@@ -1334,7 +1334,7 @@ button:disabled {
   align-items: flex-start;
   transform: translate(-3px, -3px);
   color: var(--participant-color);
-  transition: left 55ms linear, top 55ms linear;
+  transition: left 50ms linear, top 50ms linear;
   will-change: left, top;
 }
 

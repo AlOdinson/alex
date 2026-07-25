@@ -8,11 +8,22 @@ import {
 import { randomToken } from './ids.js';
 import { supabase } from './supabase.js';
 
-const MAX_BROADCAST_CHARS = 120_000;
+// Keep live packets comfortably below typical realtime message limits.
+const MAX_BROADCAST_CHARS = 48_000;
 const LOCK_TTL = 7000;
+const TRANSPORT_CONNECT_TIMEOUT = 10_000;
 
 function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+function withTimeout(promise, milliseconds, message) {
+  return Promise.race([
+    promise,
+    wait(milliseconds).then(() => {
+      throw new Error(message);
+    }),
+  ]);
 }
 
 function canBroadcastOperations(ops) {
@@ -83,11 +94,91 @@ export function connectBoardRealtime({
   let flushing = false;
   let activeWrites = 0;
   let actionSequence = 0;
-  let channel = null;
+
+  let transportKind = isSupabaseConfigured ? 'pending' : 'local';
+  let transportReadyResolve;
+  const transportReady = new Promise((resolve) => {
+    transportReadyResolve = resolve;
+  });
+  let transportResolved = !isSupabaseConfigured;
+
+  let ablyClient = null;
+  let ablyChannel = null;
+  let supabaseChannel = null;
+  let localChannel = null;
+  let localHeartbeat = null;
+  let ablyPresenceRefresh = Promise.resolve();
+
+  const resolveTransport = (kind) => {
+    if (transportResolved) return;
+    transportResolved = true;
+    transportKind = kind;
+    transportReadyResolve(kind);
+  };
 
   const updatePendingCount = async () => {
     const queued = await countPendingActions(boardId);
     onPendingChange?.(Math.max(queued, activeWrites));
+  };
+
+  const handleRealtimeEvent = (event, payload) => {
+    if (!payload || payload.clientId === clientId) return;
+
+    if (event === 'action') {
+      onOps?.(
+        Array.isArray(payload.ops) ? payload.ops : [],
+        Number(payload.revision ?? 0),
+        Boolean(payload.needsSync),
+        payload.background ?? null,
+        payload.actionId ?? null,
+        payload.clientId ?? '',
+      );
+      return;
+    }
+    if (event === 'mode') onMode?.(payload.mode);
+    if (event === 'settings') {
+      onSettings?.(
+        payload.settings ?? {},
+        Number(payload.revision ?? 0),
+        Boolean(payload.needsSync),
+      );
+    }
+    if (event === 'sync') onSyncRequired?.(Number(payload.revision ?? 0));
+    if (event === 'cursor') onCursor?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'lock') {
+      onLock?.({ ...payload, expiresAt: Number(payload.expiresAt ?? Date.now() + LOCK_TTL) });
+    }
+    if (event === 'transform') onTransform?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'draw') onDraw?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'preview') onPreview?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'selection-transaction') {
+      onSelectionTransaction?.({ ...payload, receivedAt: Date.now() });
+    }
+    if (event === 'view') onView?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'view-jump') onViewJump?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'view-request') onViewRequest?.({ ...payload, receivedAt: Date.now() });
+  };
+
+  const publishRealtime = async (event, payload) => {
+    if (disconnected) return 'closed';
+    if (isSupabaseConfigured && transportKind === 'pending') await transportReady;
+    if (disconnected) return 'closed';
+
+    if (transportKind === 'ably' && ablyChannel) {
+      await ablyChannel.publish(event, payload);
+      return 'ok';
+    }
+
+    if (transportKind === 'supabase' && supabaseChannel) {
+      return supabaseChannel.send({ type: 'broadcast', event, payload });
+    }
+
+    if (transportKind === 'local' && localChannel) {
+      localChannel.postMessage({ kind: event, ...payload });
+      return 'ok';
+    }
+
+    return 'unavailable';
   };
 
   const broadcastCommittedAction = async (action, result) => {
@@ -101,23 +192,14 @@ export function connectBoardRealtime({
       background: action.background ?? null,
     };
 
-    if (isSupabaseConfigured) {
-      try {
-        const delivery = await channel?.send({ type: 'broadcast', event: 'action', payload });
-        if (!includeOps || delivery !== 'ok') {
-          await channel?.send({
-            type: 'broadcast',
-            event: 'sync',
-            payload: { clientId, revision: result.revision },
-          });
-        }
-      } catch (error) {
-        console.warn('Realtime broadcast failed after server commit', error);
+    try {
+      const delivery = await publishRealtime('action', payload);
+      if (!includeOps || delivery !== 'ok') {
+        await publishRealtime('sync', { clientId, revision: result.revision });
       }
-      return;
+    } catch (error) {
+      console.warn('Realtime broadcast failed after server commit', error);
     }
-
-    channel?.postMessage({ kind: 'action', ...payload });
   };
 
   const commitAction = async (action, { announceSaving = true } = {}) => {
@@ -211,79 +293,123 @@ export function connectBoardRealtime({
   window.addEventListener('online', handleOnline);
   window.addEventListener('offline', handleOffline);
 
-  if (isSupabaseConfigured) {
-    channel = supabase.channel(topic, {
+  const startAblyTransport = async () => {
+    const Ably = window.Ably;
+    if (!Ably?.Realtime) throw new Error('Ably SDK did not load');
+
+    ablyClient = new Ably.Realtime({
+      clientId,
+      useTokenAuth: true,
+      authCallback: async (_tokenParams, callback) => {
+        try {
+          const { data, error } = await supabase.functions.invoke('ably-token', {
+            body: { boardId, boardKey, clientId },
+          });
+          if (error) throw error;
+          if (!data?.token) throw new Error('Token endpoint returned no token');
+          callback(null, data);
+        } catch (error) {
+          console.error('Could not obtain Ably token', error);
+          callback(error, null);
+        }
+      },
+      disconnectedRetryTimeout: 5000,
+      suspendedRetryTimeout: 15000,
+    });
+
+    ablyClient.connection.on((change) => {
+      const state = change?.current ?? ablyClient?.connection?.state;
+      if (state === 'connected' && transportKind === 'ably') onStatus?.('SUBSCRIBED');
+      if (state === 'disconnected') onStatus?.('TIMED_OUT');
+      if (state === 'suspended' || state === 'failed') onStatus?.('CHANNEL_ERROR');
+      if (state === 'closed') onStatus?.('CLOSED');
+    });
+
+    await withTimeout(
+      ablyClient.connection.once('connected'),
+      TRANSPORT_CONNECT_TIMEOUT,
+      'Timed out while connecting to Ably',
+    );
+
+    if (disconnected) throw new Error('Connection was closed');
+
+    ablyChannel = ablyClient.channels.get(topic);
+    await withTimeout(
+      ablyChannel.subscribe((message) => {
+        handleRealtimeEvent(message?.name, message?.data);
+      }),
+      TRANSPORT_CONNECT_TIMEOUT,
+      'Timed out while attaching Ably channel',
+    );
+
+    const refreshUsers = async () => {
+      if (!ablyChannel || disconnected) return;
+      try {
+        const members = await ablyChannel.presence.get();
+        const users = new Map();
+        members.forEach((member) => {
+          const data = member?.data ?? {};
+          const memberClientId = String(member?.clientId ?? data.clientId ?? '');
+          if (!memberClientId) return;
+          users.set(memberClientId, {
+            clientId: memberClientId,
+            name: data.name ?? 'Участник',
+            permission: data.permission ?? 'view',
+            color: data.color ?? participantColor(memberClientId),
+          });
+        });
+        onUsers?.([...users.values()]);
+      } catch (error) {
+        if (!disconnected) console.warn('Could not refresh Ably presence', error);
+      }
+    };
+
+    await ablyChannel.presence.subscribe(() => {
+      ablyPresenceRefresh = ablyPresenceRefresh
+        .catch(() => undefined)
+        .then(refreshUsers);
+    });
+
+    await ablyChannel.presence.enter({
+      clientId,
+      name,
+      permission,
+      color,
+      joinedAt: Date.now(),
+    });
+
+    resolveTransport('ably');
+    await refreshUsers();
+    onStatus?.('SUBSCRIBED');
+    await flushPending();
+    onSyncRequired?.(Number(getKnownRevision?.() ?? 0));
+  };
+
+  const startSupabaseTransport = async () => {
+    if (disconnected) return;
+    supabaseChannel = supabase.channel(topic, {
       config: {
         broadcast: { self: false },
         presence: { key: clientId },
       },
     });
 
-    channel
-      .on('broadcast', { event: 'action' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onOps?.(
-          Array.isArray(payload.ops) ? payload.ops : [],
-          Number(payload.revision ?? 0),
-          Boolean(payload.needsSync),
-          payload.background ?? null,
-          payload.actionId ?? null,
-          payload.clientId ?? '',
-        );
-      })
-      .on('broadcast', { event: 'mode' }, ({ payload }) => {
-        if (payload?.clientId !== clientId) onMode?.(payload?.mode);
-      })
-      .on('broadcast', { event: 'settings' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onSettings?.(
-          payload.settings ?? {},
-          Number(payload.revision ?? 0),
-          Boolean(payload.needsSync),
-        );
-      })
-      .on('broadcast', { event: 'sync' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onSyncRequired?.(Number(payload.revision ?? 0));
-      })
-      .on('broadcast', { event: 'cursor' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onCursor?.({ ...payload, receivedAt: Date.now() });
-      })
-      .on('broadcast', { event: 'lock' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onLock?.({ ...payload, expiresAt: Number(payload.expiresAt ?? Date.now() + LOCK_TTL) });
-      })
-      .on('broadcast', { event: 'transform' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onTransform?.({ ...payload, receivedAt: Date.now() });
-      })
-      .on('broadcast', { event: 'draw' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onDraw?.({ ...payload, receivedAt: Date.now() });
-      })
-      .on('broadcast', { event: 'preview' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onPreview?.({ ...payload, receivedAt: Date.now() });
-      })
-      .on('broadcast', { event: 'selection-transaction' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onSelectionTransaction?.({ ...payload, receivedAt: Date.now() });
-      })
-      .on('broadcast', { event: 'view' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onView?.({ ...payload, receivedAt: Date.now() });
-      })
-      .on('broadcast', { event: 'view-jump' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onViewJump?.({ ...payload, receivedAt: Date.now() });
-      })
-      .on('broadcast', { event: 'view-request' }, ({ payload }) => {
-        if (!payload || payload.clientId === clientId) return;
-        onViewRequest?.({ ...payload, receivedAt: Date.now() });
-      })
+    supabaseChannel
+      .on('broadcast', { event: 'action' }, ({ payload }) => handleRealtimeEvent('action', payload))
+      .on('broadcast', { event: 'mode' }, ({ payload }) => handleRealtimeEvent('mode', payload))
+      .on('broadcast', { event: 'settings' }, ({ payload }) => handleRealtimeEvent('settings', payload))
+      .on('broadcast', { event: 'sync' }, ({ payload }) => handleRealtimeEvent('sync', payload))
+      .on('broadcast', { event: 'cursor' }, ({ payload }) => handleRealtimeEvent('cursor', payload))
+      .on('broadcast', { event: 'lock' }, ({ payload }) => handleRealtimeEvent('lock', payload))
+      .on('broadcast', { event: 'transform' }, ({ payload }) => handleRealtimeEvent('transform', payload))
+      .on('broadcast', { event: 'draw' }, ({ payload }) => handleRealtimeEvent('draw', payload))
+      .on('broadcast', { event: 'preview' }, ({ payload }) => handleRealtimeEvent('preview', payload))
+      .on('broadcast', { event: 'selection-transaction' }, ({ payload }) => handleRealtimeEvent('selection-transaction', payload))
+      .on('broadcast', { event: 'view' }, ({ payload }) => handleRealtimeEvent('view', payload))
+      .on('broadcast', { event: 'view-jump' }, ({ payload }) => handleRealtimeEvent('view-jump', payload))
+      .on('broadcast', { event: 'view-request' }, ({ payload }) => handleRealtimeEvent('view-request', payload))
       .on('presence', { event: 'sync' }, () => {
-        const state = channel.presenceState();
+        const state = supabaseChannel.presenceState();
         const users = Object.values(state)
           .flat()
           .map((entry) => ({
@@ -297,16 +423,19 @@ export function connectBoardRealtime({
       .subscribe(async (status) => {
         onStatus?.(status);
         if (status === 'SUBSCRIBED') {
-          await channel.track({ clientId, name, permission, color, joinedAt: Date.now() });
+          resolveTransport('supabase');
+          await supabaseChannel.track({ clientId, name, permission, color, joinedAt: Date.now() });
           await flushPending();
           onSyncRequired?.(Number(getKnownRevision?.() ?? 0));
         }
       });
-  } else {
-    channel = new BroadcastChannel(topic);
+  };
+
+  const startLocalTransport = () => {
+    localChannel = new BroadcastChannel(topic);
     const peers = new Map();
     const publishPresence = () => {
-      channel.postMessage({
+      localChannel.postMessage({
         kind: 'presence', clientId, name, permission, color, timestamp: Date.now(),
       });
     };
@@ -319,42 +448,47 @@ export function connectBoardRealtime({
       onUsers?.([...peers.values()]);
     };
 
-    channel.onmessage = ({ data }) => {
+    localChannel.onmessage = ({ data }) => {
       if (!data || data.clientId === clientId) return;
-      if (data.kind === 'action') {
-        onOps?.(data.ops ?? [], Number(data.revision ?? 0), Boolean(data.needsSync), data.background ?? null, data.actionId ?? null, data.clientId ?? '');
-      }
-      if (data.kind === 'mode') onMode?.(data.mode);
-      if (data.kind === 'settings') onSettings?.(data.settings ?? {}, Number(data.revision ?? 0), Boolean(data.needsSync));
-      if (data.kind === 'sync') onSyncRequired?.(Number(data.revision ?? 0));
-      if (data.kind === 'cursor') onCursor?.({ ...data, receivedAt: Date.now() });
-      if (data.kind === 'lock') onLock?.({ ...data, expiresAt: Number(data.expiresAt ?? Date.now() + LOCK_TTL) });
-      if (data.kind === 'transform') onTransform?.({ ...data, receivedAt: Date.now() });
-      if (data.kind === 'draw') onDraw?.({ ...data, receivedAt: Date.now() });
-      if (data.kind === 'preview') onPreview?.({ ...data, receivedAt: Date.now() });
-      if (data.kind === 'selection-transaction') onSelectionTransaction?.({ ...data, receivedAt: Date.now() });
-      if (data.kind === 'view') onView?.({ ...data, receivedAt: Date.now() });
-      if (data.kind === 'view-jump') onViewJump?.({ ...data, receivedAt: Date.now() });
-      if (data.kind === 'view-request') onViewRequest?.({ ...data, receivedAt: Date.now() });
       if (data.kind === 'presence') {
         peers.set(data.clientId, data);
         refreshUsers();
+        return;
       }
       if (data.kind === 'leave') {
         peers.delete(data.clientId);
         refreshUsers();
+        return;
       }
+      handleRealtimeEvent(data.kind, data);
     };
 
     publishPresence();
     refreshUsers();
     onStatus?.('SUBSCRIBED');
     flushPending();
-    const heartbeat = window.setInterval(() => {
+    localHeartbeat = window.setInterval(() => {
       publishPresence();
       refreshUsers();
     }, 5000);
-    channel.__heartbeat = heartbeat;
+  };
+
+  if (isSupabaseConfigured) {
+    startAblyTransport().catch(async (error) => {
+      if (disconnected) return;
+      console.warn('Ably unavailable; switching to Supabase Realtime fallback', error);
+      try {
+        ablyClient?.close();
+      } catch {
+        // Ignore cleanup errors during fallback.
+      }
+      ablyClient = null;
+      ablyChannel = null;
+      onStatus?.('RECOVERING');
+      await startSupabaseTransport();
+    });
+  } else {
+    startLocalTransport();
   }
 
   updatePendingCount();
@@ -365,22 +499,14 @@ export function connectBoardRealtime({
       return enqueueAction(ops, null);
     },
     sendMode(mode) {
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'mode', payload: { clientId, mode } });
-      }
-      channel.postMessage({ kind: 'mode', clientId, mode });
-      return Promise.resolve('ok');
+      return publishRealtime('mode', { clientId, mode });
     },
     sendSettings(settings) {
       return enqueueAction([], settings?.background ?? null);
     },
     sendCursor(cursor) {
       const payload = { clientId, name, color, ...cursor, timestamp: Date.now() };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'cursor', payload });
-      }
-      channel.postMessage({ kind: 'cursor', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('cursor', payload);
     },
     sendLock(objectIds, locked = true) {
       const payload = {
@@ -391,11 +517,7 @@ export function connectBoardRealtime({
         locked,
         expiresAt: Date.now() + LOCK_TTL,
       };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'lock', payload });
-      }
-      channel.postMessage({ kind: 'lock', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('lock', payload);
     },
     sendTransform(transform) {
       const hasObjectFrames = Array.isArray(transform?.objects) && transform.objects.length > 0;
@@ -412,11 +534,7 @@ export function connectBoardRealtime({
         ...transform,
         timestamp: Date.now(),
       };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'transform', payload });
-      }
-      channel.postMessage({ kind: 'transform', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('transform', payload);
     },
     sendDraw(draw) {
       if (!draw || !draw.objectId || !Array.isArray(draw.points) || !draw.points.length) {
@@ -429,11 +547,7 @@ export function connectBoardRealtime({
         ...draw,
         timestamp: Date.now(),
       };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'draw', payload });
-      }
-      channel.postMessage({ kind: 'draw', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('draw', payload);
     },
     sendPreview(records) {
       const safeRecords = Array.isArray(records) ? records : [];
@@ -450,11 +564,7 @@ export function connectBoardRealtime({
         records: safeRecords,
         timestamp: Date.now(),
       };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'preview', payload });
-      }
-      channel.postMessage({ kind: 'preview', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('preview', payload);
     },
     sendSelectionTransaction(transaction) {
       if (!transaction?.transactionId || !['start', 'style', 'commit', 'cancel'].includes(transaction.phase)) {
@@ -467,44 +577,22 @@ export function connectBoardRealtime({
         ...transaction,
         timestamp: Date.now(),
       };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'selection-transaction', payload });
-      }
-      channel.postMessage({ kind: 'selection-transaction', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('selection-transaction', payload);
     },
     sendView(view) {
       const payload = { clientId, name, color, permission, ...view, timestamp: Date.now() };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'view', payload });
-      }
-      channel.postMessage({ kind: 'view', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('view', payload);
     },
     sendViewJump(view) {
       const payload = { clientId, name, color, permission, ...view, timestamp: Date.now() };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'view-jump', payload });
-      }
-      channel.postMessage({ kind: 'view-jump', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('view-jump', payload);
     },
     requestView() {
       const payload = { clientId, name, color, permission, timestamp: Date.now() };
-      if (isSupabaseConfigured) {
-        return channel.send({ type: 'broadcast', event: 'view-request', payload });
-      }
-      channel.postMessage({ kind: 'view-request', ...payload });
-      return Promise.resolve('ok');
+      return publishRealtime('view-request', payload);
     },
     requestSync(revision = Number(getKnownRevision?.() ?? 0)) {
-      if (isSupabaseConfigured) {
-        return channel.send({
-          type: 'broadcast', event: 'sync', payload: { clientId, revision },
-        });
-      }
-      channel.postMessage({ kind: 'sync', clientId, revision });
-      return Promise.resolve('ok');
+      return publishRealtime('sync', { clientId, revision });
     },
     flushPending,
     async disconnect() {
@@ -512,13 +600,33 @@ export function connectBoardRealtime({
       disconnected = true;
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
-      if (isSupabaseConfigured) {
-        await channel.untrack();
-        await supabase.removeChannel(channel);
-      } else {
-        clearInterval(channel.__heartbeat);
-        channel.postMessage({ kind: 'leave', clientId });
-        channel.close();
+
+      if (ablyChannel) {
+        try {
+          await ablyChannel.presence.leave();
+        } catch {
+          // The connection may already be closed.
+        }
+      }
+      try {
+        ablyClient?.close();
+      } catch {
+        // Ignore close errors.
+      }
+
+      if (supabaseChannel) {
+        try {
+          await supabaseChannel.untrack();
+        } catch {
+          // Ignore cleanup errors.
+        }
+        await supabase.removeChannel(supabaseChannel);
+      }
+
+      if (localChannel) {
+        window.clearInterval(localHeartbeat);
+        localChannel.postMessage({ kind: 'leave', clientId });
+        localChannel.close();
       }
     },
   };

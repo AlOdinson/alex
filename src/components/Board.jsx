@@ -47,7 +47,7 @@ const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 4;
 const HISTORY_LIMIT = 100;
-const LIVE_TRANSFORM_INTERVAL = 33;
+const LIVE_TRANSFORM_INTERVAL = 50;
 const LIVE_TRANSFORM_LOCK_TTL = 7000;
 const DESKTOP_WHEEL_ZOOM_SPEED = 6.25;
 const VIEW_BROADCAST_INTERVAL = 80;
@@ -3147,8 +3147,10 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       realtimeRef.current.sendCursor(cursorState.pending);
       cursorState.pending = null;
     };
-    if (elapsed >= 80) send();
-    else if (!cursorState.timer) cursorState.timer = window.setTimeout(send, 80 - elapsed);
+    if (elapsed >= LIVE_TRANSFORM_INTERVAL) send();
+    else if (!cursorState.timer) {
+      cursorState.timer = window.setTimeout(send, LIVE_TRANSFORM_INTERVAL - elapsed);
+    }
   }, []);
 
   const sendLocalLock = useCallback((objects, locked) => {

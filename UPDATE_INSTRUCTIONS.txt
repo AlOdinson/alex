@@ -1,14 +1,17 @@
-ALEX BOARD 0.5.8 — ОБНОВЛЕНИЕ
+ALEX BOARD 0.6.0 — ABLY 20 HZ
 
-1. Полностью закройте доску на компьютере, iPad и телефоне.
-2. Скопируйте содержимое update-архива с заменой в:
-   /Users/alik/Downloads/alex-board-mvp
-3. Файл .env не удаляйте.
-4. Проверьте версию:
-   grep '"version"' package.json
-   Должно быть: "version": "0.5.8"
-5. Соберите проект:
-   npm run build
-6. Перетащите новую папку dist в Netlify → Deploys.
+ВАЖНО: сначала обновить Supabase Edge Function ably-token.
+Код: supabase/functions/ably-token/index.ts
+Подробности: ABLY_20HZ_SETUP_RU.txt
 
-Новый SQL и npm install не нужны.
+После обновления функции:
+1. Полностью закрыть старые вкладки доски на всех устройствах.
+2. Загрузить содержимое этой папки в GitHub-репозиторий alex с заменой файлов.
+3. Не удалять GitHub Secrets:
+   VITE_SUPABASE_URL
+   VITE_SUPABASE_PUBLISHABLE_KEY
+4. Дождаться зелёной галочки во вкладке Actions.
+5. Открыть https://alodinson.github.io/alex/
+6. Проверить одну доску в двух браузерах/устройствах.
+
+Новый SQL не нужен. npm install вручную не нужен: Ably SDK загружается через официальный CDN.

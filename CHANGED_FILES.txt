@@ -1,0 +1,12 @@
+Alex Board 0.6.0 — изменённые/новые файлы
+
+index.html
+package.json
+src/components/Board.jsx
+src/lib/realtime.js
+src/styles.css
+supabase/functions/ably-token/index.ts
+README.md
+UPDATE_INSTRUCTIONS.txt
+ABLY_20HZ_SETUP_RU.txt
+CHANGED_FILES.txt
