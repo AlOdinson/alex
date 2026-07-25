@@ -1,0 +1,14 @@
+ALEX BOARD 0.5.8 — ОБНОВЛЕНИЕ
+
+1. Полностью закройте доску на компьютере, iPad и телефоне.
+2. Скопируйте содержимое update-архива с заменой в:
+   /Users/alik/Downloads/alex-board-mvp
+3. Файл .env не удаляйте.
+4. Проверьте версию:
+   grep '"version"' package.json
+   Должно быть: "version": "0.5.8"
+5. Соберите проект:
+   npm run build
+6. Перетащите новую папку dist в Netlify → Deploys.
+
+Новый SQL и npm install не нужны.
