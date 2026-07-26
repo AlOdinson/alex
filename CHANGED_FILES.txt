@@ -1,4 +1,4 @@
-Alex Board 0.6.0 — изменённые/новые файлы
+Alex Board 0.7.0 — изменённые/новые файлы
 
 index.html
 package.json
@@ -10,3 +10,6 @@ README.md
 UPDATE_INSTRUCTIONS.txt
 ABLY_20HZ_SETUP_RU.txt
 CHANGED_FILES.txt
+
+FIXES_0.7.0_RU.txt
+UPDATE_STEPS_0.7.0_RU.txt

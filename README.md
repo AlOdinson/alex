@@ -1,4 +1,4 @@
-# Alex Board 0.6.0 — Ably 20 Hz
+# Alex Board 0.7.0 — Ably 20 Hz
 
 Совместная онлайн-доска для занятий с GitHub Pages, Supabase и Ably.
 

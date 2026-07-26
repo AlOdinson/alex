@@ -1,4 +1,4 @@
-ALEX BOARD 0.6.0 — ABLY 20 HZ
+ALEX BOARD 0.7.0 — ABLY 20 HZ
 
 ВАЖНО: сначала обновить Supabase Edge Function ably-token.
 Код: supabase/functions/ably-token/index.ts

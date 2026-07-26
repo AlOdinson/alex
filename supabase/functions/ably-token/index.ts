@@ -123,7 +123,7 @@ export default {
       const keyName = apiKey.slice(0, separatorIndex);
       const channelName = `board:${boardId}:${realtimeKey}`;
       const capability = {
-        [channelName]: ["publish", "subscribe", "presence", "history"],
+        [channelName]: ["publish", "subscribe", "presence"],
       };
 
       try {

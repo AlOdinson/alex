@@ -12,6 +12,7 @@ import { supabase } from './supabase.js';
 const MAX_BROADCAST_CHARS = 48_000;
 const LOCK_TTL = 7000;
 const TRANSPORT_CONNECT_TIMEOUT = 10_000;
+const LIVE_BATCH_INTERVAL = 50;
 
 function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -94,6 +95,11 @@ export function connectBoardRealtime({
   let flushing = false;
   let activeWrites = 0;
   let actionSequence = 0;
+  let liveBatchTimer = null;
+  let liveBatchLastSentAt = 0;
+  let livePublishQueue = Promise.resolve();
+  let pendingLiveBatch = { cursor: null, transform: null, draws: [], view: null };
+  const lastLiveSignatures = new Map();
 
   let transportKind = isSupabaseConfigured ? 'pending' : 'local';
   let transportReadyResolve;
@@ -123,6 +129,83 @@ export function connectBoardRealtime({
 
   const handleRealtimeEvent = (event, payload) => {
     if (!payload || payload.clientId === clientId) return;
+
+    if (event === 'live-batch') {
+      const common = {
+        clientId: payload.clientId,
+        name: payload.n ?? 'Участник',
+        color: payload.c ?? participantColor(payload.clientId),
+        permission: payload.p ?? 'view',
+        timestamp: Number(payload.ts ?? Date.now()),
+      };
+      if (Array.isArray(payload.u) && payload.u.length >= 2) {
+        onCursor?.({ ...common, x: Number(payload.u[0]), y: Number(payload.u[1]), receivedAt: Date.now() });
+      }
+      if (payload.t && typeof payload.t === 'object') {
+        const compact = payload.t;
+        const objects = Array.isArray(compact.f)
+          ? compact.f.map((frame) => ({
+            id: frame?.[0],
+            matrix: frame?.[1],
+            creationSessionId: frame?.[2] ?? null,
+            creationClientId: frame?.[3] ?? null,
+            objectKind: frame?.[4] ?? null,
+            objectType: frame?.[5] ?? null,
+            zIndex: Number(frame?.[6] ?? -1),
+          }))
+          : [];
+        onTransform?.({
+          ...common,
+          sessionId: compact.s,
+          sessionOrder: Number(compact.o ?? 0),
+          sequence: Number(compact.q ?? 0),
+          phase: compact.h ?? 'update',
+          mode: compact.m ?? 'objects',
+          objects,
+          objectIds: compact.i ?? [],
+          deltaMatrix: compact.x ?? null,
+          transactionId: compact.r ?? null,
+          receivedAt: Date.now(),
+        });
+      }
+      if (Array.isArray(payload.d)) {
+        payload.d.forEach((draw) => {
+          if (!Array.isArray(draw)) return;
+          const flatPoints = Array.isArray(draw[8]) ? draw[8] : [];
+          const points = [];
+          for (let index = 0; index + 1 < flatPoints.length; index += 2) {
+            points.push([Number(flatPoints[index]), Number(flatPoints[index + 1])]);
+          }
+          const style = Array.isArray(draw[9])
+            ? { stroke: draw[9][0], width: Number(draw[9][1]), opacity: Number(draw[9][2]) }
+            : {};
+          onDraw?.({
+            ...common,
+            sessionId: draw[0],
+            sessionOrder: Number(draw[1] ?? 0),
+            sequence: Number(draw[2] ?? 0),
+            phase: draw[3] ?? 'update',
+            tool: draw[4] ?? 'pencil',
+            objectId: draw[5],
+            from: Number(draw[6] ?? 0),
+            replace: Boolean(draw[7]),
+            points,
+            style,
+            receivedAt: Date.now(),
+          });
+        });
+      }
+      if (Array.isArray(payload.v) && payload.v.length >= 3) {
+        onView?.({
+          ...common,
+          centerX: Number(payload.v[0]),
+          centerY: Number(payload.v[1]),
+          zoom: Number(payload.v[2]),
+          receivedAt: Date.now(),
+        });
+      }
+      return;
+    }
 
     if (event === 'action') {
       onOps?.(
@@ -179,6 +262,105 @@ export function connectBoardRealtime({
     }
 
     return 'unavailable';
+  };
+
+  const compactTransform = (transform) => ({
+    s: transform.sessionId,
+    o: Number(transform.sessionOrder ?? 0),
+    q: Number(transform.sequence ?? 0),
+    h: transform.phase ?? 'update',
+    m: transform.mode ?? 'objects',
+    f: Array.isArray(transform.objects) ? transform.objects.map((frame) => [
+      frame.id,
+      frame.matrix,
+      frame.creationSessionId ?? null,
+      frame.creationClientId ?? null,
+      frame.objectKind ?? null,
+      frame.objectType ?? null,
+      Number(frame.zIndex ?? -1),
+    ]) : [],
+    i: Array.isArray(transform.objectIds) ? transform.objectIds : [],
+    x: Array.isArray(transform.deltaMatrix) ? transform.deltaMatrix : null,
+    r: transform.transactionId ?? null,
+  });
+
+  const compactDraw = (draw) => {
+    const flatPoints = [];
+    (Array.isArray(draw.points) ? draw.points : []).forEach((point) => {
+      if (Array.isArray(point)) flatPoints.push(Number(point[0]), Number(point[1]));
+      else flatPoints.push(Number(point?.x), Number(point?.y));
+    });
+    return [
+      draw.sessionId,
+      Number(draw.sessionOrder ?? 0),
+      Number(draw.sequence ?? 0),
+      draw.phase ?? 'update',
+      draw.tool ?? 'pencil',
+      draw.objectId,
+      Number(draw.from ?? 0),
+      draw.replace ? 1 : 0,
+      flatPoints,
+      [draw.style?.stroke ?? '#111827', Number(draw.style?.width ?? 3), Number(draw.style?.opacity ?? 1)],
+    ];
+  };
+
+  const flushLiveBatch = () => {
+    window.clearTimeout(liveBatchTimer);
+    liveBatchTimer = null;
+    const batch = pendingLiveBatch;
+    if (!batch.cursor && !batch.transform && !batch.draws.length && !batch.view) {
+      return Promise.resolve('empty');
+    }
+    pendingLiveBatch = { cursor: null, transform: null, draws: [], view: null };
+    liveBatchLastSentAt = Date.now();
+    const payload = {
+      clientId,
+      n: name,
+      c: color,
+      p: permission,
+      ts: Date.now(),
+      u: batch.cursor ? [Number(batch.cursor.x), Number(batch.cursor.y)] : null,
+      t: batch.transform ? compactTransform(batch.transform) : null,
+      d: batch.draws.map(compactDraw),
+      v: batch.view
+        ? [Number(batch.view.centerX), Number(batch.view.centerY), Number(batch.view.zoom)]
+        : null,
+    };
+    livePublishQueue = livePublishQueue
+      .catch(() => undefined)
+      .then(() => publishRealtime('live-batch', payload));
+    return livePublishQueue;
+  };
+
+  const scheduleLiveFlush = (immediate = false) => {
+    if (immediate) return flushLiveBatch();
+    const elapsed = Date.now() - liveBatchLastSentAt;
+    if (!liveBatchTimer) {
+      // Even when the 50 ms boundary has already passed, wait until the end of the
+      // current JavaScript turn. Cursor + draw/transform produced by one pointer event
+      // can then share a single Ably publication.
+      liveBatchTimer = window.setTimeout(
+        flushLiveBatch,
+        elapsed >= LIVE_BATCH_INTERVAL ? 0 : LIVE_BATCH_INTERVAL - elapsed,
+      );
+    }
+    return Promise.resolve('queued');
+  };
+
+  const queueLatestLive = (kind, value, { immediate = false } = {}) => {
+    const signature = JSON.stringify(value);
+    if (lastLiveSignatures.get(kind) === signature) return Promise.resolve('duplicate');
+    lastLiveSignatures.set(kind, signature);
+    pendingLiveBatch[kind] = value;
+    return scheduleLiveFlush(immediate);
+  };
+
+  const queueDrawLive = (draw, { immediate = false } = {}) => {
+    const signature = `${draw.sessionId}:${draw.sequence}:${draw.phase}`;
+    if (lastLiveSignatures.get('draw') === signature) return Promise.resolve('duplicate');
+    lastLiveSignatures.set('draw', signature);
+    pendingLiveBatch.draws.push(draw);
+    return scheduleLiveFlush(immediate);
   };
 
   const broadcastCommittedAction = async (action, result) => {
@@ -300,6 +482,7 @@ export function connectBoardRealtime({
     ablyClient = new Ably.Realtime({
       clientId,
       useTokenAuth: true,
+      echoMessages: false,
       authCallback: async (_tokenParams, callback) => {
         try {
           const { data, error } = await supabase.functions.invoke('ably-token', {
@@ -400,6 +583,7 @@ export function connectBoardRealtime({
       .on('broadcast', { event: 'settings' }, ({ payload }) => handleRealtimeEvent('settings', payload))
       .on('broadcast', { event: 'sync' }, ({ payload }) => handleRealtimeEvent('sync', payload))
       .on('broadcast', { event: 'cursor' }, ({ payload }) => handleRealtimeEvent('cursor', payload))
+      .on('broadcast', { event: 'live-batch' }, ({ payload }) => handleRealtimeEvent('live-batch', payload))
       .on('broadcast', { event: 'lock' }, ({ payload }) => handleRealtimeEvent('lock', payload))
       .on('broadcast', { event: 'transform' }, ({ payload }) => handleRealtimeEvent('transform', payload))
       .on('broadcast', { event: 'draw' }, ({ payload }) => handleRealtimeEvent('draw', payload))
@@ -505,8 +689,13 @@ export function connectBoardRealtime({
       return enqueueAction([], settings?.background ?? null);
     },
     sendCursor(cursor) {
-      const payload = { clientId, name, color, ...cursor, timestamp: Date.now() };
-      return publishRealtime('cursor', payload);
+      if (!Number.isFinite(Number(cursor?.x)) || !Number.isFinite(Number(cursor?.y))) {
+        return Promise.resolve('ignored');
+      }
+      return queueLatestLive('cursor', {
+        x: Number(Number(cursor.x).toFixed(2)),
+        y: Number(Number(cursor.y).toFixed(2)),
+      });
     },
     sendLock(objectIds, locked = true) {
       const payload = {
@@ -527,27 +716,18 @@ export function connectBoardRealtime({
         && Array.isArray(transform.deltaMatrix)
         && transform.deltaMatrix.length === 6;
       if (!hasObjectFrames && !hasGroupFrame) return Promise.resolve('ignored');
-      const payload = {
-        clientId,
-        name,
-        color,
-        ...transform,
-        timestamp: Date.now(),
-      };
-      return publishRealtime('transform', payload);
+      return queueLatestLive('transform', transform, {
+        immediate: transform.phase === 'end',
+      });
     },
     sendDraw(draw) {
-      if (!draw || !draw.objectId || !Array.isArray(draw.points) || !draw.points.length) {
+      if (!draw || !draw.objectId || !Array.isArray(draw.points)) {
         return Promise.resolve('ignored');
       }
-      const payload = {
-        clientId,
-        name,
-        color,
-        ...draw,
-        timestamp: Date.now(),
-      };
-      return publishRealtime('draw', payload);
+      if (draw.phase === 'update' && draw.points.length === 0) return Promise.resolve('ignored');
+      return queueDrawLive(draw, {
+        immediate: draw.phase === 'end' || draw.phase === 'cancel',
+      });
     },
     sendPreview(records) {
       const safeRecords = Array.isArray(records) ? records : [];
@@ -580,8 +760,7 @@ export function connectBoardRealtime({
       return publishRealtime('selection-transaction', payload);
     },
     sendView(view) {
-      const payload = { clientId, name, color, permission, ...view, timestamp: Date.now() };
-      return publishRealtime('view', payload);
+      return queueLatestLive('view', view);
     },
     sendViewJump(view) {
       const payload = { clientId, name, color, permission, ...view, timestamp: Date.now() };
@@ -596,8 +775,12 @@ export function connectBoardRealtime({
     },
     flushPending,
     async disconnect() {
-      await writeQueue.catch(() => undefined);
       disconnected = true;
+      window.clearTimeout(liveBatchTimer);
+      liveBatchTimer = null;
+      pendingLiveBatch = { cursor: null, transform: null, draws: [], view: null };
+      await livePublishQueue.catch(() => undefined);
+      await writeQueue.catch(() => undefined);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
 

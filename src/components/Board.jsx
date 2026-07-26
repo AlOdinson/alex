@@ -62,6 +62,7 @@ FabricObject.customProperties = [
   'pendingImage',
   'transientPreview',
   'transientLiveDraw',
+  'transientAwaitingCommit',
   'previewReceivedAt',
   'creationSessionId',
   'creationClientId',
@@ -910,6 +911,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     sessionOrder: 0,
     sequence: 0,
     lastSentAt: 0,
+    lastSignature: '',
     timer: null,
     pendingTarget: null,
   });
@@ -920,6 +922,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     sessionOrder: 0,
     sequence: 0,
     lastSentAt: 0,
+    lastSentPointIndex: 0,
     timer: null,
     tool: null,
     objectId: null,
@@ -1554,6 +1557,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         sourceIds,
         sourceRecords,
         minimumZ,
+        initialProxyMatrix: compactTransformMatrix(proxy.calcTransformMatrix()),
         committing: false,
         startedAt: Date.now(),
       };
@@ -1565,13 +1569,16 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       updateSelectionStyleState();
       canvas.requestRenderAll();
 
-      const [proxyRecord] = getObjectRecords([proxy]);
+      // The receiving device already has the selected objects. Sending only stable
+      // ids lets it build the same temporary group locally instead of transferring a
+      // potentially huge serialized group containing every line and image.
       realtimeRef.current?.sendSelectionTransaction?.({
         phase: 'start',
         transactionId,
         proxyId,
         sourceIds,
-        proxyRecord,
+        sourceZIndexes: sourceRecords.map((record) => Number(record.zIndex ?? 0)),
+        minimumZ,
       });
       localLockIdsRef.current = [...sourceIds, proxyId];
       realtimeRef.current?.sendLock?.(sourceIds, true);
@@ -1770,19 +1777,21 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
   }, []);
 
 
-  const centerViewportAt = useCallback((sceneX, sceneY) => {
+  const centerViewportAt = useCallback((sceneX, sceneY, requestedZoom = null) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !Number.isFinite(Number(sceneX)) || !Number.isFinite(Number(sceneY))) return;
-    const currentZoom = canvas.getZoom();
+    const nextZoom = Number.isFinite(Number(requestedZoom))
+      ? clamp(Number(requestedZoom), MIN_ZOOM, MAX_ZOOM)
+      : canvas.getZoom();
     canvas.setViewportTransform([
-      currentZoom,
+      nextZoom,
       0,
       0,
-      currentZoom,
-      canvas.getWidth() / 2 - Number(sceneX) * currentZoom,
-      canvas.getHeight() / 2 - Number(sceneY) * currentZoom,
+      nextZoom,
+      canvas.getWidth() / 2 - Number(sceneX) * nextZoom,
+      canvas.getHeight() / 2 - Number(sceneY) * nextZoom,
     ]);
-    setZoom(currentZoom);
+    setZoom(nextZoom);
     updateBackgroundTransform();
     canvas.requestRenderAll();
   }, [updateBackgroundTransform]);
@@ -1797,6 +1806,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       centerX: Number(center.x.toFixed(3)),
       centerY: Number(center.y.toFixed(3)),
       zoom: Number(canvas.getZoom().toFixed(4)),
+      force: kind === 'jump',
+      jumpId: kind === 'jump' ? randomToken(8) : undefined,
     };
     if (kind === 'jump') realtime.sendViewJump?.(payload);
     else realtime.sendView?.(payload);
@@ -1822,14 +1833,18 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     if (isOwner || message?.permission !== 'owner') return;
     if (!Number.isFinite(Number(message?.centerX)) || !Number.isFinite(Number(message?.centerY))) return;
     lastTeacherViewRef.current = message;
-    if (autopilotRef.current) centerViewportAt(message.centerX, message.centerY);
+    if (autopilotRef.current) centerViewportAt(message.centerX, message.centerY, message.zoom);
   }, [centerViewportAt, isOwner]);
 
   const handleRemoteViewJump = useCallback((message) => {
-    if (isOwner || message?.permission !== 'owner') return;
+    if (isOwner) return;
     if (!Number.isFinite(Number(message?.centerX)) || !Number.isFinite(Number(message?.centerY))) return;
+    // `force` is set only by the owner-facing “Ко мне” action. Accept it even if an
+    // older connection reported the owner role as edit/view, which previously made
+    // the button silently do nothing for every student.
+    if (message?.permission !== 'owner' && message?.force !== true) return;
     lastTeacherViewRef.current = message;
-    centerViewportAt(message.centerX, message.centerY);
+    centerViewportAt(message.centerX, message.centerY, message.zoom);
   }, [centerViewportAt, isOwner]);
 
   const handleRemoteViewRequest = useCallback(() => {
@@ -1848,7 +1863,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     if (next) {
       if (isOwner) sendTeacherViewNow('view');
       else if (lastTeacherViewRef.current) {
-        centerViewportAt(lastTeacherViewRef.current.centerX, lastTeacherViewRef.current.centerY);
+        centerViewportAt(lastTeacherViewRef.current.centerX, lastTeacherViewRef.current.centerY, lastTeacherViewRef.current.zoom);
       }
       realtimeRef.current?.requestView?.();
     }
@@ -2328,6 +2343,22 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       syncRequestedRef.current = true;
       return;
     }
+    const now = Date.now();
+    const hasProtectedRemoteDrawing = [...remoteDrawSessionsRef.current.values()].some((session) => (
+      now - Number(session?.receivedAt ?? 0) < 15000
+      && (!session?.ended || session?.awaitingCommit)
+    )) || Boolean(fabricCanvasRef.current?.getObjects().some((object) => (
+      object.transientPreview
+      && (object.transientLiveDraw || object.transientAwaitingCommit)
+      && now - Number(object.previewReceivedAt ?? 0) < 15000
+    )));
+    // A server snapshot can lag a live stroke by a few hundred milliseconds. Never
+    // replace the whole canvas during that hand-off: keep the preview visible until
+    // the authoritative object with the same creation session arrives.
+    if (hasProtectedRemoteDrawing) {
+      syncRequestedRef.current = true;
+      return;
+    }
     if (pendingServerWritesRef.current > 0 || syncInFlightRef.current) {
       syncRequestedRef.current = true;
       return;
@@ -2411,19 +2442,50 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         canvas.renderOnAddRemove = false;
         try {
           if (phase === 'start') {
+            const proxyId = String(message?.proxyId ?? `selection-proxy:${transactionId}`);
+            const activeIds = canvas.getActiveObjects()
+              .map((object) => object.boardObjectId)
+              .filter(Boolean)
+              .map(String);
+            if (activeIds.some((id) => sourceIds.includes(id))) canvas.discardActiveObject();
+
+            let proxy = null;
             const proxyRecord = message?.proxyRecord;
             const serialized = proxyRecord?.object;
-            if (!serialized) {
-              window.setTimeout(() => syncFromServer(true), 80);
-              return;
+
+            // Backward compatibility with older senders that still include the whole
+            // serialized proxy. New clients send only ids and build the group locally.
+            if (serialized) {
+              await preloadSerializedImages(serialized);
+              [proxy] = await util.enlivenObjects([serialized]);
+            } else {
+              const sourceObjects = sourceIds
+                .map((id) => canvas.getObjects().find((object) => String(object.boardObjectId ?? '') === id))
+                .filter(Boolean);
+              if (sourceObjects.length !== sourceIds.length || sourceObjects.length < 2) {
+                window.setTimeout(() => syncFromServer(true), 100);
+                return;
+              }
+              const ordered = sourceIds
+                .map((id) => sourceObjects.find((object) => String(object.boardObjectId ?? '') === id))
+                .filter(Boolean);
+              ordered.forEach((object) => canvas.remove(object));
+              proxy = new Group(ordered, {
+                subTargetCheck: false,
+                interactive: false,
+                objectCaching: false,
+                selectable: false,
+                evented: false,
+                hasControls: false,
+                hasBorders: false,
+              });
             }
-            await preloadSerializedImages(serialized);
-            const [proxy] = await util.enlivenObjects([serialized]);
+
             if (!proxy) {
-              window.setTimeout(() => syncFromServer(true), 80);
+              window.setTimeout(() => syncFromServer(true), 100);
               return;
             }
-            proxy.boardObjectId = String(message?.proxyId ?? `selection-proxy:${transactionId}`);
+            proxy.boardObjectId = proxyId;
             proxy.transientSelectionProxy = true;
             proxy.selectionTransactionId = transactionId;
             proxy.selectionSourceIds = sourceIds;
@@ -2434,25 +2496,22 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
             proxy.hasControls = false;
             proxy.hasBorders = false;
 
-            // Prepare the complete proxy first. Only after it is ready do we atomically
-            // replace the source members, so a slow image or a failed revive cannot leave
-            // an observer with a partially missing selection.
-            const activeIds = canvas.getActiveObjects()
-              .map((object) => object.boardObjectId)
-              .filter(Boolean)
-              .map(String);
-            if (activeIds.some((id) => sourceIds.includes(id))) canvas.discardActiveObject();
-            sourceIds.forEach((id) => removeBoardObjectsById(canvas, id));
+            // The complete group is ready before it is added. renderOnAddRemove is
+            // disabled around this whole transaction, so observers never see a blank
+            // frame while many source objects become one lightweight live proxy.
+            if (serialized) sourceIds.forEach((id) => removeBoardObjectsById(canvas, id));
             removeSelectionTransactionObjects(canvas, transactionId);
             canvas.add(proxy);
-            if (Number.isInteger(proxyRecord.zIndex) && typeof canvas.moveObjectTo === 'function') {
-              canvas.moveObjectTo(proxy, clamp(proxyRecord.zIndex, 0, canvas.getObjects().length - 1));
+            const minimumZ = Number(message?.minimumZ ?? proxyRecord?.zIndex ?? 0);
+            if (Number.isFinite(minimumZ) && typeof canvas.moveObjectTo === 'function') {
+              canvas.moveObjectTo(proxy, clamp(Math.round(minimumZ), 0, canvas.getObjects().length - 1));
             }
             proxy.setCoords();
             remoteSelectionTransactionsRef.current.set(transactionId, {
               phase: 'start',
               sourceIds,
-              proxyId: proxy.boardObjectId,
+              proxyId,
+              proxy,
               receivedAt: Date.now(),
               clientId: message?.clientId ?? '',
             });
@@ -2684,18 +2743,9 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           return;
         }
 
-        const incomingAuthors = new Set(ops
-          .filter((op) => op?.type === 'upsert' && op.object)
-          .map((op) => op.object.creationClientId ?? op.object.updatedBy ?? '')
-          .filter(Boolean));
-        incomingAuthors.forEach((authorId) => {
-          removeTransientPreviewsByClient(canvas, authorId, {
-            // A multi-object upsert is a completed group transform. The same client
-            // cannot still be drawing those objects, so even a preview whose end frame
-            // was lost must be removed before the authoritative batch is shown.
-            includeLive: upsertIds.length > 1,
-          });
-        });
+        // Do not remove live previews before the authoritative objects are revived.
+        // The replacement below is performed atomically with rendering paused, so the
+        // receiving device never shows a white gap between realtime and saved state.
 
         // Revive every incoming object before touching the visible canvas. This makes a
         // multi-object commit atomic: the student never sees old and new members together.
@@ -2750,6 +2800,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         try {
           creationSessionsToReplace.forEach(({ clientId, sessionId }) => {
             removeBoardObjectsByCreationSession(canvas, clientId, sessionId);
+            remoteDrawSessionsRef.current.delete(`${clientId}:${sessionId}`);
           });
           [...new Set([...selectionTransactionIds, ...deleteMatchedTransactionIds])].forEach((transactionId) => {
             removeSelectionTransactionObjects(canvas, transactionId);
@@ -2768,6 +2819,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
             removeBoardObjectsById(canvas, op.object.boardObjectId);
             revived.transientPreview = false;
             revived.transientLiveDraw = false;
+            revived.transientAwaitingCommit = false;
             canvas.add(revived);
             if (Number.isInteger(op.zIndex) && typeof canvas.moveObjectTo === 'function') {
               canvas.moveObjectTo(revived, clamp(op.zIndex, 0, canvas.getObjects().length - 1));
@@ -3192,6 +3244,9 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     if (!state.sessionId) state.sessionId = randomToken(12);
     const objects = getLiveTransformObjects(target);
     if (!objects.length) return;
+    const signature = JSON.stringify(objects.map((frame) => [frame.id, frame.matrix]));
+    if (phase === 'update' && signature === state.lastSignature) return;
+    state.lastSignature = signature;
     state.sequence += 1;
     state.lastSentAt = Date.now();
     realtime.sendTransform({
@@ -3213,6 +3268,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     state.sessionOrder += 1;
     state.sequence = 0;
     state.lastSentAt = 0;
+    state.lastSignature = '';
 
     // Every member must keep one stable identity before the first frame is sent.
     // Live transform messages never create objects on another device; they only move
@@ -3247,6 +3303,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     state.sessionId = null;
     state.sequence = 0;
     state.lastSentAt = 0;
+    state.lastSignature = '';
     state.pendingTarget = null;
   }, [sendLiveTransformNow]);
 
@@ -3367,13 +3424,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       return;
     }
 
-    // A transform proves that this author has finished drawing the selected
-    // objects. Remove every other temporary preview from that author so an old
-    // overlapped stroke cannot remain behind when the real object moves.
-    removeTransientPreviewsByClient(canvas, remoteClientId, {
-      includeLive: true,
-      keep: usedObjects,
-    });
+    // Never clear unrelated previews merely because the same person moved another
+    // object. Each drawing preview is replaced only by its own creationSessionId.
 
     remoteTransformSessionsRef.current.set(sessionKey, {
       sequence,
@@ -3443,6 +3495,21 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     const realtime = realtimeRef.current;
     const state = liveDrawSendRef.current;
     if (!realtime?.sendDraw || !state.sessionId || !state.objectId || !state.tool) return;
+
+    let from = 0;
+    let points = [];
+    let replace = false;
+    if (state.tool === 'line') {
+      // A line is always only two points, so replacing both is cheaper and safer than
+      // maintaining a delta cursor for its moving endpoint.
+      points = state.points;
+      replace = true;
+    } else {
+      from = phase === 'start' ? 0 : state.lastSentPointIndex;
+      points = state.points.slice(from);
+      if (phase === 'update' && points.length === 0) return;
+    }
+
     state.sequence += 1;
     state.lastSentAt = Date.now();
     realtime.sendDraw({
@@ -3452,12 +3519,15 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       phase,
       tool: state.tool,
       objectId: state.objectId,
-      points: state.points.map((point) => ({
-        x: Number(Number(point.x).toFixed(2)),
-        y: Number(Number(point.y).toFixed(2)),
-      })),
+      from,
+      replace,
+      points: points.map((point) => [
+        Number(Number(point.x).toFixed(2)),
+        Number(Number(point.y).toFixed(2)),
+      ]),
       style: state.style,
     });
+    state.lastSentPointIndex = state.points.length;
   }, []);
 
   const beginLiveDraw = useCallback((toolName, objectId, firstPoint, style) => {
@@ -3469,6 +3539,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     state.sessionOrder += 1;
     state.sequence = 0;
     state.lastSentAt = 0;
+    state.lastSentPointIndex = 0;
     state.tool = toolName;
     state.objectId = objectId;
     state.points = [{ x: firstPoint.x, y: firstPoint.y }];
@@ -3489,7 +3560,12 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       const minimumDistance = Math.max(1.2, Number(state.style?.width ?? 3) * 0.22);
       if (last && Math.hypot(point.x - last.x, point.y - last.y) < minimumDistance) return;
       state.points.push({ x: point.x, y: point.y });
-      if (state.points.length > 2400) state.points = state.points.filter((_, index) => index % 2 === 0);
+      if (state.points.length > 2400) {
+        // Keep visual quality while bounding memory. Reset the delta cursor because the
+        // point array was compacted locally.
+        state.points = state.points.filter((_, index) => index % 2 === 0);
+        state.lastSentPointIndex = 0;
+      }
     }
     const elapsed = Date.now() - state.lastSentAt;
     const send = () => {
@@ -3509,6 +3585,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     state.sessionId = null;
     state.sequence = 0;
     state.lastSentAt = 0;
+    state.lastSentPointIndex = 0;
     state.tool = null;
     state.objectId = null;
     state.points = [];
@@ -3526,30 +3603,51 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     const sequence = Number(message?.sequence ?? 0);
     const phase = ['start', 'update', 'end', 'cancel'].includes(message?.phase) ? message.phase : 'update';
     const toolName = message?.tool === 'line' ? 'line' : 'pencil';
-    const points = Array.isArray(message?.points)
-      ? message.points.filter((point) => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.y)))
+    const incomingPoints = Array.isArray(message?.points)
+      ? message.points.map((point) => {
+        if (Array.isArray(point)) return { x: Number(point[0]), y: Number(point[1]) };
+        return { x: Number(point?.x), y: Number(point?.y) };
+      }).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y))
       : [];
-    if (!canvas || !remoteClientId || !sessionId || !objectId || !points.length) return;
+    if (!canvas || !remoteClientId || !sessionId || !objectId) return;
 
     const sessionKey = `${remoteClientId}:${sessionId}`;
     const previous = remoteDrawSessionsRef.current.get(sessionKey);
-    if (previous?.ended || (previous && (sessionOrder < previous.sessionOrder || sequence <= previous.sequence))) return;
-    remoteDrawSessionsRef.current.set(sessionKey, {
-      sessionOrder,
-      sequence,
-      objectId,
-      receivedAt: Date.now(),
-      ended: phase === 'end' || phase === 'cancel',
-    });
+    if (previous && (sessionOrder < previous.sessionOrder || sequence <= previous.sequence)) return;
+    if (previous?.ended && phase !== 'cancel') return;
 
     if (phase === 'cancel') {
+      remoteDrawSessionsRef.current.set(sessionKey, {
+        ...(previous ?? {}), sessionOrder, sequence, objectId, receivedAt: Date.now(), ended: true,
+      });
       removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId);
       canvas.requestRenderAll();
       return;
     }
 
-    // A single creation session is allowed to own exactly one temporary object,
-    // even if an older client accidentally changed the object id at mouse-up.
+    let points = Array.isArray(previous?.points) ? [...previous.points] : [];
+    const replace = Boolean(message?.replace) || toolName === 'line' || phase === 'start';
+    if (replace) {
+      points = incomingPoints;
+    } else {
+      const from = clamp(Number(message?.from ?? points.length), 0, points.length);
+      points = points.slice(0, from).concat(incomingPoints);
+    }
+    if (!points.length) return;
+
+    const ended = phase === 'end';
+    remoteDrawSessionsRef.current.set(sessionKey, {
+      sessionOrder,
+      sequence,
+      objectId,
+      points,
+      tool: toolName,
+      style: message?.style ?? previous?.style ?? {},
+      receivedAt: Date.now(),
+      ended,
+      awaitingCommit: ended,
+    });
+
     const sessionPreviews = canvas.getObjects().filter((object) => (
       object.transientPreview
       && object.creationSessionId === sessionId
@@ -3563,13 +3661,13 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       canvas.requestRenderAll();
       return;
     }
-    // A completed preview is newer than every late drawing frame.
-    if (existing?.transientPreview && !existing.transientLiveDraw) return;
+    if (existing?.transientPreview && !existing.transientLiveDraw && !ended) return;
 
-    const style = message?.style ?? {};
+    const style = message?.style ?? previous?.style ?? {};
     const common = {
       stroke: typeof style.stroke === 'string' ? style.stroke : '#111827',
       strokeWidth: clamp(Number(style.width ?? 3), 1, 80),
+      opacity: clamp(Number(style.opacity ?? 1), 0.05, 1),
       fill: null,
       strokeLineCap: 'round',
       strokeLineJoin: 'round',
@@ -3579,7 +3677,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       objectKind: toolName === 'line' ? 'line' : 'path',
       boardObjectId: objectId,
       transientPreview: true,
-      transientLiveDraw: phase !== 'end',
+      transientLiveDraw: !ended,
+      transientAwaitingCommit: ended,
       previewReceivedAt: Date.now(),
       creationSessionId: sessionId,
       creationClientId: remoteClientId,
@@ -3595,18 +3694,24 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     if (!preview) return;
 
     applyingRemoteRef.current = true;
+    const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+    canvas.renderOnAddRemove = false;
     try {
+      const oldObjects = [...new Set([...sessionPreviews, ...existingObjects])]
+        .filter((object) => object !== authoritativeExisting);
       const oldIndex = existing ? canvas.getObjects().indexOf(existing) : canvas.getObjects().length;
-      removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId);
-      removeBoardObjectsById(canvas, objectId);
       canvas.add(preview);
       if (oldIndex >= 0 && typeof canvas.moveObjectTo === 'function') {
         canvas.moveObjectTo(preview, Math.min(oldIndex, canvas.getObjects().length - 1));
       }
+      oldObjects.forEach((object) => {
+        if (object !== preview) canvas.remove(object);
+      });
       preview.setCoords();
-      canvas.requestRenderAll();
     } finally {
       applyingRemoteRef.current = false;
+      canvas.renderOnAddRemove = previousRenderOnAddRemove;
+      canvas.requestRenderAll();
     }
   }, []);
 
@@ -3628,9 +3733,6 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           if (!id || remotePreviewTokensRef.current.get(id) !== token) continue;
           const creationSessionId = serialized?.creationSessionId;
           const creationClientId = serialized?.creationClientId ?? message?.clientId ?? '';
-          if (creationSessionId) {
-            removeTransientDrawPreviewsBySession(canvas, creationClientId, creationSessionId);
-          }
           await preloadSerializedImages(serialized);
           const [revived] = await util.enlivenObjects([serialized]);
           if (!revived || remotePreviewTokensRef.current.get(id) !== token) continue;
@@ -3638,12 +3740,27 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           const authoritativeExisting = existingObjects.find((object) => !object.transientPreview);
           const existing = authoritativeExisting ?? existingObjects[0] ?? null;
           const existingIndex = existing ? canvas.getObjects().indexOf(existing) : canvas.getObjects().length;
-          if (authoritativeExisting) continue;
+          if (authoritativeExisting) {
+            if (creationSessionId) {
+              removeTransientDrawPreviewsBySession(canvas, creationClientId, creationSessionId);
+            } else {
+              existingObjects.filter((object) => object.transientPreview).forEach((object) => canvas.remove(object));
+            }
+            continue;
+          }
           applyingRemoteRef.current = true;
+          const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+          canvas.renderOnAddRemove = false;
           try {
-            removeBoardObjectsById(canvas, id);
+            const oldObjects = [...new Set([
+              ...existingObjects,
+              ...(creationSessionId
+                ? boardObjectsByCreationSession(canvas, creationClientId, creationSessionId)
+                : []),
+            ])];
             revived.transientPreview = true;
             revived.transientLiveDraw = false;
+            revived.transientAwaitingCommit = true;
             revived.previewReceivedAt = Date.now();
             revived.selectable = false;
             revived.evented = false;
@@ -3653,9 +3770,13 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
             if (typeof canvas.moveObjectTo === 'function') {
               canvas.moveObjectTo(revived, clamp(targetIndex, 0, canvas.getObjects().length - 1));
             }
+            oldObjects.forEach((object) => {
+              if (object !== revived) canvas.remove(object);
+            });
             revived.setCoords();
           } finally {
             applyingRemoteRef.current = false;
+            canvas.renderOnAddRemove = previousRenderOnAddRemove;
           }
         }
         canvas.requestRenderAll();
@@ -3932,20 +4053,26 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       }
       for (const [sessionKey, session] of remoteDrawSessionsRef.current) {
         const age = now - Number(session.receivedAt ?? 0);
-        if (session.ended && age > 5000) {
+        if (session.ended && session.awaitingCommit && age > 12000 && !session.syncRequested) {
+          session.syncRequested = true;
+          session.receivedAt = Number(session.receivedAt ?? now);
+          remoteDrawSessionsRef.current.set(sessionKey, session);
+          syncFromServer(true);
+        }
+        // Never create a short white gap by deleting a completed preview after five
+        // seconds. Keep it as the visible fallback until the saved object replaces it.
+        if (age > 90000) {
           const [remoteClientId, ...sessionParts] = sessionKey.split(':');
           const sessionId = sessionParts.join(':');
           if (removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId).length) {
             removedTransient = true;
           }
           remoteDrawSessionsRef.current.delete(sessionKey);
-        } else if (age > 45000) {
-          remoteDrawSessionsRef.current.delete(sessionKey);
         }
       }
       for (const object of [...canvas.getObjects()]) {
         const stalePreview = object.transientPreview
-          && now - Number(object.previewReceivedAt ?? now) > 45000;
+          && now - Number(object.previewReceivedAt ?? now) > 90000;
         const staleRemoteSelectionProxy = object.transientSelectionProxy
           && object.creationClientId !== clientIdRef.current
           && now - Number(object.previewReceivedAt ?? now) > 45000;
@@ -3977,7 +4104,12 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       if (!object || applyingRemoteRef.current || applyingHistoryRef.current) return;
       markObject(object, clientId);
       const records = getObjectRecords([object]);
-      realtimeRef.current?.sendPreview?.(records);
+      const alreadyStreamedAsLiveDraw = Boolean(object.creationSessionId)
+        && ['path', 'line'].includes(String(object.objectKind ?? object.type ?? '').toLowerCase());
+      // A completed live stroke is already kept visible on observers until the server
+      // upsert arrives. Sending the whole serialized path again wastes messages and can
+      // briefly race the incremental preview.
+      if (!alreadyStreamedAsLiveDraw) realtimeRef.current?.sendPreview?.(records);
       sendRecordUpserts(records);
       recordAction({ type: 'add', records });
       schedulePersistence();
@@ -5198,8 +5330,10 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       pendingPencilQueueRef.current = [];
       activePencilRef.current = null;
       liveTransformSendRef.current.sessionId = null;
+      liveTransformSendRef.current.lastSignature = '';
       liveTransformSendRef.current.pendingTarget = null;
       liveDrawSendRef.current.sessionId = null;
+      liveDrawSendRef.current.lastSentPointIndex = 0;
       liveDrawSendRef.current.points = [];
       liveDrawSendRef.current.acceptingPoints = false;
       remoteTransformSessionsRef.current.clear();
