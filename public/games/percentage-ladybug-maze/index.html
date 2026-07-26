@@ -73,13 +73,15 @@
     left: 12px;
     right: 12px;
     display: grid;
-    grid-template-columns: auto auto;
+    grid-template-columns: max-content max-content;
+    justify-content: start;
     gap: 10px;
     align-items: center;
     pointer-events: none;
   }
 
   .hudBox {
+    width: max-content;
     min-height: 46px;
     display: flex;
     align-items: center;
@@ -103,7 +105,7 @@
   }
 
   #hearts {
-    min-width: 138px;
+    min-width: 0;
     font-size: 23px;
     letter-spacing: 2px;
   }
@@ -415,7 +417,8 @@
 
   @media (max-width: 720px) {
     .hud {
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: max-content max-content;
+      justify-content: start;
       gap: 6px;
     }
 

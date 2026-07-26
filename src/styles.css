@@ -1918,7 +1918,7 @@ html.game-viewport-locked #root {
   }
 }
 
-/* Alex Board 0.9.2 — participant-name controls and game HUD cleanup */
+/* Alex Board 0.9.3 — compact game HUD and lighter participant panel */
 .game-room-summary {
   display: flex;
   flex: 0 0 auto;
@@ -1944,8 +1944,10 @@ html.game-viewport-locked #root {
   flex: 0 0 auto;
   padding: 8px 14px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.25);
-  background: rgba(244, 248, 244, 0.98);
+  background: rgba(244, 248, 244, 0.59);
   color: #183122;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .game-room-active {
