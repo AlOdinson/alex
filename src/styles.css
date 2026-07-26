@@ -1623,4 +1623,289 @@ html.board-viewport-locked .canvas-host .lower-canvas {
     text-overflow: clip;
   }
 }
-\n\n/* Alex Board 0.8.0 — game library and isolated single-player game */\n.game-library-button {\n  min-height: 32px;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n  gap: 6px;\n  flex: 0 0 auto;\n  padding: 0 11px;\n  border: 1px solid #bbf7d0;\n  border-radius: 9px;\n  background: linear-gradient(180deg, #f0fdf4, #dcfce7);\n  color: #166534;\n  font-weight: 800;\n  white-space: nowrap;\n}\n\n.game-library-button:hover {\n  border-color: #86efac;\n  background: #dcfce7;\n}\n\n.game-library-page,\n.game-player-page {\n  width: 100%;\n  height: 100%;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n}\n\n.game-library-page {\n  display: flex;\n  flex-direction: column;\n  background:\n    radial-gradient(circle at 15% 10%, rgba(34, 197, 94, 0.15), transparent 32%),\n    radial-gradient(circle at 88% 18%, rgba(250, 204, 21, 0.16), transparent 28%),\n    #f4f8f4;\n  color: #13251a;\n}\n\n.game-library-header,\n.game-player-header {\n  min-height: 58px;\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  flex: 0 0 auto;\n  padding: 9px 14px;\n  border-bottom: 1px solid rgba(148, 163, 184, 0.35);\n  background: rgba(255, 255, 255, 0.94);\n  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);\n  backdrop-filter: blur(12px);\n}\n\n.game-library-header-copy,\n.game-player-title {\n  min-width: 0;\n  flex: 1 1 auto;\n}\n\n.game-library-header h1,\n.game-player-title strong {\n  margin: 0;\n  color: #14281b;\n}\n\n.game-library-header h1 {\n  font-size: clamp(20px, 3vw, 30px);\n}\n\n.game-library-header p,\n.game-player-title span {\n  display: block;\n  margin: 2px 0 0;\n  overflow: hidden;\n  color: #64748b;\n  font-size: 12px;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n\n.game-back-button,\n.game-exit-button,\n.game-start-button {\n  min-height: 38px;\n  border: 0;\n  border-radius: 11px;\n  padding: 0 14px;\n  font-weight: 800;\n}\n\n.game-back-button {\n  background: #eef2f7;\n  color: #334155;\n}\n\n.game-exit-button {\n  background: #2563eb;\n  color: #fff;\n}\n\n.game-library-content {\n  width: min(1180px, 100%);\n  margin: 0 auto;\n  padding: clamp(18px, 4vw, 46px);\n  overflow: auto;\n}\n\n.game-library-intro {\n  max-width: 720px;\n  margin-bottom: 24px;\n  color: #536358;\n  font-size: 15px;\n  line-height: 1.55;\n}\n\n.game-card-grid {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr));\n  gap: 18px;\n}\n\n.game-card {\n  overflow: hidden;\n  border: 1px solid #dbe8dc;\n  border-radius: 22px;\n  background: #fff;\n  box-shadow: 0 16px 42px rgba(23, 50, 31, 0.10);\n}\n\n.game-card-preview {\n  min-height: 210px;\n  display: grid;\n  place-items: center;\n  padding: 22px;\n  background:\n    radial-gradient(circle at center, rgba(255, 224, 120, 0.42), transparent 35%),\n    linear-gradient(145deg, #73aa67, #315d38);\n  color: #fff;\n  text-align: center;\n}\n\n.game-card-preview-icon {\n  display: block;\n  font-size: 72px;\n  filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.22));\n}\n\n.game-card-preview strong {\n  display: block;\n  margin-top: 10px;\n  font-size: 20px;\n}\n\n.game-card-body {\n  padding: 20px;\n}\n\n.game-card-body h2 {\n  margin: 0;\n  font-size: 22px;\n}\n\n.game-card-body p {\n  margin: 10px 0 18px;\n  color: #64748b;\n  line-height: 1.5;\n}\n\n.game-card-tags {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 7px;\n  margin-bottom: 18px;\n}\n\n.game-card-tags span {\n  padding: 5px 9px;\n  border-radius: 999px;\n  background: #f0fdf4;\n  color: #166534;\n  font-size: 12px;\n  font-weight: 750;\n}\n\n.game-start-button {\n  width: 100%;\n  background: linear-gradient(180deg, #ffe68b, #dda329);\n  color: #382300;\n  box-shadow: 0 9px 24px rgba(225, 164, 42, 0.24);\n}\n\n.game-player-page {\n  display: flex;\n  flex-direction: column;\n  background: #14251c;\n}\n\n.game-frame-wrap {\n  position: relative;\n  min-width: 0;\n  min-height: 0;\n  flex: 1 1 auto;\n  overflow: hidden;\n  background: #14251c;\n}\n\n.game-frame {\n  display: block;\n  width: 100%;\n  height: 100%;\n  border: 0;\n  background: #14251c;\n}\n\n.game-status-pill {\n  flex: 0 0 auto;\n  padding: 5px 9px;\n  border-radius: 999px;\n  background: #ecfdf5;\n  color: #047857;\n  font-size: 11px;\n  font-weight: 800;\n}\n\nhtml.game-viewport-locked,\nbody.game-viewport-locked {\n  width: 100%;\n  height: 100dvh;\n  min-height: 0;\n  overflow: hidden !important;\n  overscroll-behavior: none;\n}\n\nbody.game-viewport-locked {\n  position: fixed;\n  inset: 0;\n}\n\nhtml.game-viewport-locked #root {\n  position: fixed;\n  inset: 0;\n  width: 100vw;\n  height: 100dvh;\n  min-width: 0;\n  min-height: 0;\n  overflow: hidden;\n}\n\n@media (max-width: 760px) {\n  .game-library-button {\n    width: 32px;\n    padding: 0;\n  }\n\n  .game-library-button-label {\n    display: none;\n  }\n\n  .game-library-header,\n  .game-player-header {\n    min-height: 50px;\n    gap: 7px;\n    padding: 6px 8px;\n  }\n\n  .game-library-header p,\n  .game-player-title span,\n  .game-status-pill {\n    display: none;\n  }\n\n  .game-back-button,\n  .game-exit-button {\n    min-height: 36px;\n    padding: 0 10px;\n    font-size: 12px;\n  }\n\n  .game-library-content {\n    padding: 14px;\n  }\n}\n
+
+
+/* Alex Board 0.8.0 — game library and isolated single-player game */
+.game-library-button {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 0 11px;
+  border: 1px solid #bbf7d0;
+  border-radius: 9px;
+  background: linear-gradient(180deg, #f0fdf4, #dcfce7);
+  color: #166534;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.game-library-button:hover {
+  border-color: #86efac;
+  background: #dcfce7;
+}
+
+.game-library-page,
+.game-player-page {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.game-library-page {
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(circle at 15% 10%, rgba(34, 197, 94, 0.15), transparent 32%),
+    radial-gradient(circle at 88% 18%, rgba(250, 204, 21, 0.16), transparent 28%),
+    #f4f8f4;
+  color: #13251a;
+}
+
+.game-library-header,
+.game-player-header {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+.game-library-header-copy,
+.game-player-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.game-library-header h1,
+.game-player-title strong {
+  margin: 0;
+  color: #14281b;
+}
+
+.game-library-header h1 {
+  font-size: clamp(20px, 3vw, 30px);
+}
+
+.game-library-header p,
+.game-player-title span {
+  display: block;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-back-button,
+.game-exit-button,
+.game-start-button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 11px;
+  padding: 0 14px;
+  font-weight: 800;
+}
+
+.game-back-button {
+  background: #eef2f7;
+  color: #334155;
+}
+
+.game-exit-button {
+  background: #2563eb;
+  color: #fff;
+}
+
+.game-library-content {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: clamp(18px, 4vw, 46px);
+  overflow: auto;
+}
+
+.game-library-intro {
+  max-width: 720px;
+  margin-bottom: 24px;
+  color: #536358;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.game-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr));
+  gap: 18px;
+}
+
+.game-card {
+  overflow: hidden;
+  border: 1px solid #dbe8dc;
+  border-radius: 22px;
+  background: #fff;
+  box-shadow: 0 16px 42px rgba(23, 50, 31, 0.10);
+}
+
+.game-card-preview {
+  min-height: 210px;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background:
+    radial-gradient(circle at center, rgba(255, 224, 120, 0.42), transparent 35%),
+    linear-gradient(145deg, #73aa67, #315d38);
+  color: #fff;
+  text-align: center;
+}
+
+.game-card-preview-icon {
+  display: block;
+  font-size: 72px;
+  filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.22));
+}
+
+.game-card-preview strong {
+  display: block;
+  margin-top: 10px;
+  font-size: 20px;
+}
+
+.game-card-body {
+  padding: 20px;
+}
+
+.game-card-body h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.game-card-body p {
+  margin: 10px 0 18px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.game-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 18px;
+}
+
+.game-card-tags span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.game-start-button {
+  width: 100%;
+  background: linear-gradient(180deg, #ffe68b, #dda329);
+  color: #382300;
+  box-shadow: 0 9px 24px rgba(225, 164, 42, 0.24);
+}
+
+.game-player-page {
+  display: flex;
+  flex-direction: column;
+  background: #14251c;
+}
+
+.game-frame-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  background: #14251c;
+}
+
+.game-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #14251c;
+}
+
+.game-status-pill {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #ecfdf5;
+  color: #047857;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+html.game-viewport-locked,
+body.game-viewport-locked {
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden !important;
+  overscroll-behavior: none;
+}
+
+body.game-viewport-locked {
+  position: fixed;
+  inset: 0;
+}
+
+html.game-viewport-locked #root {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 760px) {
+  .game-library-button {
+    width: 32px;
+    padding: 0;
+  }
+
+  .game-library-button-label {
+    display: none;
+  }
+
+  .game-library-header,
+  .game-player-header {
+    min-height: 50px;
+    gap: 7px;
+    padding: 6px 8px;
+  }
+
+  .game-library-header p,
+  .game-player-title span,
+  .game-status-pill {
+    display: none;
+  }
+
+  .game-back-button,
+  .game-exit-button {
+    min-height: 36px;
+    padding: 0 10px;
+    font-size: 12px;
+  }
+
+  .game-library-content {
+    padding: 14px;
+  }
+}
