@@ -861,6 +861,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
   const shapeDraftRef = useRef(null);
   const erasingRef = useRef(false);
   const objectEraserRecordsRef = useRef(new Map());
+  const objectEraserRealtimeDeleteIdsRef = useRef(new Set());
+  const objectEraserRealtimeTimerRef = useRef(null);
   const modifiedBeforeRef = useRef([]);
   const clipboardRef = useRef([]);
   const clipboardCenterRef = useRef(null);
@@ -933,11 +935,16 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
   const pendingPencilQueueRef = useRef([]);
   const activePencilRef = useRef(null);
   const remoteDrawSessionsRef = useRef(new Map());
+  const remoteDeletedObjectIdsRef = useRef(new Map());
   const remotePreviewTokensRef = useRef(new Map());
+  const remotePreviewPendingRef = useRef({ records: new Map(), timer: null, draining: false });
+  const remotePreviewApplyQueueRef = useRef(Promise.resolve());
+  const remotePreviewChunksRef = useRef(new Map());
   const selectionDragRef = useRef(null);
   const selectionBoxRef = useRef(null);
   const localSelectionTransactionRef = useRef(null);
   const remoteSelectionTransactionsRef = useRef(new Map());
+  const remoteSelectionOperationIdsRef = useRef(new Map());
   const selectionTransactionTransitionRef = useRef(false);
   const transientStatusTimerRef = useRef(null);
   const lastPointerSceneRef = useRef(null);
@@ -1450,7 +1457,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       } catch {
         continue;
       }
-      if (batch.length && batchSize + recordSize > 80_000) {
+      if (batch.length && batchSize + recordSize > 40_000) {
         batches.push(batch);
         batch = [];
         batchSize = 2;
@@ -1459,22 +1466,27 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       batchSize += recordSize;
     }
     if (batch.length) batches.push(batch);
-    const results = [];
-    for (const previewBatch of batches) {
-      // Preserve object order and avoid flooding Realtime with concurrent broadcasts.
-      // eslint-disable-next-line no-await-in-loop
-      results.push(await realtime.sendPreview(previewBatch));
-    }
-    return results;
+    const batchId = randomToken(16);
+    const results = await Promise.allSettled(batches.map((previewBatch, chunkIndex) => (
+      realtime.sendPreview(previewBatch, {
+        batchId,
+        chunkIndex,
+        chunkCount: batches.length,
+      })
+    )));
+    return results.map((result) => (result.status === 'fulfilled' ? result.value : 'failed'));
   }, []);
 
   const sendUpserts = useCallback((objects) => {
     sendRecordUpserts(getObjectRecords(objects));
   }, [getObjectRecords, sendRecordUpserts]);
 
-  const sendDeletes = useCallback((ids) => {
-    if (!ids.length || !realtimeRef.current) return Promise.resolve(null);
-    return realtimeRef.current.sendOps(ids.map((id) => ({ type: 'delete', id })));
+  const sendDeletes = useCallback((ids, { announce = true } = {}) => {
+    const safeIds = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean).map(String))];
+    const realtime = realtimeRef.current;
+    if (!safeIds.length || !realtime) return Promise.resolve(null);
+    if (announce) realtime.sendDeletePreview?.(safeIds).catch?.(() => undefined);
+    return realtime.sendOps(safeIds.map((id) => ({ type: 'delete', id })));
   }, []);
 
 
@@ -2050,9 +2062,28 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     updateSelectionStyleState,
   ]);
 
-  const mutateSelection = useCallback((mutator) => {
+  const mutateSelection = useCallback((mutator, realtimeOperation = null) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !canEditRef.current) return;
+
+    const publishOperation = (objects, transaction = null) => {
+      if (!realtimeOperation || !realtimeRef.current?.sendSelectionTransaction) return;
+      const objectIds = (transaction?.sourceIds?.length
+        ? transaction.sourceIds
+        : objects.map((object) => object?.boardObjectId).filter(Boolean))
+        .map(String);
+      if (!objectIds.length) return;
+      realtimeRef.current.sendSelectionTransaction({
+        phase: 'operation',
+        operationId: randomToken(14),
+        transactionId: transaction?.transactionId ?? '',
+        proxyId: transaction?.proxyId ?? '',
+        sourceIds: objectIds,
+        objectIds,
+        ...realtimeOperation,
+      });
+    };
+
     const active = canvas.getActiveObject();
     if (active?.transientSelectionProxy && typeof active.getObjects === 'function') {
       const objects = active.getObjects().filter((object) => !object.isEraserPath);
@@ -2066,6 +2097,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       });
       active.dirty = true;
       active.setCoords();
+      publishOperation(objects, transaction);
       canvas.requestRenderAll();
       updateSelectionState();
       updateSelectionStyleState();
@@ -2077,6 +2109,10 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     mutator(objects, canvas);
     objects.forEach((object) => markObject(object, clientIdRef.current));
     const after = getObjectRecords(objects);
+    // Discrete toolbar transforms are shown through Ably immediately. The same final
+    // state is still persisted through Supabase, but the observer no longer waits for
+    // the server commit or for the selection to be cleared.
+    publishOperation(objects);
     sendRecordUpserts(after);
     recordAction({ type: 'modify', before, after });
     schedulePersistence();
@@ -2236,7 +2272,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           const index = canvas.getObjects().indexOf(object);
           canvas.moveObjectTo(object, Math.min(canvas.getObjects().length - 1, index + 1));
         });
-    });
+    }, { operation: 'layer', direction: 'forward' });
   }, [mutateSelection]);
 
   const moveSelectionBackward = useCallback(() => {
@@ -2251,14 +2287,14 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           const index = canvas.getObjects().indexOf(object);
           canvas.moveObjectTo(object, Math.max(0, index - 1));
         });
-    });
+    }, { operation: 'layer', direction: 'backward' });
   }, [mutateSelection]);
 
   const rotateSelection = useCallback((degrees) => {
     mutateSelection((objects) => objects.forEach((object) => {
       object.rotate(Number(object.angle ?? 0) + degrees);
       object.setCoords();
-    }));
+    }), { operation: 'rotate', degrees });
   }, [mutateSelection]);
 
   const flipSelection = useCallback((axis) => {
@@ -2266,7 +2302,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       if (axis === 'horizontal') object.set('flipX', !object.flipX);
       else object.set('flipY', !object.flipY);
       object.setCoords();
-    }));
+    }), { operation: 'flip', axis });
   }, [mutateSelection]);
 
   const applyRecordsLocally = useCallback(async (records) => {
@@ -2332,13 +2368,33 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           .map((object) => object.boardObjectId)
           .filter(Boolean);
         const viewport = [...(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0])];
+        const now = Date.now();
+        const protectedDeletedIds = new Set(
+          [...remoteDeletedObjectIdsRef.current.entries()]
+            .filter(([, tombstone]) => (
+              !tombstone?.confirmed
+              && now - Number(tombstone?.timestamp ?? 0) < 30000
+            ))
+            .map(([id]) => String(id)),
+        );
+        const effectiveSnapshot = protectedDeletedIds.size
+          ? {
+            ...snapshot,
+            canvas: {
+              ...snapshot.canvas,
+              objects: (snapshot.canvas.objects ?? []).filter((object) => (
+                !protectedDeletedIds.has(String(object?.boardObjectId ?? ''))
+              )),
+            },
+          }
+          : snapshot;
 
         applyingRemoteRef.current = true;
         try {
-          await preloadSerializedImages(snapshot.canvas);
-          await canvas.loadFromJSON(snapshot.canvas);
+          await preloadSerializedImages(effectiveSnapshot.canvas);
+          await canvas.loadFromJSON(effectiveSnapshot.canvas);
           deduplicateBoardObjects(canvas);
-          if (BACKGROUNDS.has(snapshot.background)) applyBackground(snapshot.background);
+          if (BACKGROUNDS.has(effectiveSnapshot.background)) applyBackground(effectiveSnapshot.background);
           canvas.setViewportTransform(viewport);
           applyObjectInteractivity();
 
@@ -2359,7 +2415,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           updateSelectionStyleState();
           canvas.requestRenderAll();
           await setCachedSnapshot(boardId, {
-            snapshot,
+            snapshot: effectiveSnapshot,
             revision: revisionRef.current,
             savedAt: Date.now(),
           });
@@ -2406,6 +2462,16 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     // replace the whole canvas during that hand-off: keep the preview visible until
     // the authoritative object with the same creation session arrives.
     if (hasProtectedRemoteDrawing) {
+      syncRequestedRef.current = true;
+      return;
+    }
+    const hasPendingRemoteDeletion = [...remoteDeletedObjectIdsRef.current.values()].some((tombstone) => (
+      !tombstone?.confirmed
+      && now - Number(tombstone?.timestamp ?? 0) < 12000
+    ));
+    // A realtime delete is intentionally shown before its Supabase batch finishes.
+    // Do not let an older snapshot resurrect the deleted objects during that short gap.
+    if (hasPendingRemoteDeletion) {
       syncRequestedRef.current = true;
       return;
     }
@@ -2482,9 +2548,24 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         const sourceIds = Array.isArray(message?.sourceIds)
           ? message.sourceIds.filter(Boolean).map(String)
           : [];
-        if (!canvas || !transactionId || !['start', 'style', 'commit', 'cancel'].includes(phase)) return;
+        const validPhases = ['start', 'style', 'operation', 'commit', 'cancel'];
+        if (!canvas || !validPhases.includes(phase) || (phase !== 'operation' && !transactionId)) return;
 
-        const existingState = remoteSelectionTransactionsRef.current.get(transactionId);
+        if (phase === 'operation') {
+          const operationId = String(message?.operationId ?? '');
+          const now = Date.now();
+          for (const [id, receivedAt] of remoteSelectionOperationIdsRef.current) {
+            if (now - Number(receivedAt ?? 0) > 120000) {
+              remoteSelectionOperationIdsRef.current.delete(id);
+            }
+          }
+          if (operationId && remoteSelectionOperationIdsRef.current.has(operationId)) return;
+          if (operationId) remoteSelectionOperationIdsRef.current.set(operationId, now);
+        }
+
+        const existingState = transactionId
+          ? remoteSelectionTransactionsRef.current.get(transactionId)
+          : null;
         if (existingState?.phase === 'authoritative') return;
         if (['commit', 'awaiting-authoritative', 'commit-ready'].includes(existingState?.phase) && phase === 'start') return;
         applyingRemoteRef.current = true;
@@ -2590,6 +2671,99 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
                 state.receivedAt = Date.now();
                 remoteSelectionTransactionsRef.current.set(transactionId, state);
               }
+            }
+          }
+
+          if (phase === 'operation') {
+            const operation = String(message?.operation ?? '');
+            const objectIds = Array.isArray(message?.objectIds)
+              ? message.objectIds.filter(Boolean).map(String)
+              : sourceIds;
+            const transactionProxy = transactionId
+              ? canvas.getObjects().find((object) => (
+                object.transientSelectionProxy
+                && String(object.selectionTransactionId ?? '') === transactionId
+              ))
+              : null;
+
+            let targets = [];
+            if (transactionProxy && typeof transactionProxy.getObjects === 'function') {
+              targets = transactionProxy.getObjects().filter((object) => !object.isEraserPath);
+            } else {
+              targets = objectIds
+                .map((id) => canvas.getObjects().find((object) => String(object.boardObjectId ?? '') === id))
+                .filter((object) => object && !object.isEraserPath);
+            }
+
+            if (!targets.length) {
+              window.setTimeout(() => syncFromServer(true), 80);
+              return;
+            }
+
+            if (operation === 'rotate') {
+              const degrees = Number(message?.degrees ?? 0);
+              if (Number.isFinite(degrees) && degrees !== 0) {
+                targets.forEach((object) => {
+                  object.rotate(Number(object.angle ?? 0) + degrees);
+                  object.previewReceivedAt = Date.now();
+                  object.dirty = true;
+                  object.setCoords?.();
+                });
+              }
+            } else if (operation === 'flip') {
+              const axis = message?.axis === 'vertical' ? 'vertical' : 'horizontal';
+              targets.forEach((object) => {
+                if (axis === 'horizontal') object.set('flipX', !object.flipX);
+                else object.set('flipY', !object.flipY);
+                object.previewReceivedAt = Date.now();
+                object.dirty = true;
+                object.setCoords?.();
+              });
+            } else if (operation === 'layer' && !transactionProxy) {
+              const direction = message?.direction === 'backward' ? 'backward' : 'forward';
+              const ordered = [...targets].sort((left, right) => {
+                const leftIndex = canvas.getObjects().indexOf(left);
+                const rightIndex = canvas.getObjects().indexOf(right);
+                return direction === 'forward' ? rightIndex - leftIndex : leftIndex - rightIndex;
+              });
+              ordered.forEach((object) => {
+                const index = canvas.getObjects().indexOf(object);
+                const nextIndex = direction === 'forward'
+                  ? Math.min(canvas.getObjects().length - 1, index + 1)
+                  : Math.max(0, index - 1);
+                canvas.moveObjectTo(object, nextIndex);
+                object.previewReceivedAt = Date.now();
+                object.dirty = true;
+                object.setCoords?.();
+              });
+            }
+
+            if (transactionProxy) {
+              transactionProxy.previewReceivedAt = Date.now();
+              transactionProxy.dirty = true;
+              transactionProxy.setCoords();
+              const state = remoteSelectionTransactionsRef.current.get(transactionId);
+              if (state) {
+                state.receivedAt = Date.now();
+                remoteSelectionTransactionsRef.current.set(transactionId, state);
+              }
+            }
+
+            const lockIds = transactionProxy && Array.isArray(transactionProxy.selectionSourceIds)
+              ? transactionProxy.selectionSourceIds.filter(Boolean).map(String)
+              : objectIds;
+            let lockUiChanged = false;
+            lockIds.forEach((objectId) => {
+              const current = remoteLocksRef.current.get(objectId);
+              if (!current) return;
+              remoteLocksRef.current.set(objectId, {
+                ...current,
+                expiresAt: Date.now() + LIVE_TRANSFORM_LOCK_TTL,
+              });
+              lockUiChanged = true;
+            });
+            if (lockUiChanged) {
+              setRemoteLocks([...remoteLocksRef.current.entries()].map(([objectId, lock]) => ({ objectId, ...lock })));
             }
           }
 
@@ -2843,23 +3017,39 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         // The replacement below is performed atomically with rendering paused, so the
         // receiving device never shows a white gap between realtime and saved state.
 
-        // Revive every incoming object before touching the visible canvas. This makes a
-        // multi-object commit atomic: the student never sees old and new members together.
-        const preparedOps = [];
-        for (const op of ops) {
-          if (op?.type !== 'upsert' || !op.object?.boardObjectId) {
-            preparedOps.push({ op, revived: null });
-            continue;
+        // Revive the whole authoritative batch in one pass. Sequential enlivening made
+        // a 40-object paste spend a long time in the apply queue even though rendering was
+        // paused. Tombstones also stop an older queued upsert from reviving a deleted line.
+        const preparedOps = ops.map((op) => ({ op, revived: null, skipDeleted: false }));
+        const reviveEntries = [];
+        preparedOps.forEach((entry, index) => {
+          const op = entry.op;
+          const id = String(op?.object?.boardObjectId ?? '');
+          if (op?.type !== 'upsert' || !id) return;
+          const tombstone = remoteDeletedObjectIdsRef.current.get(id);
+          const updatedAt = Number(op.object?.updatedAt ?? 0);
+          const deletedAt = Number(tombstone?.timestamp ?? 0);
+          if (tombstone && !op.restore && (!updatedAt || updatedAt <= deletedAt)) {
+            entry.skipDeleted = true;
+            return;
           }
-          await preloadSerializedImages(op.object);
-          const [revived] = await util.enlivenObjects([op.object]);
-          preparedOps.push({ op, revived: revived ?? null });
+          if (tombstone) remoteDeletedObjectIdsRef.current.delete(id);
+          reviveEntries.push({ index, serialized: op.object });
+        });
+        if (reviveEntries.length) {
+          const serializedBatch = reviveEntries.map((entry) => entry.serialized);
+          await preloadSerializedImages(serializedBatch);
+          const revivedBatch = await util.enlivenObjects(serializedBatch);
+          reviveEntries.forEach((entry, revivedIndex) => {
+            preparedOps[entry.index].revived = revivedBatch[revivedIndex] ?? null;
+          });
         }
 
         const incompleteSelectionBatch = selectionTransactionIds.length > 0
-          && preparedOps.some(({ op, revived }) => (
+          && preparedOps.some(({ op, revived, skipDeleted }) => (
             op?.type === 'upsert'
             && op.object?.selectionTransactionId
+            && !skipDeleted
             && !revived
           ));
         if (incompleteSelectionBatch) {
@@ -2875,8 +3065,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         }
 
         const creationSessionsToReplace = new Map();
-        preparedOps.forEach(({ op }) => {
-          if (op?.type !== 'upsert' || !op.object?.creationSessionId) return;
+        preparedOps.forEach(({ op, skipDeleted }) => {
+          if (skipDeleted || op?.type !== 'upsert' || !op.object?.creationSessionId) return;
           const creationClientId = op.object.creationClientId ?? op.object.updatedBy ?? '';
           const sessionId = String(op.object.creationSessionId);
           creationSessionsToReplace.set(
@@ -2905,12 +3095,22 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
               receivedAt: Date.now(),
             });
           });
-          for (const { op, revived } of preparedOps) {
+          for (const { op, revived, skipDeleted } of preparedOps) {
             if (op?.type === 'delete') {
+              const id = String(op.id ?? '');
+              if (id) {
+                remoteDeletedObjectIdsRef.current.set(id, {
+                  timestamp: Date.now(),
+                  clientId: sourceClientId,
+                  confirmed: true,
+                });
+                remotePreviewTokensRef.current.delete(id);
+                remotePreviewPendingRef.current.records.delete(id);
+              }
               removeBoardObjectsById(canvas, op.id);
               continue;
             }
-            if (op?.type !== 'upsert' || !op.object?.boardObjectId || !revived) continue;
+            if (skipDeleted || op?.type !== 'upsert' || !op.object?.boardObjectId || !revived) continue;
             remotePreviewTokensRef.current.delete(String(op.object.boardObjectId));
             removeBoardObjectsById(canvas, op.object.boardObjectId);
             revived.transientPreview = false;
@@ -3149,8 +3349,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       canvas.discardActiveObject();
       canvas.requestRenderAll();
       const previewPromise = sendPreviewBatches(records);
-      const commitPromise = sendRecordUpserts(records);
-      await Promise.allSettled([previewPromise, commitPromise]);
+      sendRecordUpserts(records).catch?.(() => undefined);
+      await Promise.allSettled([previewPromise]);
       recordAction({ type: 'add', records });
       schedulePersistence();
       updateSelectionVisuals();
@@ -3194,7 +3394,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         sourceIds: transaction.sourceIds,
         finalRecords: [],
       });
-      realtimeRef.current?.sendOps?.(transaction.sourceIds.map((id) => ({ type: 'delete', id })));
+      sendDeletes(transaction.sourceIds);
       recordAction({ type: 'delete', records: transaction.sourceRecords });
       realtimeRef.current?.sendLock?.(transaction.sourceIds, false);
       localLockIdsRef.current = [];
@@ -3744,8 +3944,17 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       : [];
     if (!canvas || !remoteClientId || !sessionId || !objectId) return;
 
+    const deletedAt = Number(remoteDeletedObjectIdsRef.current.get(objectId)?.timestamp ?? 0);
+    if (deletedAt && Date.now() - deletedAt < 120000) {
+      if (phase === 'cancel' || phase === 'end') {
+        removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId);
+      }
+      return;
+    }
+
     const sessionKey = `${remoteClientId}:${sessionId}`;
     const previous = remoteDrawSessionsRef.current.get(sessionKey);
+    if (previous?.objectId && String(previous.objectId) !== objectId) return;
     if (previous && (sessionOrder < previous.sessionOrder || sequence <= previous.sequence)) return;
     if (previous?.ended && phase !== 'cancel') return;
 
@@ -3763,8 +3972,20 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     if (replace) {
       points = incomingPoints;
     } else {
-      const from = clamp(Number(message?.from ?? points.length), 0, points.length);
-      points = points.slice(0, from).concat(incomingPoints);
+      const requestedFrom = Math.max(0, Number(message?.from ?? points.length));
+      if (requestedFrom > points.length) {
+        remoteDrawSessionsRef.current.set(sessionKey, {
+          ...(previous ?? {}),
+          sessionOrder,
+          sequence,
+          objectId,
+          receivedAt: Date.now(),
+          missingDelta: true,
+        });
+        window.setTimeout(() => syncFromServer(true), 60);
+        return;
+      }
+      points = points.slice(0, requestedFrom).concat(incomingPoints);
     }
     if (!points.length) return;
 
@@ -3846,78 +4067,206 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       canvas.renderOnAddRemove = previousRenderOnAddRemove;
       canvas.requestRenderAll();
     }
-  }, [handleRemoteCursor]);
+  }, [handleRemoteCursor, syncFromServer]);
 
-  const handleRemotePreview = useCallback((message) => {
-    const canvas = fabricCanvasRef.current;
-    const records = Array.isArray(message?.records) ? message.records : [];
-    if (!canvas || !records.length) return;
-    const token = randomToken(8);
-    records.forEach((record) => {
-      const id = record?.object?.boardObjectId;
-      if (id) remotePreviewTokensRef.current.set(id, token);
-    });
+  const flushRemotePreviewQueue = useCallback(() => {
+    const pendingState = remotePreviewPendingRef.current;
+    window.clearTimeout(pendingState.timer);
+    pendingState.timer = null;
+    if (pendingState.draining) return;
+    pendingState.draining = true;
 
-    Promise.resolve().then(async () => {
-      try {
-        for (const record of records) {
-          const serialized = record?.object;
-          const id = serialized?.boardObjectId;
-          if (!id || remotePreviewTokensRef.current.get(id) !== token) continue;
-          const creationSessionId = serialized?.creationSessionId;
-          const creationClientId = serialized?.creationClientId ?? message?.clientId ?? '';
-          await preloadSerializedImages(serialized);
-          const [revived] = await util.enlivenObjects([serialized]);
-          if (!revived || remotePreviewTokensRef.current.get(id) !== token) continue;
-          const existingObjects = boardObjectsById(canvas, id);
-          const authoritativeExisting = existingObjects.find((object) => !object.transientPreview);
-          const existing = authoritativeExisting ?? existingObjects[0] ?? null;
-          const existingIndex = existing ? canvas.getObjects().indexOf(existing) : canvas.getObjects().length;
-          if (authoritativeExisting) {
-            if (creationSessionId) {
-              removeTransientDrawPreviewsBySession(canvas, creationClientId, creationSessionId);
-            } else {
-              existingObjects.filter((object) => object.transientPreview).forEach((object) => canvas.remove(object));
-            }
-            continue;
-          }
+    const task = remotePreviewApplyQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        while (pendingState.records.size) {
+          const pending = [...pendingState.records.values()];
+          pendingState.records.clear();
+          const canvas = fabricCanvasRef.current;
+          if (!canvas || !pending.length) continue;
+          const active = pending.filter(({ record, token }) => {
+            const id = String(record?.object?.boardObjectId ?? '');
+            if (!id || remotePreviewTokensRef.current.get(id) !== token) return false;
+            const tombstone = remoteDeletedObjectIdsRef.current.get(id);
+            return !tombstone || Date.now() - Number(tombstone.timestamp ?? 0) >= 120000;
+          });
+          if (!active.length) continue;
+
+          const serializedObjects = active.map(({ record }) => record.object);
+          await preloadSerializedImages(serializedObjects);
+          const revivedObjects = await util.enlivenObjects(serializedObjects);
+
           applyingRemoteRef.current = true;
           const previousRenderOnAddRemove = canvas.renderOnAddRemove;
           canvas.renderOnAddRemove = false;
           try {
-            const oldObjects = [...new Set([
-              ...existingObjects,
-              ...(creationSessionId
-                ? boardObjectsByCreationSession(canvas, creationClientId, creationSessionId)
-                : []),
-            ])];
-            revived.transientPreview = true;
-            revived.transientLiveDraw = false;
-            revived.transientAwaitingCommit = true;
-            revived.previewReceivedAt = Date.now();
-            revived.selectable = false;
-            revived.evented = false;
-            revived.hasControls = false;
-            canvas.add(revived);
-            const targetIndex = Number.isInteger(record.zIndex) ? record.zIndex : existingIndex;
-            if (typeof canvas.moveObjectTo === 'function') {
-              canvas.moveObjectTo(revived, clamp(targetIndex, 0, canvas.getObjects().length - 1));
-            }
-            oldObjects.forEach((object) => {
-              if (object !== revived) canvas.remove(object);
+            active.forEach(({ record, message, token }, index) => {
+              const serialized = record?.object;
+              const id = String(serialized?.boardObjectId ?? '');
+              const revived = revivedObjects[index];
+              if (!id || !revived || remotePreviewTokensRef.current.get(id) !== token) return;
+              const tombstone = remoteDeletedObjectIdsRef.current.get(id);
+              if (tombstone && Date.now() - Number(tombstone.timestamp ?? 0) < 120000) return;
+
+              const creationSessionId = serialized?.creationSessionId;
+              const creationClientId = serialized?.creationClientId ?? message?.clientId ?? '';
+              const existingObjects = boardObjectsById(canvas, id);
+              const authoritativeExisting = existingObjects.find((object) => !object.transientPreview);
+              const existing = authoritativeExisting ?? existingObjects[0] ?? null;
+              const existingIndex = existing ? canvas.getObjects().indexOf(existing) : canvas.getObjects().length;
+              if (authoritativeExisting) {
+                if (creationSessionId) {
+                  removeTransientDrawPreviewsBySession(canvas, creationClientId, creationSessionId);
+                } else {
+                  existingObjects
+                    .filter((object) => object.transientPreview)
+                    .forEach((object) => canvas.remove(object));
+                }
+                return;
+              }
+
+              const oldObjects = [...new Set([
+                ...existingObjects,
+                ...(creationSessionId
+                  ? boardObjectsByCreationSession(canvas, creationClientId, creationSessionId)
+                  : []),
+              ])];
+              revived.transientPreview = true;
+              revived.transientLiveDraw = false;
+              revived.transientAwaitingCommit = true;
+              revived.previewReceivedAt = Date.now();
+              revived.selectable = false;
+              revived.evented = false;
+              revived.hasControls = false;
+              canvas.add(revived);
+              const targetIndex = Number.isInteger(record.zIndex) ? record.zIndex : existingIndex;
+              if (typeof canvas.moveObjectTo === 'function') {
+                canvas.moveObjectTo(revived, clamp(targetIndex, 0, canvas.getObjects().length - 1));
+              }
+              oldObjects.forEach((object) => {
+                if (object !== revived) canvas.remove(object);
+              });
+              revived.setCoords();
             });
-            revived.setCoords();
           } finally {
             applyingRemoteRef.current = false;
             canvas.renderOnAddRemove = previousRenderOnAddRemove;
+            canvas.requestRenderAll();
           }
         }
-        canvas.requestRenderAll();
-      } catch (error) {
-        console.warn('Не удалось показать создаваемый объект в реальном времени', error);
-      }
+      })
+      .catch((error) => {
+        console.warn('Не удалось атомарно показать создаваемые объекты', error);
+        window.setTimeout(() => syncFromServer(true), 100);
+      })
+      .finally(() => {
+        pendingState.draining = false;
+        if (pendingState.records.size && !pendingState.timer) {
+          pendingState.timer = window.setTimeout(flushRemotePreviewQueue, 8);
+        }
+      });
+
+    remotePreviewApplyQueueRef.current = task;
+  }, [syncFromServer]);
+
+  const enqueueRemotePreviewRecords = useCallback((records, message) => {
+    const safeRecords = Array.isArray(records) ? records : [];
+    if (!safeRecords.length) return;
+    const token = randomToken(8);
+    safeRecords.forEach((record) => {
+      const id = String(record?.object?.boardObjectId ?? '');
+      if (!id) return;
+      const tombstone = remoteDeletedObjectIdsRef.current.get(id);
+      if (tombstone && Date.now() - Number(tombstone.timestamp ?? 0) < 120000) return;
+      remotePreviewTokensRef.current.set(id, token);
+      remotePreviewPendingRef.current.records.set(id, { record, message, token });
     });
-  }, []);
+    if (!remotePreviewPendingRef.current.records.size) return;
+    if (!remotePreviewPendingRef.current.timer) {
+      remotePreviewPendingRef.current.timer = window.setTimeout(flushRemotePreviewQueue, 12);
+    }
+  }, [flushRemotePreviewQueue]);
+
+  const handleRemotePreview = useCallback((message) => {
+    const records = Array.isArray(message?.records) ? message.records : [];
+    if (!records.length) return;
+    const chunkCount = Math.max(1, Number(message?.chunkCount ?? 1));
+    const chunkIndex = clamp(Number(message?.chunkIndex ?? 0), 0, chunkCount - 1);
+    const batchId = String(message?.batchId ?? '');
+    if (chunkCount <= 1 || !batchId) {
+      enqueueRemotePreviewRecords(records, message);
+      return;
+    }
+
+    const batchKey = `${message?.clientId ?? ''}:${batchId}`;
+    const existing = remotePreviewChunksRef.current.get(batchKey) ?? {
+      chunks: new Map(),
+      chunkCount,
+      receivedAt: Date.now(),
+      message,
+    };
+    existing.chunkCount = chunkCount;
+    existing.receivedAt = Date.now();
+    existing.message = message;
+    existing.chunks.set(chunkIndex, records);
+    remotePreviewChunksRef.current.set(batchKey, existing);
+    if (existing.chunks.size < chunkCount) return;
+
+    const merged = [];
+    for (let index = 0; index < chunkCount; index += 1) {
+      const chunk = existing.chunks.get(index);
+      if (!Array.isArray(chunk)) return;
+      merged.push(...chunk);
+    }
+    remotePreviewChunksRef.current.delete(batchKey);
+    enqueueRemotePreviewRecords(merged, message);
+  }, [enqueueRemotePreviewRecords]);
+
+  const handleRemoteDeletePreview = useCallback((message) => {
+    const canvas = fabricCanvasRef.current;
+    const ids = [...new Set((Array.isArray(message?.ids) ? message.ids : []).filter(Boolean).map(String))];
+    if (!canvas || !ids.length) return;
+    const timestamp = Date.now();
+    const idSet = new Set(ids);
+    const activeIds = canvas.getActiveObjects().map((object) => String(object.boardObjectId ?? ''));
+
+    applyingRemoteRef.current = true;
+    const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+    canvas.renderOnAddRemove = false;
+    try {
+      if (activeIds.some((id) => idSet.has(id))) canvas.discardActiveObject();
+      ids.forEach((id) => {
+        remoteDeletedObjectIdsRef.current.set(id, {
+          timestamp,
+          clientId: String(message?.clientId ?? ''),
+          confirmed: false,
+        });
+        remotePreviewTokensRef.current.delete(id);
+        remotePreviewPendingRef.current.records.delete(id);
+        removeBoardObjectsById(canvas, id);
+      });
+
+      for (const [sessionKey, session] of remoteDrawSessionsRef.current) {
+        if (!idSet.has(String(session?.objectId ?? ''))) continue;
+        const [remoteClientId, ...sessionParts] = sessionKey.split(':');
+        removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionParts.join(':'));
+        remoteDrawSessionsRef.current.delete(sessionKey);
+      }
+      for (const [sessionKey, session] of remoteTransformSessionsRef.current) {
+        if (Array.isArray(session?.objectIds)
+          && session.objectIds.some((id) => idSet.has(String(id)))) {
+          remoteTransformSessionsRef.current.delete(sessionKey);
+        }
+      }
+    } finally {
+      applyingRemoteRef.current = false;
+      canvas.renderOnAddRemove = previousRenderOnAddRemove;
+      applyObjectInteractivity();
+      updateSelectionState();
+      updateSelectionStyleState();
+      canvas.requestRenderAll();
+    }
+  }, [applyObjectInteractivity, updateSelectionState, updateSelectionStyleState]);
 
   const changeGuestMode = useCallback(async (mode) => {
     await setGuestMode(boardId, boardKey, mode);
@@ -4084,6 +4433,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       onTransform: handleRemoteTransform,
       onDraw: handleRemoteDraw,
       onPreview: handleRemotePreview,
+      onDeletePreview: handleRemoteDeletePreview,
       onSelectionTransaction: handleRemoteSelectionTransaction,
       onView: handleRemoteView,
       onViewJump: handleRemoteViewJump,
@@ -4183,6 +4533,16 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         if (now - Number(transaction.receivedAt ?? 0) <= 45000) continue;
         if (removeSelectionTransactionObjects(canvas, transactionId).length) removedTransient = true;
         remoteSelectionTransactionsRef.current.delete(transactionId);
+      }
+      for (const [objectId, tombstone] of remoteDeletedObjectIdsRef.current) {
+        if (now - Number(tombstone?.timestamp ?? 0) > 120000) {
+          remoteDeletedObjectIdsRef.current.delete(objectId);
+        }
+      }
+      for (const [batchKey, batch] of remotePreviewChunksRef.current) {
+        if (now - Number(batch?.receivedAt ?? 0) > 12000) {
+          remotePreviewChunksRef.current.delete(batchKey);
+        }
       }
       for (const [sessionKey, session] of remoteDrawSessionsRef.current) {
         const age = now - Number(session.receivedAt ?? 0);
@@ -4317,6 +4677,25 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       return null;
     }
 
+    function flushObjectEraserDeletePreview() {
+      window.clearTimeout(objectEraserRealtimeTimerRef.current);
+      objectEraserRealtimeTimerRef.current = null;
+      const ids = [...objectEraserRealtimeDeleteIdsRef.current];
+      objectEraserRealtimeDeleteIdsRef.current.clear();
+      if (ids.length) realtimeRef.current?.sendDeletePreview?.(ids).catch?.(() => undefined);
+    }
+
+    function queueObjectEraserDeletePreview(id) {
+      if (!id) return;
+      objectEraserRealtimeDeleteIdsRef.current.add(String(id));
+      if (!objectEraserRealtimeTimerRef.current) {
+        objectEraserRealtimeTimerRef.current = window.setTimeout(
+          flushObjectEraserDeletePreview,
+          32,
+        );
+      }
+    }
+
     function eraseAtClientPoint(clientX, clientY) {
       const pointer = objectEraserPointerRef.current;
       if (pointer?.active && pointer.lastX != null
@@ -4331,6 +4710,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       const id = record?.object?.boardObjectId;
       if (!id || objectEraserRecordsRef.current.has(id)) return;
       objectEraserRecordsRef.current.set(id, record);
+      queueObjectEraserDeletePreview(id);
       applyingRemoteRef.current = true;
       canvas.remove(target);
       applyingRemoteRef.current = false;
@@ -4348,7 +4728,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       objectEraserRecordsRef.current = new Map();
       if (!records.length) return;
       const ids = records.map((record) => record.object.boardObjectId).filter(Boolean);
-      sendDeletes(ids);
+      flushObjectEraserDeletePreview();
+      sendDeletes(ids, { announce: false });
       recordAction({ type: 'delete', records });
       schedulePersistence();
     }
@@ -4358,11 +4739,58 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         && eraserModeRef.current === 'partial';
       const now = Date.now();
       const activePending = activePencilRef.current;
-      const pendingCandidate = activePending
-        ?? pendingPencilQueueRef.current.find((pending) => (
-          !pending.consumed && now - Number(pending.startedAt ?? 0) < 1200
-        ))
-        ?? null;
+      const candidates = pendingPencilQueueRef.current.filter((pending) => (
+        !pending.consumed && now - Number(pending.startedAt ?? 0) < 1800
+      ));
+
+      // Match the Fabric path to the stroke that started at the same scene point.
+      // Pure FIFO/LIFO matching can attach a delayed path:created event to a different
+      // rapid stroke, which gives the observer a valid but completely unrelated line.
+      let pathStartPoint = null;
+      try {
+        const firstCommand = Array.isArray(path?.path)
+          ? path.path.find((command) => Array.isArray(command) && command[0] === 'M')
+          : null;
+        if (firstCommand && Number.isFinite(Number(firstCommand[1])) && Number.isFinite(Number(firstCommand[2]))) {
+          const localPoint = new Point(
+            Number(firstCommand[1]) - Number(path.pathOffset?.x ?? 0),
+            Number(firstCommand[2]) - Number(path.pathOffset?.y ?? 0),
+          );
+          pathStartPoint = util.transformPoint(localPoint, path.calcTransformMatrix());
+        }
+      } catch {
+        pathStartPoint = null;
+      }
+
+      let pendingCandidate = null;
+      if (pathStartPoint) {
+        const tolerance = Math.max(14, 34 / Math.max(canvas.getZoom(), MIN_ZOOM));
+        const ranked = candidates
+          .map((pending) => ({
+            pending,
+            distance: pending.firstPoint
+              ? Math.hypot(
+                Number(pending.firstPoint.x) - pathStartPoint.x,
+                Number(pending.firstPoint.y) - pathStartPoint.y,
+              )
+              : Number.POSITIVE_INFINITY,
+          }))
+          .sort((left, right) => left.distance - right.distance
+            || Number(left.pending.startedAt ?? 0) - Number(right.pending.startedAt ?? 0));
+        if (ranked[0]?.distance <= tolerance) pendingCandidate = ranked[0].pending;
+      }
+
+      if (!pendingCandidate) {
+        const recentlyReleased = candidates
+          .filter((pending) => pending.mouseReleased
+            && now - Number(pending.releasedAt ?? 0) <= 750)
+          .sort((left, right) => Number(left.releasedAt ?? 0) - Number(right.releasedAt ?? 0));
+        pendingCandidate = recentlyReleased[0]
+          ?? (activePending && !activePending.consumed ? activePending : null)
+          ?? candidates[0]
+          ?? null;
+      }
+
       const pendingPencil = !isPartialEraserPath && pendingCandidate
         ? pendingCandidate
         : null;
@@ -4743,8 +5171,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         // FIFO queue and steal the id of the next stroke.
         pendingPencilQueueRef.current = pendingPencilQueueRef.current.filter((pending) => {
           const stale = pending.consumed
-            || now - Number(pending.startedAt ?? 0) > 1200
-            || (pending.mouseReleased && now - Number(pending.releasedAt ?? now) > 180);
+            || now - Number(pending.startedAt ?? 0) > 1800
+            || (pending.mouseReleased && now - Number(pending.releasedAt ?? now) > 750);
           if (stale) window.clearTimeout(pending.cancelTimer);
           return !stale;
         });
@@ -4762,6 +5190,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           mouseReleased: false,
           releasedAt: 0,
           consumed: false,
+          firstPoint: { x: Number(point.x), y: Number(point.y) },
         };
         pendingPencilQueueRef.current.push(pendingPencil);
         activePencilRef.current = pendingPencil;
@@ -4959,7 +5388,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           if (index >= 0) pendingPencilQueueRef.current.splice(index, 1);
           if (activePencilRef.current === pending) activePencilRef.current = null;
           if (!pending.consumed) finishLiveDraw('cancel', pending.sessionId);
-        }, 320);
+        }, 850);
       }
 
       const selectionDrag = selectionDragRef.current;
@@ -5410,9 +5839,12 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         // to the board's internal object clipboard when Ctrl/Command+C was used here.
         return;
       }
-      if (event.key === 'Delete' || event.key === 'Backspace') {
+      if (['Delete', 'Backspace'].includes(event.key)
+        || ['Delete', 'Backspace'].includes(event.code)) {
         event.preventDefault();
+        event.stopPropagation();
         deleteSelection();
+        return;
       }
     }
 
@@ -5435,7 +5867,15 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       window.clearTimeout(localSaveTimerRef.current);
       window.clearTimeout(textChangeTimerRef.current);
       window.clearTimeout(objectEraserDelayTimer);
+      window.clearTimeout(objectEraserRealtimeTimerRef.current);
+      objectEraserRealtimeTimerRef.current = null;
+      objectEraserRealtimeDeleteIdsRef.current.clear();
       window.clearTimeout(viewSendRef.current.timer);
+      window.clearTimeout(remotePreviewPendingRef.current.timer);
+      remotePreviewPendingRef.current.timer = null;
+      remotePreviewPendingRef.current.draining = false;
+      remotePreviewPendingRef.current.records.clear();
+      remotePreviewChunksRef.current.clear();
       stopArrowPan();
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
@@ -5474,6 +5914,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       remoteTransformSessionsRef.current.clear();
       remoteTransformClientOrderRef.current.clear();
       remoteDrawSessionsRef.current.clear();
+      remoteDeletedObjectIdsRef.current.clear();
       remotePreviewTokensRef.current.clear();
       remoteSelectionTransactionsRef.current.clear();
       const localSelectionTransaction = localSelectionTransactionRef.current;

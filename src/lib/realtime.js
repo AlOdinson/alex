@@ -1,6 +1,5 @@
 import { applyBoardAction, isSupabaseConfigured } from './boardRepository.js';
 import {
-  countPendingActions,
   enqueuePendingAction,
   getPendingActions,
   removePendingAction,
@@ -12,6 +11,9 @@ import { supabase } from './supabase.js';
 const MAX_BROADCAST_CHARS = 48_000;
 const LOCK_TTL = 7000;
 const TRANSPORT_CONNECT_TIMEOUT = 10_000;
+const PERSIST_BATCH_DELAY = 24;
+const MAX_PERSIST_BATCH_ACTIONS = 120;
+const MAX_PERSIST_BATCH_CHARS = 650_000;
 
 function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -32,6 +34,71 @@ function canBroadcastOperations(ops) {
   } catch {
     return false;
   }
+}
+
+function actionSize(action) {
+  try {
+    return JSON.stringify({ ops: action?.ops ?? [], background: action?.background ?? null }).length;
+  } catch {
+    return MAX_PERSIST_BATCH_CHARS;
+  }
+}
+
+function selectPendingBatch(actions) {
+  const selected = [];
+  let size = 2;
+  for (const action of actions) {
+    const nextSize = actionSize(action) + 1;
+    if (selected.length
+      && (selected.length >= MAX_PERSIST_BATCH_ACTIONS || size + nextSize > MAX_PERSIST_BATCH_CHARS)) {
+      break;
+    }
+    selected.push(action);
+    size += nextSize;
+  }
+  return selected;
+}
+
+function compactPendingOps(actions) {
+  const latestByObjectId = new Map();
+  const passthrough = [];
+  let operationIndex = 0;
+
+  actions.forEach((action) => {
+    (Array.isArray(action?.ops) ? action.ops : []).forEach((op) => {
+      const id = String(op?.type === 'delete' ? (op?.id ?? '') : (op?.object?.boardObjectId ?? ''));
+      if ((op?.type === 'delete' || op?.type === 'upsert') && id) {
+        latestByObjectId.set(id, { op, index: operationIndex });
+      } else {
+        passthrough.push({ op, index: operationIndex });
+      }
+      operationIndex += 1;
+    });
+  });
+
+  return [...passthrough, ...latestByObjectId.values()]
+    .sort((left, right) => left.index - right.index)
+    .map((entry) => entry.op);
+}
+
+function combinePendingActions(actions, clientId, knownRevision) {
+  const firstId = String(actions[0]?.actionId ?? 'first');
+  const lastId = String(actions[actions.length - 1]?.actionId ?? firstId);
+  let background = null;
+  actions.forEach((action) => {
+    if (action?.background != null) background = action.background;
+  });
+  const ops = compactPendingOps(actions);
+  return {
+    actionId: `batch:${firstId}:${lastId}:${actions.length}`,
+    boardId: actions[0]?.boardId,
+    clientId,
+    ops,
+    background,
+    knownRevision: Number(knownRevision ?? 0),
+    createdAt: Number(actions[0]?.createdAt ?? Date.now() * 1000),
+    sourceActionIds: actions.map((action) => action.actionId),
+  };
 }
 
 function participantColor(clientId) {
@@ -82,6 +149,7 @@ export function connectBoardRealtime({
   onTransform,
   onDraw,
   onPreview,
+  onDeletePreview,
   onSelectionTransaction,
   onView,
   onViewJump,
@@ -89,11 +157,13 @@ export function connectBoardRealtime({
 }) {
   const topic = `board:${boardId}:${realtimeKey}`;
   const color = participantColor(clientId);
-  let writeQueue = Promise.resolve();
   let disconnected = false;
-  let flushing = false;
-  let activeWrites = 0;
+  let drainingWrites = false;
+  let drainPromise = Promise.resolve();
+  let writeFlushTimer = null;
   let actionSequence = 0;
+  const inMemoryPending = new Map();
+  const actionWaiters = new Map();
   let lastCursorSignature = '';
   let lastViewSignature = '';
 
@@ -118,9 +188,18 @@ export function connectBoardRealtime({
     transportReadyResolve(kind);
   };
 
+  const getAllPendingActions = async () => {
+    const persisted = await getPendingActions(boardId);
+    const merged = new Map(persisted.map((action) => [action.actionId, action]));
+    inMemoryPending.forEach((action, actionId) => merged.set(actionId, action));
+    return [...merged.values()].sort(
+      (a, b) => Number(a.createdAt ?? 0) - Number(b.createdAt ?? 0),
+    );
+  };
+
   const updatePendingCount = async () => {
-    const queued = await countPendingActions(boardId);
-    onPendingChange?.(Math.max(queued, activeWrites));
+    const queued = await getAllPendingActions();
+    onPendingChange?.(queued.length);
   };
 
   const handleRealtimeEvent = (event, payload) => {
@@ -230,6 +309,7 @@ export function connectBoardRealtime({
     if (event === 'transform') onTransform?.({ ...payload, receivedAt: Date.now() });
     if (event === 'draw') onDraw?.({ ...payload, receivedAt: Date.now() });
     if (event === 'preview') onPreview?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'delete-preview') onDeletePreview?.({ ...payload, receivedAt: Date.now() });
     if (event === 'selection-transaction') {
       onSelectionTransaction?.({ ...payload, receivedAt: Date.now() });
     }
@@ -281,66 +361,111 @@ export function connectBoardRealtime({
     }
   };
 
-  const commitAction = async (action, { announceSaving = true } = {}) => {
-    if (disconnected) return null;
+  const resolveActionWaiters = (actions, result) => {
+    actions.forEach((action) => {
+      const waiter = actionWaiters.get(action.actionId);
+      actionWaiters.delete(action.actionId);
+      waiter?.resolve?.(result);
+    });
+  };
+
+  const commitActionBatch = async (actions, { announceSaving = true } = {}) => {
+    if (disconnected || !actions.length) return null;
     if (announceSaving) onStatus?.('SAVING');
-    activeWrites += 1;
-    await updatePendingCount();
+    const batchAction = combinePendingActions(
+      actions,
+      clientId,
+      Number(getKnownRevision?.() ?? 0),
+    );
     try {
       const result = await commitWithRetry(() => applyBoardAction(boardId, boardKey, {
-        actionId: action.actionId,
+        actionId: batchAction.actionId,
         clientId,
-        ops: action.ops,
-        background: action.background,
-        knownRevision: Number(getKnownRevision?.() ?? action.knownRevision ?? 0),
+        ops: batchAction.ops,
+        background: batchAction.background,
+        knownRevision: Number(getKnownRevision?.() ?? batchAction.knownRevision ?? 0),
       }));
-      await removePendingAction(action.actionId);
-      onCommit?.(result, action);
-      await broadcastCommittedAction(action, result);
+      await Promise.all(actions.map(async (action) => {
+        inMemoryPending.delete(action.actionId);
+        await removePendingAction(action.actionId);
+      }));
+      onCommit?.(result, batchAction);
+      await broadcastCommittedAction(batchAction, result);
       onStatus?.('ACTION_CONFIRMED');
       if (result.needsSync) onSyncRequired?.(result.revision);
+      resolveActionWaiters(actions, result);
       return result;
     } catch (error) {
       console.error(error);
       if (typeof navigator !== 'undefined' && navigator.onLine === false) onStatus?.('OFFLINE');
       else onStatus?.('SAVE_ERROR');
+      resolveActionWaiters(actions, null);
       return null;
     } finally {
-      activeWrites = Math.max(0, activeWrites - 1);
       await updatePendingCount();
     }
   };
 
-  const flushPending = async () => {
-    if (flushing || disconnected) return;
+  const drainPendingWrites = async ({ recovering = false } = {}) => {
+    if (drainingWrites || disconnected) return drainPromise;
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       onStatus?.('OFFLINE');
       await updatePendingCount();
-      return;
+      return null;
     }
-    flushing = true;
-    onStatus?.('RECOVERING');
-    try {
-      const pending = await getPendingActions(boardId);
+    drainingWrites = true;
+    if (recovering) onStatus?.('RECOVERING');
+    drainPromise = (async () => {
       let committedAny = false;
+      let batchFailed = false;
       let latestRevision = Number(getKnownRevision?.() ?? 0);
-      for (const action of pending) {
-        if (disconnected) break;
-        // eslint-disable-next-line no-await-in-loop
-        const result = await commitAction(action, { announceSaving: false });
-        if (!result) break;
-        committedAny = true;
-        latestRevision = Math.max(latestRevision, Number(result.revision ?? 0));
+      try {
+        while (!disconnected) {
+          const pending = await getAllPendingActions();
+          if (!pending.length) break;
+          const batch = selectPendingBatch(pending);
+          const result = await commitActionBatch(batch, { announceSaving: !recovering });
+          if (!result) {
+            batchFailed = true;
+            break;
+          }
+          committedAny = true;
+          latestRevision = Math.max(latestRevision, Number(result.revision ?? 0));
+        }
+        const remaining = await getAllPendingActions();
+        if (recovering && remaining.length === 0) {
+          onStatus?.('RECOVERED');
+          if (committedAny) onSyncRequired?.(latestRevision);
+        }
+      } finally {
+        drainingWrites = false;
+        await updatePendingCount();
+        const remaining = await getAllPendingActions();
+        if (!disconnected && remaining.length && navigator.onLine !== false) {
+          window.clearTimeout(writeFlushTimer);
+          writeFlushTimer = window.setTimeout(
+            () => drainPendingWrites(),
+            batchFailed ? 1500 : PERSIST_BATCH_DELAY,
+          );
+        }
       }
-      const remaining = await countPendingActions(boardId);
-      if (remaining === 0) {
-        onStatus?.('RECOVERED');
-        if (committedAny) onSyncRequired?.(latestRevision);
-      }
-    } finally {
-      flushing = false;
-      await updatePendingCount();
-    }
+      return null;
+    })();
+    return drainPromise;
+  };
+
+  const flushPending = async () => {
+    window.clearTimeout(writeFlushTimer);
+    writeFlushTimer = null;
+    return drainPendingWrites({ recovering: true });
+  };
+
+  const scheduleWriteDrain = () => {
+    if (disconnected || drainingWrites || writeFlushTimer) return;
+    writeFlushTimer = window.setTimeout(() => {
+      writeFlushTimer = null;
+      drainPendingWrites();
+    }, PERSIST_BATCH_DELAY);
   };
 
   const enqueueAction = (ops, background = null) => {
@@ -354,12 +479,16 @@ export function connectBoardRealtime({
       createdAt: Date.now() * 1000 + (actionSequence++ % 1000),
     };
 
-    const persisted = enqueuePendingAction(action).then(updatePendingCount);
-    const task = writeQueue
+    inMemoryPending.set(action.actionId, action);
+    const task = new Promise((resolve) => {
+      actionWaiters.set(action.actionId, { resolve });
+    });
+    enqueuePendingAction(action)
       .catch(() => undefined)
-      .then(() => persisted)
-      .then(() => commitAction(action));
-    writeQueue = task;
+      .finally(() => {
+        updatePendingCount();
+        scheduleWriteDrain();
+      });
     return task;
   };
 
@@ -485,6 +614,7 @@ export function connectBoardRealtime({
       .on('broadcast', { event: 'transform' }, ({ payload }) => handleRealtimeEvent('transform', payload))
       .on('broadcast', { event: 'draw' }, ({ payload }) => handleRealtimeEvent('draw', payload))
       .on('broadcast', { event: 'preview' }, ({ payload }) => handleRealtimeEvent('preview', payload))
+      .on('broadcast', { event: 'delete-preview' }, ({ payload }) => handleRealtimeEvent('delete-preview', payload))
       .on('broadcast', { event: 'selection-transaction' }, ({ payload }) => handleRealtimeEvent('selection-transaction', payload))
       .on('broadcast', { event: 'view' }, ({ payload }) => handleRealtimeEvent('view', payload))
       .on('broadcast', { event: 'view-jump' }, ({ payload }) => handleRealtimeEvent('view-jump', payload))
@@ -643,7 +773,7 @@ export function connectBoardRealtime({
         timestamp: Date.now(),
       });
     },
-    sendPreview(records) {
+    sendPreview(records, batch = null) {
       const safeRecords = Array.isArray(records) ? records : [];
       if (!safeRecords.length) return Promise.resolve('ignored');
       try {
@@ -656,13 +786,38 @@ export function connectBoardRealtime({
         name,
         color,
         records: safeRecords,
+        batchId: batch?.batchId ?? null,
+        chunkIndex: Number(batch?.chunkIndex ?? 0),
+        chunkCount: Math.max(1, Number(batch?.chunkCount ?? 1)),
         timestamp: Date.now(),
       };
       return publishRealtime('preview', payload);
     },
+    sendDeletePreview(ids) {
+      const safeIds = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean).map(String))];
+      if (!safeIds.length) return Promise.resolve('ignored');
+      return publishRealtime('delete-preview', {
+        clientId,
+        name,
+        color,
+        ids: safeIds,
+        mutationId: randomToken(16),
+        timestamp: Date.now(),
+      });
+    },
     sendSelectionTransaction(transaction) {
-      if (!transaction?.transactionId || !['start', 'style', 'commit', 'cancel'].includes(transaction.phase)) {
-        return Promise.resolve('ignored');
+      const phase = transaction?.phase;
+      const validPhases = ['start', 'style', 'operation', 'commit', 'cancel'];
+      if (!validPhases.includes(phase)) return Promise.resolve('ignored');
+      if (phase !== 'operation' && !transaction?.transactionId) return Promise.resolve('ignored');
+      if (phase === 'operation') {
+        const objectIds = Array.isArray(transaction?.objectIds)
+          ? transaction.objectIds.filter(Boolean)
+          : [];
+        const sourceIds = Array.isArray(transaction?.sourceIds)
+          ? transaction.sourceIds.filter(Boolean)
+          : [];
+        if (!objectIds.length && !sourceIds.length) return Promise.resolve('ignored');
       }
       const payload = {
         clientId,
@@ -707,7 +862,11 @@ export function connectBoardRealtime({
     flushPending,
     async disconnect() {
       disconnected = true;
-      await writeQueue.catch(() => undefined);
+      window.clearTimeout(writeFlushTimer);
+      writeFlushTimer = null;
+      await drainPromise.catch(() => undefined);
+      actionWaiters.forEach(({ resolve }) => resolve?.(null));
+      actionWaiters.clear();
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
 

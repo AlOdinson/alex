@@ -1,6 +1,11 @@
-Alex Board 0.7.2
+Alex Board 0.7.4
 
-src/components/Board.jsx
-package.json
-HOTFIX_0.7.2_RU.txt
-CHANGED_FILES.txt
+Изменены:
+- src/components/Board.jsx
+- src/lib/realtime.js
+- package.json
+- README.md
+- HOTFIX_0.7.4_RU.txt
+- CHANGED_FILES.txt
+
+Supabase Edge Function ably-token, SQL-схема и настройки Ably не менялись.
