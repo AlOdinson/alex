@@ -1909,3 +1909,176 @@ html.game-viewport-locked #root {
     padding: 14px;
   }
 }
+
+/* Alex Board 0.9.0 — shared game room, 5 Hz state and control relay */
+.game-room-summary {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.game-network-pill {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.game-room-bar {
+  display: grid;
+  grid-template-columns: minmax(160px, auto) minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(244, 248, 244, 0.98);
+  color: #183122;
+}
+
+.game-room-active {
+  min-width: 0;
+}
+
+.game-room-active span {
+  display: block;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.game-room-active strong {
+  display: block;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.game-room-participants {
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.game-room-participants::-webkit-scrollbar {
+  display: none;
+}
+
+.game-room-participants span {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 1px solid #d9e5dc;
+  border-radius: 999px;
+  background: #fff;
+  color: #526258;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.game-room-participants span.is-active {
+  border-color: #86efac;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.game-control-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: min(48vw, 520px);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.game-control-actions::-webkit-scrollbar {
+  display: none;
+}
+
+.game-control-actions button {
+  min-height: 32px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 9px;
+  padding: 0 10px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.game-control-actions button.teacher-take-control {
+  background: #7c3aed;
+  color: #fff;
+}
+
+.game-control-actions button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.game-room-full {
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 10px;
+  padding: 24px;
+  background: #f8fafc;
+  color: #1e293b;
+  text-align: center;
+}
+
+.game-room-full h2,
+.game-room-full p {
+  margin: 0;
+}
+
+@media (max-width: 760px) {
+  .game-room-summary,
+  .game-network-pill {
+    display: none;
+  }
+
+  .game-room-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 7px;
+    padding: 6px 8px;
+  }
+
+  .game-room-participants {
+    grid-column: 1 / -1;
+    order: 3;
+  }
+
+  .game-control-actions {
+    max-width: 52vw;
+  }
+
+  .game-control-actions button {
+    min-height: 30px;
+    padding: 0 8px;
+    font-size: 10px;
+  }
+}
+
+.game-sync-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  background: rgba(13, 32, 21, 0.78);
+  color: #f0fff3;
+  font-size: 16px;
+  font-weight: 850;
+  backdrop-filter: blur(5px);
+}

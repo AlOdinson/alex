@@ -285,6 +285,125 @@
     opacity: 0;
   }
 
+  .pause-button {
+    position: absolute;
+    z-index: 16;
+    top: max(10px, env(safe-area-inset-top));
+    left: max(10px, env(safe-area-inset-left));
+    width: 46px;
+    height: 46px;
+    display: none;
+    place-items: center;
+    border: 1px solid rgba(230, 255, 236, .42);
+    border-radius: 14px;
+    background: rgba(7, 25, 15, .92);
+    color: #f4fff5;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .28);
+    font-size: 21px;
+    font-weight: 950;
+    touch-action: manipulation;
+  }
+
+  .pause-button:disabled {
+    opacity: .45;
+    cursor: default;
+  }
+
+  .mobile-controls {
+    position: absolute;
+    z-index: 15;
+    left: max(16px, env(safe-area-inset-left));
+    bottom: max(18px, env(safe-area-inset-bottom));
+    display: none;
+    width: 150px;
+    height: 150px;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .joystick-base {
+    position: absolute;
+    inset: 0;
+    border: 2px solid rgba(224, 255, 228, .34);
+    border-radius: 50%;
+    background: rgba(5, 24, 13, .58);
+    box-shadow: inset 0 0 28px rgba(138, 255, 158, .10), 0 10px 28px rgba(0, 0, 0, .24);
+    backdrop-filter: blur(4px);
+  }
+
+  .joystick-knob {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 66px;
+    height: 66px;
+    transform: translate(-50%, -50%);
+    border: 2px solid rgba(245, 255, 241, .72);
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #dfffa8, #66a83e 68%, #274f25);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, .32);
+    pointer-events: none;
+  }
+
+  .observer-badge {
+    position: absolute;
+    z-index: 14;
+    left: 50%;
+    top: 76px;
+    transform: translateX(-50%);
+    display: none;
+    padding: 8px 13px;
+    border: 1px solid rgba(215, 240, 255, .34);
+    border-radius: 999px;
+    background: rgba(5, 18, 24, .78);
+    color: #e8f7ff;
+    font-size: 12px;
+    font-weight: 850;
+    pointer-events: none;
+  }
+
+  .paused-badge {
+    position: absolute;
+    z-index: 17;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    display: none;
+    padding: 15px 22px;
+    border: 1px solid rgba(255, 239, 176, .54);
+    border-radius: 16px;
+    background: rgba(22, 20, 8, .88);
+    color: #fff4bd;
+    font-size: clamp(22px, 5vw, 40px);
+    font-weight: 950;
+    pointer-events: none;
+  }
+
+  .paused-badge.show,
+  .observer-badge.show {
+    display: block;
+  }
+
+  @media (pointer: coarse), (max-width: 820px) {
+    .pause-button,
+    .mobile-controls {
+      display: grid;
+    }
+
+    .hud {
+      left: 66px;
+    }
+
+    .question.show {
+      pointer-events: auto;
+    }
+
+    .answer {
+      cursor: pointer;
+      touch-action: manipulation;
+    }
+  }
 
   @media (max-width: 720px) {
     .hud {
@@ -325,6 +444,14 @@
 <body>
 <div id="game">
   <canvas id="canvas"></canvas>
+
+  <button class="pause-button" id="pauseBtn" type="button" aria-label="Пауза">⏸</button>
+  <div class="observer-badge" id="observerBadge">Сейчас вы наблюдаете</div>
+  <div class="paused-badge" id="pausedBadge">Пауза</div>
+  <div class="mobile-controls" id="mobileControls" aria-label="Джойстик движения">
+    <div class="joystick-base"></div>
+    <div class="joystick-knob" id="joystickKnob"></div>
+  </div>
 
   <div class="hud">
     <div class="hudBox">
@@ -407,6 +534,319 @@
     };
   }
 
+
+  function cloneEntity(entity) {
+    return entity ? { ...entity } : null;
+  }
+
+  function getSyncNetworkState() {
+    return {
+      version: 1,
+      state,
+      paused,
+      lives,
+      mainOpened,
+      selectedDifficulty,
+      difficultyLocked,
+      honeyActive,
+      waterStarted,
+      waterStopped,
+      waterDelay,
+      waterTimer,
+      waterStepTimer,
+      waterMazeBoostTimer,
+      damageTimer,
+      elapsed,
+      player: cloneEntity(player),
+      ant: cloneEntity(ant),
+      hornet: cloneEntity(hornet),
+      openGates: gates.filter(gate => gate.open).map(gate => keyOf(gate.x, gate.y)),
+      waterCells: [...waterCells],
+      question: questionGate && questionData ? {
+        gateKey: keyOf(questionGate.x, questionGate.y),
+        data: {
+          text: questionData.text,
+          options: questionData.options.map(option => ({ ...option }))
+        },
+        lockedFor: Math.max(0, questionLockedUntil - performance.now())
+      } : null,
+      endTitle: ui.endTitle.textContent,
+      endText: ui.endText.textContent
+    };
+  }
+
+  function getFullNetworkState() {
+    return {
+      version: 1,
+      grid: grid.map(row => row.slice()),
+      mainPath: mainPath.slice(),
+      gates: gates.map(gate => ({ ...gate })),
+      exitRow,
+      exitY,
+      sync: getSyncNetworkState()
+    };
+  }
+
+  function rebuildGateMap() {
+    gateMap = new Map();
+    gates.forEach(gate => gateMap.set(keyOf(gate.x, gate.y), gate));
+  }
+
+  function renderQuestionFromNetwork(question) {
+    if (!question?.data) {
+      closeQuestion();
+      return;
+    }
+    const gate = gateMap.get(String(question.gateKey ?? ""));
+    if (!gate) {
+      closeQuestion();
+      return;
+    }
+    questionGate = gate;
+    questionData = {
+      text: String(question.data.text ?? ""),
+      options: Array.isArray(question.data.options)
+        ? question.data.options.map(option => ({ ...option }))
+        : []
+    };
+    questionLockedUntil = performance.now() + Number(question.lockedFor ?? 0);
+    ui.questionText.textContent = questionData.text;
+    questionData.options.forEach((option, index) => {
+      if (!ui.answers[index]) return;
+      ui.answers[index].className = "answer";
+      const keyHint = index === 0 ? "← или A" : index === 1 ? "↑/↓ или W/S" : "→ или D";
+      ui.answers[index].innerHTML = `${option.value}<small>${keyHint}</small>`;
+    });
+    ui.question.classList.add("show");
+  }
+
+  function syncOverlayFromNetwork(sync) {
+    ui.endOverlay.classList.remove("show", "review");
+    if (sync.state === "menu") {
+      ui.startOverlay.classList.add("show");
+    } else {
+      ui.startOverlay.classList.remove("show");
+    }
+    if (sync.state === "won" || sync.state === "lost") {
+      ui.endTitle.textContent = sync.endTitle || (sync.state === "won" ? "Мёд найден!" : "Игра окончена");
+      ui.endText.textContent = sync.endText || "";
+      ui.endOverlay.classList.add("show");
+      if (sync.state === "lost") ui.endOverlay.classList.add("review");
+    }
+    ui.pausedBadge.classList.toggle("show", Boolean(sync.paused));
+    ui.pauseBtn.textContent = sync.paused ? "▶" : "⏸";
+    ui.pauseBtn.setAttribute("aria-label", sync.paused ? "Продолжить" : "Пауза");
+  }
+
+  function applySyncNetworkState(sync, { snap = false } = {}) {
+    if (!sync) return;
+    state = String(sync.state ?? state);
+    paused = Boolean(sync.paused);
+    lives = Number(sync.lives ?? lives);
+    mainOpened = Number(sync.mainOpened ?? mainOpened);
+    selectedDifficulty = String(sync.selectedDifficulty ?? selectedDifficulty);
+    difficultyLocked = Boolean(sync.difficultyLocked);
+    honeyActive = Boolean(sync.honeyActive);
+    waterStarted = Boolean(sync.waterStarted);
+    waterStopped = Boolean(sync.waterStopped);
+    waterDelay = Number(sync.waterDelay ?? waterDelay);
+    waterTimer = Number(sync.waterTimer ?? waterTimer);
+    waterStepTimer = Number(sync.waterStepTimer ?? waterStepTimer);
+    waterMazeBoostTimer = Number(sync.waterMazeBoostTimer ?? waterMazeBoostTimer);
+    damageTimer = Number(sync.damageTimer ?? damageTimer);
+    elapsed = Number(sync.elapsed ?? elapsed);
+
+    const openGateSet = new Set(Array.isArray(sync.openGates) ? sync.openGates.map(String) : []);
+    gates.forEach(gate => { gate.open = openGateSet.has(keyOf(gate.x, gate.y)); });
+    waterCells = new Set(Array.isArray(sync.waterCells) ? sync.waterCells.map(String) : []);
+
+    remoteTarget.player = cloneEntity(sync.player);
+    remoteTarget.ant = cloneEntity(sync.ant);
+    remoteTarget.hornet = cloneEntity(sync.hornet);
+    if (snap) {
+      if (sync.player) player = cloneEntity(sync.player);
+      if (sync.ant) ant = cloneEntity(sync.ant);
+      if (sync.hornet) hornet = cloneEntity(sync.hornet);
+    }
+
+    if (sync.question) renderQuestionFromNetwork(sync.question);
+    else closeQuestion();
+    syncOverlayFromNetwork(sync);
+    updateHud();
+  }
+
+  function applyFullNetworkState(snapshot) {
+    if (!snapshot) return;
+    if (Array.isArray(snapshot.grid)) grid = snapshot.grid.map(row => row.slice());
+    if (Array.isArray(snapshot.mainPath)) mainPath = snapshot.mainPath.slice();
+    if (Array.isArray(snapshot.gates)) gates = snapshot.gates.map(gate => ({ ...gate }));
+    exitRow = Number(snapshot.exitRow ?? exitRow);
+    exitY = Number(snapshot.exitY ?? exitY);
+    rebuildGateMap();
+    applySyncNetworkState(snapshot.sync, { snap: true });
+  }
+
+  function notifyAction(action) {
+    notifyHost("GAME_ACTION", { action: { ...action, at: Date.now() } });
+  }
+
+  function currentInputVector() {
+    let x = joystickInput.x;
+    let y = joystickInput.y;
+    if (keys.ArrowLeft || keys.KeyA) x -= 1;
+    if (keys.ArrowRight || keys.KeyD) x += 1;
+    if (keys.ArrowUp || keys.KeyW) y -= 1;
+    if (keys.ArrowDown || keys.KeyS) y += 1;
+    const length = Math.hypot(x, y);
+    if (length > 1) return { x: x / length, y: y / length };
+    return { x, y };
+  }
+
+  function emitInputAction(force = false) {
+    if (!controlEnabled || networkMode === "observer") return;
+    const vector = currentInputVector();
+    const compact = {
+      x: Number(vector.x.toFixed(3)),
+      y: Number(vector.y.toFixed(3))
+    };
+    const signature = `${compact.x}:${compact.y}`;
+    const now = performance.now();
+    if (!force && signature === lastInputSignature) return;
+    if (!force && now - lastInputSentAt < 55) {
+      clearTimeout(inputSendTimer);
+      inputSendTimer = setTimeout(() => emitInputAction(true), 55 - (now - lastInputSentAt));
+      return;
+    }
+    lastInputSignature = signature;
+    lastInputSentAt = now;
+    notifyAction({ kind: "input", ...compact });
+  }
+
+  function setNetworkMode(nextMode, enabled) {
+    networkMode = nextMode === "observer" ? "observer" : nextMode === "active" ? "active" : "solo";
+    controlEnabled = Boolean(enabled) && networkMode !== "observer";
+    if (!controlEnabled) {
+      for (const key in keys) keys[key] = false;
+      joystickInput = { x: 0, y: 0 };
+      updateJoystickKnob();
+    }
+    ui.mobileControls.style.display = controlEnabled && !paused && !questionGate ? "" : "none";
+    ui.pauseBtn.style.display = controlEnabled ? "" : "none";
+    ui.pauseBtn.disabled = !controlEnabled;
+    ui.startBtn.disabled = !controlEnabled;
+    ui.restartBtn.disabled = !controlEnabled;
+    ui.observerBadge.classList.toggle("show", networkMode === "observer");
+  }
+
+  function setPaused(nextPaused, { remote = false } = {}) {
+    if (!controlEnabled && !remote) return;
+    paused = Boolean(nextPaused);
+    for (const key in keys) keys[key] = false;
+    joystickInput = { x: 0, y: 0 };
+    remoteInput = { x: 0, y: 0 };
+    updateJoystickKnob();
+    ui.pausedBadge.classList.toggle("show", paused);
+    ui.mobileControls.style.display = controlEnabled && !paused && !questionGate ? "" : "none";
+    ui.pauseBtn.textContent = paused ? "▶" : "⏸";
+    ui.pauseBtn.setAttribute("aria-label", paused ? "Продолжить" : "Пауза");
+    if (!remote) notifyAction({ kind: "pause", paused });
+  }
+
+  function togglePause() {
+    if (state !== "playing") return;
+    setPaused(!paused);
+  }
+
+  function applyRemoteAction(action) {
+    if (!action) return;
+    if (action.kind === "input") {
+      remoteInput = {
+        x: Number(action.x ?? 0),
+        y: Number(action.y ?? 0)
+      };
+      return;
+    }
+    if (action.kind === "pause") {
+      setPaused(Boolean(action.paused), { remote: true });
+      return;
+    }
+    if (action.kind === "answer") {
+      const index = Number(action.index);
+      if (ui.answers[index]) {
+        ui.answers.forEach(answer => answer.classList.remove("good", "bad"));
+        ui.answers[index].classList.add(action.correct ? "good" : "bad");
+      }
+      return;
+    }
+    if (action.kind === "question-open" && action.question) {
+      renderQuestionFromNetwork(action.question);
+      return;
+    }
+    if (action.kind === "question-close") {
+      closeQuestion();
+      return;
+    }
+    if (action.kind === "gate-open") {
+      const gate = gateMap.get(String(action.gateKey ?? ""));
+      if (gate) gate.open = true;
+      mainOpened = Number(action.mainOpened ?? mainOpened);
+      honeyActive = Boolean(action.honeyActive);
+      updateHud();
+      return;
+    }
+    if (action.kind === "life") {
+      lives = Number(action.lives ?? lives);
+      flashValue = 1;
+      cameraShake = 7;
+      updateHud();
+      return;
+    }
+    if (action.kind === "water-start") {
+      waterStarted = true;
+      waterDelay = Number(action.waterDelay ?? waterDelay);
+      updateHud();
+      return;
+    }
+    if (action.kind === "finish") {
+      state = action.result === "won" ? "won" : "lost";
+      ui.endTitle.textContent = action.title ?? (state === "won" ? "Мёд найден!" : "Игра окончена");
+      ui.endText.textContent = action.text ?? "";
+      ui.endOverlay.classList.remove("review");
+      ui.endOverlay.classList.add("show");
+      if (state === "lost") ui.endOverlay.classList.add("review");
+      return;
+    }
+    if (action.kind === "difficulty" && action.difficulty) {
+      selectedDifficulty = String(action.difficulty);
+    }
+  }
+
+  function updateObserver(dt) {
+    if (!paused && state === "playing" && !questionGate) {
+      const length = Math.hypot(remoteInput.x, remoteInput.y);
+      if (length > .01) {
+        const dx = remoteInput.x / Math.max(1, length);
+        const dy = remoteInput.y / Math.max(1, length);
+        player.dir = Math.atan2(dy, dx);
+        tryRemoteMove(dx * PLAYER_SPEED * dt, dy * PLAYER_SPEED * dt);
+      }
+      elapsed += dt;
+    }
+
+    const smoothing = Math.min(1, dt * 9);
+    for (const [entity, target] of [[player, remoteTarget.player], [ant, remoteTarget.ant], [hornet, remoteTarget.hornet]]) {
+      if (!target) continue;
+      entity.x += (Number(target.x) - entity.x) * smoothing;
+      entity.y += (Number(target.y) - entity.y) * smoothing;
+      const angleDelta = Math.atan2(Math.sin(Number(target.dir) - entity.dir), Math.cos(Number(target.dir) - entity.dir));
+      entity.dir += angleDelta * smoothing;
+      if ("alerted" in target) entity.alerted = Boolean(target.alerted);
+      if ("escapeState" in target) entity.escapeState = target.escapeState;
+      if ("escapeTimer" in target) entity.escapeTimer = Number(target.escapeTimer ?? 0);
+      if ("step" in target) entity.step = Number(target.step ?? 0);
+    }
+  }
+
   const canvas = document.getElementById("canvas");
   const ctx = canvas.getContext("2d");
 
@@ -427,7 +867,12 @@
     endTitle: document.getElementById("endTitle"),
     endText: document.getElementById("endText"),
     startBtn: document.getElementById("startBtn"),
-    restartBtn: document.getElementById("restartBtn")
+    restartBtn: document.getElementById("restartBtn"),
+    pauseBtn: document.getElementById("pauseBtn"),
+    mobileControls: document.getElementById("mobileControls"),
+    joystickKnob: document.getElementById("joystickKnob"),
+    observerBadge: document.getElementById("observerBadge"),
+    pausedBadge: document.getElementById("pausedBadge")
   };
 
   const MAZE_COLS = 15;
@@ -523,6 +968,16 @@
   let flashValue = 0;
   let cameraShake = 0;
   let elapsed = 0;
+  let paused = false;
+  let networkMode = embedded ? "observer" : "solo";
+  let controlEnabled = !embedded;
+  let joystickInput = { x: 0, y: 0 };
+  let remoteInput = { x: 0, y: 0 };
+  let remoteTarget = { player: null, ant: null, hornet: null };
+  let joystickPointerId = null;
+  let lastInputSignature = "0:0";
+  let lastInputSentAt = 0;
+  let inputSendTimer = 0;
   let ant = {
     x: GRID_W * .25,
     y: -2.25,
@@ -918,6 +1373,10 @@
     flashValue = 0;
     cameraShake = 0;
     elapsed = 0;
+    paused = false;
+    joystickInput = { x: 0, y: 0 };
+    remoteInput = { x: 0, y: 0 };
+    remoteTarget = { player: cloneEntity(player), ant: cloneEntity(ant), hornet: cloneEntity(hornet) };
 
     for (const key in keys) keys[key] = false;
 
@@ -928,8 +1387,12 @@
     speedNoticeTimeout = 0;
     speedNoticeActive = false;
     document.getElementById("waterStatus").classList.remove("speed-up");
+    ui.pausedBadge.classList.remove("show");
+    ui.pauseBtn.textContent = "⏸";
+    updateJoystickKnob();
     updateHud();
     notifyHost("GAME_STARTED", getGameSummary());
+    notifyHost("GAME_FULL_STATE_PUSH", { state: getFullNetworkState(), reason: "restart" });
   }
 
   function updateHud() {
@@ -974,6 +1437,9 @@
     questionLockedUntil = performance.now() + 260;
 
     for (const key in keys) keys[key] = false;
+    joystickInput = { x: 0, y: 0 };
+    updateJoystickKnob();
+    emitInputAction(true);
 
     ui.questionText.textContent = questionData.text;
     questionData.options.forEach((option, index) => {
@@ -983,6 +1449,18 @@
     });
 
     ui.question.classList.add("show");
+    ui.mobileControls.style.display = "none";
+    notifyAction({
+      kind: "question-open",
+      question: {
+        gateKey: keyOf(gate.x, gate.y),
+        data: {
+          text: questionData.text,
+          options: questionData.options.map(option => ({ ...option }))
+        },
+        lockedFor: 260
+      }
+    });
   }
 
   function closeQuestion() {
@@ -990,12 +1468,14 @@
     questionData = null;
     ui.question.classList.remove("show");
     ui.answers.forEach(answer => answer.className = "answer");
+    ui.mobileControls.style.display = controlEnabled && !paused ? "" : "none";
   }
 
   function selectAnswer(index) {
-    if (!questionGate || !questionData || performance.now() < questionLockedUntil) return;
+    if (!controlEnabled || paused || !questionGate || !questionData || performance.now() < questionLockedUntil) return;
 
     const option = questionData.options[index];
+    notifyAction({ kind: "answer", index, correct: Boolean(option?.correct) });
 
     if (option.correct) {
       ui.answers[index].classList.add("good");
@@ -1016,6 +1496,12 @@
       }
 
       updateHud();
+      notifyAction({
+        kind: "gate-open",
+        gateKey: keyOf(questionGate.x, questionGate.y),
+        mainOpened,
+        honeyActive
+      });
 
       // Ответ уже принят. Пока зелёная подсветка ещё видна,
       // следующие клавиши движения только игнорируются.
@@ -1025,6 +1511,7 @@
 
       setTimeout(() => {
         closeQuestion();
+        notifyAction({ kind: "question-close" });
       }, 360);
     } else {
       ui.answers[index].classList.add("bad");
@@ -1041,6 +1528,17 @@
           ui.answers[answerIndex].innerHTML = `${newOption.value}<small>${keyHint}</small>`;
         });
         questionLockedUntil = performance.now() + 220;
+        notifyAction({
+          kind: "question-open",
+          question: {
+            gateKey: keyOf(questionGate.x, questionGate.y),
+            data: {
+              text: questionData.text,
+              options: questionData.options.map(option => ({ ...option }))
+            },
+            lockedFor: 220
+          }
+        });
       }, 430);
     }
   }
@@ -1050,6 +1548,7 @@
     flashValue = 1;
     cameraShake = 7;
     updateHud();
+    notifyAction({ kind: "life", lives, fromWrongAnswer });
 
     if (lives <= 0) {
       gameOver(fromWrongAnswer
@@ -1064,6 +1563,7 @@
     ui.endTitle.textContent = "Игра окончена";
     ui.endText.textContent = `${reason} Открыто ворот на основном пути: ${mainOpened} из ${MAIN_INTERNAL_GATES + 2}.`;
     ui.endOverlay.classList.add("show", "review");
+    notifyAction({ kind: "finish", result: "lost", title: ui.endTitle.textContent, text: ui.endText.textContent });
     notifyHost("GAME_FINISHED", { result: "lost", reason, ...getGameSummary() });
   }
 
@@ -1074,6 +1574,7 @@
     ui.endText.textContent = `Божья коровка добралась до баночки мёда. Открыто ворот: ${mainOpened}.`;
     ui.endOverlay.classList.remove("review");
     ui.endOverlay.classList.add("show");
+    notifyAction({ kind: "finish", result: "won", title: ui.endTitle.textContent, text: ui.endText.textContent });
     notifyHost("GAME_FINISHED", { result: "won", ...getGameSummary() });
   }
 
@@ -1184,6 +1685,14 @@
     const nx = player.x + dx;
     if (!circleHitsSolid(nx, player.y, PLAYER_RADIUS)) player.x = nx;
 
+    const ny = player.y + dy;
+    if (!circleHitsSolid(player.x, ny, PLAYER_RADIUS)) player.y = ny;
+  }
+
+
+  function tryRemoteMove(dx, dy) {
+    const nx = player.x + dx;
+    if (!circleHitsSolid(nx, player.y, PLAYER_RADIUS)) player.x = nx;
     const ny = player.y + dy;
     if (!circleHitsSolid(player.x, ny, PLAYER_RADIUS)) player.y = ny;
   }
@@ -1395,6 +1904,7 @@
     ui.endTitle.textContent = "Вас съели";
     ui.endText.textContent = "Муравей заметил божью коровку и догнал её.";
     ui.endOverlay.classList.add("show", "review");
+    notifyAction({ kind: "finish", result: "lost", title: ui.endTitle.textContent, text: ui.endText.textContent });
     notifyHost("GAME_FINISHED", { result: "lost", reason: "ant", ...getGameSummary() });
   }
 
@@ -1406,14 +1916,21 @@
     ui.endTitle.textContent = "Вас съели";
     ui.endText.textContent = "Шершень заметил божью коровку и догнал её.";
     ui.endOverlay.classList.add("show", "review");
+    notifyAction({ kind: "finish", result: "lost", title: ui.endTitle.textContent, text: ui.endText.textContent });
     notifyHost("GAME_FINISHED", { result: "lost", reason: "hornet", ...getGameSummary() });
   }
 
   function update(dt) {
-    elapsed += dt;
     flashValue = Math.max(0, flashValue - dt * 2.7);
     cameraShake = Math.max(0, cameraShake - dt * 18);
 
+    if (networkMode === "observer") {
+      updateObserver(dt);
+      return;
+    }
+
+    if (paused) return;
+    elapsed += dt;
     if (state !== "playing") return;
 
     updateAnt(dt);
@@ -1422,21 +1939,11 @@
     updateHornet(dt);
     if (state !== "playing") return;
 
-    if (!questionGate) {
-      let dx = 0;
-      let dy = 0;
-
-      if (keys.ArrowLeft || keys.KeyA) dx -= 1;
-      if (keys.ArrowRight || keys.KeyD) dx += 1;
-      if (keys.ArrowUp || keys.KeyW) dy -= 1;
-      if (keys.ArrowDown || keys.KeyS) dy += 1;
-
-      if (dx || dy) {
-        const length = Math.hypot(dx, dy);
-        dx /= length;
-        dy /= length;
-        player.dir = Math.atan2(dy, dx);
-        tryMove(dx * PLAYER_SPEED * dt, dy * PLAYER_SPEED * dt);
+    if (controlEnabled && !questionGate) {
+      const input = currentInputVector();
+      if (input.x || input.y) {
+        player.dir = Math.atan2(input.y, input.x);
+        tryMove(input.x * PLAYER_SPEED * dt, input.y * PLAYER_SPEED * dt);
       }
     }
 
@@ -1452,6 +1959,7 @@
       waterStepTimer = 0;
       waterMazeBoostTimer = 0;
       updateHud();
+      notifyAction({ kind: "water-start", waterDelay });
     }
 
     if (waterStarted && !waterStopped) {
@@ -1524,25 +2032,34 @@
     const maxX = MEADOW_MAX_X;
     const minY = MEADOW_MIN_Y;
     const maxY = MEADOW_MAX_Y;
+    const mobileCamera = W <= 820 || window.matchMedia?.("(pointer: coarse)").matches;
+
+    if (mobileCamera) {
+      const visibleUnits = 14;
+      const scale = Math.min(W / visibleUnits, H / visibleUnits);
+      const visibleWorldW = W / scale;
+      const visibleWorldH = H / scale;
+      const halfW = visibleWorldW / 2;
+      const halfH = visibleWorldH / 2;
+      const cameraX = Math.max(minX + halfW, Math.min(maxX - halfW, player.x));
+      const cameraY = Math.max(minY + halfH, Math.min(maxY - halfH, player.y));
+      return {
+        scale,
+        ox: W / 2 - cameraX * scale,
+        oy: H / 2 - cameraY * scale
+      };
+    }
 
     const worldH = maxY - minY;
     const scale = H / worldH;
     const visibleWorldW = W / scale;
-
     let cameraX = player.x;
     const halfVisibleW = visibleWorldW / 2;
 
-    if (maxX - minX <= visibleWorldW) {
-      cameraX = (minX + maxX) / 2;
-    } else {
-      cameraX = Math.max(
-        minX + halfVisibleW,
-        Math.min(maxX - halfVisibleW, cameraX)
-      );
-    }
+    if (maxX - minX <= visibleWorldW) cameraX = (minX + maxX) / 2;
+    else cameraX = Math.max(minX + halfVisibleW, Math.min(maxX - halfVisibleW, cameraX));
 
     const cameraY = (minY + maxY) / 2;
-
     return {
       scale,
       ox: W / 2 - cameraX * scale,
@@ -1748,7 +2265,10 @@
         player.y <= pad.y + pad.h;
 
       if (inside) {
-        selectedDifficulty = pad.id;
+        if (selectedDifficulty !== pad.id) {
+          selectedDifficulty = pad.id;
+          notifyAction({ kind: "difficulty", difficulty: pad.id });
+        }
         return;
       }
     }
@@ -2424,57 +2944,168 @@
   }
 
   function handleQuestionKey(code) {
-    if (!questionGate) return false;
+    if (!controlEnabled || paused || !questionGate) return false;
 
     if (code === "ArrowLeft" || code === "KeyA") {
       selectAnswer(0);
       return true;
     }
-
     if (code === "ArrowUp" || code === "ArrowDown" || code === "KeyW" || code === "KeyS") {
       selectAnswer(1);
       return true;
     }
-
     if (code === "ArrowRight" || code === "KeyD") {
       selectAnswer(2);
       return true;
     }
-
     return false;
   }
+
+  function updateJoystickKnob() {
+    const radius = 40;
+    ui.joystickKnob.style.transform = `translate(calc(-50% + ${joystickInput.x * radius}px), calc(-50% + ${joystickInput.y * radius}px))`;
+  }
+
+  function updateJoystickFromPointer(event) {
+    const rect = ui.mobileControls.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    let x = (event.clientX - centerX) / (rect.width * .36);
+    let y = (event.clientY - centerY) / (rect.height * .36);
+    const length = Math.hypot(x, y);
+    if (length > 1) {
+      x /= length;
+      y /= length;
+    }
+    if (Math.hypot(x, y) < .12) {
+      x = 0;
+      y = 0;
+    }
+    joystickInput = { x, y };
+    updateJoystickKnob();
+    emitInputAction();
+  }
+
+  function releaseJoystick(event) {
+    if (event && joystickPointerId !== null && event.pointerId !== joystickPointerId) return;
+    joystickPointerId = null;
+    joystickInput = { x: 0, y: 0 };
+    updateJoystickKnob();
+    emitInputAction(true);
+  }
+
+  ui.mobileControls.addEventListener("pointerdown", event => {
+    if (!controlEnabled || paused || questionGate) return;
+    joystickPointerId = event.pointerId;
+    ui.mobileControls.setPointerCapture?.(event.pointerId);
+    updateJoystickFromPointer(event);
+    event.preventDefault();
+  });
+  ui.mobileControls.addEventListener("pointermove", event => {
+    if (event.pointerId !== joystickPointerId) return;
+    updateJoystickFromPointer(event);
+    event.preventDefault();
+  });
+  ui.mobileControls.addEventListener("pointerup", releaseJoystick);
+  ui.mobileControls.addEventListener("pointercancel", releaseJoystick);
+  ui.mobileControls.addEventListener("lostpointercapture", releaseJoystick);
+
+  ui.pauseBtn.addEventListener("click", () => {
+    if (controlEnabled) togglePause();
+  });
+
+  ui.answers.forEach((answer, index) => {
+    answer.addEventListener("pointerdown", event => {
+      if (!controlEnabled || paused || !questionGate) return;
+      event.preventDefault();
+      selectAnswer(index);
+    });
+  });
 
   window.addEventListener("keydown", event => {
     if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Space"].includes(event.code)) {
       event.preventDefault();
     }
-
+    if (!controlEnabled) return;
+    if (event.code === "Space") {
+      if (!event.repeat) togglePause();
+      return;
+    }
+    if (paused) return;
     if (handleQuestionKey(event.code)) return;
-    keys[event.code] = true;
+    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "KeyW", "KeyA", "KeyS", "KeyD"].includes(event.code)) {
+      if (!keys[event.code]) {
+        keys[event.code] = true;
+        emitInputAction(true);
+      }
+    }
   });
 
   window.addEventListener("keyup", event => {
+    if (!keys[event.code]) return;
     keys[event.code] = false;
+    emitInputAction(true);
+  });
+
+  window.addEventListener("blur", () => {
+    for (const key in keys) keys[key] = false;
+    releaseJoystick();
   });
 
   window.addEventListener("message", event => {
     if (event.origin !== window.location.origin) return;
     const message = event.data;
     if (!message || message.source !== "alex-board-host") return;
+    const payload = message.payload ?? {};
 
-    if (message.type === "GAME_RESTART") resetGame();
-    if (message.type === "GAME_GET_STATE") {
-      notifyHost("GAME_STATE", getGameSummary());
+    if (message.type === "GAME_RESTART" && controlEnabled) resetGame();
+    if (message.type === "GAME_GET_STATE") notifyHost("GAME_STATE", getGameSummary());
+    if (message.type === "GAME_GET_SYNC_STATE") {
+      notifyHost("GAME_SYNC_STATE", {
+        requestId: payload.requestId ?? null,
+        state: getSyncNetworkState()
+      });
+    }
+    if (message.type === "GAME_GET_FULL_STATE") {
+      notifyHost("GAME_FULL_STATE", {
+        requestId: payload.requestId ?? null,
+        state: getFullNetworkState()
+      });
+    }
+    if (message.type === "GAME_APPLY_SYNC_STATE") {
+      applySyncNetworkState(payload.state, { snap: false });
+    }
+    if (message.type === "GAME_APPLY_FULL_STATE") {
+      applyFullNetworkState(payload.state);
+    }
+    if (message.type === "GAME_APPLY_ACTION") {
+      applyRemoteAction(payload.action);
+    }
+    if (message.type === "GAME_SET_NETWORK_MODE") {
+      setNetworkMode(payload.mode, payload.controlEnabled);
+    }
+    if (message.type === "GAME_SET_CONTROL_ENABLED") {
+      controlEnabled = Boolean(payload.enabled) && networkMode !== "observer";
+      setNetworkMode(networkMode, controlEnabled);
     }
   });
 
-  ui.startBtn.addEventListener("click", resetGame);
-  ui.restartBtn.addEventListener("click", resetGame);
+  ui.startBtn.addEventListener("click", () => {
+    if (!controlEnabled) return;
+    notifyAction({ kind: "restart" });
+    resetGame();
+  });
+  ui.restartBtn.addEventListener("click", () => {
+    if (!controlEnabled) return;
+    notifyAction({ kind: "restart" });
+    resetGame();
+  });
 
   resize();
   createMaze();
   createGates();
   updateHud();
+  setNetworkMode(networkMode, controlEnabled);
   notifyHost("GAME_READY", getGameSummary());
   requestAnimationFrame(loop);
 })();

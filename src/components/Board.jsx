@@ -28,6 +28,7 @@ import {
 } from '../lib/boardRepository.js';
 import { getCachedSnapshot, setCachedSnapshot } from '../lib/idb.js';
 import { connectBoardRealtime } from '../lib/realtime.js';
+import { forceExitGameParticipants } from '../lib/gameRealtime.js';
 import { randomToken, sha256 } from '../lib/ids.js';
 import { rememberOwnedBoard } from '../lib/boardLibrary.js';
 import { createShape } from '../lib/shapes.js';
@@ -767,6 +768,7 @@ function objectVisuallyIntersectsRect(object, selectionRect) {
 export default function Board({ boardId }) {
   const boardKey = useMemo(getKeyFromUrl, []);
   const [workspaceMode, setWorkspaceMode] = useState('board');
+  const participantClientIdRef = useRef(randomToken(10));
   const [access, setAccess] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -853,8 +855,12 @@ export default function Board({ boardId }) {
     return (
       <GameLibrary
         boardId={boardId}
+        boardKey={boardKey}
+        realtimeKey={access.realtimeKey}
         boardTitle={access.title}
         participantName={resolvedName}
+        participantClientId={participantClientIdRef.current}
+        permission={access.permission}
         onExit={returnToBoard}
       />
     );
@@ -866,6 +872,7 @@ export default function Board({ boardId }) {
       boardKey={boardKey}
       initialAccess={access}
       participantName={resolvedName}
+      participantClientId={participantClientIdRef.current}
       onAccessChange={setAccess}
       onOpenGameLibrary={() => setWorkspaceMode('games')}
     />
@@ -877,6 +884,7 @@ function BoardWorkspace({
   boardKey,
   initialAccess,
   participantName,
+  participantClientId,
   onAccessChange,
   onOpenGameLibrary,
 }) {
@@ -887,7 +895,7 @@ function BoardWorkspace({
   const gameLibraryVisibleRef = useRef(Boolean(initialAccess.gameLibraryVisible));
   const gameLibraryVisibilityBusyRef = useRef(false);
   const toggleGameLibraryVisibilityRef = useRef(null);
-  const clientIdRef = useRef(randomToken(10));
+  const clientIdRef = useRef(participantClientId || randomToken(10));
   const applyingRemoteRef = useRef(false);
   const applyingHistoryRef = useRef(false);
   const lineRef = useRef(null);
@@ -1254,7 +1262,16 @@ function BoardWorkspace({
       } catch (realtimeError) {
         console.warn('Видимость игротеки сохранена, но realtime-событие не отправлено', realtimeError);
       }
-      setSaveStatus(nextVisible ? 'Игротека открыта для всех' : 'Игротека скрыта');
+      if (!nextVisible) {
+        try {
+          await forceExitGameParticipants({ boardId, boardKey, reason: 'library-closed-by-owner' });
+        } catch (forceExitError) {
+          // The hidden flag is already persisted. Users in a game will also be returned
+          // on their next access check, even if the separate game Edge Function is unavailable.
+          console.warn('Игротека скрыта, но принудительный выход из игровой комнаты не отправлен', forceExitError);
+        }
+      }
+      setSaveStatus(nextVisible ? 'Игротека открыта для всех' : 'Игротека скрыта, игры закрыты');
       setSyncTone('saved');
     } catch (caught) {
       console.error(caught);
