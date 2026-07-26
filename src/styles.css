@@ -1821,6 +1821,10 @@ html.board-viewport-locked .canvas-host .lower-canvas {
 .game-player-page {
   display: flex;
   flex-direction: column;
+  width: var(--alex-game-viewport-width, 100vw);
+  height: var(--alex-game-viewport-height, 100dvh);
+  max-width: 100%;
+  max-height: 100%;
   background: #14251c;
 }
 
@@ -1834,9 +1838,13 @@ html.board-viewport-locked .canvas-host .lower-canvas {
 }
 
 .game-frame {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   border: 0;
   background: #14251c;
 }
@@ -1853,8 +1861,8 @@ html.board-viewport-locked .canvas-host .lower-canvas {
 
 html.game-viewport-locked,
 body.game-viewport-locked {
-  width: 100%;
-  height: 100dvh;
+  width: var(--alex-game-viewport-width, 100vw);
+  height: var(--alex-game-viewport-height, 100dvh);
   min-height: 0;
   overflow: hidden !important;
   overscroll-behavior: none;
@@ -1868,8 +1876,8 @@ body.game-viewport-locked {
 html.game-viewport-locked #root {
   position: fixed;
   inset: 0;
-  width: 100vw;
-  height: 100dvh;
+  width: var(--alex-game-viewport-width, 100vw);
+  height: var(--alex-game-viewport-height, 100dvh);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -1910,7 +1918,7 @@ html.game-viewport-locked #root {
   }
 }
 
-/* Alex Board 0.9.0 — shared game room, 5 Hz state and control relay */
+/* Alex Board 0.9.1 — shared game room, 10 Hz state, mobile viewport and control fixes */
 .game-room-summary {
   display: flex;
   flex: 0 0 auto;
@@ -2082,3 +2090,24 @@ html.game-viewport-locked #root {
   font-weight: 850;
   backdrop-filter: blur(5px);
 }
+
+@media (max-width: 900px), (pointer: coarse) {
+  .game-player-page {
+    width: var(--alex-game-viewport-width, 100vw);
+    height: var(--alex-game-viewport-height, 100dvh);
+    min-height: 0;
+  }
+
+  .game-frame-wrap {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 0;
+  }
+
+  .game-frame {
+    width: 100%;
+    height: 100%;
+  }
+}
+

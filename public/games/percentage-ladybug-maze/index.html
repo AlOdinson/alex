@@ -21,6 +21,8 @@
   html, body {
     width: 100%;
     height: 100%;
+    min-width: 0;
+    min-height: 0;
     margin: 0;
     overflow: hidden;
     background: #14251c;
@@ -34,15 +36,21 @@
 
   #game {
     position: relative;
-    width: 100vw;
-    height: 100vh;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
     min-height: 520px;
     overflow: hidden;
     background: #1d3324;
   }
 
 
+  html.embedded,
+  html.embedded body,
   html.embedded #game {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
     min-height: 0;
   }
 
@@ -722,6 +730,12 @@
     notifyAction({ kind: "input", ...compact });
   }
 
+  function focusGameInput() {
+    try { window.focus(); } catch { /* Ignore browsers that reject window focus. */ }
+    canvas.tabIndex = 0;
+    try { canvas.focus({ preventScroll: true }); } catch { canvas.focus?.(); }
+  }
+
   function setNetworkMode(nextMode, enabled) {
     networkMode = nextMode === "observer" ? "observer" : nextMode === "active" ? "active" : "solo";
     controlEnabled = Boolean(enabled) && networkMode !== "observer";
@@ -736,6 +750,7 @@
     ui.startBtn.disabled = !controlEnabled;
     ui.restartBtn.disabled = !controlEnabled;
     ui.observerBadge.classList.toggle("show", networkMode === "observer");
+    if (controlEnabled) requestAnimationFrame(focusGameInput);
   }
 
   function setPaused(nextPaused, { remote = false } = {}) {
@@ -2032,24 +2047,10 @@
     const maxX = MEADOW_MAX_X;
     const minY = MEADOW_MIN_Y;
     const maxY = MEADOW_MAX_Y;
-    const mobileCamera = W <= 820 || window.matchMedia?.("(pointer: coarse)").matches;
 
-    if (mobileCamera) {
-      const visibleUnits = 14;
-      const scale = Math.min(W / visibleUnits, H / visibleUnits);
-      const visibleWorldW = W / scale;
-      const visibleWorldH = H / scale;
-      const halfW = visibleWorldW / 2;
-      const halfH = visibleWorldH / 2;
-      const cameraX = Math.max(minX + halfW, Math.min(maxX - halfW, player.x));
-      const cameraY = Math.max(minY + halfH, Math.min(maxY - halfH, player.y));
-      return {
-        scale,
-        ox: W / 2 - cameraX * scale,
-        oy: H / 2 - cameraY * scale
-      };
-    }
-
+    // На телефоне и планшете вся высота игрового мира всегда помещается в экран.
+    // Ширина видимой области определяется реальной шириной устройства, а камера
+    // следует за жучком по горизонтали и удерживает его около центра экрана.
     const worldH = maxY - minY;
     const scale = H / worldH;
     const visibleWorldW = W / scale;
@@ -2994,6 +2995,8 @@
     emitInputAction(true);
   }
 
+  canvas.addEventListener("pointerdown", () => focusGameInput(), { passive: true });
+
   ui.mobileControls.addEventListener("pointerdown", event => {
     if (!controlEnabled || paused || questionGate) return;
     joystickPointerId = event.pointerId;
@@ -3088,6 +3091,9 @@
       controlEnabled = Boolean(payload.enabled) && networkMode !== "observer";
       setNetworkMode(networkMode, controlEnabled);
     }
+    if (message.type === "GAME_FOCUS_INPUT") {
+      focusGameInput();
+    }
   });
 
   ui.startBtn.addEventListener("click", () => {
@@ -3101,6 +3107,7 @@
     resetGame();
   });
 
+  canvas.tabIndex = 0;
   resize();
   createMaze();
   createGates();

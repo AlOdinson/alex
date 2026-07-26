@@ -4,7 +4,7 @@ import { connectGameRealtime } from '../lib/gameRealtime.js';
 import { randomToken } from '../lib/ids.js';
 
 const MAX_GAME_PARTICIPANTS = 4;
-const STATE_INTERVAL_MS = 200;
+const STATE_INTERVAL_MS = 100;
 const ACTIVE_DISCONNECT_GRACE_MS = 3000;
 
 const GAMES = [
@@ -97,6 +97,14 @@ export default function GameLibrary({
     }, window.location.origin);
   }, []);
 
+  const focusGameInput = useCallback(() => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    try { frame.focus({ preventScroll: true }); } catch { frame.focus?.(); }
+    try { frame.contentWindow?.focus?.(); } catch { /* Same-origin iframe focus can still be rejected transiently. */ }
+    postToGame('GAME_FOCUS_INPUT');
+  }, [postToGame]);
+
   const applyControlState = useCallback((message) => {
     const nextEpoch = Number(message?.epoch ?? 0);
     const nextActive = String(message?.activePlayerId ?? '');
@@ -120,7 +128,10 @@ export default function GameLibrary({
     controlStateRef.current = next;
     setControlState(next);
     setTransferBusy(false);
-  }, []);
+    if (nextActive === participantClientId) {
+      window.requestAnimationFrame(() => focusGameInput());
+    }
+  }, [focusGameInput, participantClientId]);
 
   const publishControl = useCallback(async (activePlayerId, epoch, reason) => {
     const payload = {
@@ -193,6 +204,7 @@ export default function GameLibrary({
     };
     pendingTransferRef.current = transfer;
     setTransferBusy(true);
+    if (targetClientId === participantClientId) focusGameInput();
     postToGame('GAME_SET_CONTROL_ENABLED', { enabled: false });
 
     if (current.activePlayerId === participantClientId) {
@@ -201,7 +213,7 @@ export default function GameLibrary({
     }
 
     // Teacher can take control while observing. Ask the current player for the freshest
-    // full state; if they do not answer, use the teacher's latest 5 Hz observer state.
+    // full state; if they do not answer, use the teacher's latest 10 Hz observer state.
     await realtimeRef.current?.publish('state-request', {
       requestId,
       requesterId: participantClientId,
@@ -214,7 +226,7 @@ export default function GameLibrary({
       if (pendingTransferRef.current?.requestId !== requestId) return;
       requestLocalFullState({ kind: 'transfer', transfer, requestId });
     }, 900);
-  }, [isOwner, participantClientId, postToGame, requestLocalFullState, transferBusy]);
+  }, [focusGameInput, isOwner, participantClientId, postToGame, requestLocalFullState, transferBusy]);
 
   const handleRealtimeEventRef = useRef(null);
   handleRealtimeEventRef.current = async (event, payload) => {
@@ -289,11 +301,27 @@ export default function GameLibrary({
   useEffect(() => {
     const root = document.documentElement;
     const body = document.body;
+    const updateViewportSize = () => {
+      const viewport = window.visualViewport;
+      const width = Math.max(1, Math.round(viewport?.width ?? window.innerWidth));
+      const height = Math.max(1, Math.round(viewport?.height ?? window.innerHeight));
+      root.style.setProperty('--alex-game-viewport-width', `${width}px`);
+      root.style.setProperty('--alex-game-viewport-height', `${height}px`);
+    };
+    updateViewportSize();
     root.classList.add('game-viewport-locked');
     body.classList.add('game-viewport-locked');
+    window.addEventListener('resize', updateViewportSize);
+    window.visualViewport?.addEventListener('resize', updateViewportSize);
+    window.visualViewport?.addEventListener('scroll', updateViewportSize);
     return () => {
       root.classList.remove('game-viewport-locked');
       body.classList.remove('game-viewport-locked');
+      root.style.removeProperty('--alex-game-viewport-width');
+      root.style.removeProperty('--alex-game-viewport-height');
+      window.removeEventListener('resize', updateViewportSize);
+      window.visualViewport?.removeEventListener('resize', updateViewportSize);
+      window.visualViewport?.removeEventListener('scroll', updateViewportSize);
     };
   }, []);
 
@@ -325,7 +353,7 @@ export default function GameLibrary({
         setRoomFull(ordered.length > MAX_GAME_PARTICIPANTS
           && ordered.slice(0, MAX_GAME_PARTICIPANTS).every((item) => item.clientId !== participantClientId));
       },
-      onForceExit: () => onExitRef.current?.(),
+      onForceExit: () => onExitRef.current?.({ gameLibraryVisible: false, reason: 'force-exit' }),
       onStatus: (status) => {
         if (status === 'connected') setNetworkStatus('Общая игровая комната');
         else if (status === 'solo') setNetworkStatus('Одиночный режим · игровой Ably недоступен');
@@ -431,6 +459,10 @@ export default function GameLibrary({
       participantName,
     });
 
+    if (isActivePlayer && !transferBusy) {
+      window.requestAnimationFrame(() => focusGameInput());
+    }
+
     if (!isActivePlayer && wasActiveRef.current && participants.length >= 2) {
       hasInitialStateRef.current = false;
       setHasInitialState(false);
@@ -442,6 +474,7 @@ export default function GameLibrary({
     wasActiveRef.current = isActivePlayer;
   }, [
     controlState.activePlayerId,
+    focusGameInput,
     frameReady,
     isActivePlayer,
     participantClientId,
@@ -493,7 +526,7 @@ export default function GameLibrary({
       checking = true;
       try {
         const access = await getBoardAccess(boardId, boardKey);
-        if (!access?.gameLibraryVisible) onExitRef.current?.();
+        if (!access?.gameLibraryVisible) onExitRef.current?.({ gameLibraryVisible: false, reason: 'library-hidden' });
       } catch {
         // A temporary database failure should not throw a player out of a running game.
       } finally {
@@ -624,7 +657,7 @@ export default function GameLibrary({
             <span className="game-network-pill">{networkStatus}</span>
           </div>
 
-          <button type="button" className="game-exit-button" onClick={onExit}>
+          <button type="button" className="game-exit-button" onClick={() => onExit()}>
             На доску
           </button>
         </header>
@@ -674,7 +707,7 @@ export default function GameLibrary({
           <section className="game-room-full">
             <h2>В игровой комнате уже четыре участника</h2>
             <p>Вернись на доску и присоединись, когда освободится место.</p>
-            <button type="button" className="game-exit-button" onClick={onExit}>На доску</button>
+            <button type="button" className="game-exit-button" onClick={() => onExit()}>На доску</button>
           </section>
         ) : (
           <section className="game-frame-wrap" aria-label={selectedGame.title}>
@@ -687,6 +720,10 @@ export default function GameLibrary({
               className="game-frame"
               src={gameUrl}
               title={selectedGame.title}
+              tabIndex={0}
+              onLoad={() => {
+                if (controlStateRef.current.activePlayerId === participantClientId) focusGameInput();
+              }}
               allow="fullscreen"
               sandbox="allow-scripts allow-same-origin"
             />
@@ -703,7 +740,7 @@ export default function GameLibrary({
           <h1>Игротека</h1>
           <p>{participantName} · {boardTitle}</p>
         </div>
-        <button type="button" className="game-exit-button" onClick={onExit}>
+        <button type="button" className="game-exit-button" onClick={() => onExit()}>
           Вернуться на доску
         </button>
       </header>
@@ -712,7 +749,7 @@ export default function GameLibrary({
         <p className="game-library-intro">
           Один участник играет, остальные наблюдают. Управление можно добровольно передать,
           а преподаватель в любой момент может забрать его. Движение синхронизируется командами
-          и контрольным состоянием пять раз в секунду.
+          и контрольным состоянием десять раз в секунду.
         </p>
 
         <div className="game-card-grid">

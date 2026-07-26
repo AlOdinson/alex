@@ -809,11 +809,21 @@ export default function Board({ boardId }) {
     };
   }, [boardId, boardKey]);
 
-  const returnToBoard = useCallback(async () => {
+  const returnToBoard = useCallback(async (options = {}) => {
+    const forceLibraryHidden = options?.gameLibraryVisible === false;
+    if (forceLibraryHidden) {
+      setAccess((current) => (
+        current ? { ...current, gameLibraryVisible: false } : current
+      ));
+    }
     setWorkspaceMode('board');
     try {
       const refreshedAccess = await getBoardAccess(boardId, boardKey);
-      if (refreshedAccess) setAccess(refreshedAccess);
+      if (refreshedAccess) {
+        setAccess(forceLibraryHidden
+          ? { ...refreshedAccess, gameLibraryVisible: false }
+          : refreshedAccess);
+      }
     } catch (caught) {
       console.warn('Не удалось обновить доступ после выхода из игры', caught);
     }
@@ -5605,6 +5615,114 @@ function BoardWorkspace({
     let lastArrowPanAt = 0;
     let objectEraserDelayTimer = null;
 
+    const mobileGameLibrarySequence = [1, 2, 3, 2, 1];
+    let mobileGameLibraryGesture = {
+      index: 0,
+      sequenceStartedAt: 0,
+      stageStartedAt: 0,
+      trackingStage: false,
+      maxTouches: 0,
+      moved: false,
+      startPoints: new Map(),
+    };
+
+    function resetMobileGameLibraryGesture() {
+      mobileGameLibraryGesture = {
+        index: 0,
+        sequenceStartedAt: 0,
+        stageStartedAt: 0,
+        trackingStage: false,
+        maxTouches: 0,
+        moved: false,
+        startPoints: new Map(),
+      };
+    }
+
+    function beginMobileGameLibraryTouchStage(event) {
+      if (!isOwner) return false;
+      const now = performance.now();
+      if (mobileGameLibraryGesture.sequenceStartedAt
+        && now - mobileGameLibraryGesture.sequenceStartedAt > 6500) {
+        resetMobileGameLibraryGesture();
+      }
+      if (!mobileGameLibraryGesture.trackingStage) {
+        mobileGameLibraryGesture.trackingStage = true;
+        mobileGameLibraryGesture.stageStartedAt = now;
+        mobileGameLibraryGesture.maxTouches = 0;
+        mobileGameLibraryGesture.moved = false;
+        mobileGameLibraryGesture.startPoints = new Map();
+        if (!mobileGameLibraryGesture.sequenceStartedAt) {
+          mobileGameLibraryGesture.sequenceStartedAt = now;
+        }
+      }
+      mobileGameLibraryGesture.maxTouches = Math.max(
+        mobileGameLibraryGesture.maxTouches,
+        event.touches.length,
+      );
+      for (const touch of Array.from(event.touches)) {
+        if (!mobileGameLibraryGesture.startPoints.has(touch.identifier)) {
+          mobileGameLibraryGesture.startPoints.set(touch.identifier, {
+            x: touch.clientX,
+            y: touch.clientY,
+          });
+        }
+      }
+      const expectedTouches = mobileGameLibrarySequence[mobileGameLibraryGesture.index];
+      return mobileGameLibraryGesture.index > 0
+        && event.touches.length >= expectedTouches;
+    }
+
+    function moveMobileGameLibraryTouchStage(event) {
+      if (!isOwner || !mobileGameLibraryGesture.trackingStage) return false;
+      mobileGameLibraryGesture.maxTouches = Math.max(
+        mobileGameLibraryGesture.maxTouches,
+        event.touches.length,
+      );
+      for (const touch of Array.from(event.touches)) {
+        const start = mobileGameLibraryGesture.startPoints.get(touch.identifier);
+        if (!start) continue;
+        if (Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > 24) {
+          mobileGameLibraryGesture.moved = true;
+        }
+      }
+      const expectedTouches = mobileGameLibrarySequence[mobileGameLibraryGesture.index];
+      return mobileGameLibraryGesture.index > 0
+        && mobileGameLibraryGesture.maxTouches >= expectedTouches;
+    }
+
+    function finishMobileGameLibraryTouchStage(event) {
+      if (!isOwner || !mobileGameLibraryGesture.trackingStage) return false;
+      const expectedTouches = mobileGameLibrarySequence[mobileGameLibraryGesture.index];
+      const wasSecretStage = mobileGameLibraryGesture.index > 0
+        && mobileGameLibraryGesture.maxTouches >= expectedTouches;
+      if (event.touches.length > 0) return wasSecretStage;
+
+      const now = performance.now();
+      const validStage = !mobileGameLibraryGesture.moved
+        && now - mobileGameLibraryGesture.stageStartedAt <= 1100
+        && mobileGameLibraryGesture.maxTouches === expectedTouches;
+
+      mobileGameLibraryGesture.trackingStage = false;
+      mobileGameLibraryGesture.stageStartedAt = 0;
+      mobileGameLibraryGesture.maxTouches = 0;
+      mobileGameLibraryGesture.moved = false;
+      mobileGameLibraryGesture.startPoints = new Map();
+
+      if (!validStage) {
+        resetMobileGameLibraryGesture();
+        return wasSecretStage;
+      }
+
+      const completedStageIndex = mobileGameLibraryGesture.index;
+      mobileGameLibraryGesture.index += 1;
+      if (mobileGameLibraryGesture.index === mobileGameLibrarySequence.length) {
+        resetMobileGameLibraryGesture();
+        toggleGameLibraryVisibilityRef.current?.();
+        return true;
+      }
+      return completedStageIndex > 0;
+    }
+
     function stopArrowPan() {
       heldArrowKeys.clear();
       if (arrowPanFrame != null) window.cancelAnimationFrame(arrowPanFrame);
@@ -5814,6 +5932,12 @@ function BoardWorkspace({
     host.addEventListener('drop', handleDrop);
 
     function handleTouchStart(event) {
+      if (beginMobileGameLibraryTouchStage(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        return;
+      }
       if (event.touches.length !== 2) return;
       event.preventDefault();
       event.stopPropagation();
@@ -5847,6 +5971,12 @@ function BoardWorkspace({
     }
 
     function handleTouchMove(event) {
+      if (moveMobileGameLibraryTouchStage(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        return;
+      }
       if (!touchGestureRef.current || event.touches.length !== 2) return;
       event.preventDefault();
       event.stopPropagation();
@@ -5874,6 +6004,17 @@ function BoardWorkspace({
     }
 
     function handleTouchEnd(event) {
+      const handledSecretGesture = finishMobileGameLibraryTouchStage(event);
+      if (handledSecretGesture) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        if (event.touches.length === 0 && touchGestureRef.current) {
+          touchGestureRef.current = null;
+          configureBrushAndMode();
+        }
+        return;
+      }
       if (!touchGestureRef.current || event.touches.length >= 2) return;
       event.preventDefault();
       event.stopPropagation();
@@ -5882,10 +6023,15 @@ function BoardWorkspace({
       configureBrushAndMode();
     }
 
+    function handleTouchCancel(event) {
+      resetMobileGameLibraryGesture();
+      handleTouchEnd(event);
+    }
+
     touchTarget.addEventListener('touchstart', handleTouchStart, { passive: false, capture: true });
     touchTarget.addEventListener('touchmove', handleTouchMove, { passive: false, capture: true });
     touchTarget.addEventListener('touchend', handleTouchEnd, { passive: false, capture: true });
-    touchTarget.addEventListener('touchcancel', handleTouchEnd, { passive: false, capture: true });
+    touchTarget.addEventListener('touchcancel', handleTouchCancel, { passive: false, capture: true });
 
     function handleContextMenu(event) {
       event.preventDefault();
@@ -6075,7 +6221,7 @@ function BoardWorkspace({
       touchTarget.removeEventListener('touchstart', handleTouchStart, true);
       touchTarget.removeEventListener('touchmove', handleTouchMove, true);
       touchTarget.removeEventListener('touchend', handleTouchEnd, true);
-      touchTarget.removeEventListener('touchcancel', handleTouchEnd, true);
+      touchTarget.removeEventListener('touchcancel', handleTouchCancel, true);
       host.removeEventListener('dragover', handleDragOver);
       host.removeEventListener('drop', handleDrop);
       window.clearInterval(syncInterval);
