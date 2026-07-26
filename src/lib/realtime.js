@@ -154,6 +154,7 @@ export function connectBoardRealtime({
   onView,
   onViewJump,
   onViewRequest,
+  onGameLibraryVisibility,
 }) {
   const topic = `board:${boardId}:${realtimeKey}`;
   const color = participantColor(clientId);
@@ -316,6 +317,9 @@ export function connectBoardRealtime({
     if (event === 'view') onView?.({ ...payload, receivedAt: Date.now() });
     if (event === 'view-jump') onViewJump?.({ ...payload, receivedAt: Date.now() });
     if (event === 'view-request') onViewRequest?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'game-library-visibility') {
+      onGameLibraryVisibility?.({ ...payload, visible: Boolean(payload.visible), receivedAt: Date.now() });
+    }
   };
 
   const publishRealtime = async (event, payload) => {
@@ -619,6 +623,7 @@ export function connectBoardRealtime({
       .on('broadcast', { event: 'view' }, ({ payload }) => handleRealtimeEvent('view', payload))
       .on('broadcast', { event: 'view-jump' }, ({ payload }) => handleRealtimeEvent('view-jump', payload))
       .on('broadcast', { event: 'view-request' }, ({ payload }) => handleRealtimeEvent('view-request', payload))
+      .on('broadcast', { event: 'game-library-visibility' }, ({ payload }) => handleRealtimeEvent('game-library-visibility', payload))
       .on('presence', { event: 'sync' }, () => {
         const state = supabaseChannel.presenceState();
         const users = Object.values(state)
@@ -858,6 +863,15 @@ export function connectBoardRealtime({
     },
     requestSync(revision = Number(getKnownRevision?.() ?? 0)) {
       return publishRealtime('sync', { clientId, revision });
+    },
+    sendGameLibraryVisibility(visible) {
+      return publishRealtime('game-library-visibility', {
+        clientId,
+        name,
+        permission,
+        visible: Boolean(visible),
+        timestamp: Date.now(),
+      });
     },
     flushPending,
     async disconnect() {

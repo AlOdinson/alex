@@ -17,11 +17,13 @@ import {
 } from 'fabric';
 import Toolbar from './Toolbar.jsx';
 import ShareDialog from './ShareDialog.jsx';
+import GameLibrary from './GameLibrary.jsx';
 import {
   getBoardAccess,
   getBoardRecovery,
   getBoardSyncState,
   isSupabaseConfigured,
+  setGameLibraryVisibility,
   setGuestMode,
 } from '../lib/boardRepository.js';
 import { getCachedSnapshot, setCachedSnapshot } from '../lib/idb.js';
@@ -764,6 +766,7 @@ function objectVisuallyIntersectsRect(object, selectionRect) {
 
 export default function Board({ boardId }) {
   const boardKey = useMemo(getKeyFromUrl, []);
+  const [workspaceMode, setWorkspaceMode] = useState('board');
   const [access, setAccess] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -804,6 +807,16 @@ export default function Board({ boardId }) {
     };
   }, [boardId, boardKey]);
 
+  const returnToBoard = useCallback(async () => {
+    setWorkspaceMode('board');
+    try {
+      const refreshedAccess = await getBoardAccess(boardId, boardKey);
+      if (refreshedAccess) setAccess(refreshedAccess);
+    } catch (caught) {
+      console.warn('Не удалось обновить доступ после выхода из игры', caught);
+    }
+  }, [boardId, boardKey]);
+
   if (loading) {
     return <AccessMessage title="Открываю доску">Загружаю сохранённое состояние…</AccessMessage>;
   }
@@ -836,6 +849,17 @@ export default function Board({ boardId }) {
     );
   }
 
+  if (workspaceMode === 'games') {
+    return (
+      <GameLibrary
+        boardId={boardId}
+        boardTitle={access.title}
+        participantName={resolvedName}
+        onExit={returnToBoard}
+      />
+    );
+  }
+
   return (
     <BoardWorkspace
       boardId={boardId}
@@ -843,15 +867,26 @@ export default function Board({ boardId }) {
       initialAccess={access}
       participantName={resolvedName}
       onAccessChange={setAccess}
+      onOpenGameLibrary={() => setWorkspaceMode('games')}
     />
   );
 }
 
-function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onAccessChange }) {
+function BoardWorkspace({
+  boardId,
+  boardKey,
+  initialAccess,
+  participantName,
+  onAccessChange,
+  onOpenGameLibrary,
+}) {
   const canvasElementRef = useRef(null);
   const canvasHostRef = useRef(null);
   const fabricCanvasRef = useRef(null);
   const realtimeRef = useRef(null);
+  const gameLibraryVisibleRef = useRef(Boolean(initialAccess.gameLibraryVisible));
+  const gameLibraryVisibilityBusyRef = useRef(false);
+  const toggleGameLibraryVisibilityRef = useRef(null);
   const clientIdRef = useRef(randomToken(10));
   const applyingRemoteRef = useRef(false);
   const applyingHistoryRef = useRef(false);
@@ -972,6 +1007,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
   const [syncTone, setSyncTone] = useState('saved');
   const [pendingCount, setPendingCount] = useState(0);
   const [users, setUsers] = useState([]);
+  const [gameLibraryVisible, setGameLibraryVisibleState] = useState(Boolean(initialAccess.gameLibraryVisible));
   const [remoteCursors, setRemoteCursors] = useState([]);
   const [remoteLocks, setRemoteLocks] = useState([]);
   const [viewportVersion, setViewportVersion] = useState(0);
@@ -1164,18 +1200,109 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     };
   }, []);
 
+  const persistSnapshotNow = useCallback(async () => {
+    window.clearTimeout(localSaveTimerRef.current);
+    localSaveTimerRef.current = null;
+    const snapshot = getSnapshot();
+    await setCachedSnapshot(boardId, {
+      snapshot,
+      revision: revisionRef.current,
+      savedAt: Date.now(),
+    });
+    if (!isSupabaseConfigured) setSaveStatus('Сохранено в браузере');
+    return snapshot;
+  }, [boardId, getSnapshot]);
+
   const schedulePersistence = useCallback(() => {
     window.clearTimeout(localSaveTimerRef.current);
-    localSaveTimerRef.current = window.setTimeout(async () => {
-      const snapshot = getSnapshot();
-      await setCachedSnapshot(boardId, {
-        snapshot,
-        revision: revisionRef.current,
-        savedAt: Date.now(),
+    localSaveTimerRef.current = window.setTimeout(() => {
+      persistSnapshotNow().catch((caught) => {
+        console.warn('Не удалось сохранить локальный снимок перед переключением режима', caught);
       });
-      if (!isSupabaseConfigured) setSaveStatus('Сохранено в браузере');
     }, 180);
-  }, [boardId, getSnapshot]);
+  }, [persistSnapshotNow]);
+
+  const applyGameLibraryVisibility = useCallback((visible) => {
+    const nextVisible = Boolean(visible);
+    gameLibraryVisibleRef.current = nextVisible;
+    setGameLibraryVisibleState(nextVisible);
+    onAccessChange?.((currentAccess) => (
+      currentAccess
+        ? { ...currentAccess, gameLibraryVisible: nextVisible }
+        : currentAccess
+    ));
+  }, [onAccessChange]);
+
+  const handleRemoteGameLibraryVisibility = useCallback((message) => {
+    if (message?.permission !== 'owner') return;
+    applyGameLibraryVisibility(Boolean(message.visible));
+  }, [applyGameLibraryVisibility]);
+
+  const toggleGameLibraryVisibility = useCallback(async () => {
+    if (!isOwner || gameLibraryVisibilityBusyRef.current) return;
+    const previousVisible = Boolean(gameLibraryVisibleRef.current);
+    const nextVisible = !previousVisible;
+    gameLibraryVisibilityBusyRef.current = true;
+    applyGameLibraryVisibility(nextVisible);
+    setSaveStatus(nextVisible ? 'Открываю игротеку для участников…' : 'Скрываю игротеку…');
+    setSyncTone('saving');
+
+    try {
+      await setGameLibraryVisibility(boardId, boardKey, nextVisible);
+      try {
+        await realtimeRef.current?.sendGameLibraryVisibility?.(nextVisible);
+      } catch (realtimeError) {
+        console.warn('Видимость игротеки сохранена, но realtime-событие не отправлено', realtimeError);
+      }
+      setSaveStatus(nextVisible ? 'Игротека открыта для всех' : 'Игротека скрыта');
+      setSyncTone('saved');
+    } catch (caught) {
+      console.error(caught);
+      applyGameLibraryVisibility(previousVisible);
+      setSaveStatus(caught instanceof Error ? caught.message : 'Не удалось изменить видимость игротеки');
+      setSyncTone('error');
+    } finally {
+      gameLibraryVisibilityBusyRef.current = false;
+    }
+  }, [applyGameLibraryVisibility, boardId, boardKey, isOwner]);
+
+  toggleGameLibraryVisibilityRef.current = toggleGameLibraryVisibility;
+
+  const openGameLibrary = useCallback(async () => {
+    const canvas = fabricCanvasRef.current;
+    if (canvas) {
+      const activeObject = canvas.getActiveObject();
+      if (activeObject instanceof IText && activeObject.isEditing) {
+        activeObject.exitEditing();
+        canvas.fire('text:changed', { target: activeObject });
+      }
+      canvas.discardActiveObject();
+      canvas.requestRenderAll();
+      updateSelectionState();
+      updateSelectionStyleState();
+    }
+
+    setShareOpen(false);
+    setSaveStatus('Открываю игротеку…');
+    setSyncTone('saving');
+    await persistSnapshotNow();
+
+    const flushPromise = realtimeRef.current?.flushPending?.();
+    if (flushPromise) {
+      await Promise.race([
+        Promise.resolve(flushPromise).catch(() => undefined),
+        new Promise((resolve) => window.setTimeout(resolve, 3500)),
+      ]);
+    }
+
+    await persistSnapshotNow();
+    onOpenGameLibrary?.();
+  }, [
+    onOpenGameLibrary,
+    persistSnapshotNow,
+    updateSelectionState,
+    updateSelectionStyleState,
+  ]);
 
   const updateBackgroundTransform = useCallback(() => {
     const canvas = fabricCanvasRef.current;
@@ -4438,6 +4565,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       onView: handleRemoteView,
       onViewJump: handleRemoteViewJump,
       onViewRequest: handleRemoteViewRequest,
+      onGameLibraryVisibility: handleRemoteGameLibraryVisibility,
       onSyncRequired() {
         syncFromServer(true);
       },
@@ -5795,6 +5923,10 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       }
     }
 
+    const gameLibrarySequence = ['ArrowRight', 'ArrowLeft', 'ArrowRight', 'ArrowLeft'];
+    let gameLibrarySequenceIndex = 0;
+    let gameLibrarySequenceStartedAt = 0;
+
     function handleKeyDown(event) {
       const isShortcut = event.metaKey || event.ctrlKey;
       const target = event.target;
@@ -5804,6 +5936,39 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         || Boolean(target?.isContentEditable);
       const activeObject = canvas.getActiveObject();
       const isCanvasTextEditing = activeObject instanceof IText && activeObject.isEditing;
+
+      if (isOwner && !isTextInput && !isCanvasTextEditing && !event.repeat
+        && !isShortcut && !event.altKey && !event.shiftKey) {
+        const now = performance.now();
+        const isSequenceArrow = event.key === 'ArrowRight' || event.key === 'ArrowLeft';
+
+        if (!isSequenceArrow) {
+          gameLibrarySequenceIndex = 0;
+          gameLibrarySequenceStartedAt = 0;
+        } else {
+          if (!gameLibrarySequenceStartedAt || now - gameLibrarySequenceStartedAt > 3000) {
+            gameLibrarySequenceIndex = 0;
+            gameLibrarySequenceStartedAt = now;
+          }
+
+          const expectedKey = gameLibrarySequence[gameLibrarySequenceIndex];
+          if (event.key === expectedKey) {
+            gameLibrarySequenceIndex += 1;
+          } else {
+            gameLibrarySequenceIndex = event.key === gameLibrarySequence[0] ? 1 : 0;
+            gameLibrarySequenceStartedAt = gameLibrarySequenceIndex ? now : 0;
+          }
+
+          if (gameLibrarySequenceIndex === gameLibrarySequence.length) {
+            gameLibrarySequenceIndex = 0;
+            gameLibrarySequenceStartedAt = 0;
+            event.preventDefault();
+            event.stopPropagation();
+            toggleGameLibraryVisibilityRef.current?.();
+            return;
+          }
+        }
+      }
 
       if (event.code === 'Space' && !event.repeat && !isTextInput && !isCanvasTextEditing) {
         spacePressedRef.current = true;
@@ -6074,6 +6239,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         onZoomOut={() => changeZoom(1 / 1.2)}
         onResetZoom={resetZoom}
         onBringStudents={bringStudentsToTeacher}
+        onOpenGames={openGameLibrary}
+        gameLibraryVisible={gameLibraryVisible}
         saveStatus={saveStatus}
         syncTone={syncTone}
         pendingCount={pendingCount}

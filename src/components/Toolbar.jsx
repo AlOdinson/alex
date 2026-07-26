@@ -74,6 +74,8 @@ export default function Toolbar({
   onZoomOut,
   onResetZoom,
   onBringStudents,
+  onOpenGames,
+  gameLibraryVisible = false,
   saveStatus,
   users,
   onShare,
@@ -210,6 +212,18 @@ export default function Toolbar({
               Ко мне
             </button>
           </div>
+        )}
+
+        {gameLibraryVisible && (
+          <button
+            type="button"
+            className="game-library-button"
+            title="Открыть игротеку"
+            onClick={onOpenGames}
+          >
+            <span aria-hidden="true">🎮</span>
+            <span className="game-library-button-label">Игротека</span>
+          </button>
         )}
 
         <div className="presence-summary" title={users.map((user) => user.name).join(', ')}>

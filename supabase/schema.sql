@@ -8,6 +8,7 @@ create table if not exists public.boards (
   realtime_key text not null,
   guest_mode text not null default 'edit'
     check (guest_mode in ('edit', 'view', 'closed')),
+  game_library_visible boolean not null default false,
   snapshot jsonb not null default '{"version":2,"background":"grid","canvas":{"objects":[]}}'::jsonb,
   revision bigint not null default 0,
   created_at timestamptz not null default now(),

@@ -1,11 +1,13 @@
-Alex Board 0.7.4
+Alex Board 0.8.1 — изменённые/добавленные файлы относительно 0.8.0
 
-Изменены:
-- src/components/Board.jsx
-- src/lib/realtime.js
-- package.json
-- README.md
-- HOTFIX_0.7.4_RU.txt
-- CHANGED_FILES.txt
-
-Supabase Edge Function ably-token, SQL-схема и настройки Ably не менялись.
+package.json
+README.md
+UPDATE_INSTRUCTIONS.txt
+INTEGRATION_0.8.1_RU.txt
+CHANGED_FILES.txt
+src/components/Board.jsx
+src/components/Toolbar.jsx
+src/lib/boardRepository.js
+src/lib/realtime.js
+supabase/schema.sql
+supabase/game_library_visibility_upgrade_0.8.1.sql

@@ -97,6 +97,7 @@ export async function createBoard(title = 'Новая доска', studentName =
       shareKeyHash,
       realtimeKey,
       guestMode: 'edit',
+      gameLibraryVisible: false,
       snapshot: { version: 2, background: 'grid', canvas: { objects: [] } },
       revision: 0,
       createdAt: new Date().toISOString(),
@@ -113,10 +114,16 @@ export async function getBoardAccess(boardId, key) {
   if (isSupabaseConfigured) {
     let data;
     let error;
-    ({ data, error } = await supabase.rpc('get_board_access_v4', {
+    ({ data, error } = await supabase.rpc('get_board_access_v5', {
       p_id: boardId,
       p_key_hash: keyHash,
     }));
+    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+      ({ data, error } = await supabase.rpc('get_board_access_v4', {
+        p_id: boardId,
+        p_key_hash: keyHash,
+      }));
+    }
     if (error && /function .* does not exist/i.test(error.message ?? '')) {
       ({ data, error } = await supabase.rpc('get_board_access', {
         p_id: boardId,
@@ -131,6 +138,7 @@ export async function getBoardAccess(boardId, key) {
       title: row.title,
       studentName: row.student_name ?? '',
       guestMode: row.guest_mode,
+      gameLibraryVisible: Boolean(row.game_library_visible),
       realtimeKey: row.realtime_key,
       snapshot: row.snapshot,
       revision: Number(row.revision ?? 0),
@@ -148,6 +156,7 @@ export async function getBoardAccess(boardId, key) {
     title: board.title,
     studentName: board.studentName ?? '',
     guestMode: board.guestMode,
+    gameLibraryVisible: Boolean(board.gameLibraryVisible),
     realtimeKey: board.realtimeKey,
     snapshot: board.snapshot,
     revision: board.revision,
@@ -295,6 +304,37 @@ export async function setGuestMode(boardId, ownerKey, guestMode) {
   setLocalBoard(boardId, board);
 }
 
+
+export async function setGameLibraryVisibility(boardId, ownerKey, visible) {
+  const ownerKeyHash = await sha256(ownerKey);
+  const nextVisible = Boolean(visible);
+
+  if (isSupabaseConfigured) {
+    const { data, error } = await supabase.rpc('set_game_library_visibility_v5', {
+      p_id: boardId,
+      p_owner_key_hash: ownerKeyHash,
+      p_visible: nextVisible,
+    });
+    if (error) {
+      if (/function .* does not exist/i.test(error.message ?? '')) {
+        throw new Error('Сначала запустите supabase/game_library_visibility_upgrade_0.8.1.sql');
+      }
+      throw error;
+    }
+    if (!data) throw new Error('Только владелец доски может открыть игротеку');
+    return nextVisible;
+  }
+
+  const board = getLocalBoard(boardId);
+  if (!board || board.ownerKeyHash !== ownerKeyHash) {
+    throw new Error('Только владелец доски может открыть игротеку');
+  }
+  board.gameLibraryVisible = nextVisible;
+  board.updatedAt = new Date().toISOString();
+  setLocalBoard(boardId, board);
+  return nextVisible;
+}
+
 export async function setBoardMetadata(boardId, ownerKey, { title, studentName }) {
   const ownerKeyHash = await sha256(ownerKey);
   if (isSupabaseConfigured) {
@@ -363,6 +403,7 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
       ownerKeyHash: newOwnerHash,
       shareKeyHash: newShareHash,
       realtimeKey: newRealtimeKey,
+      gameLibraryVisible: false,
       revision: 0,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
