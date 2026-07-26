@@ -14,6 +14,7 @@ const TRANSPORT_CONNECT_TIMEOUT = 10_000;
 const PERSIST_BATCH_DELAY = 24;
 const MAX_PERSIST_BATCH_ACTIONS = 120;
 const MAX_PERSIST_BATCH_CHARS = 650_000;
+const SOLO_REALTIME_GRACE_MS = 3000;
 
 function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -167,6 +168,9 @@ export function connectBoardRealtime({
   const actionWaiters = new Map();
   let lastCursorSignature = '';
   let lastViewSignature = '';
+  let participantCount = 1;
+  let realtimeFanoutEnabled = false;
+  let soloRealtimeTimer = null;
 
   let transportKind = isSupabaseConfigured ? 'pending' : 'local';
   let transportReadyResolve;
@@ -187,6 +191,63 @@ export function connectBoardRealtime({
     transportResolved = true;
     transportKind = kind;
     transportReadyResolve(kind);
+  };
+
+  const enableRealtimeFanout = () => {
+    if (realtimeFanoutEnabled || disconnected) return;
+    realtimeFanoutEnabled = true;
+    lastCursorSignature = '';
+    lastViewSignature = '';
+
+    // A newly joined participant loads the durable board from Supabase. Flush any
+    // local writes first, then ask connected peers to verify their revision once.
+    Promise.resolve()
+      .then(() => flushPending())
+      .then(() => {
+        if (!disconnected && participantCount > 1) {
+          return publishRealtime('sync', {
+            clientId,
+            revision: Number(getKnownRevision?.() ?? 0),
+          });
+        }
+        return null;
+      })
+      .catch((error) => {
+        if (!disconnected) console.warn('Could not start collaborative realtime fanout', error);
+      });
+  };
+
+  const disableRealtimeFanout = () => {
+    realtimeFanoutEnabled = false;
+    lastCursorSignature = '';
+    lastViewSignature = '';
+  };
+
+  const emitUsers = (users) => {
+    const uniqueUsers = new Map();
+    (Array.isArray(users) ? users : []).forEach((user) => {
+      const id = String(user?.clientId ?? '');
+      if (id) uniqueUsers.set(id, user);
+    });
+
+    const nextUsers = [...uniqueUsers.values()];
+    participantCount = Math.max(1, nextUsers.length);
+    onUsers?.(nextUsers);
+
+    if (participantCount > 1) {
+      window.clearTimeout(soloRealtimeTimer);
+      soloRealtimeTimer = null;
+      enableRealtimeFanout();
+      return;
+    }
+
+    // Keep realtime active briefly after a peer disappears so a short mobile
+    // reconnect does not repeatedly switch the board between solo and shared modes.
+    if (!realtimeFanoutEnabled || soloRealtimeTimer) return;
+    soloRealtimeTimer = window.setTimeout(() => {
+      soloRealtimeTimer = null;
+      if (!disconnected && participantCount <= 1) disableRealtimeFanout();
+    }, SOLO_REALTIME_GRACE_MS);
   };
 
   const getAllPendingActions = async () => {
@@ -324,6 +385,12 @@ export function connectBoardRealtime({
 
   const publishRealtime = async (event, payload) => {
     if (disconnected) return 'closed';
+
+    // With no remote participant, Fabric continues rendering locally at full FPS
+    // and durable operations still go to Supabase, but transient board packets are
+    // not published. Presence itself is handled directly by the transport below.
+    if (!realtimeFanoutEnabled) return 'solo';
+
     if (isSupabaseConfigured && transportKind === 'pending') await transportReady;
     if (disconnected) return 'closed';
 
@@ -357,6 +424,7 @@ export function connectBoardRealtime({
 
     try {
       const delivery = await publishRealtime('action', payload);
+      if (delivery === 'solo') return;
       if (!includeOps || delivery !== 'ok') {
         await publishRealtime('sync', { clientId, revision: result.revision });
       }
@@ -571,7 +639,7 @@ export function connectBoardRealtime({
             color: data.color ?? participantColor(memberClientId),
           });
         });
-        onUsers?.([...users.values()]);
+        emitUsers([...users.values()]);
       } catch (error) {
         if (!disconnected) console.warn('Could not refresh Ably presence', error);
       }
@@ -634,7 +702,7 @@ export function connectBoardRealtime({
             permission: entry.permission,
             color: entry.color ?? participantColor(entry.clientId),
           }));
-        onUsers?.(users);
+        emitUsers(users);
       })
       .subscribe(async (status) => {
         onStatus?.(status);
@@ -661,7 +729,7 @@ export function connectBoardRealtime({
       for (const [id, peer] of peers) {
         if (now - peer.timestamp > 12000) peers.delete(id);
       }
-      onUsers?.([...peers.values()]);
+      emitUsers([...peers.values()]);
     };
 
     localChannel.onmessage = ({ data }) => {
@@ -878,6 +946,8 @@ export function connectBoardRealtime({
       disconnected = true;
       window.clearTimeout(writeFlushTimer);
       writeFlushTimer = null;
+      window.clearTimeout(soloRealtimeTimer);
+      soloRealtimeTimer = null;
       await drainPromise.catch(() => undefined);
       actionWaiters.forEach(({ resolve }) => resolve?.(null));
       actionWaiters.clear();
