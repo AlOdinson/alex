@@ -17,6 +17,23 @@ const FONTS = [
   ['Verdana', 'Verdana'],
 ];
 
+
+function ExportIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+      <path d="M12 3v11m0 0 4-4m-4 4-4-4M5 15v4h14v-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ShareLinkIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+      <path d="M10.2 13.8l3.6-3.6m-5.9 6.9-1 .9a3.5 3.5 0 0 1-5-5l3.2-3.2a3.5 3.5 0 0 1 5 0m3.8-2.9 1-.9a3.5 3.5 0 1 1 5 5l-3.2 3.2a3.5 3.5 0 0 1-5 0" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function IconButton({ title, children, active = false, disabled = false, onClick, className = '' }) {
   return (
     <button
@@ -231,27 +248,36 @@ export default function Toolbar({
           {users.length || 1}
         </div>
 
-        <div className="export-anchor" ref={exportAnchorRef}>
-          <button type="button" className="secondary-button toolbar-export-button" onClick={() => setExportOpen((value) => !value)}>
-            Экспорт
-          </button>
-          {exportOpen && (
-            <div className="export-menu">
-              <button type="button" onClick={() => { setExportOpen(false); onExportCurrentPng?.(); }}>PNG текущей области</button>
-              <button type="button" onClick={() => { setExportOpen(false); onExportPng?.(); }}>PNG всей доски</button>
-              <button type="button" onClick={() => { setExportOpen(false); onExportPdf?.(); }}>PDF всей доски</button>
-              <button type="button" onClick={() => { setExportOpen(false); onCopyImage?.(); }}>Скопировать изображение</button>
-              <button type="button" onClick={() => { setExportOpen(false); onShareImage?.(); }}>Отправить итог урока</button>
-            </div>
+        <div className="toolbar-end-actions" aria-label="Экспорт и доступ к доске">
+          <div className="export-anchor" ref={exportAnchorRef}>
+            <button
+              type="button"
+              className="secondary-button toolbar-export-button"
+              title="Экспорт"
+              aria-label="Экспорт"
+              onClick={() => setExportOpen((value) => !value)}
+            >
+              <span className="export-wide">Экспорт</span>
+              <span className="export-narrow" aria-hidden="true"><ExportIcon /></span>
+            </button>
+            {exportOpen && (
+              <div className="export-menu">
+                <button type="button" onClick={() => { setExportOpen(false); onExportCurrentPng?.(); }}>PNG текущей области</button>
+                <button type="button" onClick={() => { setExportOpen(false); onExportPng?.(); }}>PNG всей доски</button>
+                <button type="button" onClick={() => { setExportOpen(false); onExportPdf?.(); }}>PDF всей доски</button>
+                <button type="button" onClick={() => { setExportOpen(false); onCopyImage?.(); }}>Скопировать изображение</button>
+                <button type="button" onClick={() => { setExportOpen(false); onShareImage?.(); }}>Отправить итог урока</button>
+              </div>
+            )}
+          </div>
+
+          {isOwner && (
+            <button type="button" className="share-button toolbar-share-button" title="Поделиться ссылкой на доску" aria-label="Поделиться ссылкой на доску" onClick={onShare}>
+              <span className="share-wide">Поделиться</span>
+              <span className="share-narrow" aria-hidden="true"><ShareLinkIcon /></span>
+            </button>
           )}
         </div>
-
-        {isOwner && (
-          <button type="button" className="share-button" onClick={onShare}>
-            <span className="share-wide">Поделиться</span>
-            <span className="share-narrow" aria-hidden="true">↗</span>
-          </button>
-        )}
       </div>
 
       <div className="toolbar-secondary-row">

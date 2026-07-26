@@ -668,28 +668,32 @@ export default function GameLibrary({
             <strong>{participantLabel(activeParticipant)}</strong>
           </div>
           <div className="game-room-participants">
-            {visibleParticipants.map((participant) => (
-              <span
-                className={participant.clientId === controlState.activePlayerId ? 'is-active' : ''}
-                key={participant.clientId}
-              >
-                {participantLabel(participant)}
-              </span>
-            ))}
-          </div>
-          <div className="game-control-actions">
-            {isActivePlayer && visibleParticipants
-              .filter((participant) => participant.clientId !== participantClientId)
-              .map((participant) => (
+            {visibleParticipants.map((participant) => {
+              const isCurrentPlayer = participant.clientId === controlState.activePlayerId;
+              const canAssignControl = isOwner || isActivePlayer;
+              const transferReason = isOwner ? 'teacher-assign-control' : 'voluntary-transfer';
+              return (
                 <button
                   type="button"
+                  className={isCurrentPlayer ? 'is-active' : ''}
                   key={participant.clientId}
-                  disabled={transferBusy}
-                  onClick={() => beginTransfer(participant.clientId, 'voluntary-transfer')}
+                  disabled={transferBusy || isCurrentPlayer || !canAssignControl}
+                  aria-label={isCurrentPlayer
+                    ? `${participantLabel(participant)} сейчас играет`
+                    : `Передать управление: ${participantLabel(participant)}`}
+                  title={isCurrentPlayer
+                    ? 'Сейчас управляет игрой'
+                    : canAssignControl
+                      ? 'Передать управление этому участнику'
+                      : 'Только активный игрок или учитель может передавать управление'}
+                  onClick={() => beginTransfer(participant.clientId, transferReason)}
                 >
-                  Передать: {participant.name}
+                  {participantLabel(participant)}
                 </button>
-              ))}
+              );
+            })}
+          </div>
+          <div className="game-control-actions">
             {isOwner && !isActivePlayer && (
               <button
                 type="button"

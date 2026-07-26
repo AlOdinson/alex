@@ -73,7 +73,7 @@
     left: 12px;
     right: 12px;
     display: grid;
-    grid-template-columns: auto auto 1fr;
+    grid-template-columns: auto auto;
     gap: 10px;
     align-items: center;
     pointer-events: none;
@@ -109,8 +109,7 @@
   }
 
   #waterStatus {
-    justify-self: end;
-    transition: border-color .18s ease, background .18s ease, box-shadow .18s ease;
+    display: none !important;
   }
 
   #waterStatus.speed-up {
@@ -358,7 +357,8 @@
     position: absolute;
     z-index: 14;
     left: 50%;
-    top: 76px;
+    top: auto;
+    bottom: max(4px, env(safe-area-inset-bottom));
     transform: translateX(-50%);
     display: none;
     padding: 8px 13px;
