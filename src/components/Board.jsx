@@ -1558,6 +1558,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         sourceRecords,
         minimumZ,
         initialProxyMatrix: compactTransformMatrix(proxy.calcTransformMatrix()),
+        contentChanged: false,
         committing: false,
         startedAt: Date.now(),
       };
@@ -1616,6 +1617,52 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       if (!proxy || children.length !== transaction.sourceRecords.length) {
         throw new Error('Временная группа повреждена');
       }
+
+      const currentProxyMatrix = compactTransformMatrix(proxy.calcTransformMatrix());
+      const transformChanged = transformMatrixDistance(
+        currentProxyMatrix,
+        transaction.initialProxyMatrix,
+      ) > 0.01;
+
+      // Selecting several objects must not rewrite them in Supabase when nothing was
+      // actually moved, rotated, scaled or restyled. Restore the originals locally and
+      // release the remote preview with a lightweight Ably cancel message.
+      if (!transformChanged && !transaction.contentChanged) {
+        realtimeRef.current?.sendSelectionTransaction?.({
+          phase: 'cancel',
+          reason: 'no-change',
+          transactionId: transaction.transactionId,
+          proxyId: transaction.proxyId,
+          sourceIds: transaction.sourceIds,
+        });
+        applyingRemoteRef.current = true;
+        canvas.remove(proxy);
+        const restored = await util.enlivenObjects(
+          transaction.sourceRecords.map((record) => record.object),
+        );
+        restored.forEach((object, index) => {
+          object.selectable = activeToolRef.current === 'select';
+          object.evented = activeToolRef.current === 'select';
+          object.hasControls = true;
+          object.hasBorders = true;
+          object.setCoords();
+          canvas.add(object);
+          const zIndex = transaction.sourceRecords[index]?.zIndex;
+          if (Number.isInteger(zIndex) && typeof canvas.moveObjectTo === 'function') {
+            canvas.moveObjectTo(object, clamp(zIndex, 0, canvas.getObjects().length - 1));
+          }
+        });
+        applyingRemoteRef.current = false;
+        realtimeRef.current?.sendLock?.(transaction.sourceIds, false);
+        localLockIdsRef.current = [];
+        localSelectionTransactionRef.current = null;
+        applyObjectInteractivity();
+        updateSelectionState();
+        updateSelectionStyleState();
+        canvas.requestRenderAll();
+        return;
+      }
+
       const absoluteMatrices = children.map((object) => compactTransformMatrix(object.calcTransformMatrix()));
       const childSerializations = children.map((object) => serializeObject(object));
       for (const serialized of childSerializations) {
@@ -2011,6 +2058,8 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       const objects = active.getObjects().filter((object) => !object.isEraserPath);
       if (!objects.length) return;
       mutator(objects, canvas);
+      const transaction = localSelectionTransactionRef.current;
+      if (transaction?.proxy === active) transaction.contentChanged = true;
       objects.forEach((object) => {
         object.dirty = true;
         object.setCoords?.();
@@ -2151,6 +2200,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     });
     proxy.dirty = true;
     proxy.setCoords();
+    transaction.contentChanged = true;
     canvas.setActiveObject(proxy);
     canvas.requestRenderAll();
     updateSelectionState();
@@ -2510,6 +2560,9 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
             remoteSelectionTransactionsRef.current.set(transactionId, {
               phase: 'start',
               sourceIds,
+              sourceZIndexes: Array.isArray(message?.sourceZIndexes)
+                ? message.sourceZIndexes.map((value) => Number(value))
+                : [],
               proxyId,
               proxy,
               receivedAt: Date.now(),
@@ -2559,9 +2612,52 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           }
 
           if (phase === 'cancel') {
-            removeSelectionTransactionObjects(canvas, transactionId);
-            remoteSelectionTransactionsRef.current.delete(transactionId);
-            window.setTimeout(() => syncFromServer(true), 40);
+            const transactionState = remoteSelectionTransactionsRef.current.get(transactionId);
+            const transactionProxy = transactionState?.proxy
+              ?? canvas.getObjects().find((object) => (
+                object.transientSelectionProxy
+                && String(object.selectionTransactionId ?? '') === transactionId
+              ));
+
+            if (message?.reason === 'no-change'
+              && transactionProxy
+              && typeof transactionProxy.getObjects === 'function') {
+              const children = [...transactionProxy.getObjects()];
+              const absoluteMatrices = children.map((object) => (
+                compactTransformMatrix(object.calcTransformMatrix())
+              ));
+              const serializations = children.map((object) => serializeObject(object));
+              for (const serialized of serializations) {
+                // eslint-disable-next-line no-await-in-loop
+                await preloadSerializedImages(serialized);
+              }
+              const restored = await util.enlivenObjects(serializations);
+              canvas.remove(transactionProxy);
+              restored.forEach((object, index) => {
+                const matrix = absoluteMatrices[index];
+                if (matrix) util.applyTransformToObject(object, matrix);
+                object.transientPreview = false;
+                object.transientLiveDraw = false;
+                object.transientSelectionProxy = false;
+                object.selectionTransactionId = undefined;
+                object.selectionSourceIds = undefined;
+                object.selectable = activeToolRef.current === 'select';
+                object.evented = activeToolRef.current === 'select';
+                object.hasControls = true;
+                object.hasBorders = true;
+                object.setCoords();
+                canvas.add(object);
+                const zIndex = transactionState?.sourceZIndexes?.[index];
+                if (Number.isInteger(zIndex) && typeof canvas.moveObjectTo === 'function') {
+                  canvas.moveObjectTo(object, clamp(zIndex, 0, canvas.getObjects().length - 1));
+                }
+              });
+              remoteSelectionTransactionsRef.current.delete(transactionId);
+            } else {
+              removeSelectionTransactionObjects(canvas, transactionId);
+              remoteSelectionTransactionsRef.current.delete(transactionId);
+              window.setTimeout(() => syncFromServer(true), 40);
+            }
           }
         } finally {
           applyingRemoteRef.current = false;
@@ -3475,14 +3571,19 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     }
 
     const lockNow = Date.now();
+    const lockIds = [...new Set(resolved.flatMap(({ frame, object }) => (
+      object?.transientSelectionProxy && Array.isArray(object.selectionSourceIds)
+        ? object.selectionSourceIds.filter(Boolean).map(String)
+        : [frame.id]
+    )))];
     let lockUiChanged = false;
-    affectedIds.forEach((objectId) => {
+    lockIds.forEach((objectId) => {
       const existingLock = remoteLocksRef.current.get(objectId);
       const nextLock = {
         clientId: remoteClientId,
         name: message.name,
         color: message.color,
-        objectIds: affectedIds,
+        objectIds: lockIds,
         locked: true,
         expiresAt: lockNow + (phase === 'end' ? 1800 : LIVE_TRANSFORM_LOCK_TTL),
       };
@@ -5438,14 +5539,51 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
   const cursorOverlays = remoteCursors
     .map((cursor) => ({ ...cursor, position: projectScenePoint(cursor.x, cursor.y) }))
     .filter((cursor) => cursor.position);
-  const lockOverlays = remoteLocks
+  const latestLockByClient = new Map();
+  remoteLocks.forEach((lock) => {
+    const clientKey = String(lock?.clientId ?? '');
+    if (!clientKey || Number(lock?.expiresAt ?? 0) <= Date.now()) return;
+    const current = latestLockByClient.get(clientKey);
+    if (!current || Number(lock.expiresAt ?? 0) >= Number(current.expiresAt ?? 0)) {
+      latestLockByClient.set(clientKey, lock);
+    }
+  });
+  const lockOverlays = [...latestLockByClient.values()]
     .map((lock) => {
-      const object = fabricCanvasRef.current?.getObjects().find((item) => item.boardObjectId === lock.objectId);
-      if (!object) return null;
-      const center = object.getCenterPoint();
-      return { ...lock, position: projectScenePoint(center.x, center.y) };
+      const canvas = fabricCanvasRef.current;
+      if (!canvas) return null;
+      const ids = new Set([
+        ...(Array.isArray(lock.objectIds) ? lock.objectIds : []),
+        lock.objectId,
+      ].filter(Boolean).map(String));
+
+      // A multi-selection is represented remotely by one temporary Fabric group.
+      // Anchor one label to that group instead of rendering a label for every child.
+      const proxy = canvas.getObjects().find((object) => (
+        object.transientSelectionProxy
+        && (
+          String(object.creationClientId ?? '') === String(lock.clientId ?? '')
+          || (Array.isArray(object.selectionSourceIds)
+            && object.selectionSourceIds.some((id) => ids.has(String(id))))
+        )
+      ));
+      const objects = proxy
+        ? [proxy]
+        : canvas.getObjects().filter((object) => ids.has(String(object.boardObjectId ?? '')));
+      if (!objects.length) return null;
+
+      const bounds = objects.map((object) => object.getBoundingRect());
+      const left = Math.min(...bounds.map((rect) => Number(rect.left ?? 0)));
+      const top = Math.min(...bounds.map((rect) => Number(rect.top ?? 0)));
+      const right = Math.max(...bounds.map((rect) => Number(rect.left ?? 0) + Number(rect.width ?? 0)));
+      const bottom = Math.max(...bounds.map((rect) => Number(rect.top ?? 0) + Number(rect.height ?? 0)));
+      return {
+        ...lock,
+        overlayKey: String(lock.clientId),
+        position: projectScenePoint((left + right) / 2, (top + bottom) / 2),
+      };
     })
-    .filter(Boolean);
+    .filter((lock) => lock?.position);
 
   if (fatalError) {
     return <AccessMessage title="Ошибка доски">{fatalError}</AccessMessage>;
@@ -5538,7 +5676,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
           {lockOverlays.map((lock) => (
             <div
               className="remote-lock-label"
-              key={`${lock.clientId}:${lock.objectId}`}
+              key={lock.overlayKey}
               style={{ left: lock.position.left, top: lock.position.top, '--participant-color': lock.color }}
             >
               Редактирует {lock.name || 'участник'}

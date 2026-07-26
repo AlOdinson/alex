@@ -36,3 +36,6 @@ supabase/functions/ably-token/index.ts
 ```text
 https://alodinson.github.io/alex/
 ```
+
+## 0.7.2
+Одна метка для группового редактирования; выделение без изменений не записывается в Supabase.

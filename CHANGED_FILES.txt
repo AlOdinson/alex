@@ -1,9 +1,6 @@
-Alex Board 0.7.1 — low latency hotfix
+Alex Board 0.7.2
 
-Изменены относительно 0.7.0:
-- package.json
-- src/components/Board.jsx
-- src/lib/realtime.js
-- README.md
-- HOTFIX_0.7.1_RU.txt
-- CHANGED_FILES.txt
+src/components/Board.jsx
+package.json
+HOTFIX_0.7.2_RU.txt
+CHANGED_FILES.txt
