@@ -1,15 +1,9 @@
-Alex Board 0.7.0 — изменённые/новые файлы
+Alex Board 0.7.1 — low latency hotfix
 
-index.html
-package.json
-src/components/Board.jsx
-src/lib/realtime.js
-src/styles.css
-supabase/functions/ably-token/index.ts
-README.md
-UPDATE_INSTRUCTIONS.txt
-ABLY_20HZ_SETUP_RU.txt
-CHANGED_FILES.txt
-
-FIXES_0.7.0_RU.txt
-UPDATE_STEPS_0.7.0_RU.txt
+Изменены относительно 0.7.0:
+- package.json
+- src/components/Board.jsx
+- src/lib/realtime.js
+- README.md
+- HOTFIX_0.7.1_RU.txt
+- CHANGED_FILES.txt

@@ -12,7 +12,6 @@ import { supabase } from './supabase.js';
 const MAX_BROADCAST_CHARS = 48_000;
 const LOCK_TTL = 7000;
 const TRANSPORT_CONNECT_TIMEOUT = 10_000;
-const LIVE_BATCH_INTERVAL = 50;
 
 function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -95,11 +94,8 @@ export function connectBoardRealtime({
   let flushing = false;
   let activeWrites = 0;
   let actionSequence = 0;
-  let liveBatchTimer = null;
-  let liveBatchLastSentAt = 0;
-  let livePublishQueue = Promise.resolve();
-  let pendingLiveBatch = { cursor: null, transform: null, draws: [], view: null };
-  const lastLiveSignatures = new Map();
+  let lastCursorSignature = '';
+  let lastViewSignature = '';
 
   let transportKind = isSupabaseConfigured ? 'pending' : 'local';
   let transportReadyResolve;
@@ -262,105 +258,6 @@ export function connectBoardRealtime({
     }
 
     return 'unavailable';
-  };
-
-  const compactTransform = (transform) => ({
-    s: transform.sessionId,
-    o: Number(transform.sessionOrder ?? 0),
-    q: Number(transform.sequence ?? 0),
-    h: transform.phase ?? 'update',
-    m: transform.mode ?? 'objects',
-    f: Array.isArray(transform.objects) ? transform.objects.map((frame) => [
-      frame.id,
-      frame.matrix,
-      frame.creationSessionId ?? null,
-      frame.creationClientId ?? null,
-      frame.objectKind ?? null,
-      frame.objectType ?? null,
-      Number(frame.zIndex ?? -1),
-    ]) : [],
-    i: Array.isArray(transform.objectIds) ? transform.objectIds : [],
-    x: Array.isArray(transform.deltaMatrix) ? transform.deltaMatrix : null,
-    r: transform.transactionId ?? null,
-  });
-
-  const compactDraw = (draw) => {
-    const flatPoints = [];
-    (Array.isArray(draw.points) ? draw.points : []).forEach((point) => {
-      if (Array.isArray(point)) flatPoints.push(Number(point[0]), Number(point[1]));
-      else flatPoints.push(Number(point?.x), Number(point?.y));
-    });
-    return [
-      draw.sessionId,
-      Number(draw.sessionOrder ?? 0),
-      Number(draw.sequence ?? 0),
-      draw.phase ?? 'update',
-      draw.tool ?? 'pencil',
-      draw.objectId,
-      Number(draw.from ?? 0),
-      draw.replace ? 1 : 0,
-      flatPoints,
-      [draw.style?.stroke ?? '#111827', Number(draw.style?.width ?? 3), Number(draw.style?.opacity ?? 1)],
-    ];
-  };
-
-  const flushLiveBatch = () => {
-    window.clearTimeout(liveBatchTimer);
-    liveBatchTimer = null;
-    const batch = pendingLiveBatch;
-    if (!batch.cursor && !batch.transform && !batch.draws.length && !batch.view) {
-      return Promise.resolve('empty');
-    }
-    pendingLiveBatch = { cursor: null, transform: null, draws: [], view: null };
-    liveBatchLastSentAt = Date.now();
-    const payload = {
-      clientId,
-      n: name,
-      c: color,
-      p: permission,
-      ts: Date.now(),
-      u: batch.cursor ? [Number(batch.cursor.x), Number(batch.cursor.y)] : null,
-      t: batch.transform ? compactTransform(batch.transform) : null,
-      d: batch.draws.map(compactDraw),
-      v: batch.view
-        ? [Number(batch.view.centerX), Number(batch.view.centerY), Number(batch.view.zoom)]
-        : null,
-    };
-    livePublishQueue = livePublishQueue
-      .catch(() => undefined)
-      .then(() => publishRealtime('live-batch', payload));
-    return livePublishQueue;
-  };
-
-  const scheduleLiveFlush = (immediate = false) => {
-    if (immediate) return flushLiveBatch();
-    const elapsed = Date.now() - liveBatchLastSentAt;
-    if (!liveBatchTimer) {
-      // Even when the 50 ms boundary has already passed, wait until the end of the
-      // current JavaScript turn. Cursor + draw/transform produced by one pointer event
-      // can then share a single Ably publication.
-      liveBatchTimer = window.setTimeout(
-        flushLiveBatch,
-        elapsed >= LIVE_BATCH_INTERVAL ? 0 : LIVE_BATCH_INTERVAL - elapsed,
-      );
-    }
-    return Promise.resolve('queued');
-  };
-
-  const queueLatestLive = (kind, value, { immediate = false } = {}) => {
-    const signature = JSON.stringify(value);
-    if (lastLiveSignatures.get(kind) === signature) return Promise.resolve('duplicate');
-    lastLiveSignatures.set(kind, signature);
-    pendingLiveBatch[kind] = value;
-    return scheduleLiveFlush(immediate);
-  };
-
-  const queueDrawLive = (draw, { immediate = false } = {}) => {
-    const signature = `${draw.sessionId}:${draw.sequence}:${draw.phase}`;
-    if (lastLiveSignatures.get('draw') === signature) return Promise.resolve('duplicate');
-    lastLiveSignatures.set('draw', signature);
-    pendingLiveBatch.draws.push(draw);
-    return scheduleLiveFlush(immediate);
   };
 
   const broadcastCommittedAction = async (action, result) => {
@@ -692,9 +589,18 @@ export function connectBoardRealtime({
       if (!Number.isFinite(Number(cursor?.x)) || !Number.isFinite(Number(cursor?.y))) {
         return Promise.resolve('ignored');
       }
-      return queueLatestLive('cursor', {
-        x: Number(Number(cursor.x).toFixed(2)),
-        y: Number(Number(cursor.y).toFixed(2)),
+      const x = Number(Number(cursor.x).toFixed(2));
+      const y = Number(Number(cursor.y).toFixed(2));
+      const signature = `${x}:${y}`;
+      if (signature === lastCursorSignature) return Promise.resolve('duplicate');
+      lastCursorSignature = signature;
+      return publishRealtime('cursor', {
+        clientId,
+        name,
+        color,
+        x,
+        y,
+        timestamp: Date.now(),
       });
     },
     sendLock(objectIds, locked = true) {
@@ -716,8 +622,12 @@ export function connectBoardRealtime({
         && Array.isArray(transform.deltaMatrix)
         && transform.deltaMatrix.length === 6;
       if (!hasObjectFrames && !hasGroupFrame) return Promise.resolve('ignored');
-      return queueLatestLive('transform', transform, {
-        immediate: transform.phase === 'end',
+      return publishRealtime('transform', {
+        clientId,
+        name,
+        color,
+        ...transform,
+        timestamp: Date.now(),
       });
     },
     sendDraw(draw) {
@@ -725,8 +635,12 @@ export function connectBoardRealtime({
         return Promise.resolve('ignored');
       }
       if (draw.phase === 'update' && draw.points.length === 0) return Promise.resolve('ignored');
-      return queueDrawLive(draw, {
-        immediate: draw.phase === 'end' || draw.phase === 'cancel',
+      return publishRealtime('draw', {
+        clientId,
+        name,
+        color,
+        ...draw,
+        timestamp: Date.now(),
       });
     },
     sendPreview(records) {
@@ -760,7 +674,24 @@ export function connectBoardRealtime({
       return publishRealtime('selection-transaction', payload);
     },
     sendView(view) {
-      return queueLatestLive('view', view);
+      const centerX = Number(Number(view?.centerX).toFixed(3));
+      const centerY = Number(Number(view?.centerY).toFixed(3));
+      const zoom = Number(Number(view?.zoom).toFixed(4));
+      if (![centerX, centerY, zoom].every(Number.isFinite)) return Promise.resolve('ignored');
+      const signature = `${centerX}:${centerY}:${zoom}`;
+      if (signature === lastViewSignature) return Promise.resolve('duplicate');
+      lastViewSignature = signature;
+      return publishRealtime('view', {
+        clientId,
+        name,
+        color,
+        permission,
+        ...view,
+        centerX,
+        centerY,
+        zoom,
+        timestamp: Date.now(),
+      });
     },
     sendViewJump(view) {
       const payload = { clientId, name, color, permission, ...view, timestamp: Date.now() };
@@ -776,10 +707,6 @@ export function connectBoardRealtime({
     flushPending,
     async disconnect() {
       disconnected = true;
-      window.clearTimeout(liveBatchTimer);
-      liveBatchTimer = null;
-      pendingLiveBatch = { cursor: null, transform: null, draws: [], view: null };
-      await livePublishQueue.catch(() => undefined);
       await writeQueue.catch(() => undefined);
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);

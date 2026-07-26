@@ -3249,6 +3249,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     state.lastSignature = signature;
     state.sequence += 1;
     state.lastSentAt = Date.now();
+    const pointer = lastPointerSceneRef.current;
     realtime.sendTransform({
       sessionId: state.sessionId,
       sessionOrder: state.sessionOrder,
@@ -3256,6 +3257,9 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       phase,
       mode: 'objects',
       objects,
+      cursor: pointer && Number.isFinite(Number(pointer.x)) && Number.isFinite(Number(pointer.y))
+        ? [Number(Number(pointer.x).toFixed(2)), Number(Number(pointer.y).toFixed(2))]
+        : null,
     });
   }, [getLiveTransformObjects]);
 
@@ -3315,6 +3319,17 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     const sequence = Number(message?.sequence ?? 0);
     const phase = ['start', 'update', 'end'].includes(message?.phase) ? message.phase : 'update';
     const rawFrames = Array.isArray(message?.objects) ? message.objects : [];
+    const remotePointer = Array.isArray(message?.cursor) ? message.cursor : null;
+    if (remotePointer && Number.isFinite(Number(remotePointer[0])) && Number.isFinite(Number(remotePointer[1]))) {
+      handleRemoteCursor({
+        clientId: remoteClientId,
+        name: message?.name,
+        color: message?.color,
+        x: Number(remotePointer[0]),
+        y: Number(remotePointer[1]),
+        receivedAt: Date.now(),
+      });
+    }
     if (!canvas || !remoteClientId || !sessionId
       || !Number.isFinite(sessionOrder) || !Number.isFinite(sequence) || !rawFrames.length) return;
 
@@ -3478,7 +3493,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       setRemoteLocks([...remoteLocksRef.current.entries()].map(([objectId, lock]) => ({ objectId, ...lock })));
       applyObjectInteractivity();
     }
-  }, [applyObjectInteractivity, syncFromServer]);
+  }, [applyObjectInteractivity, handleRemoteCursor, syncFromServer]);
 
   const handleRemoteTransform = useCallback((message) => {
     const task = remoteTransformApplyQueueRef.current
@@ -3525,6 +3540,12 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
         Number(Number(point.x).toFixed(2)),
         Number(Number(point.y).toFixed(2)),
       ]),
+      cursor: (() => {
+        const pointer = lastPointerSceneRef.current ?? state.points[state.points.length - 1];
+        return pointer && Number.isFinite(Number(pointer.x)) && Number.isFinite(Number(pointer.y))
+          ? [Number(Number(pointer.x).toFixed(2)), Number(Number(pointer.y).toFixed(2))]
+          : null;
+      })(),
       style: state.style,
     });
     state.lastSentPointIndex = state.points.length;
@@ -3603,6 +3624,17 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
     const sequence = Number(message?.sequence ?? 0);
     const phase = ['start', 'update', 'end', 'cancel'].includes(message?.phase) ? message.phase : 'update';
     const toolName = message?.tool === 'line' ? 'line' : 'pencil';
+    const remotePointer = Array.isArray(message?.cursor) ? message.cursor : null;
+    if (remotePointer && Number.isFinite(Number(remotePointer[0])) && Number.isFinite(Number(remotePointer[1]))) {
+      handleRemoteCursor({
+        clientId: remoteClientId,
+        name: message?.name,
+        color: message?.color,
+        x: Number(remotePointer[0]),
+        y: Number(remotePointer[1]),
+        receivedAt: Date.now(),
+      });
+    }
     const incomingPoints = Array.isArray(message?.points)
       ? message.points.map((point) => {
         if (Array.isArray(point)) return { x: Number(point[0]), y: Number(point[1]) };
@@ -3713,7 +3745,7 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       canvas.renderOnAddRemove = previousRenderOnAddRemove;
       canvas.requestRenderAll();
     }
-  }, []);
+  }, [handleRemoteCursor]);
 
   const handleRemotePreview = useCallback((message) => {
     const canvas = fabricCanvasRef.current;
@@ -4702,7 +4734,9 @@ function BoardWorkspace({ boardId, boardKey, initialAccess, participantName, onA
       if (nativeEvent?.pointerId != null && rejectedPointerIdsRef.current.has(nativeEvent.pointerId)) return;
       const cursorScenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = cursorScenePoint;
-      if (!liveTransformSendRef.current.sessionId) sendCursorThrottled(cursorScenePoint);
+      if (!liveTransformSendRef.current.sessionId && !liveDrawSendRef.current.sessionId) {
+        sendCursorThrottled(cursorScenePoint);
+      }
       if (panningRef.current) {
         const point = event.viewportPoint ?? canvas.getViewportPoint(nativeEvent);
         const last = lastPanRef.current;
