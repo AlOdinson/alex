@@ -1052,7 +1052,6 @@ function BoardWorkspace({
   });
   const pendingPencilQueueRef = useRef([]);
   const activePencilRef = useRef(null);
-  const recentPencilSessionsRef = useRef([]);
   const remoteDrawSessionsRef = useRef(new Map());
   const remoteDeletedObjectIdsRef = useRef(new Map());
   const remotePreviewTokensRef = useRef(new Map());
@@ -5416,31 +5415,6 @@ function BoardWorkspace({
         // interrupted sibling carrying the same session, even when a buggy browser
         // assigned it a different boardObjectId.
         removeBoardObjectsByCreationSession(canvas, clientId, pendingPencil.sessionId, path);
-        recentPencilSessionsRef.current = recentPencilSessionsRef.current
-          .filter((session) => now - Number(session.committedAt ?? 0) < 900);
-        recentPencilSessionsRef.current.push({
-          sessionId: pendingPencil.sessionId,
-          objectId: pendingPencil.objectId,
-          firstPoint: pendingPencil.firstPoint,
-          committedAt: now,
-        });
-      } else if (!isPartialEraserPath && pathStartPoint) {
-        recentPencilSessionsRef.current = recentPencilSessionsRef.current
-          .filter((session) => now - Number(session.committedAt ?? 0) < 900);
-        const duplicateSession = recentPencilSessionsRef.current.find((session) => (
-          now - Number(session.committedAt ?? 0) <= 450
-          && session.firstPoint
-          && Math.hypot(
-            Number(session.firstPoint.x) - pathStartPoint.x,
-            Number(session.firstPoint.y) - pathStartPoint.y,
-          ) <= Math.max(12, 28 / Math.max(canvas.getZoom(), MIN_ZOOM))
-        ));
-        if (duplicateSession) {
-          applyingRemoteRef.current = true;
-          canvas.remove(path);
-          applyingRemoteRef.current = false;
-          return;
-        }
       }
       if (isPartialEraserPath) {
         path.set({
@@ -6337,6 +6311,9 @@ function BoardWorkspace({
 
     function handlePalmPointerDown(event) {
       if (event.pointerType === 'pen') {
+        // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
+        // a rejected palm id from an earlier contact.
+        rejectedPointerIdsRef.current.delete(event.pointerId);
         const interruptedTouchGesture = Boolean(touchGestureRef.current?.active);
         if (touchGestureRef.current) touchGestureRef.current = null;
         penInputRef.current = {
@@ -6358,11 +6335,12 @@ function BoardWorkspace({
       // A touch arriving while the Pencil is down is a palm/hand contact, not a second
       // drawing pointer. During the brief release grace period only a large contact is
       // rejected, so a deliberate small one-finger stroke can still start immediately.
-      if (event.pointerType === 'touch' && (
-        penInputRef.current.active
-        || (Date.now() < Number(penInputRef.current.suppressUntil ?? 0) && isLikelyPalmPointer(event))
-      )) {
-        rejectPointerEvent(event);
+      if (event.pointerType === 'touch') {
+        const likelyPalm = isLikelyPalmPointer(event);
+        const additionalContact = event.isPrimary === false;
+        const duringPencil = penInputRef.current.active && (likelyPalm || additionalContact);
+        const duringGrace = Date.now() < Number(penInputRef.current.suppressUntil ?? 0) && likelyPalm;
+        if (duringPencil || duringGrace) rejectPointerEvent(event);
       }
     }
 
@@ -6591,9 +6569,13 @@ function BoardWorkspace({
     function shouldSuppressTouchEvent(event, { ending = false } = {}) {
       const now = Date.now();
       if (penInputRef.current.active) {
+        // IMPORTANT: do not call preventDefault() for the TouchEvent while Pencil is
+        // active. On iPadOS Safari the Pencil can be represented in the same touch
+        // stream, so cancelling that event cancels Fabric's Pencil stroke as well.
+        // Palm pointer events are already rejected separately by handlePalmPointerDown.
+        // Here we only keep the gesture recognizer asleep.
         suppressTouchContacts(event.touches);
         suppressTouchContacts(event.changedTouches);
-        rejectTouchEvent(event);
         if (ending) releaseEndedSuppressedTouches(event);
         return true;
       }
@@ -6605,7 +6587,8 @@ function BoardWorkspace({
       }
 
       if (touchEventHasSuppressedContact(event)) {
-        rejectTouchEvent(event);
+        // As above, suppress only our own two-finger recognizer. Do not cancel the
+        // browser touch stream because it may still contain the Pencil contact.
         if (ending) releaseEndedSuppressedTouches(event);
         return true;
       }
@@ -6920,7 +6903,6 @@ function BoardWorkspace({
       pendingPencilQueueRef.current.forEach((pending) => window.clearTimeout(pending.cancelTimer));
       pendingPencilQueueRef.current = [];
       activePencilRef.current = null;
-      recentPencilSessionsRef.current = [];
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
       touchGestureRef.current = null;

@@ -1,0 +1,8 @@
+Alex Board 0.9.9 — технический hotfix Pencil
+
+1. В shouldSuppressTouchEvent при активном Pencil больше нет preventDefault/stopPropagation для всего TouchEvent. Обработчик только не допускает запуск собственного двухпальцевого recognizer.
+2. Palm pointer по-прежнему блокируется до Fabric, но только если это дополнительный pointer или контакт имеет крупную площадь.
+3. При новом pointerdown типа pen удаляется возможная старая rejected-запись с тем же pointerId.
+4. Удалена геометрическая эвристика дубликатов по близости стартовых точек. На малом масштабе она могла удалять нормальные части букв и цифр.
+5. Дедупликация осталась строгой: удаляются только preview/фрагменты с одинаковыми creationClientId и creationSessionId.
+6. Сервер, IndexedDB, Ably, Undo/Redo и board_objects не изменены. SQL не требуется.
