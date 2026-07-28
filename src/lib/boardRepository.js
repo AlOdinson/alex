@@ -3,7 +3,7 @@ import { isSupabaseConfigured, supabase } from './supabase.js';
 import { copySerializedBoardImages } from './imageStorage.js';
 import {
   clearBoardCache,
-  confirmPendingAction,
+  confirmPendingActions,
   getCachedSnapshot,
   getConfirmedActionsAfter,
   getPendingActions,
@@ -76,7 +76,7 @@ async function applyLargeBoardAction(boardId, keyHash, action) {
     if (!data) throw new Error('Сервер отклонил часть большой операции');
   }
 
-  const { data, error } = await supabase.rpc('commit_board_import_v6', {
+  let { data, error } = await supabase.rpc('commit_board_import_v7', {
     p_id: boardId,
     p_key_hash: keyHash,
     p_import_id: importId,
@@ -86,8 +86,36 @@ async function applyLargeBoardAction(boardId, keyHash, action) {
     p_background: action.background,
     p_client_revision: Number(action.knownRevision ?? 0),
   });
+  if (error && /function .* does not exist/i.test(error.message ?? '')) {
+    ({ data, error } = await supabase.rpc('commit_board_import_v6', {
+      p_id: boardId,
+      p_key_hash: keyHash,
+      p_import_id: importId,
+      p_chunk_count: chunks.length,
+      p_action_id: action.actionId,
+      p_client_id: action.clientId,
+      p_background: action.background,
+      p_client_revision: Number(action.knownRevision ?? 0),
+    }));
+  }
   if (error) throw error;
   return data;
+}
+
+function normalizeActionResult(data, { fallbackOps = [], fallbackBackground = null, legacy = false } = {}) {
+  if (!data) throw new Error('Сервер отклонил изменение доски');
+  return {
+    revision: Number(data.revision ?? 0),
+    needsSync: Boolean(data.needs_sync) || legacy,
+    updatedAt: data.updated_at ?? null,
+    alreadyApplied: Boolean(data.already_applied),
+    changed: data.changed !== false,
+    appliedOps: !legacy && Array.isArray(data.applied_ops) ? data.applied_ops : [],
+    appliedBackground: !legacy ? (data.applied_background ?? fallbackBackground ?? null) : null,
+    rejectedObjectIds: Array.isArray(data.rejected_object_ids)
+      ? data.rejected_object_ids.map(String)
+      : [],
+  };
 }
 
 async function rebuildLocalSnapshot(boardId, fallbackSnapshot, fallbackRevision = 0) {
@@ -121,7 +149,25 @@ export function applyOpsToSnapshot(sourceSnapshot, ops, background = null) {
   if (!Array.isArray(snapshot.canvas.objects)) snapshot.canvas.objects = [];
 
   const objects = snapshot.canvas.objects;
-  for (const op of Array.isArray(ops) ? ops : []) {
+  const sourceOps = Array.isArray(ops) ? ops : [];
+  const isExplicitReorder = (op) => op?.type === 'upsert'
+    && Boolean(op.reorder || op.restore)
+    && op.object?.boardObjectId;
+  const orderedOps = [
+    ...sourceOps.filter((op) => !isExplicitReorder(op)),
+    ...sourceOps.filter(isExplicitReorder).sort((a, b) => (
+      Number(a.zIndex ?? Number.MAX_SAFE_INTEGER) - Number(b.zIndex ?? Number.MAX_SAFE_INTEGER)
+    )),
+  ];
+  const reorderIds = new Set(orderedOps.filter(isExplicitReorder)
+    .map((op) => String(op.object.boardObjectId)));
+  if (reorderIds.size) {
+    for (let index = objects.length - 1; index >= 0; index -= 1) {
+      if (reorderIds.has(String(objects[index]?.boardObjectId ?? ''))) objects.splice(index, 1);
+    }
+  }
+
+  for (const op of orderedOps) {
     if (op?.type === 'delete' && op.id) {
       const index = objects.findIndex((object) => object?.boardObjectId === op.id);
       if (index >= 0) objects.splice(index, 1);
@@ -132,7 +178,9 @@ export function applyOpsToSnapshot(sourceSnapshot, ops, background = null) {
       (object) => object?.boardObjectId === op.object.boardObjectId,
     );
     if (existingIndex >= 0) objects.splice(existingIndex, 1);
-    const requestedIndex = Number.isInteger(op.zIndex) ? op.zIndex : objects.length;
+    const requestedIndex = op.preserveOrder && existingIndex >= 0
+      ? existingIndex
+      : (Number.isInteger(op.zIndex) ? op.zIndex : objects.length);
     const targetIndex = Math.max(0, Math.min(objects.length, requestedIndex));
     objects.splice(targetIndex, 0, op.object);
   }
@@ -204,10 +252,16 @@ export async function getBoardAccess(boardId, key) {
   if (isSupabaseConfigured) {
     let data;
     let error;
-    ({ data, error } = await supabase.rpc('get_board_access_v5', {
+    ({ data, error } = await supabase.rpc('get_board_access_v7', {
       p_id: boardId,
       p_key_hash: keyHash,
     }));
+    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+      ({ data, error } = await supabase.rpc('get_board_access_v5', {
+        p_id: boardId,
+        p_key_hash: keyHash,
+      }));
+    }
     if (error && /function .* does not exist/i.test(error.message ?? '')) {
       ({ data, error } = await supabase.rpc('get_board_access_v4', {
         p_id: boardId,
@@ -232,7 +286,7 @@ export async function getBoardAccess(boardId, key) {
       realtimeKey: row.realtime_key,
       snapshot: row.snapshot,
       revision: Number(row.revision ?? 0),
-      snapshotRevision: Number(row.revision ?? 0),
+      snapshotRevision: Number(row.snapshot_revision ?? row.revision ?? 0),
       updatedAt: row.updated_at,
       createdAt: row.created_at ?? null,
       lastLessonAt: row.last_lesson_at ?? row.updated_at ?? null,
@@ -274,10 +328,16 @@ export async function getBoardAccess(boardId, key) {
 export async function getBoardSyncState(boardId, key) {
   const keyHash = await sha256(key);
   if (isSupabaseConfigured) {
-    const { data, error } = await supabase.rpc('get_board_sync_state_v4', {
+    let { data, error } = await supabase.rpc('get_board_sync_state_v7', {
       p_id: boardId,
       p_key_hash: keyHash,
     });
+    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+      ({ data, error } = await supabase.rpc('get_board_sync_state_v4', {
+        p_id: boardId,
+        p_key_hash: keyHash,
+      }));
+    }
     if (error) {
       if (/function .* does not exist/i.test(error.message ?? '')) {
         const fallback = await getBoardRevision(boardId, key);
@@ -366,10 +426,16 @@ export async function getBoardChanges(boardId, key, sinceRevision, limit = 500) 
 export async function getBoardRecovery(boardId, key) {
   if (!isSupabaseConfigured) return null;
   const keyHash = await sha256(key);
-  const { data, error } = await supabase.rpc('get_board_recovery_v4', {
+  let { data, error } = await supabase.rpc('get_board_recovery_v7', {
     p_id: boardId,
     p_key_hash: keyHash,
   });
+  if (error && /function .* does not exist/i.test(error.message ?? '')) {
+    ({ data, error } = await supabase.rpc('get_board_recovery_v4', {
+      p_id: boardId,
+      p_key_hash: keyHash,
+    }));
+  }
   if (error) {
     if (/function .* does not exist/i.test(error.message ?? '')) return null;
     throw error;
@@ -494,24 +560,19 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
     // idempotently committed first; only then is the server snapshot duplicated.
     const pending = await getPendingActions(boardId);
     let knownRevision = Number((await getBoardRevision(boardId, ownerKey))?.revision ?? 0);
-    for (const action of pending) {
+    for (let offset = 0; offset < pending.length; offset += 32) {
+      const actions = pending.slice(offset, offset + 32);
       // eslint-disable-next-line no-await-in-loop
-      const result = await applyBoardAction(boardId, ownerKey, {
-        actionId: action.actionId,
-        clientId: action.clientId ?? 'copy-flush',
-        ops: action.ops ?? [],
-        background: action.background ?? null,
-        knownRevision,
-      });
-      if (Array.isArray(result?.rejectedObjectIds) && result.rejectedObjectIds.length) {
+      const results = await applyBoardActionBatch(boardId, ownerKey, actions, knownRevision);
+      if (results.some((result) => Array.isArray(result?.rejectedObjectIds) && result.rejectedObjectIds.length)) {
         throw new Error('Одно из ожидающих действий конфликтует с сервером. Откройте доску и дождитесь восстановления.');
       }
       // eslint-disable-next-line no-await-in-loop
-      await confirmPendingAction(action, result);
-      knownRevision = Number(result?.revision ?? knownRevision);
+      await confirmPendingActions(actions.map((action, index) => ({ action, result: results[index] })));
+      knownRevision = Math.max(knownRevision, ...results.map((result) => Number(result?.revision ?? 0)));
     }
 
-    const sourceAccess = await getBoardAccess(boardId, ownerKey);
+    const sourceAccess = await getBoardRecovery(boardId, ownerKey);
     if (!sourceAccess?.snapshot) throw new Error('Не удалось получить актуальный урок для копирования');
 
     // Copy image assets before creating the board, then update only top-level objects
@@ -527,7 +588,7 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
         : []
     ));
 
-    const { data, error } = await supabase.rpc('duplicate_board_v4', {
+    const duplicateArgs = {
       p_source_id: boardId,
       p_source_owner_key_hash: sourceOwnerHash,
       p_new_id: newBoardId,
@@ -535,7 +596,11 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
       p_new_owner_key_hash: newOwnerHash,
       p_new_share_key_hash: newShareHash,
       p_new_realtime_key: newRealtimeKey,
-    });
+    };
+    let { data, error } = await supabase.rpc('duplicate_board_v7', duplicateArgs);
+    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+      ({ data, error } = await supabase.rpc('duplicate_board_v4', duplicateArgs));
+    }
     if (error) throw error;
     if (!data) throw new Error('Не удалось скопировать доску');
 
@@ -593,6 +658,77 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
   return { boardId: newBoardId, ownerKey: newOwnerKey, shareKey: newShareKey };
 }
 
+export async function applyBoardActionBatch(boardId, key, actions, knownRevision = 0) {
+  const safeActions = (Array.isArray(actions) ? actions : [])
+    .filter((action) => action?.actionId)
+    .map((action) => ({
+      actionId: action.actionId,
+      clientId: action.clientId ?? '',
+      ops: Array.isArray(action.ops) ? action.ops : [],
+      background: action.background ?? null,
+    }));
+  if (!safeActions.length) return [];
+  if (safeActions.length === 1 || safeActions.some((action) => serializedSize(action.ops) > BULK_ACTION_THRESHOLD)) {
+    const results = [];
+    let revision = Number(knownRevision ?? 0);
+    for (const action of safeActions) {
+      // Large logical actions remain individually atomic and use the staged-import path.
+      // eslint-disable-next-line no-await-in-loop
+      const result = await applyBoardAction(boardId, key, { ...action, knownRevision: revision });
+      results.push({ actionId: action.actionId, ...result });
+      revision = Math.max(revision, Number(result?.revision ?? revision));
+    }
+    return results;
+  }
+
+  if (isSupabaseConfigured) {
+    const keyHash = await sha256(key);
+    const { data, error } = await supabase.rpc('apply_board_actions_batch_v7', {
+      p_id: boardId,
+      p_key_hash: keyHash,
+      p_actions: safeActions.map((action) => ({
+        action_id: action.actionId,
+        client_id: action.clientId,
+        ops: action.ops,
+        background: action.background,
+      })),
+      p_client_revision: Number(knownRevision ?? 0),
+    });
+    if (error) {
+      if (/function .* does not exist/i.test(error.message ?? '')) {
+        const results = [];
+        let revision = Number(knownRevision ?? 0);
+        for (const action of safeActions) {
+          // Compatibility with a server that has not received the 0.9.7 SQL yet.
+          // eslint-disable-next-line no-await-in-loop
+          const result = await applyBoardAction(boardId, key, { ...action, knownRevision: revision });
+          results.push({ actionId: action.actionId, ...result });
+          revision = Math.max(revision, Number(result?.revision ?? revision));
+        }
+        return results;
+      }
+      throw error;
+    }
+    return (Array.isArray(data) ? data : []).map((item, index) => ({
+      actionId: item?.action_id ?? safeActions[index]?.actionId,
+      ...normalizeActionResult(item, {
+        fallbackOps: safeActions[index]?.ops ?? [],
+        fallbackBackground: safeActions[index]?.background ?? null,
+      }),
+    }));
+  }
+
+  const results = [];
+  let revision = Number(knownRevision ?? 0);
+  for (const action of safeActions) {
+    // eslint-disable-next-line no-await-in-loop
+    const result = await applyBoardAction(boardId, key, { ...action, knownRevision: revision });
+    results.push({ actionId: action.actionId, ...result });
+    revision = Math.max(revision, Number(result?.revision ?? revision));
+  }
+  return results;
+}
+
 export async function applyBoardAction(
   boardId,
   key,
@@ -613,7 +749,7 @@ export async function applyBoardAction(
     };
     let data;
     let error;
-    let usedV5 = true;
+    let usedModern = true;
 
     if (serializedSize(safeOps) > BULK_ACTION_THRESHOLD) {
       try {
@@ -626,14 +762,17 @@ export async function applyBoardAction(
         });
       } catch (bulkError) {
         if (/function .* does not exist/i.test(bulkError?.message ?? '')) {
-          throw new Error('Для большой вставки сначала выполните supabase/collaboration_upgrade_0.9.6.sql');
+          throw new Error('Для большой вставки сначала выполните supabase/collaboration_upgrade_0.9.7.sql');
         }
         throw bulkError;
       }
     } else {
-      ({ data, error } = await supabase.rpc('apply_board_action_v5', args));
+      ({ data, error } = await supabase.rpc('apply_board_action_v7', args));
       if (error && /function .* does not exist/i.test(error.message ?? '')) {
-        usedV5 = false;
+        ({ data, error } = await supabase.rpc('apply_board_action_v5', args));
+      }
+      if (error && /function .* does not exist/i.test(error.message ?? '')) {
+        usedModern = false;
         ({ data, error } = await supabase.rpc('apply_board_action_v4', args));
       }
       if (error) {
@@ -644,19 +783,11 @@ export async function applyBoardAction(
       }
     }
 
-    if (!data) throw new Error('Сервер отклонил изменение доски');
-    return {
-      revision: Number(data.revision ?? 0),
-      needsSync: Boolean(data.needs_sync) || !usedV5,
-      updatedAt: data.updated_at ?? null,
-      alreadyApplied: Boolean(data.already_applied),
-      changed: data.changed !== false,
-      appliedOps: usedV5 && Array.isArray(data.applied_ops) ? data.applied_ops : [],
-      appliedBackground: usedV5 ? (data.applied_background ?? background ?? null) : null,
-      rejectedObjectIds: Array.isArray(data.rejected_object_ids)
-        ? data.rejected_object_ids.map(String)
-        : [],
-    };
+    return normalizeActionResult(data, {
+      fallbackOps: safeOps,
+      fallbackBackground: background,
+      legacy: !usedModern,
+    });
   }
 
   const board = getLocalBoard(boardId);
