@@ -1,4 +1,4 @@
-ТЕКУЩЕЕ ОБНОВЛЕНИЕ: ALEX BOARD 0.9.6
+ALEX BOARD 0.9.6 — ИЗМЕНЁННЫЕ И ДОБАВЛЕННЫЕ ФАЙЛЫ
 
 src/components/Board.jsx
 src/components/Home.jsx

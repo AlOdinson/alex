@@ -34,6 +34,7 @@ export default function Home() {
   const [error, setError] = useState('');
   const [boards, setBoards] = useState([]);
   const [loadingBoards, setLoadingBoards] = useState(true);
+  const [duplicatingBoardId, setDuplicatingBoardId] = useState(null);
 
   const refreshBoards = useCallback(async () => {
     setLoadingBoards(true);
@@ -96,8 +97,11 @@ export default function Home() {
   }
 
   async function handleDuplicate(board) {
+    if (duplicatingBoardId) return;
     const nextTitle = window.prompt('Название копии', `${board.title ?? 'Доска'} — копия`);
     if (nextTitle === null) return;
+    setDuplicatingBoardId(board.boardId);
+    setError('');
     try {
       const created = await duplicateBoard(board.boardId, board.ownerKey, nextTitle);
       rememberOwnedBoard({
@@ -109,6 +113,8 @@ export default function Home() {
       await refreshBoards();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось скопировать доску');
+    } finally {
+      setDuplicatingBoardId(null);
     }
   }
 
@@ -204,8 +210,13 @@ export default function Home() {
                 <button type="button" className="secondary-button compact-button" onClick={() => handleRename(board)}>
                   Переименовать
                 </button>
-                <button type="button" className="secondary-button compact-button" onClick={() => handleDuplicate(board)}>
-                  Копировать
+                <button
+                  type="button"
+                  className="secondary-button compact-button"
+                  onClick={() => handleDuplicate(board)}
+                  disabled={Boolean(duplicatingBoardId)}
+                >
+                  {duplicatingBoardId === board.boardId ? 'Копирую…' : 'Копировать'}
                 </button>
                 <button type="button" className="danger-button compact-button" onClick={() => handleDelete(board)}>
                   Удалить

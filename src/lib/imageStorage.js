@@ -264,3 +264,71 @@ export async function preloadSerializedImages(value) {
   });
   await Promise.all(workers);
 }
+
+function collectSerializedImageNodes(value, results) {
+  if (!value || typeof value !== 'object') return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectSerializedImageNodes(item, results));
+    return;
+  }
+  const type = String(value.type ?? '').toLowerCase();
+  if ((type === 'image' || value.objectKind === 'image') && typeof value.src === 'string') {
+    results.push(value);
+  }
+  Object.values(value).forEach((item) => collectSerializedImageNodes(item, results));
+}
+
+/**
+ * Give cross-board pasted images their own Storage files. This prevents a pasted
+ * lesson from depending on the source board's asset folder forever.
+ */
+export async function copySerializedBoardImages(value, targetBoardId) {
+  if (!isSupabaseConfigured) return value;
+  const sourceNodes = [];
+  collectSerializedImageNodes(value, sourceNodes);
+  if (!sourceNodes.length) return value;
+
+  const clone = typeof structuredClone === 'function'
+    ? structuredClone(value)
+    : JSON.parse(JSON.stringify(value));
+  const nodes = [];
+  collectSerializedImageNodes(clone, nodes);
+  const sourceMap = new Map();
+  for (const node of nodes) {
+    const source = String(node.src ?? '');
+    if (!source || sourceMap.has(source)) continue;
+    sourceMap.set(source, null);
+  }
+
+  const sources = [...sourceMap.keys()];
+  const queue = [...sources];
+  const workers = Array.from({ length: Math.min(2, queue.length) }, async () => {
+    while (queue.length) {
+      const source = queue.shift();
+      if (!source) continue;
+      const response = await fetch(source, { mode: 'cors', cache: 'force-cache' });
+      if (!response.ok) throw new Error(`Не удалось скопировать изображение (${response.status})`);
+      const blob = await response.blob();
+      const extension = blob.type === 'image/png'
+        ? 'png'
+        : blob.type === 'image/webp'
+          ? 'webp'
+          : 'jpg';
+      const file = new File([blob], `copied-image.${extension}`, {
+        type: blob.type || `image/${extension === 'jpg' ? 'jpeg' : extension}`,
+      });
+      // eslint-disable-next-line no-await-in-loop
+      const stored = await storeBoardImage(targetBoardId, file);
+      sourceMap.set(source, stored);
+    }
+  });
+  await Promise.all(workers);
+
+  nodes.forEach((node) => {
+    const stored = sourceMap.get(String(node.src ?? ''));
+    if (!stored) return;
+    node.src = stored.url;
+    node.storagePath = stored.storagePath;
+  });
+  return clone;
+}

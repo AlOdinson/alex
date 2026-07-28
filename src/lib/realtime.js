@@ -1,5 +1,6 @@
 import { applyBoardAction, isSupabaseConfigured } from './boardRepository.js';
 import {
+  confirmPendingAction,
   enqueuePendingAction,
   getPendingActions,
   removePendingAction,
@@ -12,8 +13,6 @@ const MAX_BROADCAST_CHARS = 48_000;
 const LOCK_TTL = 7000;
 const TRANSPORT_CONNECT_TIMEOUT = 10_000;
 const PERSIST_BATCH_DELAY = 24;
-const MAX_PERSIST_BATCH_ACTIONS = 120;
-const MAX_PERSIST_BATCH_CHARS = 650_000;
 const SOLO_REALTIME_GRACE_MS = 3000;
 
 function wait(milliseconds) {
@@ -37,68 +36,21 @@ function canBroadcastOperations(ops) {
   }
 }
 
-function actionSize(action) {
-  try {
-    return JSON.stringify({ ops: action?.ops ?? [], background: action?.background ?? null }).length;
-  } catch {
-    return MAX_PERSIST_BATCH_CHARS;
-  }
-}
 
 function selectPendingBatch(actions) {
-  const selected = [];
-  let size = 2;
-  for (const action of actions) {
-    const nextSize = actionSize(action) + 1;
-    if (selected.length
-      && (selected.length >= MAX_PERSIST_BATCH_ACTIONS || size + nextSize > MAX_PERSIST_BATCH_CHARS)) {
-      break;
-    }
-    selected.push(action);
-    size += nextSize;
-  }
-  return selected;
-}
-
-function compactPendingOps(actions) {
-  const latestByObjectId = new Map();
-  const passthrough = [];
-  let operationIndex = 0;
-
-  actions.forEach((action) => {
-    (Array.isArray(action?.ops) ? action.ops : []).forEach((op) => {
-      const id = String(op?.type === 'delete' ? (op?.id ?? '') : (op?.object?.boardObjectId ?? ''));
-      if ((op?.type === 'delete' || op?.type === 'upsert') && id) {
-        latestByObjectId.set(id, { op, index: operationIndex });
-      } else {
-        passthrough.push({ op, index: operationIndex });
-      }
-      operationIndex += 1;
-    });
-  });
-
-  return [...passthrough, ...latestByObjectId.values()]
-    .sort((left, right) => left.index - right.index)
-    .map((entry) => entry.op);
+  // 0.9.5 keeps every logical action atomic. A group paste, Undo/Redo or clear-board
+  // operation is already represented by one action containing many ops, so different
+  // actions must never be compacted into one server revision.
+  return actions.length ? [actions[0]] : [];
 }
 
 function combinePendingActions(actions, clientId, knownRevision) {
-  const firstId = String(actions[0]?.actionId ?? 'first');
-  const lastId = String(actions[actions.length - 1]?.actionId ?? firstId);
-  let background = null;
-  actions.forEach((action) => {
-    if (action?.background != null) background = action.background;
-  });
-  const ops = compactPendingOps(actions);
+  const action = actions[0];
   return {
-    actionId: `batch:${firstId}:${lastId}:${actions.length}`,
-    boardId: actions[0]?.boardId,
+    ...action,
     clientId,
-    ops,
-    background,
-    knownRevision: Number(knownRevision ?? 0),
-    createdAt: Number(actions[0]?.createdAt ?? Date.now() * 1000),
-    sourceActionIds: actions.map((action) => action.actionId),
+    knownRevision: Number(knownRevision ?? action?.knownRevision ?? 0),
+    sourceActionIds: action?.actionId ? [action.actionId] : [],
   };
 }
 
@@ -141,6 +93,7 @@ export function connectBoardRealtime({
   onUsers,
   onMode,
   onSettings,
+  onBackgroundLive,
   onSyncRequired,
   onCommit,
   onPendingChange,
@@ -150,6 +103,7 @@ export function connectBoardRealtime({
   onTransform,
   onDraw,
   onPreview,
+  onObjectLive,
   onDeletePreview,
   onSelectionTransaction,
   onView,
@@ -161,6 +115,7 @@ export function connectBoardRealtime({
   const color = participantColor(clientId);
   let disconnected = false;
   let drainingWrites = false;
+  let writesPaused = false;
   let drainPromise = Promise.resolve();
   let writeFlushTimer = null;
   let actionSequence = 0;
@@ -363,6 +318,7 @@ export function connectBoardRealtime({
         Boolean(payload.needsSync),
       );
     }
+    if (event === 'background-live') onBackgroundLive?.(payload.background);
     if (event === 'sync') onSyncRequired?.(Number(payload.revision ?? 0));
     if (event === 'cursor') onCursor?.({ ...payload, receivedAt: Date.now() });
     if (event === 'lock') {
@@ -371,6 +327,7 @@ export function connectBoardRealtime({
     if (event === 'transform') onTransform?.({ ...payload, receivedAt: Date.now() });
     if (event === 'draw') onDraw?.({ ...payload, receivedAt: Date.now() });
     if (event === 'preview') onPreview?.({ ...payload, receivedAt: Date.now() });
+    if (event === 'object-live') onObjectLive?.({ ...payload, receivedAt: Date.now() });
     if (event === 'delete-preview') onDeletePreview?.({ ...payload, receivedAt: Date.now() });
     if (event === 'selection-transaction') {
       onSelectionTransaction?.({ ...payload, receivedAt: Date.now() });
@@ -412,14 +369,16 @@ export function connectBoardRealtime({
   };
 
   const broadcastCommittedAction = async (action, result) => {
-    const includeOps = canBroadcastOperations(action.ops);
+    const effectiveOps = Array.isArray(result?.appliedOps) ? result.appliedOps : action.ops;
+    const effectiveBackground = result?.appliedBackground ?? action.background ?? null;
+    const includeOps = canBroadcastOperations(effectiveOps);
     const payload = {
       clientId,
       actionId: action.actionId,
       revision: result.revision,
       needsSync: result.needsSync || !includeOps,
-      ops: includeOps ? action.ops : [],
-      background: action.background ?? null,
+      ops: includeOps ? effectiveOps : [],
+      background: effectiveBackground,
     };
 
     try {
@@ -442,7 +401,7 @@ export function connectBoardRealtime({
   };
 
   const commitActionBatch = async (actions, { announceSaving = true } = {}) => {
-    if (disconnected || !actions.length) return null;
+    if (disconnected || writesPaused || !actions.length) return null;
     if (announceSaving) onStatus?.('SAVING');
     const batchAction = combinePendingActions(
       actions,
@@ -457,14 +416,17 @@ export function connectBoardRealtime({
         background: batchAction.background,
         knownRevision: Number(getKnownRevision?.() ?? batchAction.knownRevision ?? 0),
       }));
+      const rejected = Array.isArray(result?.rejectedObjectIds)
+        && result.rejectedObjectIds.length > 0;
       await Promise.all(actions.map(async (action) => {
         inMemoryPending.delete(action.actionId);
-        await removePendingAction(action.actionId);
+        if (rejected) await removePendingAction(action.actionId);
+        else await confirmPendingAction(action, result);
       }));
       onCommit?.(result, batchAction);
       await broadcastCommittedAction(batchAction, result);
-      onStatus?.('ACTION_CONFIRMED');
-      if (result.needsSync) onSyncRequired?.(result.revision);
+      onStatus?.(rejected ? 'ACTION_REJECTED' : 'ACTION_CONFIRMED');
+      if (result.needsSync && !rejected) onSyncRequired?.(result.revision);
       resolveActionWaiters(actions, result);
       return result;
     } catch (error) {
@@ -492,7 +454,7 @@ export function connectBoardRealtime({
       let batchFailed = false;
       let latestRevision = Number(getKnownRevision?.() ?? 0);
       try {
-        while (!disconnected) {
+        while (!disconnected && !writesPaused) {
           const pending = await getAllPendingActions();
           if (!pending.length) break;
           const batch = selectPendingBatch(pending);
@@ -513,7 +475,7 @@ export function connectBoardRealtime({
         drainingWrites = false;
         await updatePendingCount();
         const remaining = await getAllPendingActions();
-        if (!disconnected && remaining.length && navigator.onLine !== false) {
+        if (!disconnected && !writesPaused && remaining.length && navigator.onLine !== false) {
           window.clearTimeout(writeFlushTimer);
           writeFlushTimer = window.setTimeout(
             () => drainPendingWrites(),
@@ -529,11 +491,12 @@ export function connectBoardRealtime({
   const flushPending = async () => {
     window.clearTimeout(writeFlushTimer);
     writeFlushTimer = null;
+    if (writesPaused) return null;
     return drainPendingWrites({ recovering: true });
   };
 
   const scheduleWriteDrain = () => {
-    if (disconnected || drainingWrites || writeFlushTimer) return;
+    if (disconnected || writesPaused || drainingWrites || writeFlushTimer) return;
     writeFlushTimer = window.setTimeout(() => {
       writeFlushTimer = null;
       drainPendingWrites();
@@ -786,7 +749,13 @@ export function connectBoardRealtime({
       return publishRealtime('mode', { clientId, mode });
     },
     sendSettings(settings) {
-      return enqueueAction([], settings?.background ?? null);
+      const background = settings?.background ?? null;
+      publishRealtime('background-live', {
+        clientId,
+        background,
+        timestamp: Date.now(),
+      }).catch?.(() => undefined);
+      return enqueueAction([], background);
     },
     sendCursor(cursor) {
       if (!Number.isFinite(Number(cursor?.x)) || !Number.isFinite(Number(cursor?.y))) {
@@ -866,6 +835,21 @@ export function connectBoardRealtime({
       };
       return publishRealtime('preview', payload);
     },
+    sendObjectLive(record) {
+      if (!record?.object?.boardObjectId) return Promise.resolve('ignored');
+      try {
+        if (JSON.stringify(record).length > MAX_BROADCAST_CHARS) return Promise.resolve('too-large');
+      } catch {
+        return Promise.resolve('invalid');
+      }
+      return publishRealtime('object-live', {
+        clientId,
+        name,
+        color,
+        record,
+        timestamp: Date.now(),
+      });
+    },
     sendDeletePreview(ids) {
       const safeIds = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean).map(String))];
       if (!safeIds.length) return Promise.resolve('ignored');
@@ -942,6 +926,19 @@ export function connectBoardRealtime({
       });
     },
     flushPending,
+    getPendingActions() {
+      return getAllPendingActions();
+    },
+    pauseWrites() {
+      writesPaused = true;
+      window.clearTimeout(writeFlushTimer);
+      writeFlushTimer = null;
+    },
+    resumeWrites() {
+      if (disconnected) return;
+      writesPaused = false;
+      scheduleWriteDrain();
+    },
     async disconnect() {
       disconnected = true;
       window.clearTimeout(writeFlushTimer);

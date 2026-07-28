@@ -1,0 +1,12 @@
+ALEX BOARD 0.9.5 — ИЗМЕНЁННЫЕ И ДОБАВЛЕННЫЕ ФАЙЛЫ
+
+src/components/Board.jsx
+src/lib/boardRepository.js
+src/lib/realtime.js
+supabase/collaboration_upgrade_0.9.5.sql
+README.md
+package.json
+INTEGRATION_0.9.5_RU.txt
+UPDATE_INSTRUCTIONS_0.9.5_RU.txt
+CHANGED_FILES_0.9.5.txt
+CHANGED_FILES.txt
