@@ -70,6 +70,10 @@ const INSURANCE_SYNC_PAGE_SIZE = 500;
 const INTEGRITY_CHECK_INTERVAL = 5 * 60_000;
 const LOCAL_LOCK_REFRESH_INTERVAL = 2_500;
 const IMAGE_RETRY_INTERVAL = 5_000;
+const PENCIL_TOUCH_GRACE_MS = 240;
+const TOUCH_GESTURE_ARM_MS = 80;
+const TOUCH_GESTURE_MOVE_THRESHOLD = 6;
+const PALM_CONTACT_RADIUS = 22;
 
 FabricObject.customProperties = [
   'boardObjectId',
@@ -1048,6 +1052,7 @@ function BoardWorkspace({
   });
   const pendingPencilQueueRef = useRef([]);
   const activePencilRef = useRef(null);
+  const recentPencilSessionsRef = useRef([]);
   const remoteDrawSessionsRef = useRef(new Map());
   const remoteDeletedObjectIdsRef = useRef(new Map());
   const remotePreviewTokensRef = useRef(new Map());
@@ -1063,8 +1068,14 @@ function BoardWorkspace({
   const transientStatusTimerRef = useRef(null);
   const lastPointerSceneRef = useRef(null);
   const internalClipboardArmedRef = useRef(false);
-  const penInputRef = useRef({ pointerId: null, active: false, lastSeenAt: 0 });
+  const penInputRef = useRef({
+    pointerId: null,
+    active: false,
+    lastSeenAt: 0,
+    suppressUntil: 0,
+  });
   const rejectedPointerIdsRef = useRef(new Set());
+  const suppressedTouchIdsRef = useRef(new Set());
   const viewSendRef = useRef({ lastSentAt: 0, timer: null, pending: false });
   const lastTeacherViewRef = useRef(null);
   const autopilotRef = useRef(false);
@@ -5392,7 +5403,44 @@ function BoardWorkspace({
         path.creationSessionId = pendingPencil.sessionId;
         path.creationClientId = clientId;
         if (activePencilRef.current === pendingPencil) activePencilRef.current = null;
+        if (pendingPencil.cancelled) {
+          finishLiveDraw('cancel', pendingPencil.sessionId);
+          removeBoardObjectsByCreationSession(canvas, clientId, pendingPencil.sessionId);
+          applyingRemoteRef.current = true;
+          canvas.remove(path);
+          applyingRemoteRef.current = false;
+          return;
+        }
         finishLiveDraw('end', pendingPencil.sessionId);
+        // The authoritative Fabric path owns the session. Remove every temporary or
+        // interrupted sibling carrying the same session, even when a buggy browser
+        // assigned it a different boardObjectId.
+        removeBoardObjectsByCreationSession(canvas, clientId, pendingPencil.sessionId, path);
+        recentPencilSessionsRef.current = recentPencilSessionsRef.current
+          .filter((session) => now - Number(session.committedAt ?? 0) < 900);
+        recentPencilSessionsRef.current.push({
+          sessionId: pendingPencil.sessionId,
+          objectId: pendingPencil.objectId,
+          firstPoint: pendingPencil.firstPoint,
+          committedAt: now,
+        });
+      } else if (!isPartialEraserPath && pathStartPoint) {
+        recentPencilSessionsRef.current = recentPencilSessionsRef.current
+          .filter((session) => now - Number(session.committedAt ?? 0) < 900);
+        const duplicateSession = recentPencilSessionsRef.current.find((session) => (
+          now - Number(session.committedAt ?? 0) <= 450
+          && session.firstPoint
+          && Math.hypot(
+            Number(session.firstPoint.x) - pathStartPoint.x,
+            Number(session.firstPoint.y) - pathStartPoint.y,
+          ) <= Math.max(12, 28 / Math.max(canvas.getZoom(), MIN_ZOOM))
+        ));
+        if (duplicateSession) {
+          applyingRemoteRef.current = true;
+          canvas.remove(path);
+          applyingRemoteRef.current = false;
+          return;
+        }
       }
       if (isPartialEraserPath) {
         path.set({
@@ -5539,6 +5587,22 @@ function BoardWorkspace({
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
+      if (activeToolRef.current === 'pencil') {
+        const activeStroke = activePencilRef.current;
+        if (activeStroke && !activeStroke.mouseReleased) {
+          // One physical pointer owns one stroke from start to finish. A palm or a
+          // second finger cannot open another Fabric path while that stroke is active.
+          if (pointerId == null || activeStroke.pointerId !== pointerId) {
+            nativeEvent.preventDefault?.();
+            nativeEvent.stopPropagation?.();
+            nativeEvent.stopImmediatePropagation?.();
+            return;
+          }
+          // Safari can occasionally repeat mouse:down for the same Pencil pointer.
+          nativeEvent.preventDefault?.();
+          return;
+        }
+      }
       const scenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = scenePoint;
       if (nativeEvent.button === 1 || nativeEvent.button === 2 || spacePressedRef.current) {
@@ -5774,11 +5838,14 @@ function BoardWorkspace({
         const pendingPencil = {
           objectId,
           sessionId,
+          pointerId,
+          pointerType: nativeEvent?.pointerType ?? 'unknown',
           cancelTimer: null,
           startedAt: Date.now(),
           mouseReleased: false,
           releasedAt: 0,
           consumed: false,
+          cancelled: false,
           firstPoint: { x: Number(point.x), y: Number(point.y) },
         };
         pendingPencilQueueRef.current.push(pendingPencil);
@@ -5905,7 +5972,13 @@ function BoardWorkspace({
           canvas.requestRenderAll();
         }
       }
-      if (liveDrawSendRef.current.sessionId && ['pencil', 'line'].includes(liveDrawSendRef.current.tool)) {
+      const activeStroke = activePencilRef.current;
+      const drawingPointerMatches = !activeStroke
+        || nativeEvent?.pointerId == null
+        || activeStroke.pointerId === nativeEvent.pointerId;
+      if (drawingPointerMatches
+        && liveDrawSendRef.current.sessionId
+        && ['pencil', 'line'].includes(liveDrawSendRef.current.tool)) {
         updateLiveDraw(cursorScenePoint);
       }
       if (activeToolRef.current === 'line' && lineRef.current) {
@@ -5916,7 +5989,10 @@ function BoardWorkspace({
       }
     });
 
-    canvas.on('mouse:up', () => {
+    canvas.on('mouse:up', (event) => {
+      const nativeEvent = event?.e;
+      const pointerId = nativeEvent?.pointerId;
+      if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
       if (liveTransformSendRef.current.sessionId) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
       }
@@ -5965,6 +6041,7 @@ function BoardWorkspace({
 
       if (activeToolRef.current === 'pencil' && activePencilRef.current) {
         const pending = activePencilRef.current;
+        if (pointerId != null && pending.pointerId != null && pointerId !== pending.pointerId) return;
         pending.mouseReleased = true;
         pending.releasedAt = Date.now();
         window.clearTimeout(pending.cancelTimer);
@@ -6202,20 +6279,89 @@ function BoardWorkspace({
       event.stopImmediatePropagation?.();
     }
 
+    function isLikelyPalmPointer(event) {
+      return Math.max(Number(event?.width ?? 0), Number(event?.height ?? 0)) >= PALM_CONTACT_RADIUS;
+    }
+
+    function isStylusTouch(touch) {
+      return String(touch?.touchType ?? '').toLowerCase() === 'stylus';
+    }
+
+    function isLikelyPalmTouch(touch) {
+      return Math.max(Number(touch?.radiusX ?? 0), Number(touch?.radiusY ?? 0)) >= PALM_CONTACT_RADIUS;
+    }
+
+    function touchId(touch) {
+      return touch?.identifier == null ? null : Number(touch.identifier);
+    }
+
+    function touchArray(touches) {
+      return Array.from(touches ?? []);
+    }
+
+    function suppressTouchContacts(touches) {
+      touchArray(touches).forEach((touch) => {
+        if (isStylusTouch(touch)) return;
+        const identifier = touchId(touch);
+        if (identifier != null) suppressedTouchIdsRef.current.add(identifier);
+      });
+    }
+
+    function releaseEndedSuppressedTouches(event) {
+      touchArray(event?.changedTouches).forEach((touch) => {
+        const identifier = touchId(touch);
+        if (identifier != null) suppressedTouchIdsRef.current.delete(identifier);
+      });
+    }
+
+    function unsuppressedFingerTouches(touches) {
+      return touchArray(touches).filter((touch) => {
+        if (isStylusTouch(touch)) return false;
+        const identifier = touchId(touch);
+        return identifier == null || !suppressedTouchIdsRef.current.has(identifier);
+      });
+    }
+
+    function touchEventHasSuppressedContact(event) {
+      return [...touchArray(event?.touches), ...touchArray(event?.changedTouches)].some((touch) => {
+        const identifier = touchId(touch);
+        return identifier != null && suppressedTouchIdsRef.current.has(identifier);
+      });
+    }
+
+    function rejectTouchEvent(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    }
+
     function handlePalmPointerDown(event) {
       if (event.pointerType === 'pen') {
+        const interruptedTouchGesture = Boolean(touchGestureRef.current?.active);
+        if (touchGestureRef.current) touchGestureRef.current = null;
         penInputRef.current = {
           pointerId: event.pointerId,
           active: true,
           lastSeenAt: Date.now(),
+          suppressUntil: 0,
         };
-        if (['pencil', 'line'].includes(activeToolRef.current)) configureBrushAndMode();
+        // Do not reconfigure every object on every Pencil-down. On a large lesson
+        // applyObjectInteractivity() is O(number of objects) and caused a growing pause
+        // before each symbol. Restore the mode only when a real gesture disabled it.
+        if (interruptedTouchGesture
+          || (activeToolRef.current === 'pencil' && !canvas.isDrawingMode)) {
+          configureBrushAndMode();
+        }
         return;
       }
 
-      // Reject only an additional touch that arrives while the Pencil is physically
-      // touching the screen. Normal finger drawing and every two-finger gesture remain enabled.
-      if (event.pointerType === 'touch' && penInputRef.current.active) {
+      // A touch arriving while the Pencil is down is a palm/hand contact, not a second
+      // drawing pointer. During the brief release grace period only a large contact is
+      // rejected, so a deliberate small one-finger stroke can still start immediately.
+      if (event.pointerType === 'touch' && (
+        penInputRef.current.active
+        || (Date.now() < Number(penInputRef.current.suppressUntil ?? 0) && isLikelyPalmPointer(event))
+      )) {
         rejectPointerEvent(event);
       }
     }
@@ -6230,14 +6376,33 @@ function BoardWorkspace({
 
     function handlePalmPointerEnd(event) {
       if (event.pointerType === 'pen' && penInputRef.current.pointerId === event.pointerId) {
+        const now = Date.now();
         penInputRef.current.active = false;
         penInputRef.current.pointerId = null;
-        penInputRef.current.lastSeenAt = Date.now();
-        window.requestAnimationFrame(configureBrushAndMode);
+        penInputRef.current.lastSeenAt = now;
+        penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
+        if (event.type === 'pointercancel') {
+          const pending = activePencilRef.current;
+          if (pending?.pointerId === event.pointerId) {
+            pending.cancelled = true;
+            pending.mouseReleased = true;
+            pending.releasedAt = now;
+            finishLiveDraw('cancel', pending.sessionId);
+          }
+        }
+        // A normal Pencil-up leaves Fabric in drawing mode. Reconfiguring here used to
+        // scan every object after every stroke, so only repair an actually disabled mode.
+        if (activeToolRef.current === 'pencil' && !canvas.isDrawingMode) {
+          window.requestAnimationFrame(() => {
+            if (!touchGestureRef.current?.active && !canvas.isDrawingMode) configureBrushAndMode();
+          });
+        }
       }
       if (rejectedPointerIdsRef.current.has(event.pointerId)) {
         rejectPointerEvent(event);
-        rejectedPointerIdsRef.current.delete(event.pointerId);
+        // Keep the id rejected through Fabric's bubbling mouse-up handler. Removing it
+        // synchronously lets the same palm-up event finish or split the Pencil stroke.
+        window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
       }
     }
 
@@ -6365,58 +6530,131 @@ function BoardWorkspace({
     host.addEventListener('dragover', handleDragOver);
     host.addEventListener('drop', handleDrop);
 
-    function handleTouchStart(event) {
-      if (beginMobileGameLibraryTouchStage(event)) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation?.();
-        return;
-      }
-      if (event.touches.length !== 2) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation?.();
+    function cancelActiveDrawingForTouchGesture() {
       if (lineRef.current) {
-        canvas.remove(lineRef.current);
+        const line = lineRef.current;
         lineRef.current = null;
         lineStartRef.current = null;
+        finishLiveDraw('cancel', line.creationSessionId ?? liveDrawSendRef.current.sessionId);
+        applyingRemoteRef.current = true;
+        canvas.remove(line);
+        applyingRemoteRef.current = false;
       }
       if (shapeDraftRef.current) {
         const draft = shapeDraftRef.current;
         shapeDraftRef.current = null;
         endLiveTransform(draft.object);
+        applyingRemoteRef.current = true;
         canvas.remove(draft.object);
+        applyingRemoteRef.current = false;
         sendDeletes([draft.object.boardObjectId]);
       }
-      const metrics = touchMetrics(event.touches, touchTarget);
-      const inverse = util.invertTransform(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]);
-      const scenePoint = util.transformPoint(metrics.midpoint, inverse);
+      const pending = activePencilRef.current;
+      if (pending && !pending.mouseReleased) {
+        pending.cancelled = true;
+        pending.mouseReleased = true;
+        pending.releasedAt = Date.now();
+        finishLiveDraw('cancel', pending.sessionId);
+      }
+      liveDrawSendRef.current.acceptingPoints = false;
+    }
+
+    function beginTouchGestureCandidate(fingers) {
+      const metrics = touchMetrics(fingers, touchTarget);
       touchGestureRef.current = {
+        active: false,
+        startedAt: performance.now(),
         startDistance: Math.max(metrics.distance, 1),
+        startMidpoint: metrics.midpoint,
         startZoom: canvas.getZoom(),
-        scenePoint,
+        scenePoint: null,
       };
+    }
+
+    function activateTouchGesture(gesture) {
+      if (!gesture || gesture.active) return;
+      cancelActiveDrawingForTouchGesture();
+      const inverse = util.invertTransform(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]);
+      gesture.scenePoint = util.transformPoint(gesture.startMidpoint, inverse);
+      gesture.active = true;
       canvas.isDrawingMode = false;
       canvas.selection = false;
-      canvas.discardActiveObject();
-      updateSelectionState();
-      updateSelectionStyleState();
-      canvas.requestRenderAll();
+      const hadSelection = Boolean(canvas.getActiveObject());
+      if (hadSelection) {
+        canvas.discardActiveObject();
+        updateSelectionState();
+        updateSelectionStyleState();
+        canvas.requestRenderAll();
+      }
+    }
+
+    function shouldSuppressTouchEvent(event, { ending = false } = {}) {
+      const now = Date.now();
+      if (penInputRef.current.active) {
+        suppressTouchContacts(event.touches);
+        suppressTouchContacts(event.changedTouches);
+        rejectTouchEvent(event);
+        if (ending) releaseEndedSuppressedTouches(event);
+        return true;
+      }
+
+      if (now < Number(penInputRef.current.suppressUntil ?? 0)) {
+        const graceContacts = [...touchArray(event.touches), ...touchArray(event.changedTouches)];
+        const palmContacts = graceContacts.filter((touch) => !isStylusTouch(touch) && isLikelyPalmTouch(touch));
+        if (palmContacts.length) suppressTouchContacts(palmContacts);
+      }
+
+      if (touchEventHasSuppressedContact(event)) {
+        rejectTouchEvent(event);
+        if (ending) releaseEndedSuppressedTouches(event);
+        return true;
+      }
+      return false;
+    }
+
+    function handleTouchStart(event) {
+      if (shouldSuppressTouchEvent(event)) return;
+      const fingers = unsuppressedFingerTouches(event.touches);
+      if (fingers.length !== event.touches.length) return;
+
+      if (beginMobileGameLibraryTouchStage(event)) {
+        rejectTouchEvent(event);
+        return;
+      }
+      if (fingers.length !== 2) return;
+
+      // Arm a real two-finger gesture, but do not immediately disable drawing. It only
+      // becomes active after both fingers have remained briefly and moved intentionally.
+      rejectTouchEvent(event);
+      beginTouchGestureCandidate(fingers);
     }
 
     function handleTouchMove(event) {
+      if (shouldSuppressTouchEvent(event)) return;
+      const fingers = unsuppressedFingerTouches(event.touches);
+      if (fingers.length !== event.touches.length) return;
+
       if (moveMobileGameLibraryTouchStage(event)) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation?.();
+        rejectTouchEvent(event);
         return;
       }
-      if (!touchGestureRef.current || event.touches.length !== 2) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation?.();
-      const metrics = touchMetrics(event.touches, touchTarget);
       const gesture = touchGestureRef.current;
+      if (!gesture || fingers.length !== 2) return;
+      rejectTouchEvent(event);
+
+      const metrics = touchMetrics(fingers, touchTarget);
+      if (!gesture.active) {
+        const elapsed = performance.now() - Number(gesture.startedAt ?? 0);
+        const midpointMovement = Math.hypot(
+          metrics.midpoint.x - gesture.startMidpoint.x,
+          metrics.midpoint.y - gesture.startMidpoint.y,
+        );
+        const distanceMovement = Math.abs(metrics.distance - gesture.startDistance);
+        if (elapsed < TOUCH_GESTURE_ARM_MS
+          || Math.max(midpointMovement, distanceMovement) < TOUCH_GESTURE_MOVE_THRESHOLD) return;
+        activateTouchGesture(gesture);
+      }
+
       const nextZoom = clamp(
         gesture.startZoom * (metrics.distance / gesture.startDistance),
         MIN_ZOOM,
@@ -6438,28 +6676,35 @@ function BoardWorkspace({
     }
 
     function handleTouchEnd(event) {
+      if (shouldSuppressTouchEvent(event, { ending: true })) return;
       const handledSecretGesture = finishMobileGameLibraryTouchStage(event);
       if (handledSecretGesture) {
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation?.();
+        rejectTouchEvent(event);
         if (event.touches.length === 0 && touchGestureRef.current) {
+          const wasActive = Boolean(touchGestureRef.current.active);
           touchGestureRef.current = null;
-          configureBrushAndMode();
+          if (wasActive) configureBrushAndMode();
         }
         return;
       }
-      if (!touchGestureRef.current || event.touches.length >= 2) return;
-      event.preventDefault();
-      event.stopPropagation();
-      event.stopImmediatePropagation?.();
+
+      const gesture = touchGestureRef.current;
+      if (!gesture) return;
+      const fingers = unsuppressedFingerTouches(event.touches);
+      if (fingers.length >= 2) return;
+      rejectTouchEvent(event);
+      const wasActive = Boolean(gesture.active);
       touchGestureRef.current = null;
-      configureBrushAndMode();
+      if (wasActive) configureBrushAndMode();
     }
 
     function handleTouchCancel(event) {
       resetMobileGameLibraryGesture();
-      handleTouchEnd(event);
+      if (shouldSuppressTouchEvent(event, { ending: true })) return;
+      const gesture = touchGestureRef.current;
+      touchGestureRef.current = null;
+      if (gesture?.active) configureBrushAndMode();
+      rejectTouchEvent(event);
     }
 
     touchTarget.addEventListener('touchstart', handleTouchStart, { passive: false, capture: true });
@@ -6675,6 +6920,10 @@ function BoardWorkspace({
       pendingPencilQueueRef.current.forEach((pending) => window.clearTimeout(pending.cancelTimer));
       pendingPencilQueueRef.current = [];
       activePencilRef.current = null;
+      recentPencilSessionsRef.current = [];
+      rejectedPointerIdsRef.current.clear();
+      suppressedTouchIdsRef.current.clear();
+      touchGestureRef.current = null;
       liveTransformSendRef.current.sessionId = null;
       liveTransformSendRef.current.lastSignature = '';
       liveTransformSendRef.current.pendingTarget = null;
