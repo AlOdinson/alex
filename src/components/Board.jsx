@@ -77,7 +77,6 @@ const PALM_CONTACT_RADIUS = 22;
 const PENCIL_HANDOFF_IDLE_MS = 18;
 const PENCIL_HANDOFF_MAX_RADIUS = 34;
 const PENCIL_HANDOFF_MIN_SEPARATION = 20;
-const CREATION_TOOLS = new Set(['pencil', 'line', 'shape']);
 
 FabricObject.customProperties = [
   'boardObjectId',
@@ -979,8 +978,6 @@ function BoardWorkspace({
   const selectedShapeRef = useRef(null);
   const shapeDraftRef = useRef(null);
   const cancelCreationDraftRef = useRef(null);
-  const prepareCreationToolSwitchRef = useRef(null);
-  const creationToolGenerationRef = useRef(0);
   const erasingRef = useRef(false);
   const objectEraserRecordsRef = useRef(new Map());
   const objectEraserRealtimeDeleteIdsRef = useRef(new Set());
@@ -1539,24 +1536,12 @@ function BoardWorkspace({
     applyObjectInteractivity();
   }, [applyCanvasInputMode, applyObjectInteractivity]);
 
-  const configureToolTransition = useCallback((previousTool, nextTool) => {
-    applyCanvasInputMode();
-    const staysInsideCreationTools = CREATION_TOOLS.has(previousTool)
-      && CREATION_TOOLS.has(nextTool)
-      && !eyedropperActiveRef.current;
-    if (staysInsideCreationTools) return;
-    applyObjectInteractivity();
-  }, [applyCanvasInputMode, applyObjectInteractivity]);
-
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
-    const previousTool = activeToolRef.current;
-    if (nextTool !== previousTool) {
+    if (nextTool !== activeToolRef.current) {
       cancelCreationDraftRef.current?.('tool-change');
-      creationToolGenerationRef.current += 1;
-      prepareCreationToolSwitchRef.current?.(previousTool, nextTool);
     }
-    if (eyedropperActiveRef.current && nextTool !== previousTool) {
+    if (eyedropperActiveRef.current && nextTool !== activeToolRef.current) {
       eyedropperActiveRef.current = false;
       eyedropperModeRef.current = null;
       eyedropperSelectionIdsRef.current = [];
@@ -1566,8 +1551,8 @@ function BoardWorkspace({
     if (nextTool !== 'shape') selectedShapeRef.current = null;
     activeToolRef.current = nextTool;
     setToolState(nextTool);
-    configureToolTransition(previousTool, nextTool);
-  }, [configureToolTransition]);
+    configureBrushAndMode();
+  }, [configureBrushAndMode]);
 
   const setColor = useCallback((nextColor) => {
     colorRef.current = nextColor;
@@ -2149,16 +2134,13 @@ function BoardWorkspace({
 
   const chooseShapeTool = useCallback((shapeId) => {
     if (!shapeId || !canEditRef.current) return;
-    const previousTool = activeToolRef.current;
     cancelCreationDraftRef.current?.('shape-change');
-    creationToolGenerationRef.current += 1;
-    prepareCreationToolSwitchRef.current?.(previousTool, 'shape');
     selectedShapeRef.current = shapeId;
     activeToolRef.current = 'shape';
     setToolState('shape');
     setSaveStatus('Фигура выбрана — протяните её мышкой или пальцем');
-    configureToolTransition(previousTool, 'shape');
-  }, [configureToolTransition]);
+    configureBrushAndMode();
+  }, [configureBrushAndMode]);
 
 
   const addImageFiles = useCallback(async (files, scenePoint = null) => {
@@ -4905,10 +4887,6 @@ function BoardWorkspace({
     const canvas = new Canvas(canvasElement, {
       preserveObjectStacking: true,
       selection: false,
-      // Fabric's legacy touch adapter temporarily removes the down listener for 400 ms
-      // after every touch/stylus release. Native Pointer Events keep the first contact
-      // after a tool switch available immediately and preserve pointerId/pointerType.
-      enablePointerEvents: true,
       enableRetinaScaling: false,
       perPixelTargetFind: false,
       skipOffscreen: true,
@@ -5264,7 +5242,6 @@ function BoardWorkspace({
 
     let creationPreviewFrame = null;
     let pendingNativeCreationPointer = null;
-    let nativeCreationContactSequence = 0;
 
     function clearCreationPreview() {
       if (creationPreviewFrame != null) {
@@ -5343,16 +5320,12 @@ function BoardWorkspace({
       const directPointerType = typeof nativeEvent?.pointerType === 'string'
         ? nativeEvent.pointerType
         : null;
-      const eventTimeStamp = Number.isFinite(Number(nativeEvent?.timeStamp))
-        ? Number(nativeEvent.timeStamp)
-        : null;
       if (directPointerId != null) {
         const pointerType = directPointerType || 'unknown';
         return {
           key: `pointer:${pointerType}:${String(directPointerId)}`,
           pointerId: directPointerId,
           pointerType,
-          eventTimeStamp,
         };
       }
 
@@ -5370,7 +5343,6 @@ function BoardWorkspace({
           key: `touch:${String(touch.identifier)}`,
           pointerId: touch.identifier,
           pointerType: 'touch',
-          eventTimeStamp,
         };
       }
 
@@ -5381,7 +5353,6 @@ function BoardWorkspace({
         key: pointerType === 'mouse' ? 'mouse:primary' : null,
         pointerId: null,
         pointerType,
-        eventTimeStamp,
       };
     }
 
@@ -5396,25 +5367,14 @@ function BoardWorkspace({
         clientX: Number(event.clientX ?? 0),
         clientY: Number(event.clientY ?? 0),
         startedAt: performance.now(),
-        pointerDownTimeStamp: Number.isFinite(Number(event?.timeStamp)) ? Number(event.timeStamp) : null,
-        toolGeneration: creationToolGenerationRef.current,
-        contactToken: ++nativeCreationContactSequence,
       };
     }
 
     function creationPointerForDraft(nativeEvent) {
       const captured = pendingNativeCreationPointer;
       pendingNativeCreationPointer = null;
-      if (captured
-        && captured.toolGeneration === creationToolGenerationRef.current
-        && performance.now() - captured.startedAt < 500) return captured;
-      const pointer = creationPointerFromNativeEvent(nativeEvent);
-      return {
-        ...pointer,
-        pointerDownTimeStamp: pointer.eventTimeStamp,
-        toolGeneration: creationToolGenerationRef.current,
-        contactToken: ++nativeCreationContactSequence,
-      };
+      if (captured && performance.now() - captured.startedAt < 500) return captured;
+      return creationPointerFromNativeEvent(nativeEvent);
     }
 
     function clearPendingNativeCreationPointer(event = null) {
@@ -5426,13 +5386,7 @@ function BoardWorkspace({
 
     function creationDraftOwnsEvent(draft, nativeEvent) {
       if (!draft) return false;
-      if (Number(draft.toolGeneration) !== Number(creationToolGenerationRef.current)) return false;
       const pointer = creationPointerFromNativeEvent(nativeEvent);
-      if (Number.isFinite(Number(draft.pointerDownTimeStamp))
-        && Number.isFinite(Number(pointer.eventTimeStamp))
-        && Number(pointer.eventTimeStamp) + 0.01 < Number(draft.pointerDownTimeStamp)) {
-        return false;
-      }
       if (draft.pointerId != null && pointer.pointerId != null) {
         return String(draft.pointerId) === String(pointer.pointerId);
       }
@@ -5558,30 +5512,6 @@ function BoardWorkspace({
     }
 
     cancelCreationDraftRef.current = cancelCreationDraft;
-    prepareCreationToolSwitchRef.current = (previousTool, nextTool) => {
-      pendingNativeCreationPointer = null;
-      if (!CREATION_TOOLS.has(previousTool) || !CREATION_TOOLS.has(nextTool)) return;
-
-      // A delayed Fabric drawing session from Pencil must be closed before the first
-      // line/shape pointerdown reaches Canvas. This is a one-contact cleanup only and
-      // never enumerates the objects on the board.
-      if (previousTool === 'pencil' && nextTool !== 'pencil' && canvas._isCurrentlyDrawing) {
-        const syntheticUp = makeSyntheticPenUpEvent();
-        try {
-          if (typeof canvas._onMouseUpInDrawingMode === 'function') {
-            canvas._onMouseUpInDrawingMode(syntheticUp);
-          } else {
-            canvas._isCurrentlyDrawing = false;
-          }
-        } catch {
-          canvas._isCurrentlyDrawing = false;
-          try { canvas.clearContext?.(canvas.contextTop); } catch { /* Ignore cleanup fallback. */ }
-        }
-      }
-
-      // Fabric runs in Pointer Events mode, so there is no legacy mainTouchId or
-      // delayed touch-to-mouse compatibility stream to release here.
-    };
 
     const redrawCreationPreviewAfterCanvasRender = () => {
       if (shapeDraftRef.current || lineRef.current) scheduleCreationPreview();
@@ -6150,9 +6080,6 @@ function BoardWorkspace({
           pointerKey: creationPointer.key,
           pointerId: creationPointer.pointerId,
           pointerType: creationPointer.pointerType,
-          pointerDownTimeStamp: creationPointer.pointerDownTimeStamp,
-          toolGeneration: creationPointer.toolGeneration,
-          contactToken: creationPointer.contactToken,
           startedAt: Date.now(),
           sessionId: null,
           cancelled: false,
@@ -6291,9 +6218,6 @@ function BoardWorkspace({
           pointerKey: creationPointer.key,
           pointerId: creationPointer.pointerId,
           pointerType: creationPointer.pointerType,
-          pointerDownTimeStamp: creationPointer.pointerDownTimeStamp,
-          toolGeneration: creationPointer.toolGeneration,
-          contactToken: creationPointer.contactToken,
           startedAt: Date.now(),
           sessionId,
           cancelled: false,
@@ -6752,14 +6676,14 @@ function BoardWorkspace({
       }
     }
 
-    const fabricSuppressedSecondaryTouchPointers = new Set();
-
-    function stopPointerBeforeFabric(event) {
-      // Do not preventDefault here: the separate TouchEvent stream is still needed by
-      // the two-finger gesture recognizer. Stopping propagation is enough to keep this
-      // secondary PointerEvent out of Fabric's free-drawing listener.
-      event.stopPropagation?.();
-      event.stopImmediatePropagation?.();
+    function releaseFabricTouchOwnership(event) {
+      if (event?.touches?.length !== 0) return;
+      try {
+        if (typeof canvas._onTouchEnd === 'function') canvas._onTouchEnd(event);
+        else canvas.mainTouchId = undefined;
+      } catch {
+        canvas.mainTouchId = undefined;
+      }
     }
 
     function isLikelyPalmPointer(event) {
@@ -6820,17 +6744,6 @@ function BoardWorkspace({
 
     function handlePalmPointerDown(event) {
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
-
-      // In Fabric drawing mode __onMouseDown handles every pointer before checking
-      // isPrimary. Keep a second finger available to our TouchEvent pinch recognizer,
-      // but stop its PointerEvent from starting/replacing the active brush stroke.
-      const fabricFreeDrawingActive = activeToolRef.current === 'pencil'
-        || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial');
-      if (event.pointerType === 'touch' && event.isPrimary === false && fabricFreeDrawingActive) {
-        fabricSuppressedSecondaryTouchPointers.add(event.pointerId);
-        stopPointerBeforeFabric(event);
-        return;
-      }
 
       if (event.pointerType === 'pen') {
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
@@ -6901,10 +6814,6 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerMove(event) {
-      if (fabricSuppressedSecondaryTouchPointers.has(event.pointerId)) {
-        stopPointerBeforeFabric(event);
-        return;
-      }
       if (event.pointerType === 'pen') {
         penInputRef.current.lastSeenAt = Date.now();
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
@@ -6918,12 +6827,6 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerEnd(event) {
-      if (fabricSuppressedSecondaryTouchPointers.has(event.pointerId)) {
-        fabricSuppressedSecondaryTouchPointers.delete(event.pointerId);
-        forgetHandoffTouchPointer(event);
-        stopPointerBeforeFabric(event);
-        return;
-      }
       if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
       else finalizeCreationDraft(event);
       clearPendingNativeCreationPointer(event);
@@ -7276,6 +7179,7 @@ function BoardWorkspace({
       if (fingers.length >= 2) return;
       rejectTouchEvent(event);
       finishTouchGesture(gesture);
+      releaseFabricTouchOwnership(event);
     }
 
     function handleTouchCancel(event) {
@@ -7284,6 +7188,7 @@ function BoardWorkspace({
       const gesture = touchGestureRef.current;
       if (gesture && touchEventBelongsToGesture(event, gesture)) finishTouchGesture(gesture);
       rejectTouchEvent(event);
+      releaseFabricTouchOwnership(event);
     }
 
     touchTarget.addEventListener('touchstart', handleTouchStart, { passive: false, capture: true });
@@ -7463,7 +7368,6 @@ function BoardWorkspace({
       clearCreationPreview();
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
       cancelCreationDraftRef.current = null;
-      prepareCreationToolSwitchRef.current = null;
       window.clearTimeout(textChangeTimerRef.current);
       window.clearTimeout(objectEraserDelayTimer);
       window.clearTimeout(objectEraserRealtimeTimerRef.current);
@@ -7508,7 +7412,6 @@ function BoardWorkspace({
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
       handoffTouchPointers.clear();
-      fabricSuppressedSecondaryTouchPointers.clear();
       touchGestureRef.current = null;
       touchGestureGenerationRef.current = 0;
       lastTouchGestureEndedAtRef.current = 0;
