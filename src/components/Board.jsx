@@ -77,6 +77,7 @@ const PALM_CONTACT_RADIUS = 22;
 const PENCIL_HANDOFF_IDLE_MS = 18;
 const PENCIL_HANDOFF_MAX_RADIUS = 34;
 const PENCIL_HANDOFF_MIN_SEPARATION = 20;
+const CREATION_TOOLS = new Set(['pencil', 'line', 'shape']);
 
 FabricObject.customProperties = [
   'boardObjectId',
@@ -978,6 +979,8 @@ function BoardWorkspace({
   const selectedShapeRef = useRef(null);
   const shapeDraftRef = useRef(null);
   const cancelCreationDraftRef = useRef(null);
+  const prepareCreationToolSwitchRef = useRef(null);
+  const creationToolGenerationRef = useRef(0);
   const erasingRef = useRef(false);
   const objectEraserRecordsRef = useRef(new Map());
   const objectEraserRealtimeDeleteIdsRef = useRef(new Set());
@@ -1536,12 +1539,24 @@ function BoardWorkspace({
     applyObjectInteractivity();
   }, [applyCanvasInputMode, applyObjectInteractivity]);
 
+  const configureToolTransition = useCallback((previousTool, nextTool) => {
+    applyCanvasInputMode();
+    const staysInsideCreationTools = CREATION_TOOLS.has(previousTool)
+      && CREATION_TOOLS.has(nextTool)
+      && !eyedropperActiveRef.current;
+    if (staysInsideCreationTools) return;
+    applyObjectInteractivity();
+  }, [applyCanvasInputMode, applyObjectInteractivity]);
+
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
-    if (nextTool !== activeToolRef.current) {
+    const previousTool = activeToolRef.current;
+    if (nextTool !== previousTool) {
       cancelCreationDraftRef.current?.('tool-change');
+      creationToolGenerationRef.current += 1;
+      prepareCreationToolSwitchRef.current?.(previousTool, nextTool);
     }
-    if (eyedropperActiveRef.current && nextTool !== activeToolRef.current) {
+    if (eyedropperActiveRef.current && nextTool !== previousTool) {
       eyedropperActiveRef.current = false;
       eyedropperModeRef.current = null;
       eyedropperSelectionIdsRef.current = [];
@@ -1551,8 +1566,8 @@ function BoardWorkspace({
     if (nextTool !== 'shape') selectedShapeRef.current = null;
     activeToolRef.current = nextTool;
     setToolState(nextTool);
-    configureBrushAndMode();
-  }, [configureBrushAndMode]);
+    configureToolTransition(previousTool, nextTool);
+  }, [configureToolTransition]);
 
   const setColor = useCallback((nextColor) => {
     colorRef.current = nextColor;
@@ -2134,13 +2149,16 @@ function BoardWorkspace({
 
   const chooseShapeTool = useCallback((shapeId) => {
     if (!shapeId || !canEditRef.current) return;
+    const previousTool = activeToolRef.current;
     cancelCreationDraftRef.current?.('shape-change');
+    creationToolGenerationRef.current += 1;
+    prepareCreationToolSwitchRef.current?.(previousTool, 'shape');
     selectedShapeRef.current = shapeId;
     activeToolRef.current = 'shape';
     setToolState('shape');
     setSaveStatus('Фигура выбрана — протяните её мышкой или пальцем');
-    configureBrushAndMode();
-  }, [configureBrushAndMode]);
+    configureToolTransition(previousTool, 'shape');
+  }, [configureToolTransition]);
 
 
   const addImageFiles = useCallback(async (files, scenePoint = null) => {
@@ -5242,6 +5260,7 @@ function BoardWorkspace({
 
     let creationPreviewFrame = null;
     let pendingNativeCreationPointer = null;
+    let nativeCreationContactSequence = 0;
 
     function clearCreationPreview() {
       if (creationPreviewFrame != null) {
@@ -5320,12 +5339,16 @@ function BoardWorkspace({
       const directPointerType = typeof nativeEvent?.pointerType === 'string'
         ? nativeEvent.pointerType
         : null;
+      const eventTimeStamp = Number.isFinite(Number(nativeEvent?.timeStamp))
+        ? Number(nativeEvent.timeStamp)
+        : null;
       if (directPointerId != null) {
         const pointerType = directPointerType || 'unknown';
         return {
           key: `pointer:${pointerType}:${String(directPointerId)}`,
           pointerId: directPointerId,
           pointerType,
+          eventTimeStamp,
         };
       }
 
@@ -5343,6 +5366,7 @@ function BoardWorkspace({
           key: `touch:${String(touch.identifier)}`,
           pointerId: touch.identifier,
           pointerType: 'touch',
+          eventTimeStamp,
         };
       }
 
@@ -5353,6 +5377,7 @@ function BoardWorkspace({
         key: pointerType === 'mouse' ? 'mouse:primary' : null,
         pointerId: null,
         pointerType,
+        eventTimeStamp,
       };
     }
 
@@ -5367,14 +5392,25 @@ function BoardWorkspace({
         clientX: Number(event.clientX ?? 0),
         clientY: Number(event.clientY ?? 0),
         startedAt: performance.now(),
+        pointerDownTimeStamp: Number.isFinite(Number(event?.timeStamp)) ? Number(event.timeStamp) : null,
+        toolGeneration: creationToolGenerationRef.current,
+        contactToken: ++nativeCreationContactSequence,
       };
     }
 
     function creationPointerForDraft(nativeEvent) {
       const captured = pendingNativeCreationPointer;
       pendingNativeCreationPointer = null;
-      if (captured && performance.now() - captured.startedAt < 500) return captured;
-      return creationPointerFromNativeEvent(nativeEvent);
+      if (captured
+        && captured.toolGeneration === creationToolGenerationRef.current
+        && performance.now() - captured.startedAt < 500) return captured;
+      const pointer = creationPointerFromNativeEvent(nativeEvent);
+      return {
+        ...pointer,
+        pointerDownTimeStamp: pointer.eventTimeStamp,
+        toolGeneration: creationToolGenerationRef.current,
+        contactToken: ++nativeCreationContactSequence,
+      };
     }
 
     function clearPendingNativeCreationPointer(event = null) {
@@ -5386,7 +5422,13 @@ function BoardWorkspace({
 
     function creationDraftOwnsEvent(draft, nativeEvent) {
       if (!draft) return false;
+      if (Number(draft.toolGeneration) !== Number(creationToolGenerationRef.current)) return false;
       const pointer = creationPointerFromNativeEvent(nativeEvent);
+      if (Number.isFinite(Number(draft.pointerDownTimeStamp))
+        && Number.isFinite(Number(pointer.eventTimeStamp))
+        && Number(pointer.eventTimeStamp) + 0.01 < Number(draft.pointerDownTimeStamp)) {
+        return false;
+      }
       if (draft.pointerId != null && pointer.pointerId != null) {
         return String(draft.pointerId) === String(pointer.pointerId);
       }
@@ -5512,6 +5554,34 @@ function BoardWorkspace({
     }
 
     cancelCreationDraftRef.current = cancelCreationDraft;
+    prepareCreationToolSwitchRef.current = (previousTool, nextTool) => {
+      pendingNativeCreationPointer = null;
+      if (!CREATION_TOOLS.has(previousTool) || !CREATION_TOOLS.has(nextTool)) return;
+
+      // A delayed Fabric drawing session from Pencil must be closed before the first
+      // line/shape pointerdown reaches Canvas. This is a one-contact cleanup only and
+      // never enumerates the objects on the board.
+      if (previousTool === 'pencil' && nextTool !== 'pencil' && canvas._isCurrentlyDrawing) {
+        const syntheticUp = makeSyntheticPenUpEvent();
+        try {
+          if (typeof canvas._onMouseUpInDrawingMode === 'function') {
+            canvas._onMouseUpInDrawingMode(syntheticUp);
+          } else {
+            canvas._isCurrentlyDrawing = false;
+          }
+        } catch {
+          canvas._isCurrentlyDrawing = false;
+          try { canvas.clearContext?.(canvas.contextTop); } catch { /* Ignore cleanup fallback. */ }
+        }
+      }
+
+      // Safari can retain ownership of the previous touch compatibility stream for a
+      // fraction of a frame. Once the old draft has been cancelled, release that stale
+      // id so the first contact of the new creation tool is not swallowed.
+      if (!penInputRef.current.active && !touchGestureRef.current?.active) {
+        canvas.mainTouchId = undefined;
+      }
+    };
 
     const redrawCreationPreviewAfterCanvasRender = () => {
       if (shapeDraftRef.current || lineRef.current) scheduleCreationPreview();
@@ -6080,6 +6150,9 @@ function BoardWorkspace({
           pointerKey: creationPointer.key,
           pointerId: creationPointer.pointerId,
           pointerType: creationPointer.pointerType,
+          pointerDownTimeStamp: creationPointer.pointerDownTimeStamp,
+          toolGeneration: creationPointer.toolGeneration,
+          contactToken: creationPointer.contactToken,
           startedAt: Date.now(),
           sessionId: null,
           cancelled: false,
@@ -6218,6 +6291,9 @@ function BoardWorkspace({
           pointerKey: creationPointer.key,
           pointerId: creationPointer.pointerId,
           pointerType: creationPointer.pointerType,
+          pointerDownTimeStamp: creationPointer.pointerDownTimeStamp,
+          toolGeneration: creationPointer.toolGeneration,
+          contactToken: creationPointer.contactToken,
           startedAt: Date.now(),
           sessionId,
           cancelled: false,
@@ -7368,6 +7444,7 @@ function BoardWorkspace({
       clearCreationPreview();
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
       cancelCreationDraftRef.current = null;
+      prepareCreationToolSwitchRef.current = null;
       window.clearTimeout(textChangeTimerRef.current);
       window.clearTimeout(objectEraserDelayTimer);
       window.clearTimeout(objectEraserRealtimeTimerRef.current);
