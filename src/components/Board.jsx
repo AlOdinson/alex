@@ -1084,6 +1084,7 @@ function BoardWorkspace({
     lastClientX: 0,
     lastClientY: 0,
     suppressUntil: 0,
+    pointerDownTimestamp: 0,
   });
   const rejectedPointerIdsRef = useRef(new Set());
   const suppressedTouchIdsRef = useRef(new Set());
@@ -5386,6 +5387,7 @@ function BoardWorkspace({
     function normalizeCreationPointerEvent(nativeEvent) {
       const clientX = Number(nativeEvent?.clientX ?? 0);
       const clientY = Number(nativeEvent?.clientY ?? 0);
+      const nativeTimestamp = Number(nativeEvent?.timeStamp ?? 0);
       return {
         nativeEvent,
         pointerId: nativeEvent?.pointerId ?? null,
@@ -5394,12 +5396,27 @@ function BoardWorkspace({
         buttons: Number(nativeEvent?.buttons ?? 0),
         clientPoint: new Point(clientX, clientY),
         scenePoint: scenePointFromClient(clientX, clientY),
-        timestamp: Number(nativeEvent?.timeStamp ?? performance.now()),
+        timestamp: Number.isFinite(nativeTimestamp) && nativeTimestamp > 0
+          ? nativeTimestamp
+          : performance.now(),
       };
     }
 
     function creationSessionOwnsEvent(session, nativeEvent) {
       if (!session || !nativeEvent) return false;
+
+      // iPadOS Safari can reuse the same Apple Pencil pointerId for the next physical
+      // contact while a delayed pointerup/pointercancel/lostpointercapture from the
+      // previous contact is still queued. Pointer id alone is therefore not enough.
+      // Reject any delayed event that was generated before this session's pointerdown.
+      const eventTimestamp = Number(nativeEvent.timeStamp ?? 0);
+      const sessionTimestamp = Number(session.pointerDownTimestamp ?? 0);
+      if (eventTimestamp > 0
+        && sessionTimestamp > 0
+        && eventTimestamp + 0.5 < sessionTimestamp) {
+        return false;
+      }
+
       if (session.pointerId != null && nativeEvent.pointerId != null) {
         return String(session.pointerId) === String(nativeEvent.pointerId);
       }
@@ -5775,7 +5792,13 @@ function BoardWorkspace({
       // The physical input lock is released before tool finalization, realtime, history or
       // persistence. A new contact can therefore begin immediately with the newly selected tool.
       controller.activeSession = null;
-      releaseCreationPointerCapture(session);
+      // A real pointerup implicitly releases pointer capture. Calling
+      // releasePointerCapture() ourselves on iPadOS can enqueue a delayed
+      // lostpointercapture event which then arrives during the next Pencil contact and
+      // cancels its first line/shape. Forced endings still release capture explicitly.
+      if (reason !== 'pointerup' && reason !== 'superseded-pointerdown') {
+        releaseCreationPointerCapture(session);
+      }
       const input = nativeEvent ? normalizeCreationPointerEvent(nativeEvent) : session.lastInput;
       try {
         session.tool.end(session.context, session, input);
@@ -6730,6 +6753,7 @@ function BoardWorkspace({
         lastClientX: Number(pen.lastClientX ?? 0),
         lastClientY: Number(pen.lastClientY ?? 0),
         suppressUntil: 0,
+        pointerDownTimestamp: 0,
       };
       return true;
     }
@@ -6844,6 +6868,7 @@ function BoardWorkspace({
           lastClientX: Number(event.clientX ?? 0),
           lastClientY: Number(event.clientY ?? 0),
           suppressUntil: 0,
+          pointerDownTimestamp: Number(event.timeStamp ?? performance.now()),
         };
 
         const justAfterTouchGesture = performance.now()
@@ -6882,8 +6907,19 @@ function BoardWorkspace({
       }
     }
 
+    function penEventPredatesCurrentContact(event) {
+      const eventTimestamp = Number(event?.timeStamp ?? 0);
+      const contactTimestamp = Number(penInputRef.current.pointerDownTimestamp ?? 0);
+      return eventTimestamp > 0
+        && contactTimestamp > 0
+        && eventTimestamp + 0.5 < contactTimestamp;
+    }
+
     function handlePalmPointerMove(event) {
       if (event.pointerType === 'pen') {
+        if (penEventPredatesCurrentContact(event)) return;
+        if (penInputRef.current.pointerId != null
+          && String(penInputRef.current.pointerId) !== String(event.pointerId)) return;
         penInputRef.current.lastSeenAt = Date.now();
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
@@ -6896,7 +6932,9 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerEnd(event) {
-      if (event.pointerType === 'pen' && penInputRef.current.pointerId === event.pointerId) {
+      if (event.pointerType === 'pen'
+        && !penEventPredatesCurrentContact(event)
+        && String(penInputRef.current.pointerId) === String(event.pointerId)) {
         const now = Date.now();
         penInputRef.current.active = false;
         penInputRef.current.pointerId = null;
@@ -6904,6 +6942,7 @@ function BoardWorkspace({
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
         penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
+        penInputRef.current.pointerDownTimestamp = 0;
         // Only the partial eraser still uses Fabric drawing mode. Creation tools are
         // independent of canvas.isDrawingMode and need no post-gesture repair.
         if (activeToolRef.current === 'eraser'
@@ -7058,8 +7097,22 @@ function BoardWorkspace({
       const controller = creationInputRef.current;
       const activeSession = controller.activeSession;
       if (activeSession) {
-        if (creationSessionOwnsEvent(activeSession, event)) consumeCreationPointerEvent(event);
-        return;
+        const incomingPointerType = String(event.pointerType ?? 'unknown');
+        const isNewPenContact = incomingPointerType === 'pen'
+          && activeSession.pointerType === 'pen';
+
+        if (isNewPenContact) {
+          // A second pointerdown cannot belong to the same physical Pencil contact.
+          // Safari occasionally delivers it before the previous contact's delayed
+          // pointerup. Finalize the stale session at its last known point, then let this
+          // exact pointerdown start the newly selected tool instead of discarding the
+          // first line/shape.
+          consumeCreationPointerEvent(event);
+          finishCreationSession(null, 'superseded-pointerdown', true);
+        } else {
+          if (creationSessionOwnsEvent(activeSession, event)) consumeCreationPointerEvent(event);
+          return;
+        }
       }
       if (!canStartCreationPointer(event)) return;
 
@@ -7076,6 +7129,7 @@ function BoardWorkspace({
         toolId,
         tool: selectedTool,
         startedAt: performance.now(),
+        pointerDownTimestamp: Number(input.timestamp ?? event.timeStamp ?? 0),
         draft: null,
         context: creationToolContext,
         captureTarget: event.currentTarget,
@@ -7087,7 +7141,7 @@ function BoardWorkspace({
       try {
         event.currentTarget.setPointerCapture?.(event.pointerId);
       } catch {
-        // Touch and pen normally keep implicit targeting; lostpointercapture still cancels safely.
+        // Touch and pen normally keep implicit targeting; pointercancel remains the authoritative interruption signal.
       }
 
       try {
@@ -7143,6 +7197,16 @@ function BoardWorkspace({
     function handleCreationLostPointerCapture(event) {
       const session = creationInputRef.current.activeSession;
       if (!session || !creationSessionOwnsEvent(session, event)) return;
+
+      // Safari may emit a zero-pressure lostpointercapture from the previous Pencil
+      // contact after the next one has already begun with the same pointerId. Real
+      // interruption is also reported through pointercancel, so this release event must
+      // never be allowed to erase the first stroke of a new pen session.
+      if (session.pointerType === 'pen'
+        && Number(event.buttons ?? 0) === 0
+        && Number(event.pressure ?? 0) === 0) {
+        return;
+      }
       cancelCreationDraft('lost-pointer-capture', event, true);
     }
 
