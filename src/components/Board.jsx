@@ -3998,7 +3998,9 @@ function BoardWorkspace({
           creationClientId: object.creationClientId ?? object.updatedBy ?? null,
           objectKind: object.objectKind ?? object.type ?? null,
           objectType: object.type ?? null,
-          zIndex: canvas ? canvas.getObjects().indexOf(object) : -1,
+          zIndex: Number.isFinite(Number(object.creationDraftZIndex))
+            ? Number(object.creationDraftZIndex)
+            : (canvas ? canvas.getObjects().indexOf(object) : -1),
         };
       })
       .filter(Boolean);
@@ -5238,6 +5240,81 @@ function BoardWorkspace({
     }
 
 
+    let creationPreviewFrame = null;
+    let pendingNativeCreationPointer = null;
+
+    function clearCreationPreview() {
+      if (creationPreviewFrame != null) {
+        window.cancelAnimationFrame(creationPreviewFrame);
+        creationPreviewFrame = null;
+      }
+      const contextTop = canvas.contextTop;
+      if (!contextTop) return;
+      try {
+        canvas.clearContext(contextTop);
+      } catch {
+        contextTop.clearRect(0, 0, canvas.upperCanvasEl.width, canvas.upperCanvasEl.height);
+      }
+    }
+
+    function drawCreationPreviewNow() {
+      creationPreviewFrame = null;
+      const draft = shapeDraftRef.current ?? lineRef.current;
+      const object = draft?.object;
+      const contextTop = canvas.contextTop;
+      if (!contextTop) return;
+
+      try {
+        canvas.clearContext(contextTop);
+      } catch {
+        contextTop.clearRect(0, 0, canvas.upperCanvasEl.width, canvas.upperCanvasEl.height);
+      }
+      if (!object || draft.cancelled || draft.finalized) return;
+
+      contextTop.save();
+      try {
+        const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
+        contextTop.transform(
+          Number(viewport[0] ?? 1),
+          Number(viewport[1] ?? 0),
+          Number(viewport[2] ?? 0),
+          Number(viewport[3] ?? 1),
+          Number(viewport[4] ?? 0),
+          Number(viewport[5] ?? 0),
+        );
+        object.render(contextTop);
+      } finally {
+        contextTop.restore();
+      }
+    }
+
+    function scheduleCreationPreview() {
+      if (creationPreviewFrame != null) return;
+      creationPreviewFrame = window.requestAnimationFrame(drawCreationPreviewNow);
+    }
+
+    function prepareCreationPreviewObject(object) {
+      if (!object) return;
+      object.canvas = canvas;
+      Object.defineProperty(object, 'creationDraftZIndex', {
+        configurable: true,
+        writable: true,
+        value: canvas.getObjects().length,
+      });
+    }
+
+    function addCreationObjectWithoutImmediateRender(object) {
+      if (!object) return;
+      try { delete object.creationDraftZIndex; } catch { object.creationDraftZIndex = undefined; }
+      const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+      canvas.renderOnAddRemove = false;
+      try {
+        canvas.add(object);
+      } finally {
+        canvas.renderOnAddRemove = previousRenderOnAddRemove;
+      }
+    }
+
     function creationPointerFromNativeEvent(nativeEvent) {
       const directPointerId = nativeEvent?.pointerId;
       const directPointerType = typeof nativeEvent?.pointerType === 'string'
@@ -5279,6 +5356,34 @@ function BoardWorkspace({
       };
     }
 
+    function rememberNativeCreationPointer(event) {
+      if (!['line', 'shape'].includes(activeToolRef.current)) return;
+      if (shapeDraftRef.current || lineRef.current) return;
+      if (Number(event?.button ?? 0) > 0) return;
+      pendingNativeCreationPointer = {
+        key: `pointer:${String(event.pointerType || 'unknown')}:${String(event.pointerId)}`,
+        pointerId: event.pointerId,
+        pointerType: event.pointerType || 'unknown',
+        clientX: Number(event.clientX ?? 0),
+        clientY: Number(event.clientY ?? 0),
+        startedAt: performance.now(),
+      };
+    }
+
+    function creationPointerForDraft(nativeEvent) {
+      const captured = pendingNativeCreationPointer;
+      pendingNativeCreationPointer = null;
+      if (captured && performance.now() - captured.startedAt < 500) return captured;
+      return creationPointerFromNativeEvent(nativeEvent);
+    }
+
+    function clearPendingNativeCreationPointer(event = null) {
+      if (!pendingNativeCreationPointer) return;
+      if (event?.pointerId != null
+        && String(event.pointerId) !== String(pendingNativeCreationPointer.pointerId)) return;
+      pendingNativeCreationPointer = null;
+    }
+
     function creationDraftOwnsEvent(draft, nativeEvent) {
       if (!draft) return false;
       const pointer = creationPointerFromNativeEvent(nativeEvent);
@@ -5295,8 +5400,71 @@ function BoardWorkspace({
       return pointer.key == null && pointer.pointerId == null;
     }
 
+    function finalizeCreationDraft(nativeEvent = null) {
+      const shapeDraft = shapeDraftRef.current;
+      if (shapeDraft) {
+        if (nativeEvent && !creationDraftOwnsEvent(shapeDraft, nativeEvent)) return false;
+        if (shapeDraft.cancelled || shapeDraft.finalized) return false;
+        shapeDraft.finalized = true;
+        shapeDraftRef.current = null;
+        clearCreationPreview();
+        endLiveTransform(shapeDraft.object, shapeDraft.sessionId);
+
+        const bounds = shapeDraft.object.getBoundingRect();
+        if (bounds.width < 4 || bounds.height < 4) {
+          realtimeRef.current?.sendDeletePreview?.([shapeDraft.object.boardObjectId]).catch?.(() => undefined);
+          setSaveStatus('Фигура слишком маленькая');
+          return true;
+        }
+
+        const selectableNow = canEditRef.current
+          && activeToolRef.current === 'select'
+          && !eyedropperActiveRef.current;
+        shapeDraft.object.set({
+          selectable: selectableNow,
+          evented: selectableNow,
+          hasControls: true,
+          hasBorders: true,
+        });
+        shapeDraft.object.setCoords();
+        addCreationObjectWithoutImmediateRender(shapeDraft.object);
+        commitAddedObject(shapeDraft.object);
+        setSaveStatus('Фигура создана — можно нарисовать следующую');
+        return true;
+      }
+
+      const lineDraft = lineRef.current;
+      if (lineDraft) {
+        if (nativeEvent && !creationDraftOwnsEvent(lineDraft, nativeEvent)) return false;
+        if (lineDraft.cancelled || lineDraft.finalized) return false;
+        lineDraft.finalized = true;
+        lineRef.current = null;
+        lineStartRef.current = null;
+        clearCreationPreview();
+
+        const line = lineDraft.object;
+        const length = Math.hypot(
+          Number(line.x2) - lineDraft.start.x,
+          Number(line.y2) - lineDraft.start.y,
+        );
+        if (length < 3) {
+          finishLiveDraw('cancel', lineDraft.sessionId);
+          return true;
+        }
+
+        finishLiveDraw('end', lineDraft.sessionId);
+        addCreationObjectWithoutImmediateRender(line);
+        commitAddedObject(line);
+        return true;
+      }
+
+      return false;
+    }
+
+
     function cancelCreationDraft(reason = 'cancel', nativeEvent = null) {
       let cancelled = false;
+      let removedFromMainCanvas = false;
       const lineDraft = lineRef.current;
       if (lineDraft
         && (!nativeEvent || creationDraftOwnsEvent(lineDraft, nativeEvent))
@@ -5307,9 +5475,12 @@ function BoardWorkspace({
         lineRef.current = null;
         lineStartRef.current = null;
         finishLiveDraw('cancel', lineDraft.sessionId);
-        applyingRemoteRef.current = true;
-        canvas.remove(lineDraft.object);
-        applyingRemoteRef.current = false;
+        if (canvas.getObjects().includes(lineDraft.object)) {
+          applyingRemoteRef.current = true;
+          canvas.remove(lineDraft.object);
+          applyingRemoteRef.current = false;
+          removedFromMainCanvas = true;
+        }
         cancelled = true;
       }
 
@@ -5322,21 +5493,30 @@ function BoardWorkspace({
         shapeDraft.finalized = true;
         shapeDraftRef.current = null;
         endLiveTransform(shapeDraft.object, shapeDraft.sessionId);
-        applyingRemoteRef.current = true;
-        canvas.remove(shapeDraft.object);
-        applyingRemoteRef.current = false;
+        if (canvas.getObjects().includes(shapeDraft.object)) {
+          applyingRemoteRef.current = true;
+          canvas.remove(shapeDraft.object);
+          applyingRemoteRef.current = false;
+          removedFromMainCanvas = true;
+        }
         realtimeRef.current?.sendDeletePreview?.([shapeDraft.object.boardObjectId]).catch?.(() => undefined);
         cancelled = true;
       }
 
       if (cancelled) {
-        canvas.requestRenderAll();
+        clearCreationPreview();
+        if (removedFromMainCanvas) canvas.requestRenderAll();
         if (reason === 'pointercancel') setSaveStatus('Создание объекта отменено системой ввода');
       }
       return cancelled;
     }
 
     cancelCreationDraftRef.current = cancelCreationDraft;
+
+    const redrawCreationPreviewAfterCanvasRender = () => {
+      if (shapeDraftRef.current || lineRef.current) scheduleCreationPreview();
+    };
+    canvas.on('after:render', redrawCreationPreviewAfterCanvasRender);
 
     function scenePointFromClient(clientX, clientY) {
       const rect = canvas.upperCanvasEl.getBoundingClientRect();
@@ -5889,8 +6069,8 @@ function BoardWorkspace({
         });
         object.setCoords();
         canvas.discardActiveObject();
-        canvas.add(object);
-        const creationPointer = creationPointerFromNativeEvent(nativeEvent);
+        prepareCreationPreviewObject(object);
+        const creationPointer = creationPointerForDraft(nativeEvent);
         const shapeDraft = {
           kind: 'shape',
           object,
@@ -5906,10 +6086,12 @@ function BoardWorkspace({
           finalized: false,
         };
         shapeDraftRef.current = shapeDraft;
-        const records = getObjectRecords([object]);
-        realtimeRef.current?.sendPreview?.(records);
+        realtimeRef.current?.sendPreview?.([{
+          object: serializeObject(object),
+          zIndex: Number(object.creationDraftZIndex ?? canvas.getObjects().length),
+        }]);
         shapeDraft.sessionId = beginLiveTransform(object);
-        canvas.requestRenderAll();
+        scheduleCreationPreview();
         return;
       }
 
@@ -6028,7 +6210,7 @@ function BoardWorkspace({
         });
         line.creationSessionId = sessionId;
         line.creationClientId = clientId;
-        const creationPointer = creationPointerFromNativeEvent(nativeEvent);
+        const creationPointer = creationPointerForDraft(nativeEvent);
         lineRef.current = {
           kind: 'line',
           object: line,
@@ -6042,7 +6224,8 @@ function BoardWorkspace({
           finalized: false,
         };
         lineStartRef.current = point;
-        canvas.add(line);
+        prepareCreationPreviewObject(line);
+        scheduleCreationPreview();
         return;
       }
 
@@ -6087,7 +6270,7 @@ function BoardWorkspace({
         draft.object.dirty = true;
         draft.object.setCoords();
         sendLiveTransformThrottled(draft.object);
-        canvas.requestRenderAll();
+        scheduleCreationPreview();
         return;
       }
       if (selectionDragRef.current && activeToolRef.current === 'select') {
@@ -6125,7 +6308,7 @@ function BoardWorkspace({
         }
         draft.object.set({ x2: point.x, y2: point.y });
         draft.object.setCoords();
-        canvas.requestRenderAll();
+        scheduleCreationPreview();
       }
     });
 
@@ -6149,35 +6332,7 @@ function BoardWorkspace({
       }
 
       if (shapeDraftRef.current) {
-        const draft = shapeDraftRef.current;
-        if (!creationDraftOwnsEvent(draft, nativeEvent)) return;
-        if (draft.cancelled || draft.finalized) return;
-        draft.finalized = true;
-        shapeDraftRef.current = null;
-        endLiveTransform(draft.object, draft.sessionId);
-        const bounds = draft.object.getBoundingRect();
-        if (bounds.width < 4 || bounds.height < 4) {
-          applyingRemoteRef.current = true;
-          canvas.remove(draft.object);
-          applyingRemoteRef.current = false;
-          realtimeRef.current?.sendDeletePreview?.([draft.object.boardObjectId]).catch?.(() => undefined);
-          canvas.requestRenderAll();
-          setSaveStatus('Фигура слишком маленькая');
-          return;
-        }
-        const selectableNow = canEditRef.current
-          && activeToolRef.current === 'select'
-          && !eyedropperActiveRef.current;
-        draft.object.set({
-          selectable: selectableNow,
-          evented: selectableNow,
-          hasControls: true,
-          hasBorders: true,
-        });
-        draft.object.setCoords();
-        commitAddedObject(draft.object);
-        canvas.requestRenderAll();
-        setSaveStatus('Фигура создана — можно нарисовать следующую');
+        if (finalizeCreationDraft(nativeEvent)) return;
         return;
       }
 
@@ -6231,28 +6386,9 @@ function BoardWorkspace({
       }
 
       if (lineRef.current) {
-        const draft = lineRef.current;
-        if (!creationDraftOwnsEvent(draft, nativeEvent)) return;
-        if (draft.cancelled || draft.finalized) return;
-        draft.finalized = true;
-        lineRef.current = null;
-        lineStartRef.current = null;
-        const line = draft.object;
-        const length = Math.hypot(
-          Number(line.x2) - draft.start.x,
-          Number(line.y2) - draft.start.y,
-        );
-        if (length < 3) {
-          finishLiveDraw('cancel', draft.sessionId);
-          applyingRemoteRef.current = true;
-          canvas.remove(line);
-          applyingRemoteRef.current = false;
-          canvas.requestRenderAll();
-          return;
-        }
-        finishLiveDraw('end', draft.sessionId);
-        commitAddedObject(line);
+        finalizeCreationDraft(nativeEvent);
       }
+
     });
 
     canvas.on('mouse:wheel', (event) => {
@@ -6650,6 +6786,7 @@ function BoardWorkspace({
         if (interruptedTouchGesture || justAfterTouchGesture || drawingToolNeedsRepair) {
           applyCanvasInputMode();
         }
+        rememberNativeCreationPointer(event);
         return;
       }
 
@@ -6667,8 +6804,13 @@ function BoardWorkspace({
           && (likelyPalm || additionalContact);
         const duringGrace = Date.now() < Number(penInputRef.current.suppressUntil ?? 0)
           && contactRadius > PENCIL_HANDOFF_MAX_RADIUS;
-        if (duringPencil || duringGrace) rejectPointerEvent(event);
+        if (duringPencil || duringGrace) {
+          clearPendingNativeCreationPointer(event);
+          rejectPointerEvent(event);
+          return;
+        }
       }
+      rememberNativeCreationPointer(event);
     }
 
     function handlePalmPointerMove(event) {
@@ -6686,6 +6828,8 @@ function BoardWorkspace({
 
     function handlePalmPointerEnd(event) {
       if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
+      else finalizeCreationDraft(event);
+      clearPendingNativeCreationPointer(event);
       if (event.pointerType === 'pen' && penInputRef.current.pointerId === event.pointerId) {
         const now = Date.now();
         penInputRef.current.active = false;
@@ -7221,6 +7365,8 @@ function BoardWorkspace({
     return () => {
       disposed = true;
       cancelCreationDraft('unmount');
+      clearCreationPreview();
+      canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
       cancelCreationDraftRef.current = null;
       window.clearTimeout(textChangeTimerRef.current);
       window.clearTimeout(objectEraserDelayTimer);
