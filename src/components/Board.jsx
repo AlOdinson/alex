@@ -973,10 +973,14 @@ function BoardWorkspace({
   const clientIdRef = useRef(participantClientId || randomToken(10));
   const applyingRemoteRef = useRef(false);
   const applyingHistoryRef = useRef(false);
-  const lineRef = useRef(null);
-  const lineStartRef = useRef(null);
   const selectedShapeRef = useRef(null);
-  const shapeDraftRef = useRef(null);
+  const creationInputRef = useRef({
+    activeSession: null,
+    selectedToolId: 'pencil',
+    sessionCounter: 0,
+  });
+  const creationToolRegistryRef = useRef(new Map());
+  const pendingCreationCommitsRef = useRef({ objects: [], timer: null });
   const cancelCreationDraftRef = useRef(null);
   const erasingRef = useRef(false);
   const objectEraserRecordsRef = useRef(new Map());
@@ -1502,13 +1506,16 @@ function BoardWorkspace({
     const objectEraser = activeToolRef.current === 'eraser' && eraserModeRef.current === 'object';
     const shouldDraw = canEditRef.current
       && !eyedropperActiveRef.current
-      && (activeToolRef.current === 'pencil' || partialEraser);
+      && partialEraser;
     const drawingToolActive = canEditRef.current
       && (['pencil', 'line', 'shape'].includes(activeToolRef.current) || partialEraser)
       && !eyedropperActiveRef.current;
 
     // This is the lightweight input-mode restoration used after pinch/pan. It must
     // stay O(1): no object enumeration, no selection rebuild and no render request.
+    // Pencil, line and shape input is owned by CreationInputController. Fabric's
+    // drawing mode remains enabled only for the partial eraser, which is not a
+    // creation tool and keeps its established compositing behavior.
     canvas.isDrawingMode = shouldDraw;
     canvas.selection = false;
     canvas.perPixelTargetFind = objectEraser;
@@ -1538,9 +1545,6 @@ function BoardWorkspace({
 
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
-    if (nextTool !== activeToolRef.current) {
-      cancelCreationDraftRef.current?.('tool-change');
-    }
     if (eyedropperActiveRef.current && nextTool !== activeToolRef.current) {
       eyedropperActiveRef.current = false;
       eyedropperModeRef.current = null;
@@ -1550,6 +1554,7 @@ function BoardWorkspace({
     }
     if (nextTool !== 'shape') selectedShapeRef.current = null;
     activeToolRef.current = nextTool;
+    creationInputRef.current.selectedToolId = nextTool;
     setToolState(nextTool);
     configureBrushAndMode();
   }, [configureBrushAndMode]);
@@ -2134,9 +2139,9 @@ function BoardWorkspace({
 
   const chooseShapeTool = useCallback((shapeId) => {
     if (!shapeId || !canEditRef.current) return;
-    cancelCreationDraftRef.current?.('shape-change');
     selectedShapeRef.current = shapeId;
     activeToolRef.current = 'shape';
+    creationInputRef.current.selectedToolId = 'shape';
     setToolState('shape');
     setSaveStatus('Фигура выбрана — протяните её мышкой или пальцем');
     configureBrushAndMode();
@@ -2230,6 +2235,7 @@ function BoardWorkspace({
     }
 
     activeToolRef.current = 'select';
+    creationInputRef.current.selectedToolId = 'select';
     setToolState('select');
     configureBrushAndMode();
     canvas.discardActiveObject();
@@ -2563,6 +2569,9 @@ function BoardWorkspace({
     const liveDrawId = liveDrawSendRef.current?.objectId;
     if (activePencilId) ids.add(String(activePencilId));
     if (liveDrawId && liveDrawSendRef.current?.acceptingPoints) ids.add(String(liveDrawId));
+    pendingCreationCommitsRef.current.objects.forEach((object) => {
+      if (object?.boardObjectId) ids.add(String(object.boardObjectId));
+    });
     textBeforeRef.current.forEach((_records, objectId) => ids.add(String(objectId)));
 
     const liveTarget = liveTransformSendRef.current?.pendingTarget;
@@ -3623,6 +3632,7 @@ function BoardWorkspace({
     if (mode !== 'edit') cancelCreationDraftRef.current?.('permission-change');
     canEditRef.current = mode === 'edit';
     activeToolRef.current = mode === 'edit' ? 'pencil' : 'select';
+    creationInputRef.current.selectedToolId = activeToolRef.current;
     setToolState(activeToolRef.current);
     configureBrushAndMode();
   }, [configureBrushAndMode, initialAccess, isOwner, onAccessChange]);
@@ -5241,7 +5251,51 @@ function BoardWorkspace({
 
 
     let creationPreviewFrame = null;
-    let pendingNativeCreationPointer = null;
+
+    function schedulePendingCreationCommit(delay = 24) {
+      const pending = pendingCreationCommitsRef.current;
+      if (pending.timer != null || !pending.objects.length) return;
+      pending.timer = window.setTimeout(() => {
+        pending.timer = null;
+        if (disposed) {
+          pending.objects = [];
+          return;
+        }
+        // Never serialize or enqueue server writes while a physical drawing contact is
+        // active or while the browser already has input waiting. Creation input always wins.
+        let inputPending = false;
+        try {
+          inputPending = Boolean(globalThis.navigator?.scheduling?.isInputPending?.({
+            includeContinuous: true,
+          }));
+        } catch {
+          inputPending = false;
+        }
+        if (creationInputRef.current.activeSession || inputPending) {
+          schedulePendingCreationCommit(24);
+          return;
+        }
+        const object = pending.objects.shift();
+        if (object && canvas.getObjects().includes(object)) commitAddedObject(object);
+        if (pending.objects.length) schedulePendingCreationCommit(8);
+      }, delay);
+    }
+
+    function enqueueCreationCommit(object) {
+      if (!object) return;
+      pendingCreationCommitsRef.current.objects.push(object);
+      schedulePendingCreationCommit();
+    }
+
+    function flushPendingCreationCommits() {
+      const pending = pendingCreationCommitsRef.current;
+      window.clearTimeout(pending.timer);
+      pending.timer = null;
+      const objects = pending.objects.splice(0);
+      objects.forEach((object) => {
+        if (object && canvas.getObjects().includes(object)) commitAddedObject(object);
+      });
+    }
 
     function clearCreationPreview() {
       if (creationPreviewFrame != null) {
@@ -5257,10 +5311,17 @@ function BoardWorkspace({
       }
     }
 
+    function currentCreationDraft() {
+      return creationInputRef.current.activeSession?.draft ?? null;
+    }
+
     function drawCreationPreviewNow() {
       creationPreviewFrame = null;
-      const draft = shapeDraftRef.current ?? lineRef.current;
+      const draft = currentCreationDraft();
       const object = draft?.object;
+      // PencilBrush owns contextTop while a freehand stroke is active. Never clear that
+      // preview from the line/shape renderer during unrelated Fabric render cycles.
+      if (!object) return;
       const contextTop = canvas.contextTop;
       if (!contextTop) return;
 
@@ -5315,215 +5376,424 @@ function BoardWorkspace({
       }
     }
 
-    function creationPointerFromNativeEvent(nativeEvent) {
-      const directPointerId = nativeEvent?.pointerId;
-      const directPointerType = typeof nativeEvent?.pointerType === 'string'
-        ? nativeEvent.pointerType
-        : null;
-      if (directPointerId != null) {
-        const pointerType = directPointerType || 'unknown';
-        return {
-          key: `pointer:${pointerType}:${String(directPointerId)}`,
-          pointerId: directPointerId,
-          pointerType,
-        };
-      }
-
-      const changedTouches = nativeEvent?.changedTouches
-        ? Array.from(nativeEvent.changedTouches)
-        : [];
-      const activeTouches = nativeEvent?.touches
-        ? Array.from(nativeEvent.touches)
-        : [];
-      const touch = changedTouches.length === 1
-        ? changedTouches[0]
-        : (activeTouches.length === 1 ? activeTouches[0] : null);
-      if (touch?.identifier != null) {
-        return {
-          key: `touch:${String(touch.identifier)}`,
-          pointerId: touch.identifier,
-          pointerType: 'touch',
-        };
-      }
-
-      const eventType = String(nativeEvent?.type ?? '').toLowerCase();
-      const pointerType = directPointerType
-        || (eventType.startsWith('touch') ? 'touch' : (eventType.startsWith('mouse') ? 'mouse' : 'unknown'));
-      return {
-        key: pointerType === 'mouse' ? 'mouse:primary' : null,
-        pointerId: null,
-        pointerType,
-      };
-    }
-
-    function rememberNativeCreationPointer(event) {
-      if (!['line', 'shape'].includes(activeToolRef.current)) return;
-      if (shapeDraftRef.current || lineRef.current) return;
-      if (Number(event?.button ?? 0) > 0) return;
-      pendingNativeCreationPointer = {
-        key: `pointer:${String(event.pointerType || 'unknown')}:${String(event.pointerId)}`,
-        pointerId: event.pointerId,
-        pointerType: event.pointerType || 'unknown',
-        clientX: Number(event.clientX ?? 0),
-        clientY: Number(event.clientY ?? 0),
-        startedAt: performance.now(),
-      };
-    }
-
-    function creationPointerForDraft(nativeEvent) {
-      const captured = pendingNativeCreationPointer;
-      pendingNativeCreationPointer = null;
-      if (captured && performance.now() - captured.startedAt < 500) return captured;
-      return creationPointerFromNativeEvent(nativeEvent);
-    }
-
-    function clearPendingNativeCreationPointer(event = null) {
-      if (!pendingNativeCreationPointer) return;
-      if (event?.pointerId != null
-        && String(event.pointerId) !== String(pendingNativeCreationPointer.pointerId)) return;
-      pendingNativeCreationPointer = null;
-    }
-
-    function creationDraftOwnsEvent(draft, nativeEvent) {
-      if (!draft) return false;
-      const pointer = creationPointerFromNativeEvent(nativeEvent);
-      if (draft.pointerId != null && pointer.pointerId != null) {
-        return String(draft.pointerId) === String(pointer.pointerId);
-      }
-      if (draft.pointerKey && pointer.key) return draft.pointerKey === pointer.key;
-      if (draft.pointerType && draft.pointerType !== 'unknown'
-        && pointer.pointerType && pointer.pointerType !== 'unknown') {
-        return draft.pointerType === pointer.pointerType;
-      }
-      // Some Fabric compatibility events do not retain pointer metadata. Accept such
-      // an event only when there is no contradictory identity to compare.
-      return pointer.key == null && pointer.pointerId == null;
-    }
-
-    function finalizeCreationDraft(nativeEvent = null) {
-      const shapeDraft = shapeDraftRef.current;
-      if (shapeDraft) {
-        if (nativeEvent && !creationDraftOwnsEvent(shapeDraft, nativeEvent)) return false;
-        if (shapeDraft.cancelled || shapeDraft.finalized) return false;
-        shapeDraft.finalized = true;
-        shapeDraftRef.current = null;
-        clearCreationPreview();
-        endLiveTransform(shapeDraft.object, shapeDraft.sessionId);
-
-        const bounds = shapeDraft.object.getBoundingRect();
-        if (bounds.width < 4 || bounds.height < 4) {
-          realtimeRef.current?.sendDeletePreview?.([shapeDraft.object.boardObjectId]).catch?.(() => undefined);
-          setSaveStatus('Фигура слишком маленькая');
-          return true;
-        }
-
-        const selectableNow = canEditRef.current
-          && activeToolRef.current === 'select'
-          && !eyedropperActiveRef.current;
-        shapeDraft.object.set({
-          selectable: selectableNow,
-          evented: selectableNow,
-          hasControls: true,
-          hasBorders: true,
-        });
-        shapeDraft.object.setCoords();
-        addCreationObjectWithoutImmediateRender(shapeDraft.object);
-        commitAddedObject(shapeDraft.object);
-        setSaveStatus('Фигура создана — можно нарисовать следующую');
-        return true;
-      }
-
-      const lineDraft = lineRef.current;
-      if (lineDraft) {
-        if (nativeEvent && !creationDraftOwnsEvent(lineDraft, nativeEvent)) return false;
-        if (lineDraft.cancelled || lineDraft.finalized) return false;
-        lineDraft.finalized = true;
-        lineRef.current = null;
-        lineStartRef.current = null;
-        clearCreationPreview();
-
-        const line = lineDraft.object;
-        const length = Math.hypot(
-          Number(line.x2) - lineDraft.start.x,
-          Number(line.y2) - lineDraft.start.y,
-        );
-        if (length < 3) {
-          finishLiveDraw('cancel', lineDraft.sessionId);
-          return true;
-        }
-
-        finishLiveDraw('end', lineDraft.sessionId);
-        addCreationObjectWithoutImmediateRender(line);
-        commitAddedObject(line);
-        return true;
-      }
-
-      return false;
-    }
-
-
-    function cancelCreationDraft(reason = 'cancel', nativeEvent = null) {
-      let cancelled = false;
-      let removedFromMainCanvas = false;
-      const lineDraft = lineRef.current;
-      if (lineDraft
-        && (!nativeEvent || creationDraftOwnsEvent(lineDraft, nativeEvent))
-        && !lineDraft.finalized
-        && !lineDraft.cancelled) {
-        lineDraft.cancelled = true;
-        lineDraft.finalized = true;
-        lineRef.current = null;
-        lineStartRef.current = null;
-        finishLiveDraw('cancel', lineDraft.sessionId);
-        if (canvas.getObjects().includes(lineDraft.object)) {
-          applyingRemoteRef.current = true;
-          canvas.remove(lineDraft.object);
-          applyingRemoteRef.current = false;
-          removedFromMainCanvas = true;
-        }
-        cancelled = true;
-      }
-
-      const shapeDraft = shapeDraftRef.current;
-      if (shapeDraft
-        && (!nativeEvent || creationDraftOwnsEvent(shapeDraft, nativeEvent))
-        && !shapeDraft.finalized
-        && !shapeDraft.cancelled) {
-        shapeDraft.cancelled = true;
-        shapeDraft.finalized = true;
-        shapeDraftRef.current = null;
-        endLiveTransform(shapeDraft.object, shapeDraft.sessionId);
-        if (canvas.getObjects().includes(shapeDraft.object)) {
-          applyingRemoteRef.current = true;
-          canvas.remove(shapeDraft.object);
-          applyingRemoteRef.current = false;
-          removedFromMainCanvas = true;
-        }
-        realtimeRef.current?.sendDeletePreview?.([shapeDraft.object.boardObjectId]).catch?.(() => undefined);
-        cancelled = true;
-      }
-
-      if (cancelled) {
-        clearCreationPreview();
-        if (removedFromMainCanvas) canvas.requestRenderAll();
-        if (reason === 'pointercancel') setSaveStatus('Создание объекта отменено системой ввода');
-      }
-      return cancelled;
-    }
-
-    cancelCreationDraftRef.current = cancelCreationDraft;
-
-    const redrawCreationPreviewAfterCanvasRender = () => {
-      if (shapeDraftRef.current || lineRef.current) scheduleCreationPreview();
-    };
-    canvas.on('after:render', redrawCreationPreviewAfterCanvasRender);
-
     function scenePointFromClient(clientX, clientY) {
       const rect = canvas.upperCanvasEl.getBoundingClientRect();
       const viewportPoint = new Point(clientX - rect.left, clientY - rect.top);
       const inverse = util.invertTransform(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]);
       return util.transformPoint(viewportPoint, inverse);
     }
+
+    function normalizeCreationPointerEvent(nativeEvent) {
+      const clientX = Number(nativeEvent?.clientX ?? 0);
+      const clientY = Number(nativeEvent?.clientY ?? 0);
+      return {
+        nativeEvent,
+        pointerId: nativeEvent?.pointerId ?? null,
+        pointerType: String(nativeEvent?.pointerType ?? 'unknown'),
+        pressure: Number(nativeEvent?.pressure ?? 0),
+        buttons: Number(nativeEvent?.buttons ?? 0),
+        clientPoint: new Point(clientX, clientY),
+        scenePoint: scenePointFromClient(clientX, clientY),
+        timestamp: Number(nativeEvent?.timeStamp ?? performance.now()),
+      };
+    }
+
+    function creationSessionOwnsEvent(session, nativeEvent) {
+      if (!session || !nativeEvent) return false;
+      if (session.pointerId != null && nativeEvent.pointerId != null) {
+        return String(session.pointerId) === String(nativeEvent.pointerId);
+      }
+      return session.pointerType === String(nativeEvent.pointerType ?? 'unknown');
+    }
+
+    function consumeCreationPointerEvent(event) {
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      event.stopImmediatePropagation?.();
+    }
+
+    function releaseCreationPointerCapture(session) {
+      if (!session?.captureTarget || session.pointerId == null) return;
+      try {
+        if (session.captureTarget.hasPointerCapture?.(session.pointerId)) {
+          session.captureTarget.releasePointerCapture?.(session.pointerId);
+        }
+      } catch {
+        // Safari may release capture itself before pointerup/pointercancel reaches us.
+      }
+    }
+
+    function resetPencilBrushPreview(brush) {
+      clearCreationPreview();
+      if (!brush) return;
+      // PencilBrush has no public cancel method. Clearing its transient point list is a
+      // narrow fallback used only for pointercancel/gesture interruption; normal strokes
+      // use the public onMouseDown/onMouseMove/onMouseUp methods.
+      try {
+        if (Array.isArray(brush._points)) brush._points.length = 0;
+        brush.oldEnd = undefined;
+        brush._hasStraightLine = false;
+      } catch {
+        // The visible preview has already been cleared, so a future stroke can recover.
+      }
+    }
+
+    // Creation pencil rendering is intentionally isolated from canvas.freeDrawingBrush.
+    // Tool switches may reconfigure the Fabric brush for the partial eraser, but they must
+    // never mutate the renderer that belongs to an already active Pencil contact.
+    const creationPencilBrush = new PencilBrush(canvas);
+    let finalizingPencilPath = null;
+    const creationToolContext = {
+      canvas,
+      clientId,
+      pencilBrush: creationPencilBrush,
+      enqueueCommit: enqueueCreationCommit,
+      clearPreview: clearCreationPreview,
+      schedulePreview: scheduleCreationPreview,
+    };
+
+    const pencilTool = {
+      begin(context, input) {
+        const now = Date.now();
+        pendingPencilQueueRef.current = pendingPencilQueueRef.current.filter((pending) => {
+          const stale = pending.consumed
+            || now - Number(pending.startedAt ?? 0) > 1800
+            || (pending.mouseReleased && now - Number(pending.releasedAt ?? now) > 750);
+          if (stale) window.clearTimeout(pending.cancelTimer);
+          return !stale;
+        });
+
+        const brush = context.pencilBrush;
+        brush.color = hexToRgba(colorRef.current, opacityRef.current);
+        brush.width = widthRef.current;
+
+        const objectId = randomToken(10);
+        const liveSessionId = beginLiveDraw('pencil', objectId, input.scenePoint, {
+          stroke: brush.color,
+          width: brush.width,
+        });
+        const pending = {
+          objectId,
+          sessionId: liveSessionId,
+          pointerId: input.pointerId,
+          pointerType: input.pointerType,
+          cancelTimer: null,
+          startedAt: now,
+          mouseReleased: false,
+          releasedAt: 0,
+          consumed: false,
+          cancelled: false,
+          firstPoint: { x: Number(input.scenePoint.x), y: Number(input.scenePoint.y) },
+          brush,
+        };
+        pendingPencilQueueRef.current.push(pending);
+        activePencilRef.current = pending;
+        brush.onMouseDown(input.scenePoint, { e: input.nativeEvent });
+        return pending;
+      },
+
+      move(context, session, input) {
+        const pending = session.draft;
+        if (!pending || pending.cancelled || pending.mouseReleased) return;
+        pending.brush.onMouseMove(input.scenePoint, { e: input.nativeEvent });
+        if (liveDrawSendRef.current.sessionId === pending.sessionId) updateLiveDraw(input.scenePoint);
+      },
+
+      end(context, session, input) {
+        const pending = session.draft;
+        if (!pending || pending.mouseReleased) return;
+        pending.mouseReleased = true;
+        pending.releasedAt = Date.now();
+        if (liveDrawSendRef.current.sessionId === pending.sessionId) {
+          updateLiveDraw(input.scenePoint);
+          finishLiveDraw(pending.cancelled ? 'cancel' : 'end', pending.sessionId);
+        }
+        finalizingPencilPath = pending;
+        try {
+          pending.brush.onMouseUp({ e: input.nativeEvent });
+        } catch (error) {
+          console.error('Не удалось завершить штрих карандаша', error);
+          pending.cancelled = true;
+          resetPencilBrushPreview(pending.brush);
+          finishLiveDraw('cancel', pending.sessionId);
+        } finally {
+          if (finalizingPencilPath === pending) finalizingPencilPath = null;
+        }
+        window.clearTimeout(pending.cancelTimer);
+        if (!pending.consumed) {
+          pending.cancelTimer = window.setTimeout(() => {
+            const index = pendingPencilQueueRef.current.indexOf(pending);
+            if (index >= 0) pendingPencilQueueRef.current.splice(index, 1);
+            if (activePencilRef.current === pending) activePencilRef.current = null;
+            if (!pending.consumed) finishLiveDraw('cancel', pending.sessionId);
+          }, pending.cancelled ? 80 : 850);
+        }
+      },
+
+      cancel(context, session) {
+        const pending = session.draft;
+        if (!pending || pending.cancelled) return;
+        pending.cancelled = true;
+        pending.mouseReleased = true;
+        pending.releasedAt = Date.now();
+        finishLiveDraw('cancel', pending.sessionId);
+        resetPencilBrushPreview(pending.brush);
+        window.clearTimeout(pending.cancelTimer);
+        pending.cancelTimer = window.setTimeout(() => {
+          const index = pendingPencilQueueRef.current.indexOf(pending);
+          if (index >= 0) pendingPencilQueueRef.current.splice(index, 1);
+          if (activePencilRef.current === pending) activePencilRef.current = null;
+        }, 100);
+      },
+    };
+
+    const lineTool = {
+      begin(context, input) {
+        const point = input.scenePoint;
+        const line = new Line([point.x, point.y, point.x, point.y], {
+          stroke: hexToRgba(colorRef.current, opacityRef.current),
+          strokeWidth: widthRef.current,
+          fill: hexToRgba(colorRef.current, opacityRef.current),
+          strokeLineCap: 'round',
+          selectable: false,
+          evented: false,
+        });
+        markObject(line, context.clientId);
+        const liveSessionId = beginLiveDraw('line', line.boardObjectId, point, {
+          stroke: hexToRgba(colorRef.current, opacityRef.current),
+          width: widthRef.current,
+        });
+        line.creationSessionId = liveSessionId;
+        line.creationClientId = context.clientId;
+        const draft = {
+          kind: 'line',
+          object: line,
+          start: new Point(point.x, point.y),
+          sessionId: liveSessionId,
+          cancelled: false,
+          finalized: false,
+        };
+        prepareCreationPreviewObject(line);
+        context.schedulePreview();
+        return draft;
+      },
+
+      move(context, session, input) {
+        const draft = session.draft;
+        if (!draft || draft.cancelled || draft.finalized) return;
+        const point = input.scenePoint;
+        if (liveDrawSendRef.current.sessionId === draft.sessionId) updateLiveDraw(point);
+        draft.object.set({ x2: point.x, y2: point.y });
+        draft.object.setCoords();
+        context.schedulePreview();
+      },
+
+      end(context, session, input) {
+        const draft = session.draft;
+        if (!draft || draft.cancelled || draft.finalized) return;
+        draft.finalized = true;
+        const point = input.scenePoint;
+        draft.object.set({ x2: point.x, y2: point.y });
+        draft.object.setCoords();
+        context.clearPreview();
+        const length = Math.hypot(point.x - draft.start.x, point.y - draft.start.y);
+        if (length < 3) {
+          finishLiveDraw('cancel', draft.sessionId);
+          return;
+        }
+        finishLiveDraw('end', draft.sessionId);
+        const selectableNow = canEditRef.current
+          && activeToolRef.current === 'select'
+          && !eyedropperActiveRef.current;
+        draft.object.set({
+          selectable: selectableNow,
+          evented: selectableNow,
+          hasControls: true,
+          hasBorders: true,
+        });
+        addCreationObjectWithoutImmediateRender(draft.object);
+        context.enqueueCommit(draft.object);
+      },
+
+      cancel(context, session) {
+        const draft = session.draft;
+        if (!draft || draft.cancelled || draft.finalized) return;
+        draft.cancelled = true;
+        draft.finalized = true;
+        finishLiveDraw('cancel', draft.sessionId);
+        context.clearPreview();
+      },
+    };
+
+    const shapeTool = {
+      begin(context, input) {
+        const shapeId = selectedShapeRef.current;
+        if (!shapeId) return null;
+        const point = input.scenePoint;
+        const object = createShape(shapeId, {
+          stroke: hexToRgba(colorRef.current, opacityRef.current),
+          strokeWidth: widthRef.current,
+        });
+        if (!object) return null;
+        markObject(object, context.clientId);
+        const baseWidth = Math.max(1, Number(object.width ?? 1));
+        const baseHeight = Math.max(1, Number(object.height ?? 1));
+        object.set({
+          left: point.x,
+          top: point.y,
+          originX: 'center',
+          originY: 'center',
+          scaleX: 0.01,
+          scaleY: 0.01,
+          selectable: false,
+          evented: false,
+          hasControls: false,
+          hasBorders: false,
+        });
+        object.setCoords();
+        context.canvas.discardActiveObject();
+        prepareCreationPreviewObject(object);
+        realtimeRef.current?.sendPreview?.([{
+          object: serializeObject(object),
+          zIndex: Number(object.creationDraftZIndex ?? context.canvas.getObjects().length),
+        }]);
+        const draft = {
+          kind: 'shape',
+          object,
+          start: new Point(point.x, point.y),
+          baseWidth,
+          baseHeight,
+          sessionId: beginLiveTransform(object),
+          cancelled: false,
+          finalized: false,
+        };
+        context.schedulePreview();
+        return draft;
+      },
+
+      move(context, session, input) {
+        const draft = session.draft;
+        if (!draft || draft.cancelled || draft.finalized) return;
+        const dx = input.scenePoint.x - draft.start.x;
+        const dy = input.scenePoint.y - draft.start.y;
+        const drawnWidth = Math.max(2, Math.abs(dx));
+        const drawnHeight = Math.max(2, Math.abs(dy));
+        draft.object.set({
+          left: draft.start.x + dx / 2,
+          top: draft.start.y + dy / 2,
+          scaleX: drawnWidth / draft.baseWidth,
+          scaleY: drawnHeight / draft.baseHeight,
+        });
+        draft.object.dirty = true;
+        draft.object.setCoords();
+        sendLiveTransformThrottled(draft.object);
+        context.schedulePreview();
+      },
+
+      end(context, session, input) {
+        const draft = session.draft;
+        if (!draft || draft.cancelled || draft.finalized) return;
+        const dx = input.scenePoint.x - draft.start.x;
+        const dy = input.scenePoint.y - draft.start.y;
+        const drawnWidth = Math.max(2, Math.abs(dx));
+        const drawnHeight = Math.max(2, Math.abs(dy));
+        draft.object.set({
+          left: draft.start.x + dx / 2,
+          top: draft.start.y + dy / 2,
+          scaleX: drawnWidth / draft.baseWidth,
+          scaleY: drawnHeight / draft.baseHeight,
+        });
+        draft.object.dirty = true;
+        draft.object.setCoords();
+        sendLiveTransformThrottled(draft.object);
+        draft.finalized = true;
+        context.clearPreview();
+        endLiveTransform(draft.object, draft.sessionId);
+        const bounds = draft.object.getBoundingRect();
+        if (bounds.width < 4 || bounds.height < 4) {
+          realtimeRef.current?.sendDeletePreview?.([draft.object.boardObjectId]).catch?.(() => undefined);
+          setSaveStatus('Фигура слишком маленькая');
+          return;
+        }
+        const selectableNow = canEditRef.current
+          && activeToolRef.current === 'select'
+          && !eyedropperActiveRef.current;
+        draft.object.set({
+          selectable: selectableNow,
+          evented: selectableNow,
+          hasControls: true,
+          hasBorders: true,
+        });
+        draft.object.setCoords();
+        addCreationObjectWithoutImmediateRender(draft.object);
+        context.enqueueCommit(draft.object);
+        setSaveStatus('Фигура создана — можно нарисовать следующую');
+      },
+
+      cancel(context, session) {
+        const draft = session.draft;
+        if (!draft || draft.cancelled || draft.finalized) return;
+        draft.cancelled = true;
+        draft.finalized = true;
+        endLiveTransform(draft.object, draft.sessionId);
+        realtimeRef.current?.sendDeletePreview?.([draft.object.boardObjectId]).catch?.(() => undefined);
+        context.clearPreview();
+      },
+    };
+
+    creationToolRegistryRef.current = new Map([
+      ['pencil', pencilTool],
+      ['line', lineTool],
+      ['shape', shapeTool],
+    ]);
+    creationInputRef.current.selectedToolId = activeToolRef.current;
+
+    function cancelCreationDraft(reason = 'cancel', nativeEvent = null, force = false) {
+      const controller = creationInputRef.current;
+      const session = controller.activeSession;
+      if (!session) return false;
+      if (!force && nativeEvent && !creationSessionOwnsEvent(session, nativeEvent)) return false;
+      controller.activeSession = null;
+      releaseCreationPointerCapture(session);
+      try {
+        session.tool.cancel(session.context, session, reason);
+      } catch (error) {
+        console.error('Не удалось отменить создание объекта', error);
+        clearCreationPreview();
+      }
+      if (reason === 'pointercancel') setSaveStatus('Создание объекта отменено системой ввода');
+      schedulePendingCreationCommit();
+      return true;
+    }
+
+    function finishCreationSession(nativeEvent = null, reason = 'pointerup', force = false) {
+      const controller = creationInputRef.current;
+      const session = controller.activeSession;
+      if (!session) return false;
+      if (!force && nativeEvent && !creationSessionOwnsEvent(session, nativeEvent)) return false;
+
+      // The physical input lock is released before tool finalization, realtime, history or
+      // persistence. A new contact can therefore begin immediately with the newly selected tool.
+      controller.activeSession = null;
+      releaseCreationPointerCapture(session);
+      const input = nativeEvent ? normalizeCreationPointerEvent(nativeEvent) : session.lastInput;
+      try {
+        session.tool.end(session.context, session, input);
+      } catch (error) {
+        console.error('Не удалось завершить создание объекта', error);
+        try { session.tool.cancel(session.context, session, 'end-error'); } catch { clearCreationPreview(); }
+      }
+      schedulePendingCreationCommit();
+      return true;
+    }
+
+    cancelCreationDraftRef.current = cancelCreationDraft;
+
+    const redrawCreationPreviewAfterCanvasRender = () => {
+      if (currentCreationDraft()?.object) scheduleCreationPreview();
+    };
+    canvas.on('after:render', redrawCreationPreviewAfterCanvasRender);
+
 
     function objectAtScenePoint(scenePoint, { strictImageBounds = false } = {}) {
       const tolerance = Math.max(7, 18 / Math.max(canvas.getZoom(), MIN_ZOOM));
@@ -5645,13 +5915,19 @@ function BoardWorkspace({
     }
 
     canvas.on('path:created', ({ path }) => {
-      const isPartialEraserPath = activeToolRef.current === 'eraser'
-        && eraserModeRef.current === 'partial';
       const now = Date.now();
+      const directPending = finalizingPencilPath && !finalizingPencilPath.consumed
+        ? finalizingPencilPath
+        : null;
       const activePending = activePencilRef.current;
-      const candidates = pendingPencilQueueRef.current.filter((pending) => (
-        !pending.consumed && now - Number(pending.startedAt ?? 0) < 1800
-      ));
+      const partialEraserOwnsPath = !directPending
+        && activeToolRef.current === 'eraser'
+        && eraserModeRef.current === 'partial';
+      const candidates = partialEraserOwnsPath
+        ? []
+        : pendingPencilQueueRef.current.filter((pending) => (
+          !pending.consumed && now - Number(pending.startedAt ?? 0) < 1800
+        ));
 
       // Match the Fabric path to the stroke that started at the same scene point.
       // Pure FIFO/LIFO matching can attach a delayed path:created event to a different
@@ -5672,8 +5948,8 @@ function BoardWorkspace({
         pathStartPoint = null;
       }
 
-      let pendingCandidate = null;
-      if (pathStartPoint) {
+      let pendingCandidate = directPending;
+      if (!pendingCandidate && pathStartPoint) {
         const tolerance = Math.max(14, 34 / Math.max(canvas.getZoom(), MIN_ZOOM));
         const ranked = candidates
           .map((pending) => ({
@@ -5690,7 +5966,7 @@ function BoardWorkspace({
         if (ranked[0]?.distance <= tolerance) pendingCandidate = ranked[0].pending;
       }
 
-      if (!pendingCandidate) {
+      if (!pendingCandidate && !partialEraserOwnsPath) {
         const recentlyReleased = candidates
           .filter((pending) => pending.mouseReleased
             && now - Number(pending.releasedAt ?? 0) <= 750)
@@ -5701,9 +5977,8 @@ function BoardWorkspace({
           ?? null;
       }
 
-      const pendingPencil = !isPartialEraserPath && pendingCandidate
-        ? pendingCandidate
-        : null;
+      const pendingPencil = pendingCandidate ?? null;
+      const isPartialEraserPath = !pendingPencil && partialEraserOwnsPath;
       if (pendingPencil) {
         pendingPencil.consumed = true;
         const queueIndex = pendingPencilQueueRef.current.indexOf(pendingPencil);
@@ -5726,6 +6001,15 @@ function BoardWorkspace({
         // interrupted sibling carrying the same session, even when a buggy browser
         // assigned it a different boardObjectId.
         removeBoardObjectsByCreationSession(canvas, clientId, pendingPencil.sessionId, path);
+        const selectableNow = canEditRef.current
+          && activeToolRef.current === 'select'
+          && !eyedropperActiveRef.current;
+        path.set({
+          selectable: selectableNow,
+          evented: selectableNow,
+          hasControls: true,
+          hasBorders: true,
+        });
       }
       if (isPartialEraserPath) {
         path.set({
@@ -5738,7 +6022,8 @@ function BoardWorkspace({
         path.dirty = true;
         canvas.requestRenderAll();
       }
-      commitAddedObject(path);
+      if (pendingPencil) enqueueCreationCommit(path);
+      else commitAddedObject(path);
     });
 
     canvas.on('before:transform', ({ transform }) => {
@@ -5872,22 +6157,6 @@ function BoardWorkspace({
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
-      if (activeToolRef.current === 'pencil') {
-        const activeStroke = activePencilRef.current;
-        if (activeStroke && !activeStroke.mouseReleased) {
-          // One physical pointer owns one stroke from start to finish. A palm or a
-          // second finger cannot open another Fabric path while that stroke is active.
-          if (pointerId == null || activeStroke.pointerId !== pointerId) {
-            nativeEvent.preventDefault?.();
-            nativeEvent.stopPropagation?.();
-            nativeEvent.stopImmediatePropagation?.();
-            return;
-          }
-          // Safari can occasionally repeat mouse:down for the same Pencil pointer.
-          nativeEvent.preventDefault?.();
-          return;
-        }
-      }
       const scenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = scenePoint;
       if (nativeEvent.button === 1 || nativeEvent.button === 2 || spacePressedRef.current) {
@@ -6038,62 +6307,9 @@ function BoardWorkspace({
         || nativeEvent.pointerType === 'touch'
         || nativeEvent.pointerType === 'pen';
 
-      const activeCreationDraft = shapeDraftRef.current ?? lineRef.current;
-      if (activeCreationDraft && ['shape', 'line'].includes(activeToolRef.current)) {
-        if (creationDraftOwnsEvent(activeCreationDraft, nativeEvent)) nativeEvent.preventDefault?.();
-        return;
-      }
-
-      if (activeToolRef.current === 'shape' && selectedShapeRef.current && primarySelectionPointer) {
-        nativeEvent.preventDefault?.();
-        const point = scenePoint;
-        const object = createShape(selectedShapeRef.current, {
-          stroke: hexToRgba(colorRef.current, opacityRef.current),
-          strokeWidth: widthRef.current,
-        });
-        if (!object) return;
-        markObject(object, clientId);
-        const baseWidth = Math.max(1, Number(object.width ?? 1));
-        const baseHeight = Math.max(1, Number(object.height ?? 1));
-        object.set({
-          left: point.x,
-          top: point.y,
-          originX: 'center',
-          originY: 'center',
-          scaleX: 0.01,
-          scaleY: 0.01,
-          selectable: false,
-          evented: false,
-          hasControls: false,
-          hasBorders: false,
-        });
-        object.setCoords();
-        canvas.discardActiveObject();
-        prepareCreationPreviewObject(object);
-        const creationPointer = creationPointerForDraft(nativeEvent);
-        const shapeDraft = {
-          kind: 'shape',
-          object,
-          start: new Point(point.x, point.y),
-          baseWidth,
-          baseHeight,
-          pointerKey: creationPointer.key,
-          pointerId: creationPointer.pointerId,
-          pointerType: creationPointer.pointerType,
-          startedAt: Date.now(),
-          sessionId: null,
-          cancelled: false,
-          finalized: false,
-        };
-        shapeDraftRef.current = shapeDraft;
-        realtimeRef.current?.sendPreview?.([{
-          object: serializeObject(object),
-          zIndex: Number(object.creationDraftZIndex ?? canvas.getObjects().length),
-        }]);
-        shapeDraft.sessionId = beginLiveTransform(object);
-        scheduleCreationPreview();
-        return;
-      }
+      // Creation tools are handled by the native pointer controller in capture phase.
+      // This guard also prevents compatibility mouse events from creating duplicates.
+      if (creationToolRegistryRef.current.has(activeToolRef.current)) return;
 
       if (activeToolRef.current === 'select' && !event.target && primarySelectionPointer) {
         const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
@@ -6118,41 +6334,6 @@ function BoardWorkspace({
         selectionBoxRef.current = selectionBox;
         canvas.add(selectionBox);
         if (typeof canvas.bringObjectToFront === 'function') canvas.bringObjectToFront(selectionBox);
-      }
-
-      if (activeToolRef.current === 'pencil') {
-        const point = scenePoint;
-        const now = Date.now();
-        // A stroke that produced no Fabric path must never remain at the front of a
-        // FIFO queue and steal the id of the next stroke.
-        pendingPencilQueueRef.current = pendingPencilQueueRef.current.filter((pending) => {
-          const stale = pending.consumed
-            || now - Number(pending.startedAt ?? 0) > 1800
-            || (pending.mouseReleased && now - Number(pending.releasedAt ?? now) > 750);
-          if (stale) window.clearTimeout(pending.cancelTimer);
-          return !stale;
-        });
-        if (activePencilRef.current?.mouseReleased) activePencilRef.current = null;
-        const objectId = randomToken(10);
-        const sessionId = beginLiveDraw('pencil', objectId, point, {
-          stroke: hexToRgba(colorRef.current, opacityRef.current),
-          width: widthRef.current,
-        });
-        const pendingPencil = {
-          objectId,
-          sessionId,
-          pointerId,
-          pointerType: nativeEvent?.pointerType ?? 'unknown',
-          cancelTimer: null,
-          startedAt: Date.now(),
-          mouseReleased: false,
-          releasedAt: 0,
-          consumed: false,
-          cancelled: false,
-          firstPoint: { x: Number(point.x), y: Number(point.y) },
-        };
-        pendingPencilQueueRef.current.push(pendingPencil);
-        activePencilRef.current = pendingPencil;
       }
 
       if (activeToolRef.current === 'text') {
@@ -6193,41 +6374,7 @@ function BoardWorkspace({
         return;
       }
 
-      if (activeToolRef.current === 'line') {
-        const point = scenePoint;
-        const line = new Line([point.x, point.y, point.x, point.y], {
-          stroke: hexToRgba(colorRef.current, opacityRef.current),
-          strokeWidth: widthRef.current,
-          fill: hexToRgba(colorRef.current, opacityRef.current),
-          strokeLineCap: 'round',
-          selectable: false,
-          evented: false,
-        });
-        markObject(line, clientId);
-        const sessionId = beginLiveDraw('line', line.boardObjectId, point, {
-          stroke: hexToRgba(colorRef.current, opacityRef.current),
-          width: widthRef.current,
-        });
-        line.creationSessionId = sessionId;
-        line.creationClientId = clientId;
-        const creationPointer = creationPointerForDraft(nativeEvent);
-        lineRef.current = {
-          kind: 'line',
-          object: line,
-          start: new Point(point.x, point.y),
-          pointerKey: creationPointer.key,
-          pointerId: creationPointer.pointerId,
-          pointerType: creationPointer.pointerType,
-          startedAt: Date.now(),
-          sessionId,
-          cancelled: false,
-          finalized: false,
-        };
-        lineStartRef.current = point;
-        prepareCreationPreviewObject(line);
-        scheduleCreationPreview();
-        return;
-      }
+
 
     });
 
@@ -6254,25 +6401,6 @@ function BoardWorkspace({
       }
 
       if (!canEditRef.current) return;
-      if (shapeDraftRef.current && activeToolRef.current === 'shape') {
-        const draft = shapeDraftRef.current;
-        if (draft.cancelled || draft.finalized || !creationDraftOwnsEvent(draft, nativeEvent)) return;
-        const dx = cursorScenePoint.x - draft.start.x;
-        const dy = cursorScenePoint.y - draft.start.y;
-        const drawnWidth = Math.max(2, Math.abs(dx));
-        const drawnHeight = Math.max(2, Math.abs(dy));
-        draft.object.set({
-          left: draft.start.x + dx / 2,
-          top: draft.start.y + dy / 2,
-          scaleX: drawnWidth / draft.baseWidth,
-          scaleY: drawnHeight / draft.baseHeight,
-        });
-        draft.object.dirty = true;
-        draft.object.setCoords();
-        sendLiveTransformThrottled(draft.object);
-        scheduleCreationPreview();
-        return;
-      }
       if (selectionDragRef.current && activeToolRef.current === 'select') {
         selectionDragRef.current.end = cursorScenePoint;
         const selectionBox = selectionBoxRef.current;
@@ -6289,34 +6417,14 @@ function BoardWorkspace({
           canvas.requestRenderAll();
         }
       }
-      const activeStroke = activePencilRef.current;
-      const pencilPointerMatches = !activeStroke
-        || nativeEvent?.pointerId == null
-        || activeStroke.pointerId === nativeEvent.pointerId;
-      if (pencilPointerMatches
-        && liveDrawSendRef.current.sessionId
-        && liveDrawSendRef.current.tool === 'pencil') {
-        updateLiveDraw(cursorScenePoint);
-      }
-      if (activeToolRef.current === 'line' && lineRef.current) {
-        const draft = lineRef.current;
-        if (draft.cancelled || draft.finalized || !creationDraftOwnsEvent(draft, nativeEvent)) return;
-        const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
-        if (liveDrawSendRef.current.sessionId === draft.sessionId
-          && liveDrawSendRef.current.tool === 'line') {
-          updateLiveDraw(point);
-        }
-        draft.object.set({ x2: point.x, y2: point.y });
-        draft.object.setCoords();
-        scheduleCreationPreview();
-      }
     });
 
     canvas.on('mouse:up', (event) => {
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
-      if (liveTransformSendRef.current.sessionId && !shapeDraftRef.current) {
+      const creationOwnsLiveTransform = creationInputRef.current.activeSession?.toolId === 'shape';
+      if (liveTransformSendRef.current.sessionId && !creationOwnsLiveTransform) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
       }
       if (localLockIdsRef.current.length) {
@@ -6329,33 +6437,6 @@ function BoardWorkspace({
         canvas.defaultCursor = 'default';
         configureBrushAndMode();
         return;
-      }
-
-      if (shapeDraftRef.current) {
-        if (finalizeCreationDraft(nativeEvent)) return;
-        return;
-      }
-
-      if (activeToolRef.current === 'pencil' && activePencilRef.current) {
-        const pending = activePencilRef.current;
-        if (pointerId != null && pending.pointerId != null && pointerId !== pending.pointerId) return;
-        pending.mouseReleased = true;
-        pending.releasedAt = Date.now();
-        window.clearTimeout(pending.cancelTimer);
-        if (pending.cancelled) {
-          finishLiveDraw('cancel', pending.sessionId);
-        } else {
-          finishLiveDraw('end', pending.sessionId);
-        }
-        // path:created is normally emitted during this same mouse-up. Keep the exact
-        // pending record briefly for Safari, then discard it before another stroke can
-        // ever reuse its id.
-        pending.cancelTimer = window.setTimeout(() => {
-          const index = pendingPencilQueueRef.current.indexOf(pending);
-          if (index >= 0) pendingPencilQueueRef.current.splice(index, 1);
-          if (activePencilRef.current === pending) activePencilRef.current = null;
-          if (!pending.consumed) finishLiveDraw('cancel', pending.sessionId);
-        }, pending.cancelled ? 80 : 850);
       }
 
       const selectionDrag = selectionDragRef.current;
@@ -6383,10 +6464,6 @@ function BoardWorkspace({
             canvas.requestRenderAll();
           }, 0);
         }
-      }
-
-      if (lineRef.current) {
-        finalizeCreationDraft(nativeEvent);
       }
 
     });
@@ -6612,44 +6689,39 @@ function BoardWorkspace({
       return separation >= PENCIL_HANDOFF_MIN_SEPARATION ? fingers : null;
     }
 
-    function makeSyntheticPenUpEvent() {
-      const pen = penInputRef.current;
-      const init = {
-        bubbles: false,
-        cancelable: true,
-        clientX: Number(pen.lastClientX ?? 0),
-        clientY: Number(pen.lastClientY ?? 0),
-        button: 0,
-        buttons: 0,
-        pointerId: Number(pen.pointerId ?? 1),
-        pointerType: 'pen',
-        isPrimary: true,
-        pressure: 0,
-      };
-      try {
-        return new PointerEvent('pointerup', init);
-      } catch {
-        return {
-          type: 'pointerup',
-          ...init,
-          preventDefault() {},
-          stopPropagation() {},
-          stopImmediatePropagation() {},
-        };
-      }
-    }
-
     function finishPenForTwoFingerHandoff() {
       const pen = penInputRef.current;
       if (!pen.active || Date.now() - Number(pen.lastSeenAt ?? 0) < PENCIL_HANDOFF_IDLE_MS) return false;
-      const syntheticUp = makeSyntheticPenUpEvent();
-      try {
-        if (canvas._isCurrentlyDrawing && typeof canvas._onMouseUpInDrawingMode === 'function') {
-          canvas._onMouseUpInDrawingMode(syntheticUp);
+
+      let finished = false;
+      const activeCreation = creationInputRef.current.activeSession;
+      if (activeCreation?.pointerType === 'pen') {
+        finished = finishCreationSession(null, 'two-finger-handoff', true);
+      } else if (canvas._isCurrentlyDrawing
+        && activeToolRef.current === 'eraser'
+        && eraserModeRef.current === 'partial') {
+        // Partial erasing remains a Fabric compositing tool. This fallback is isolated
+        // from pencil/line/shape creation and is used only for the two-finger handoff.
+        try {
+          const syntheticEvent = {
+            pointerId: Number(pen.pointerId ?? 1),
+            pointerType: 'pen',
+            clientX: Number(pen.lastClientX ?? 0),
+            clientY: Number(pen.lastClientY ?? 0),
+            pressure: 0,
+            button: 0,
+            buttons: 0,
+            preventDefault() {},
+            stopPropagation() {},
+          };
+          canvas._onMouseUpInDrawingMode?.(syntheticEvent);
+          finished = true;
+        } catch {
+          finished = false;
         }
-      } catch {
-        return false;
       }
+      if (!finished) return false;
+
       const now = Date.now();
       penInputRef.current = {
         pointerId: null,
@@ -6776,8 +6848,8 @@ function BoardWorkspace({
 
         const justAfterTouchGesture = performance.now()
           - Number(lastTouchGestureEndedAtRef.current ?? 0) < 350;
-        const drawingToolNeedsRepair = (activeToolRef.current === 'pencil'
-          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial'))
+        const drawingToolNeedsRepair = activeToolRef.current === 'eraser'
+          && eraserModeRef.current === 'partial'
           && !canvas.isDrawingMode;
 
         // Restore synchronously in capture phase, before this same pointerdown reaches
@@ -6786,7 +6858,6 @@ function BoardWorkspace({
         if (interruptedTouchGesture || justAfterTouchGesture || drawingToolNeedsRepair) {
           applyCanvasInputMode();
         }
-        rememberNativeCreationPointer(event);
         return;
       }
 
@@ -6805,12 +6876,10 @@ function BoardWorkspace({
         const duringGrace = Date.now() < Number(penInputRef.current.suppressUntil ?? 0)
           && contactRadius > PENCIL_HANDOFF_MAX_RADIUS;
         if (duringPencil || duringGrace) {
-          clearPendingNativeCreationPointer(event);
           rejectPointerEvent(event);
           return;
         }
       }
-      rememberNativeCreationPointer(event);
     }
 
     function handlePalmPointerMove(event) {
@@ -6827,9 +6896,6 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerEnd(event) {
-      if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
-      else finalizeCreationDraft(event);
-      clearPendingNativeCreationPointer(event);
       if (event.pointerType === 'pen' && penInputRef.current.pointerId === event.pointerId) {
         const now = Date.now();
         penInputRef.current.active = false;
@@ -6838,19 +6904,10 @@ function BoardWorkspace({
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
         penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
-        if (event.type === 'pointercancel') {
-          const pending = activePencilRef.current;
-          if (pending?.pointerId === event.pointerId) {
-            pending.cancelled = true;
-            pending.mouseReleased = true;
-            pending.releasedAt = now;
-            finishLiveDraw('cancel', pending.sessionId);
-          }
-        }
-        // A normal Pencil-up leaves Fabric in drawing mode. Reconfiguring here used to
-        // scan every object after every stroke, so only repair an actually disabled mode.
-        if ((activeToolRef.current === 'pencil'
-          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial'))
+        // Only the partial eraser still uses Fabric drawing mode. Creation tools are
+        // independent of canvas.isDrawingMode and need no post-gesture repair.
+        if (activeToolRef.current === 'eraser'
+          && eraserModeRef.current === 'partial'
           && !canvas.isDrawingMode) {
           window.requestAnimationFrame(() => {
             if (!touchGestureRef.current?.active && !canvas.isDrawingMode) applyCanvasInputMode();
@@ -6979,6 +7036,116 @@ function BoardWorkspace({
       addImageFiles(files, scenePointFromClient(event.clientX, event.clientY));
     }
 
+
+    function canStartCreationPointer(event) {
+      if (!canEditRef.current || eyedropperActiveRef.current) return false;
+      if (mobilePasteAwaitingPointRef.current || panningRef.current || spacePressedRef.current) return false;
+      if (touchGestureRef.current?.active) return false;
+      if (event.pointerId != null && rejectedPointerIdsRef.current.has(event.pointerId)) return false;
+      if (Number(event.button ?? 0) > 0) return false;
+
+      const toolId = creationInputRef.current.selectedToolId || activeToolRef.current;
+      if (!creationToolRegistryRef.current.has(toolId)) return false;
+      if (event.pointerType === 'pen') return true;
+      if (event.pointerType === 'touch') {
+        if (penInputRef.current.active && penInputRef.current.pointerId !== event.pointerId) return false;
+        return event.isPrimary !== false;
+      }
+      return event.pointerType === 'mouse' || !event.pointerType;
+    }
+
+    function handleCreationPointerDown(event) {
+      const controller = creationInputRef.current;
+      const activeSession = controller.activeSession;
+      if (activeSession) {
+        if (creationSessionOwnsEvent(activeSession, event)) consumeCreationPointerEvent(event);
+        return;
+      }
+      if (!canStartCreationPointer(event)) return;
+
+      const toolId = controller.selectedToolId || activeToolRef.current;
+      const selectedTool = creationToolRegistryRef.current.get(toolId);
+      if (!selectedTool) return;
+      const input = normalizeCreationPointerEvent(event);
+      lastPointerSceneRef.current = input.scenePoint;
+      controller.sessionCounter += 1;
+      const session = {
+        id: `${clientId}-${controller.sessionCounter}-${randomToken(6)}`,
+        pointerId: event.pointerId ?? null,
+        pointerType: String(event.pointerType ?? 'unknown'),
+        toolId,
+        tool: selectedTool,
+        startedAt: performance.now(),
+        draft: null,
+        context: creationToolContext,
+        captureTarget: event.currentTarget,
+        lastInput: input,
+      };
+
+      controller.activeSession = session;
+      consumeCreationPointerEvent(event);
+      try {
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+      } catch {
+        // Touch and pen normally keep implicit targeting; lostpointercapture still cancels safely.
+      }
+
+      try {
+        session.draft = selectedTool.begin(session.context, input);
+        if (!session.draft) {
+          controller.activeSession = null;
+          releaseCreationPointerCapture(session);
+          clearCreationPreview();
+        }
+      } catch (error) {
+        console.error(`Не удалось начать инструмент ${toolId}`, error);
+        controller.activeSession = null;
+        releaseCreationPointerCapture(session);
+        try { selectedTool.cancel(session.context, session, 'begin-error'); } catch { clearCreationPreview(); }
+      }
+    }
+
+    function handleCreationPointerMove(event) {
+      const session = creationInputRef.current.activeSession;
+      if (!session || !creationSessionOwnsEvent(session, event)) return;
+      consumeCreationPointerEvent(event);
+      const samples = typeof event.getCoalescedEvents === 'function'
+        ? event.getCoalescedEvents()
+        : [event];
+      const usableSamples = samples.length ? samples : [event];
+      try {
+        for (const sample of usableSamples) {
+          const input = normalizeCreationPointerEvent(sample);
+          session.lastInput = input;
+          lastPointerSceneRef.current = input.scenePoint;
+          session.tool.move(session.context, session, input);
+        }
+      } catch (error) {
+        console.error(`Не удалось продолжить инструмент ${session.toolId}`, error);
+        cancelCreationDraft('move-error', event, true);
+      }
+    }
+
+    function handleCreationPointerUp(event) {
+      const session = creationInputRef.current.activeSession;
+      if (!session || !creationSessionOwnsEvent(session, event)) return;
+      consumeCreationPointerEvent(event);
+      finishCreationSession(event, 'pointerup');
+    }
+
+    function handleCreationPointerCancel(event) {
+      const session = creationInputRef.current.activeSession;
+      if (!session || !creationSessionOwnsEvent(session, event)) return;
+      consumeCreationPointerEvent(event);
+      cancelCreationDraft('pointercancel', event);
+    }
+
+    function handleCreationLostPointerCapture(event) {
+      const session = creationInputRef.current.activeSession;
+      if (!session || !creationSessionOwnsEvent(session, event)) return;
+      cancelCreationDraft('lost-pointer-capture', event, true);
+    }
+
     touchTarget.addEventListener('pointerdown', handlePalmPointerDown, { passive: false, capture: true });
     touchTarget.addEventListener('pointermove', handlePalmPointerMove, { passive: false, capture: true });
     touchTarget.addEventListener('pointerup', handlePalmPointerEnd, { passive: false, capture: true });
@@ -6987,18 +7154,16 @@ function BoardWorkspace({
     touchTarget.addEventListener('pointermove', handleObjectEraserPointerMove, { passive: false, capture: true });
     touchTarget.addEventListener('pointerup', handleObjectEraserPointerEnd, { passive: false, capture: true });
     touchTarget.addEventListener('pointercancel', handleObjectEraserPointerEnd, { passive: false, capture: true });
+    touchTarget.addEventListener('pointerdown', handleCreationPointerDown, { passive: false, capture: true });
+    touchTarget.addEventListener('pointermove', handleCreationPointerMove, { passive: false, capture: true });
+    touchTarget.addEventListener('pointerup', handleCreationPointerUp, { passive: false, capture: true });
+    touchTarget.addEventListener('pointercancel', handleCreationPointerCancel, { passive: false, capture: true });
+    touchTarget.addEventListener('lostpointercapture', handleCreationLostPointerCapture, { passive: false, capture: true });
     host.addEventListener('dragover', handleDragOver);
     host.addEventListener('drop', handleDrop);
 
     function cancelActiveDrawingForTouchGesture() {
-      cancelCreationDraft('touch-gesture');
-      const pending = activePencilRef.current;
-      if (pending && !pending.mouseReleased) {
-        pending.cancelled = true;
-        pending.mouseReleased = true;
-        pending.releasedAt = Date.now();
-        finishLiveDraw('cancel', pending.sessionId);
-      }
+      cancelCreationDraft('touch-gesture', null, true);
       liveDrawSendRef.current.acceptingPoints = false;
     }
 
@@ -7363,8 +7528,11 @@ function BoardWorkspace({
     touchTarget.addEventListener('contextmenu', handleContextMenu);
 
     return () => {
-      disposed = true;
       cancelCreationDraft('unmount');
+      // A completed local object may still be waiting for the low-priority commit slot.
+      // Flush it before disconnecting so fast board navigation cannot drop the last stroke.
+      flushPendingCreationCommits();
+      disposed = true;
       clearCreationPreview();
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
       cancelCreationDraftRef.current = null;
@@ -7393,6 +7561,11 @@ function BoardWorkspace({
       touchTarget.removeEventListener('pointermove', handleObjectEraserPointerMove, true);
       touchTarget.removeEventListener('pointerup', handleObjectEraserPointerEnd, true);
       touchTarget.removeEventListener('pointercancel', handleObjectEraserPointerEnd, true);
+      touchTarget.removeEventListener('pointerdown', handleCreationPointerDown, true);
+      touchTarget.removeEventListener('pointermove', handleCreationPointerMove, true);
+      touchTarget.removeEventListener('pointerup', handleCreationPointerUp, true);
+      touchTarget.removeEventListener('pointercancel', handleCreationPointerCancel, true);
+      touchTarget.removeEventListener('lostpointercapture', handleCreationLostPointerCapture, true);
       touchTarget.removeEventListener('touchstart', handleTouchStart, true);
       touchTarget.removeEventListener('touchmove', handleTouchMove, true);
       touchTarget.removeEventListener('touchend', handleTouchEnd, true);
@@ -7406,6 +7579,11 @@ function BoardWorkspace({
       window.clearTimeout(cursorSendRef.current.timer);
       window.clearTimeout(liveTransformSendRef.current.timer);
       window.clearTimeout(liveDrawSendRef.current.timer);
+      window.clearTimeout(pendingCreationCommitsRef.current.timer);
+      pendingCreationCommitsRef.current.timer = null;
+      pendingCreationCommitsRef.current.objects = [];
+      creationInputRef.current.activeSession = null;
+      creationToolRegistryRef.current.clear();
       pendingPencilQueueRef.current.forEach((pending) => window.clearTimeout(pending.cancelTimer));
       pendingPencilQueueRef.current = [];
       activePencilRef.current = null;
@@ -7476,6 +7654,7 @@ function BoardWorkspace({
       eyedropperSelectionTransactionIdRef.current = null;
       setEyedropperActive(false);
       activeToolRef.current = 'select';
+      creationInputRef.current.selectedToolId = 'select';
       setToolState('select');
     }
     configureBrushAndMode();
