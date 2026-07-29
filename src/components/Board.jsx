@@ -7235,10 +7235,12 @@ function BoardWorkspace({
       const unifiedState = unifiedPointerInputRef.current;
       if (unifiedPointerTool() || unifiedState.mode !== 'idle'
         || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
+        // Pointer Events exclusively own board input in unified mode. On iPadOS,
+        // cancelling the compatibility touch event here also cancels the already
+        // started pointer stream, which used to disable every finger interaction.
+        // Keep observing the hidden game-library gesture, but never prevent or stop
+        // this legacy touch event while the unified pointer controller is active.
         beginMobileGameLibraryTouchStage(event);
-        const hasStylus = [...touchArray(event.touches), ...touchArray(event.changedTouches)]
-          .some((touch) => isStylusTouch(touch));
-        if (!hasStylus) rejectTouchEvent(event);
         return;
       }
       if (shouldSuppressTouchEvent(event)) return;
@@ -7262,9 +7264,6 @@ function BoardWorkspace({
       if (unifiedPointerTool() || unifiedState.mode !== 'idle'
         || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
         moveMobileGameLibraryTouchStage(event);
-        const hasStylus = [...touchArray(event.touches), ...touchArray(event.changedTouches)]
-          .some((touch) => isStylusTouch(touch));
-        if (!hasStylus) rejectTouchEvent(event);
         return;
       }
       if (shouldSuppressTouchEvent(event)) return;
@@ -7317,9 +7316,6 @@ function BoardWorkspace({
       if (unifiedPointerTool() || unifiedState.mode !== 'idle'
         || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
         finishMobileGameLibraryTouchStage(event);
-        const hasStylus = [...touchArray(event.touches), ...touchArray(event.changedTouches)]
-          .some((touch) => isStylusTouch(touch));
-        if (!hasStylus) rejectTouchEvent(event);
         return;
       }
       if (shouldSuppressTouchEvent(event, { ending: true })) {
@@ -7357,9 +7353,6 @@ function BoardWorkspace({
       const unifiedState = unifiedPointerInputRef.current;
       if (unifiedPointerTool() || unifiedState.mode !== 'idle'
         || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
-        const hasStylus = [...touchArray(event.touches), ...touchArray(event.changedTouches)]
-          .some((touch) => isStylusTouch(touch));
-        if (!hasStylus) rejectTouchEvent(event);
         return;
       }
       if (shouldSuppressTouchEvent(event, { ending: true })) {

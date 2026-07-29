@@ -1,0 +1,11 @@
+ALEX BOARD 1.0.3 — ПРОВЕРКИ
+
+Выполнено:
+- проверено отсутствие rejectTouchEvent() в unified-ветках touchstart/touchmove/touchend/touchcancel;
+- проверено, что Pointer Events продолжают перехватывать touch pointer до Fabric;
+- проверено наличие touch-action:none на контейнере и canvas;
+- синтаксическая транспиляция всех JS/JSX-файлов;
+- проверка локальных импортов;
+- проверка целостности ZIP.
+
+Физическая проверка Safari/iPadOS и Apple Pencil должна выполняться на iPad.
