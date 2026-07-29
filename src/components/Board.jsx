@@ -6760,6 +6760,11 @@ function BoardWorkspace({
         return;
       }
       if (event.pointerType !== 'touch') return;
+      if (state.mode === 'touchGestureFallback' || state.mode === 'touchGestureDrain') {
+        stopUnifiedPointerEvent(event);
+        state.ignoredPointerIds.add(event.pointerId);
+        return;
+      }
       const toolName = unifiedPointerTool();
       if (!toolName && !state.pointers.has(event.pointerId) && !state.ignoredPointerIds.has(event.pointerId)) return;
 
@@ -7231,16 +7236,55 @@ function BoardWorkspace({
       return false;
     }
 
+    function beginUnifiedTouchFallbackGesture(event, fingers) {
+      if (fingers.length !== 2 || fingers.length !== event.touches.length) return false;
+      const maxRadius = Math.max(...fingers.map((touch) => (
+        Math.max(Number(touch?.radiusX ?? 0), Number(touch?.radiusY ?? 0))
+      )));
+      if (maxRadius > PENCIL_GRACE_GESTURE_MAX_RADIUS) return false;
+      const separation = Math.hypot(
+        Number(fingers[0]?.clientX ?? 0) - Number(fingers[1]?.clientX ?? 0),
+        Number(fingers[0]?.clientY ?? 0) - Number(fingers[1]?.clientY ?? 0),
+      );
+      if (separation < PENCIL_GRACE_GESTURE_MIN_SEPARATION) return false;
+
+      const state = unifiedPointerInputRef.current;
+      if (state.mode === 'fingerDrawing') cancelUnifiedFingerDrawing(state);
+      else removeUnifiedPreview(state);
+      for (const pointerId of state.pointers.keys()) state.ignoredPointerIds.add(pointerId);
+      state.pointers.clear();
+      state.gesture = null;
+      state.mode = 'touchGestureFallback';
+      resetUnifiedDrawingFields(state);
+
+      // Touch Events are the reliable source of the complete two-contact set on iPadOS.
+      // The Pointer Events stream remains responsible for Pencil and one-finger drawing.
+      // When the second finger appears, cancel any first-finger candidate and let this
+      // touch session own pan/zoom until every finger has been released.
+      releaseStalePencilOwnershipForTransition();
+      penInputRef.current.active = false;
+      penInputRef.current.pointerId = null;
+      penInputRef.current.suppressUntil = 0;
+      canvas.isDrawingMode = false;
+      canvas.selection = false;
+      beginTouchGestureCandidate(fingers);
+      if (touchGestureRef.current) touchGestureRef.current.unifiedFallback = true;
+      rejectTouchEvent(event);
+      return true;
+    }
+
     function handleTouchStart(event) {
       const unifiedState = unifiedPointerInputRef.current;
-      if (unifiedPointerTool() || unifiedState.mode !== 'idle'
-        || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
-        // Pointer Events exclusively own board input in unified mode. On iPadOS,
-        // cancelling the compatibility touch event here also cancels the already
-        // started pointer stream, which used to disable every finger interaction.
-        // Keep observing the hidden game-library gesture, but never prevent or stop
-        // this legacy touch event while the unified pointer controller is active.
+      const unifiedMode = Boolean(unifiedPointerTool())
+        || unifiedState.mode !== 'idle'
+        || unifiedState.pointers.size
+        || unifiedState.ignoredPointerIds.size;
+      if (unifiedMode) {
         beginMobileGameLibraryTouchStage(event);
+        const fingers = touchArray(event.touches).filter((touch) => !isStylusTouch(touch));
+        if (beginUnifiedTouchFallbackGesture(event, fingers)) return;
+        // Do not cancel one-finger compatibility TouchEvents. Safari may cancel the
+        // corresponding Pointer Events stream, which owns one-finger drawing.
         return;
       }
       if (shouldSuppressTouchEvent(event)) return;
@@ -7259,25 +7303,9 @@ function BoardWorkspace({
       beginTouchGestureCandidate(fingers);
     }
 
-    function handleTouchMove(event) {
-      const unifiedState = unifiedPointerInputRef.current;
-      if (unifiedPointerTool() || unifiedState.mode !== 'idle'
-        || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
-        moveMobileGameLibraryTouchStage(event);
-        return;
-      }
-      if (shouldSuppressTouchEvent(event)) return;
-      const fingers = unsuppressedFingerTouches(event.touches);
-      if (fingers.length !== event.touches.length) return;
-
-      if (moveMobileGameLibraryTouchStage(event)) {
-        rejectTouchEvent(event);
-        return;
-      }
-      const gesture = touchGestureRef.current;
-      if (!gesture || fingers.length !== 2) return;
+    function updateTouchGestureFromEvent(event, fingers, gesture) {
+      if (!gesture || fingers.length !== 2) return false;
       rejectTouchEvent(event);
-
       const metrics = touchMetrics(fingers, touchTarget);
       if (!gesture.active) {
         const elapsed = performance.now() - Number(gesture.startedAt ?? 0);
@@ -7286,8 +7314,14 @@ function BoardWorkspace({
           metrics.midpoint.y - gesture.startMidpoint.y,
         );
         const distanceMovement = Math.abs(metrics.distance - gesture.startDistance);
-        if (elapsed < TOUCH_GESTURE_ARM_MS
-          || Math.max(midpointMovement, distanceMovement) < TOUCH_GESTURE_MOVE_THRESHOLD) return;
+        const armMs = gesture.unifiedFallback
+          ? UNIFIED_POINTER_GESTURE_ARM_MS
+          : TOUCH_GESTURE_ARM_MS;
+        const movementThreshold = gesture.unifiedFallback
+          ? UNIFIED_POINTER_GESTURE_MOVE_THRESHOLD
+          : TOUCH_GESTURE_MOVE_THRESHOLD;
+        if (elapsed < armMs
+          || Math.max(midpointMovement, distanceMovement) < movementThreshold) return true;
         activateTouchGesture(gesture);
       }
 
@@ -7309,10 +7343,76 @@ function BoardWorkspace({
       updateBackgroundTransform();
       sendTeacherViewThrottled();
       canvas.requestRenderAll();
+      return true;
+    }
+
+    function handleTouchMove(event) {
+      const fallbackGesture = touchGestureRef.current?.unifiedFallback
+        ? touchGestureRef.current
+        : null;
+      if (fallbackGesture) {
+        const fingers = touchArray(event.touches).filter((touch) => !isStylusTouch(touch));
+        updateTouchGestureFromEvent(event, fingers, fallbackGesture);
+        return;
+      }
+
+      const unifiedState = unifiedPointerInputRef.current;
+      if (unifiedPointerTool() || unifiedState.mode !== 'idle'
+        || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
+        moveMobileGameLibraryTouchStage(event);
+        return;
+      }
+      if (shouldSuppressTouchEvent(event)) return;
+      const fingers = unsuppressedFingerTouches(event.touches);
+      if (fingers.length !== event.touches.length) return;
+
+      if (moveMobileGameLibraryTouchStage(event)) {
+        rejectTouchEvent(event);
+        return;
+      }
+      updateTouchGestureFromEvent(event, fingers, touchGestureRef.current);
+    }
+
+    function finishUnifiedTouchFallback(event) {
+      const gesture = touchGestureRef.current;
+      if (!gesture?.unifiedFallback) return false;
+      const fingers = touchArray(event.touches).filter((touch) => !isStylusTouch(touch));
+      if (fingers.length >= 2) return true;
+      rejectTouchEvent(event);
+      finishTouchGesture(gesture, {
+        restoreInput: !fingers.length,
+        remainingTouches: event.touches,
+      });
+      const state = unifiedPointerInputRef.current;
+      state.mode = fingers.length ? 'touchGestureDrain' : 'idle';
+      state.pointers.clear();
+      state.gesture = null;
+      resetUnifiedDrawingFields(state);
+      if (!fingers.length) {
+        state.ignoredPointerIds.clear();
+        // Also restore after a two-finger tap that never crossed the movement threshold.
+        applyCanvasInputMode();
+      }
+      return true;
     }
 
     function handleTouchEnd(event) {
+      if (finishUnifiedTouchFallback(event)) {
+        finishMobileGameLibraryTouchStage(event);
+        return;
+      }
       const unifiedState = unifiedPointerInputRef.current;
+      if (unifiedState.mode === 'touchGestureDrain') {
+        finishMobileGameLibraryTouchStage(event);
+        if (!event.touches.length) {
+          unifiedState.mode = 'idle';
+          unifiedState.ignoredPointerIds.clear();
+          unifiedState.pointers.clear();
+          resetUnifiedDrawingFields(unifiedState);
+          applyCanvasInputMode();
+        }
+        return;
+      }
       if (unifiedPointerTool() || unifiedState.mode !== 'idle'
         || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
         finishMobileGameLibraryTouchStage(event);
@@ -7350,7 +7450,24 @@ function BoardWorkspace({
 
     function handleTouchCancel(event) {
       resetMobileGameLibraryGesture();
+      if (finishUnifiedTouchFallback(event)) {
+        const state = unifiedPointerInputRef.current;
+        state.mode = 'idle';
+        state.ignoredPointerIds.clear();
+        state.pointers.clear();
+        resetUnifiedDrawingFields(state);
+        applyCanvasInputMode();
+        return;
+      }
       const unifiedState = unifiedPointerInputRef.current;
+      if (unifiedState.mode === 'touchGestureDrain') {
+        unifiedState.mode = 'idle';
+        unifiedState.ignoredPointerIds.clear();
+        unifiedState.pointers.clear();
+        resetUnifiedDrawingFields(unifiedState);
+        applyCanvasInputMode();
+        return;
+      }
       if (unifiedPointerTool() || unifiedState.mode !== 'idle'
         || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
         return;
