@@ -1081,6 +1081,14 @@ function BoardWorkspace({
     lastClientY: 0,
     suppressUntil: 0,
   });
+  const stylusTouchFallbackRef = useRef({
+    active: false,
+    touchId: null,
+    pointerId: null,
+    lastClientX: 0,
+    lastClientY: 0,
+    guardUntil: 0,
+  });
   const rejectedPointerIdsRef = useRef(new Set());
   const suppressedTouchIdsRef = useRef(new Set());
   const viewSendRef = useRef({ lastSentAt: 0, timer: null, pending: false });
@@ -6694,6 +6702,165 @@ function BoardWorkspace({
       return String(touch?.touchType ?? '').toLowerCase() === 'stylus';
     }
 
+    function isStylusFallbackPointerEvent(event) {
+      return Boolean(event?.alexStylusTouchFallback);
+    }
+
+    function findStylusTouch(event, expectedId = null) {
+      const candidates = [
+        ...touchArray(event?.changedTouches),
+        ...touchArray(event?.touches),
+      ];
+      return candidates.find((touch) => (
+        isStylusTouch(touch)
+        && (expectedId == null || touchId(touch) === expectedId)
+      )) ?? null;
+    }
+
+    function fallbackPointerIdForTouch(identifier) {
+      const numeric = Number(identifier);
+      const safeIdentifier = Number.isFinite(numeric) ? Math.abs(Math.trunc(numeric)) : 1;
+      return 1_500_000_000 + (safeIdentifier % 100_000_000);
+    }
+
+    function dispatchStylusFallbackPointer(type, touch) {
+      if (!touch) return false;
+      const state = stylusTouchFallbackRef.current;
+      const ending = type === 'pointerup' || type === 'pointercancel';
+      const active = !ending;
+      const force = Number(touch.force ?? 0);
+      const pressure = ending ? 0 : (force > 0 ? clamp(force, 0.01, 1) : 0.5);
+      const init = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        pointerId: Number(state.pointerId ?? fallbackPointerIdForTouch(touchId(touch))),
+        pointerType: 'pen',
+        isPrimary: true,
+        button: 0,
+        buttons: active ? 1 : 0,
+        pressure,
+        width: Math.max(1, Number(touch.radiusX ?? 0) * 2 || 1),
+        height: Math.max(1, Number(touch.radiusY ?? 0) * 2 || 1),
+        clientX: Number(touch.clientX ?? state.lastClientX ?? 0),
+        clientY: Number(touch.clientY ?? state.lastClientY ?? 0),
+        screenX: Number(touch.screenX ?? 0),
+        screenY: Number(touch.screenY ?? 0),
+      };
+      let synthetic;
+      try {
+        synthetic = new PointerEvent(type, init);
+      } catch {
+        synthetic = new MouseEvent(type, init);
+        for (const [key, value] of Object.entries({
+          pointerId: init.pointerId,
+          pointerType: 'pen',
+          isPrimary: true,
+          pressure: init.pressure,
+          width: init.width,
+          height: init.height,
+        })) {
+          try { Object.defineProperty(synthetic, key, { configurable: true, value }); } catch { /* Ignore. */ }
+        }
+      }
+      try {
+        Object.defineProperty(synthetic, 'alexStylusTouchFallback', {
+          configurable: true,
+          value: true,
+        });
+      } catch {
+        synthetic.alexStylusTouchFallback = true;
+      }
+      state.lastClientX = init.clientX;
+      state.lastClientY = init.clientY;
+      return touchTarget.dispatchEvent(synthetic);
+    }
+
+    function claimStylusTouchEvent(event) {
+      if (event.cancelable) event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    }
+
+    function beginStylusTouchFallback(event) {
+      const stylus = findStylusTouch(event);
+      if (!stylus) return false;
+      // Pointer Events remain the preferred path. The TouchEvent route is activated only
+      // when WebKit delivered a stylus touch without first delivering pointerdown.
+      if (penInputRef.current.active && !stylusTouchFallbackRef.current.active) return false;
+
+      const identifier = touchId(stylus);
+      const state = stylusTouchFallbackRef.current;
+      if (state.active && state.touchId === identifier) {
+        claimStylusTouchEvent(event);
+        return true;
+      }
+      if (state.active) {
+        dispatchStylusFallbackPointer('pointercancel', stylus);
+      }
+
+      stylusTouchFallbackRef.current = {
+        active: true,
+        touchId: identifier,
+        pointerId: fallbackPointerIdForTouch(identifier),
+        lastClientX: Number(stylus.clientX ?? 0),
+        lastClientY: Number(stylus.clientY ?? 0),
+        guardUntil: performance.now() + 250,
+      };
+      claimStylusTouchEvent(event);
+      dispatchStylusFallbackPointer('pointerdown', stylus);
+      return true;
+    }
+
+    function moveStylusTouchFallback(event) {
+      const state = stylusTouchFallbackRef.current;
+      if (!state.active) return false;
+      const stylus = findStylusTouch(event, state.touchId);
+      if (!stylus) return false;
+      claimStylusTouchEvent(event);
+      dispatchStylusFallbackPointer('pointermove', stylus);
+      return true;
+    }
+
+    function finishStylusTouchFallback(event, cancelled = false) {
+      const state = stylusTouchFallbackRef.current;
+      if (!state.active) return false;
+      const stylus = findStylusTouch(event, state.touchId) ?? {
+        identifier: state.touchId,
+        clientX: state.lastClientX,
+        clientY: state.lastClientY,
+        force: 0,
+        radiusX: 0.5,
+        radiusY: 0.5,
+        touchType: 'stylus',
+      };
+      claimStylusTouchEvent(event);
+      dispatchStylusFallbackPointer(cancelled ? 'pointercancel' : 'pointerup', stylus);
+      stylusTouchFallbackRef.current = {
+        active: false,
+        touchId: null,
+        pointerId: null,
+        lastClientX: Number(stylus.clientX ?? state.lastClientX ?? 0),
+        lastClientY: Number(stylus.clientY ?? state.lastClientY ?? 0),
+        // Reject a late native pointer event generated for the same physical contact.
+        // A genuinely new rapid contact still has its own touchstart and will use this
+        // fallback route if its pointerdown is caught by the guard.
+        guardUntil: performance.now() + 180,
+      };
+      return true;
+    }
+
+    function shouldRejectNativePenAfterTouchFallback(event) {
+      if (event.pointerType !== 'pen' || isStylusFallbackPointerEvent(event)) return false;
+      const state = stylusTouchFallbackRef.current;
+      if (!state.active && performance.now() >= Number(state.guardUntil ?? 0)) return false;
+      const distance = Math.hypot(
+        Number(event.clientX ?? 0) - Number(state.lastClientX ?? 0),
+        Number(event.clientY ?? 0) - Number(state.lastClientY ?? 0),
+      );
+      return state.active || distance <= 42;
+    }
+
     function isLikelyPalmTouch(touch) {
       return Math.max(Number(touch?.radiusX ?? 0), Number(touch?.radiusY ?? 0)) >= PALM_CONTACT_RADIUS;
     }
@@ -6744,6 +6911,12 @@ function BoardWorkspace({
 
     function handlePalmPointerDown(event) {
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
+
+      if (shouldRejectNativePenAfterTouchFallback(event)) {
+        if (event.pointerId != null) rejectedPointerIdsRef.current.add(event.pointerId);
+        rejectPointerEvent(event);
+        return;
+      }
 
       if (event.pointerType === 'pen') {
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
@@ -6814,6 +6987,11 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerMove(event) {
+      if (rejectedPointerIdsRef.current.has(event.pointerId)
+        && !isStylusFallbackPointerEvent(event)) {
+        rejectPointerEvent(event);
+        return;
+      }
       if (event.pointerType === 'pen') {
         penInputRef.current.lastSeenAt = Date.now();
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
@@ -6827,6 +7005,13 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerEnd(event) {
+      if (rejectedPointerIdsRef.current.has(event.pointerId)
+        && !isStylusFallbackPointerEvent(event)) {
+        clearPendingNativeCreationPointer(event);
+        rejectPointerEvent(event);
+        window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
+        return;
+      }
       if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
       else finalizeCreationDraft(event);
       clearPendingNativeCreationPointer(event);
@@ -7095,6 +7280,7 @@ function BoardWorkspace({
     }
 
     function handleTouchStart(event) {
+      if (beginStylusTouchFallback(event)) return;
       if (shouldSuppressTouchEvent(event)) return;
       const fingers = unsuppressedFingerTouches(event.touches);
       if (fingers.length !== event.touches.length) return;
@@ -7112,6 +7298,7 @@ function BoardWorkspace({
     }
 
     function handleTouchMove(event) {
+      if (moveStylusTouchFallback(event)) return;
       if (shouldSuppressTouchEvent(event)) return;
       const fingers = unsuppressedFingerTouches(event.touches);
       if (fingers.length !== event.touches.length) return;
@@ -7158,6 +7345,7 @@ function BoardWorkspace({
     }
 
     function handleTouchEnd(event) {
+      if (finishStylusTouchFallback(event, false)) return;
       if (shouldSuppressTouchEvent(event, { ending: true })) return;
       const gestureAtEventStart = touchGestureRef.current;
       const belongsToCurrentGesture = !gestureAtEventStart
@@ -7184,6 +7372,7 @@ function BoardWorkspace({
 
     function handleTouchCancel(event) {
       resetMobileGameLibraryGesture();
+      if (finishStylusTouchFallback(event, true)) return;
       if (shouldSuppressTouchEvent(event, { ending: true })) return;
       const gesture = touchGestureRef.current;
       if (gesture && touchEventBelongsToGesture(event, gesture)) finishTouchGesture(gesture);
@@ -7409,6 +7598,14 @@ function BoardWorkspace({
       pendingPencilQueueRef.current.forEach((pending) => window.clearTimeout(pending.cancelTimer));
       pendingPencilQueueRef.current = [];
       activePencilRef.current = null;
+      stylusTouchFallbackRef.current = {
+        active: false,
+        touchId: null,
+        pointerId: null,
+        lastClientX: 0,
+        lastClientY: 0,
+        guardUntil: 0,
+      };
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
       handoffTouchPointers.clear();

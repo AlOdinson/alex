@@ -1,3 +1,6 @@
 {
-  "version": "1.0.12"
+  "version": "1.0.13",
+  "base": "1.0.3",
+  "release": "iPad Apple Pencil stylus TouchEvent fallback",
+  "date": "2026-07-30"
 }

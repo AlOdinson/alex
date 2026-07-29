@@ -1,10 +1,52 @@
-import { useLayoutEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ShapeIcon from './ShapeIcon.jsx';
 import { SHAPE_CATEGORIES } from '../lib/shapes.js';
 
 const EDGE_GAP = 6;
 const DESKTOP_WIDTH = 470;
+
+function firstStylusTouch(event) {
+  return [...Array.from(event?.changedTouches ?? []), ...Array.from(event?.touches ?? [])]
+    .find((touch) => String(touch?.touchType ?? '').toLowerCase() === 'stylus') ?? null;
+}
+
+function StylusFastButton({ onActivate, children, ...props }) {
+  const buttonRef = useRef(null);
+  const actionRef = useRef(onActivate);
+  const suppressClickUntilRef = useRef(0);
+  actionRef.current = onActivate;
+
+  useEffect(() => {
+    const button = buttonRef.current;
+    if (!button) return undefined;
+    function handleTouchStart(event) {
+      if (props.disabled || !firstStylusTouch(event)) return;
+      if (event.cancelable) event.preventDefault();
+      event.stopPropagation();
+      suppressClickUntilRef.current = performance.now() + 900;
+      actionRef.current?.();
+      button.blur();
+    }
+    button.addEventListener('touchstart', handleTouchStart, { passive: false, capture: true });
+    return () => button.removeEventListener('touchstart', handleTouchStart, true);
+  }, [props.disabled]);
+
+  function handleClick(event) {
+    if (performance.now() < suppressClickUntilRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    onActivate?.();
+  }
+
+  return (
+    <button ref={buttonRef} type="button" {...props} onClick={handleClick}>
+      {children}
+    </button>
+  );
+}
 
 export default function ShapePalette({ onChoose, onClose, anchorRef }) {
   const [placement, setPlacement] = useState(null);
@@ -63,7 +105,7 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
     >
       <div className="shape-palette-heading">
         <strong>Фигуры</strong>
-        <button type="button" className="palette-close" onClick={onClose} aria-label="Закрыть">×</button>
+        <StylusFastButton className="palette-close" onActivate={onClose} aria-label="Закрыть">×</StylusFastButton>
       </div>
       <div className="shape-palette-scroll">
         {SHAPE_CATEGORIES.map((category) => (
@@ -71,16 +113,15 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
             <h3>{category.label}</h3>
             <div className="shape-grid">
               {category.shapes.map(([id, label]) => (
-                <button
-                  type="button"
+                <StylusFastButton
                   className="shape-choice"
                   key={id}
                   title={label}
-                  onClick={() => onChoose(id)}
+                  onActivate={() => onChoose(id)}
                 >
                   <ShapeIcon id={id} />
                   <span>{label}</span>
-                </button>
+                </StylusFastButton>
               ))}
             </div>
           </section>

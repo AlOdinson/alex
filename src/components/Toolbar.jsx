@@ -34,15 +34,61 @@ function ShareLinkIcon() {
   );
 }
 
+function firstStylusTouch(event) {
+  const changed = Array.from(event?.changedTouches ?? []);
+  const active = Array.from(event?.touches ?? []);
+  return [...changed, ...active].find(
+    (touch) => String(touch?.touchType ?? '').toLowerCase() === 'stylus',
+  ) ?? null;
+}
+
 function IconButton({ title, children, active = false, disabled = false, onClick, className = '' }) {
+  const buttonRef = useRef(null);
+  const actionRef = useRef(onClick);
+  const suppressClickUntilRef = useRef(0);
+  actionRef.current = onClick;
+
+  useEffect(() => {
+    const button = buttonRef.current;
+    if (!button) return undefined;
+
+    function handleStylusTouchStart(event) {
+      if (disabled || !firstStylusTouch(event)) return;
+      // On iPadOS a Pencil tap on a native control can keep the browser's stylus
+      // recognizer busy after the visual click has completed. Claim the stylus touch
+      // before the compatibility click is created and run the action immediately.
+      if (event.cancelable) event.preventDefault();
+      event.stopPropagation();
+      suppressClickUntilRef.current = performance.now() + 900;
+      actionRef.current?.({ inputType: 'stylus-touch', nativeEvent: event });
+      button.blur();
+    }
+
+    button.addEventListener('touchstart', handleStylusTouchStart, {
+      passive: false,
+      capture: true,
+    });
+    return () => button.removeEventListener('touchstart', handleStylusTouchStart, true);
+  }, [disabled]);
+
+  function handleClick(event) {
+    if (performance.now() < suppressClickUntilRef.current) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    onClick?.(event);
+  }
+
   return (
     <button
+      ref={buttonRef}
       type="button"
       className={`tool-button ${active ? 'active' : ''} ${className}`.trim()}
       title={title}
       aria-label={title}
       disabled={disabled}
-      onClick={onClick}
+      onClick={handleClick}
     >
       <span aria-hidden="true">{children}</span>
     </button>
