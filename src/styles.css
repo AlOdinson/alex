@@ -2228,3 +2228,18 @@ html.game-viewport-locked #root {
     width: min(270px, calc(100vw - 16px));
   }
 }
+
+/* Alex Board 1.0.10 — release Apple Pencil toolbar contacts immediately */
+.toolbar-shell button,
+.shape-palette button {
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.toolbar-shell button:focus:not(:focus-visible),
+.shape-palette button:focus:not(:focus-visible) {
+  outline: none;
+}

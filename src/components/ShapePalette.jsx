@@ -8,7 +8,7 @@ const DESKTOP_WIDTH = 470;
 
 export default function ShapePalette({ onChoose, onClose, anchorRef }) {
   const [placement, setPlacement] = useState(null);
-  const handledPointerChoiceRef = useRef(null);
+  const handledPointerChoiceRef = useRef({ id: null, until: 0 });
 
   useLayoutEffect(() => {
     const updatePlacement = () => {
@@ -77,15 +77,19 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
                   className="shape-choice"
                   key={id}
                   title={label}
-                  onPointerDown={(event) => {
+                  onPointerUp={(event) => {
                     if (!['pen', 'touch'].includes(String(event.pointerType))) return;
-                    event.preventDefault();
-                    handledPointerChoiceRef.current = id;
+                    handledPointerChoiceRef.current = {
+                      id,
+                      until: performance.now() + 1200,
+                    };
                     onChoose(id);
+                    event.currentTarget.blur?.();
                   }}
                   onClick={() => {
-                    if (handledPointerChoiceRef.current === id) {
-                      handledPointerChoiceRef.current = null;
+                    const handled = handledPointerChoiceRef.current;
+                    if (handled.id === id && performance.now() <= Number(handled.until ?? 0)) {
+                      handledPointerChoiceRef.current = { id: null, until: 0 };
                       return;
                     }
                     onChoose(id);
