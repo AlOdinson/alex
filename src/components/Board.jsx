@@ -977,6 +977,7 @@ function BoardWorkspace({
   const lineStartRef = useRef(null);
   const selectedShapeRef = useRef(null);
   const shapeDraftRef = useRef(null);
+  const cancelCreationDraftRef = useRef(null);
   const erasingRef = useRef(false);
   const objectEraserRecordsRef = useRef(new Map());
   const objectEraserRealtimeDeleteIdsRef = useRef(new Set());
@@ -1537,6 +1538,9 @@ function BoardWorkspace({
 
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
+    if (nextTool !== activeToolRef.current) {
+      cancelCreationDraftRef.current?.('tool-change');
+    }
     if (eyedropperActiveRef.current && nextTool !== activeToolRef.current) {
       eyedropperActiveRef.current = false;
       eyedropperModeRef.current = null;
@@ -2130,6 +2134,7 @@ function BoardWorkspace({
 
   const chooseShapeTool = useCallback((shapeId) => {
     if (!shapeId || !canEditRef.current) return;
+    cancelCreationDraftRef.current?.('shape-change');
     selectedShapeRef.current = shapeId;
     activeToolRef.current = 'shape';
     setToolState('shape');
@@ -3615,6 +3620,7 @@ function BoardWorkspace({
       return;
     }
     setPermission(mode);
+    if (mode !== 'edit') cancelCreationDraftRef.current?.('permission-change');
     canEditRef.current = mode === 'edit';
     activeToolRef.current = mode === 'edit' ? 'pencil' : 'select';
     setToolState(activeToolRef.current);
@@ -4039,7 +4045,9 @@ function BoardWorkspace({
     // Live transform messages never create objects on another device; they only move
     // the already existing object with this id/session.
     flattenTarget(target).forEach((object) => markObject(object, clientIdRef.current));
+    const sessionId = state.sessionId;
     sendLiveTransformNow(target, 'start');
+    return sessionId;
   }, [markObject, sendLiveTransformNow]);
 
   const sendLiveTransformThrottled = useCallback((target) => {
@@ -4058,9 +4066,9 @@ function BoardWorkspace({
     else if (!state.timer) state.timer = window.setTimeout(send, LIVE_TRANSFORM_INTERVAL - elapsed);
   }, [beginLiveTransform, sendLiveTransformNow]);
 
-  const endLiveTransform = useCallback((target) => {
+  const endLiveTransform = useCallback((target, expectedSessionId = null) => {
     const state = liveTransformSendRef.current;
-    if (!state.sessionId) return;
+    if (!state.sessionId || (expectedSessionId && state.sessionId !== expectedSessionId)) return false;
     window.clearTimeout(state.timer);
     state.timer = null;
     state.pendingTarget = target ?? state.pendingTarget;
@@ -4070,6 +4078,7 @@ function BoardWorkspace({
     state.lastSentAt = 0;
     state.lastSignature = '';
     state.pendingTarget = null;
+    return true;
   }, [sendLiveTransformNow]);
 
   const processRemoteTransform = useCallback((message) => {
@@ -5228,6 +5237,107 @@ function BoardWorkspace({
       canvas.requestRenderAll();
     }
 
+
+    function creationPointerFromNativeEvent(nativeEvent) {
+      const directPointerId = nativeEvent?.pointerId;
+      const directPointerType = typeof nativeEvent?.pointerType === 'string'
+        ? nativeEvent.pointerType
+        : null;
+      if (directPointerId != null) {
+        const pointerType = directPointerType || 'unknown';
+        return {
+          key: `pointer:${pointerType}:${String(directPointerId)}`,
+          pointerId: directPointerId,
+          pointerType,
+        };
+      }
+
+      const changedTouches = nativeEvent?.changedTouches
+        ? Array.from(nativeEvent.changedTouches)
+        : [];
+      const activeTouches = nativeEvent?.touches
+        ? Array.from(nativeEvent.touches)
+        : [];
+      const touch = changedTouches.length === 1
+        ? changedTouches[0]
+        : (activeTouches.length === 1 ? activeTouches[0] : null);
+      if (touch?.identifier != null) {
+        return {
+          key: `touch:${String(touch.identifier)}`,
+          pointerId: touch.identifier,
+          pointerType: 'touch',
+        };
+      }
+
+      const eventType = String(nativeEvent?.type ?? '').toLowerCase();
+      const pointerType = directPointerType
+        || (eventType.startsWith('touch') ? 'touch' : (eventType.startsWith('mouse') ? 'mouse' : 'unknown'));
+      return {
+        key: pointerType === 'mouse' ? 'mouse:primary' : null,
+        pointerId: null,
+        pointerType,
+      };
+    }
+
+    function creationDraftOwnsEvent(draft, nativeEvent) {
+      if (!draft) return false;
+      const pointer = creationPointerFromNativeEvent(nativeEvent);
+      if (draft.pointerId != null && pointer.pointerId != null) {
+        return String(draft.pointerId) === String(pointer.pointerId);
+      }
+      if (draft.pointerKey && pointer.key) return draft.pointerKey === pointer.key;
+      if (draft.pointerType && draft.pointerType !== 'unknown'
+        && pointer.pointerType && pointer.pointerType !== 'unknown') {
+        return draft.pointerType === pointer.pointerType;
+      }
+      // Some Fabric compatibility events do not retain pointer metadata. Accept such
+      // an event only when there is no contradictory identity to compare.
+      return pointer.key == null && pointer.pointerId == null;
+    }
+
+    function cancelCreationDraft(reason = 'cancel', nativeEvent = null) {
+      let cancelled = false;
+      const lineDraft = lineRef.current;
+      if (lineDraft
+        && (!nativeEvent || creationDraftOwnsEvent(lineDraft, nativeEvent))
+        && !lineDraft.finalized
+        && !lineDraft.cancelled) {
+        lineDraft.cancelled = true;
+        lineDraft.finalized = true;
+        lineRef.current = null;
+        lineStartRef.current = null;
+        finishLiveDraw('cancel', lineDraft.sessionId);
+        applyingRemoteRef.current = true;
+        canvas.remove(lineDraft.object);
+        applyingRemoteRef.current = false;
+        cancelled = true;
+      }
+
+      const shapeDraft = shapeDraftRef.current;
+      if (shapeDraft
+        && (!nativeEvent || creationDraftOwnsEvent(shapeDraft, nativeEvent))
+        && !shapeDraft.finalized
+        && !shapeDraft.cancelled) {
+        shapeDraft.cancelled = true;
+        shapeDraft.finalized = true;
+        shapeDraftRef.current = null;
+        endLiveTransform(shapeDraft.object, shapeDraft.sessionId);
+        applyingRemoteRef.current = true;
+        canvas.remove(shapeDraft.object);
+        applyingRemoteRef.current = false;
+        realtimeRef.current?.sendDeletePreview?.([shapeDraft.object.boardObjectId]).catch?.(() => undefined);
+        cancelled = true;
+      }
+
+      if (cancelled) {
+        canvas.requestRenderAll();
+        if (reason === 'pointercancel') setSaveStatus('Создание объекта отменено системой ввода');
+      }
+      return cancelled;
+    }
+
+    cancelCreationDraftRef.current = cancelCreationDraft;
+
     function scenePointFromClient(clientX, clientY) {
       const rect = canvas.upperCanvasEl.getBoundingClientRect();
       const viewportPoint = new Point(clientX - rect.left, clientY - rect.top);
@@ -5748,6 +5858,12 @@ function BoardWorkspace({
         || nativeEvent.pointerType === 'touch'
         || nativeEvent.pointerType === 'pen';
 
+      const activeCreationDraft = shapeDraftRef.current ?? lineRef.current;
+      if (activeCreationDraft && ['shape', 'line'].includes(activeToolRef.current)) {
+        if (creationDraftOwnsEvent(activeCreationDraft, nativeEvent)) nativeEvent.preventDefault?.();
+        return;
+      }
+
       if (activeToolRef.current === 'shape' && selectedShapeRef.current && primarySelectionPointer) {
         nativeEvent.preventDefault?.();
         const point = scenePoint;
@@ -5774,15 +5890,25 @@ function BoardWorkspace({
         object.setCoords();
         canvas.discardActiveObject();
         canvas.add(object);
-        shapeDraftRef.current = {
+        const creationPointer = creationPointerFromNativeEvent(nativeEvent);
+        const shapeDraft = {
+          kind: 'shape',
           object,
           start: new Point(point.x, point.y),
           baseWidth,
           baseHeight,
+          pointerKey: creationPointer.key,
+          pointerId: creationPointer.pointerId,
+          pointerType: creationPointer.pointerType,
+          startedAt: Date.now(),
+          sessionId: null,
+          cancelled: false,
+          finalized: false,
         };
+        shapeDraftRef.current = shapeDraft;
         const records = getObjectRecords([object]);
         realtimeRef.current?.sendPreview?.(records);
-        beginLiveTransform(object);
+        shapeDraft.sessionId = beginLiveTransform(object);
         canvas.requestRenderAll();
         return;
       }
@@ -5902,7 +6028,19 @@ function BoardWorkspace({
         });
         line.creationSessionId = sessionId;
         line.creationClientId = clientId;
-        lineRef.current = line;
+        const creationPointer = creationPointerFromNativeEvent(nativeEvent);
+        lineRef.current = {
+          kind: 'line',
+          object: line,
+          start: new Point(point.x, point.y),
+          pointerKey: creationPointer.key,
+          pointerId: creationPointer.pointerId,
+          pointerType: creationPointer.pointerType,
+          startedAt: Date.now(),
+          sessionId,
+          cancelled: false,
+          finalized: false,
+        };
         lineStartRef.current = point;
         canvas.add(line);
         return;
@@ -5935,6 +6073,7 @@ function BoardWorkspace({
       if (!canEditRef.current) return;
       if (shapeDraftRef.current && activeToolRef.current === 'shape') {
         const draft = shapeDraftRef.current;
+        if (draft.cancelled || draft.finalized || !creationDraftOwnsEvent(draft, nativeEvent)) return;
         const dx = cursorScenePoint.x - draft.start.x;
         const dy = cursorScenePoint.y - draft.start.y;
         const drawnWidth = Math.max(2, Math.abs(dx));
@@ -5968,18 +6107,24 @@ function BoardWorkspace({
         }
       }
       const activeStroke = activePencilRef.current;
-      const drawingPointerMatches = !activeStroke
+      const pencilPointerMatches = !activeStroke
         || nativeEvent?.pointerId == null
         || activeStroke.pointerId === nativeEvent.pointerId;
-      if (drawingPointerMatches
+      if (pencilPointerMatches
         && liveDrawSendRef.current.sessionId
-        && ['pencil', 'line'].includes(liveDrawSendRef.current.tool)) {
+        && liveDrawSendRef.current.tool === 'pencil') {
         updateLiveDraw(cursorScenePoint);
       }
       if (activeToolRef.current === 'line' && lineRef.current) {
+        const draft = lineRef.current;
+        if (draft.cancelled || draft.finalized || !creationDraftOwnsEvent(draft, nativeEvent)) return;
         const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
-        lineRef.current.set({ x2: point.x, y2: point.y });
-        lineRef.current.setCoords();
+        if (liveDrawSendRef.current.sessionId === draft.sessionId
+          && liveDrawSendRef.current.tool === 'line') {
+          updateLiveDraw(point);
+        }
+        draft.object.set({ x2: point.x, y2: point.y });
+        draft.object.setCoords();
         canvas.requestRenderAll();
       }
     });
@@ -5988,7 +6133,7 @@ function BoardWorkspace({
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
-      if (liveTransformSendRef.current.sessionId) {
+      if (liveTransformSendRef.current.sessionId && !shapeDraftRef.current) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
       }
       if (localLockIdsRef.current.length) {
@@ -6003,32 +6148,34 @@ function BoardWorkspace({
         return;
       }
 
-      if (liveDrawSendRef.current.sessionId) {
-        liveDrawSendRef.current.acceptingPoints = false;
-      }
-
       if (shapeDraftRef.current) {
         const draft = shapeDraftRef.current;
+        if (!creationDraftOwnsEvent(draft, nativeEvent)) return;
+        if (draft.cancelled || draft.finalized) return;
+        draft.finalized = true;
         shapeDraftRef.current = null;
+        endLiveTransform(draft.object, draft.sessionId);
         const bounds = draft.object.getBoundingRect();
         if (bounds.width < 4 || bounds.height < 4) {
           applyingRemoteRef.current = true;
           canvas.remove(draft.object);
           applyingRemoteRef.current = false;
-          sendDeletes([draft.object.boardObjectId]);
+          realtimeRef.current?.sendDeletePreview?.([draft.object.boardObjectId]).catch?.(() => undefined);
           canvas.requestRenderAll();
           setSaveStatus('Фигура слишком маленькая');
           return;
         }
+        const selectableNow = canEditRef.current
+          && activeToolRef.current === 'select'
+          && !eyedropperActiveRef.current;
         draft.object.set({
-          selectable: true,
-          evented: true,
+          selectable: selectableNow,
+          evented: selectableNow,
           hasControls: true,
           hasBorders: true,
         });
         draft.object.setCoords();
         commitAddedObject(draft.object);
-        applyObjectInteractivity();
         canvas.requestRenderAll();
         setSaveStatus('Фигура создана — можно нарисовать следующую');
         return;
@@ -6084,20 +6231,26 @@ function BoardWorkspace({
       }
 
       if (lineRef.current) {
-        const line = lineRef.current;
-        const start = lineStartRef.current;
-        const length = Math.hypot(Number(line.x2) - start.x, Number(line.y2) - start.y);
+        const draft = lineRef.current;
+        if (!creationDraftOwnsEvent(draft, nativeEvent)) return;
+        if (draft.cancelled || draft.finalized) return;
+        draft.finalized = true;
         lineRef.current = null;
         lineStartRef.current = null;
-        const lineSessionId = line.creationSessionId ?? liveDrawSendRef.current.sessionId;
+        const line = draft.object;
+        const length = Math.hypot(
+          Number(line.x2) - draft.start.x,
+          Number(line.y2) - draft.start.y,
+        );
         if (length < 3) {
-          finishLiveDraw('cancel', lineSessionId);
+          finishLiveDraw('cancel', draft.sessionId);
           applyingRemoteRef.current = true;
           canvas.remove(line);
           applyingRemoteRef.current = false;
+          canvas.requestRenderAll();
           return;
         }
-        finishLiveDraw('end', lineSessionId);
+        finishLiveDraw('end', draft.sessionId);
         commitAddedObject(line);
       }
     });
@@ -6532,6 +6685,7 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerEnd(event) {
+      if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
       if (event.pointerType === 'pen' && penInputRef.current.pointerId === event.pointerId) {
         const now = Date.now();
         penInputRef.current.active = false;
@@ -6693,24 +6847,7 @@ function BoardWorkspace({
     host.addEventListener('drop', handleDrop);
 
     function cancelActiveDrawingForTouchGesture() {
-      if (lineRef.current) {
-        const line = lineRef.current;
-        lineRef.current = null;
-        lineStartRef.current = null;
-        finishLiveDraw('cancel', line.creationSessionId ?? liveDrawSendRef.current.sessionId);
-        applyingRemoteRef.current = true;
-        canvas.remove(line);
-        applyingRemoteRef.current = false;
-      }
-      if (shapeDraftRef.current) {
-        const draft = shapeDraftRef.current;
-        shapeDraftRef.current = null;
-        endLiveTransform(draft.object);
-        applyingRemoteRef.current = true;
-        canvas.remove(draft.object);
-        applyingRemoteRef.current = false;
-        sendDeletes([draft.object.boardObjectId]);
-      }
+      cancelCreationDraft('touch-gesture');
       const pending = activePencilRef.current;
       if (pending && !pending.mouseReleased) {
         pending.cancelled = true;
@@ -6920,6 +7057,7 @@ function BoardWorkspace({
     }
 
     function handleWindowBlur() {
+      cancelCreationDraft('window-blur');
       internalClipboardArmedRef.current = false;
       spacePressedRef.current = false;
       const activeText = canvas.getActiveObject();
@@ -7082,6 +7220,8 @@ function BoardWorkspace({
 
     return () => {
       disposed = true;
+      cancelCreationDraft('unmount');
+      cancelCreationDraftRef.current = null;
       window.clearTimeout(textChangeTimerRef.current);
       window.clearTimeout(objectEraserDelayTimer);
       window.clearTimeout(objectEraserRealtimeTimerRef.current);
@@ -7183,6 +7323,7 @@ function BoardWorkspace({
   useEffect(() => {
     canEditRef.current = canEdit;
     if (!canEdit) {
+      cancelCreationDraftRef.current?.('permission-change');
       eyedropperActiveRef.current = false;
       eyedropperModeRef.current = null;
       eyedropperSelectionIdsRef.current = [];
