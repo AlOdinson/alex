@@ -1079,6 +1079,7 @@ function BoardWorkspace({
   const penInputRef = useRef({
     pointerId: null,
     active: false,
+    pointerDownTimeStamp: null,
     lastSeenAt: 0,
     lastClientX: 0,
     lastClientY: 0,
@@ -5945,17 +5946,22 @@ function BoardWorkspace({
       if (activeToolRef.current === 'pencil') {
         const activeStroke = activePencilRef.current;
         if (activeStroke && !activeStroke.mouseReleased) {
-          // One physical pointer owns one stroke from start to finish. A palm or a
-          // second finger cannot open another Fabric path while that stroke is active.
-          if (pointerId == null || activeStroke.pointerId !== pointerId) {
+          const switchedSinceStroke = Number(activeStroke.toolGeneration ?? 0) !== Number(creationToolGenerationRef.current);
+          if (switchedSinceStroke && !penInputRef.current.active) {
+            activePencilRef.current = null;
+          } else {
+            // One physical pointer owns one stroke from start to finish. A palm or a
+            // second finger cannot open another Fabric path while that stroke is active.
+            if (pointerId == null || activeStroke.pointerId !== pointerId) {
+              nativeEvent.preventDefault?.();
+              nativeEvent.stopPropagation?.();
+              nativeEvent.stopImmediatePropagation?.();
+              return;
+            }
+            // Safari can occasionally repeat mouse:down for the same Pencil pointer.
             nativeEvent.preventDefault?.();
-            nativeEvent.stopPropagation?.();
-            nativeEvent.stopImmediatePropagation?.();
             return;
           }
-          // Safari can occasionally repeat mouse:down for the same Pencil pointer.
-          nativeEvent.preventDefault?.();
-          return;
         }
       }
       const scenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
@@ -6216,6 +6222,7 @@ function BoardWorkspace({
           sessionId,
           pointerId,
           pointerType: nativeEvent?.pointerType ?? 'unknown',
+          toolGeneration: creationToolGenerationRef.current,
           cancelTimer: null,
           startedAt: Date.now(),
           mouseReleased: false,
@@ -6818,6 +6825,15 @@ function BoardWorkspace({
       event.stopImmediatePropagation?.();
     }
 
+    function isStalePenTerminationEvent(event) {
+      if (event?.pointerType !== 'pen') return false;
+      if (penInputRef.current.pointerId == null || String(penInputRef.current.pointerId) !== String(event.pointerId)) return false;
+      const activeDownTime = Number(penInputRef.current.pointerDownTimeStamp);
+      const eventTime = Number(event?.timeStamp);
+      if (!Number.isFinite(activeDownTime) || !Number.isFinite(eventTime)) return false;
+      return eventTime + 0.01 < activeDownTime;
+    }
+
     function handlePalmPointerDown(event) {
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
 
@@ -6855,6 +6871,7 @@ function BoardWorkspace({
         penInputRef.current = {
           pointerId: event.pointerId,
           active: true,
+          pointerDownTimeStamp: Number.isFinite(Number(event.timeStamp)) ? Number(event.timeStamp) : performance.now(),
           lastSeenAt: Date.now(),
           lastClientX: Number(event.clientX ?? 0),
           lastClientY: Number(event.clientY ?? 0),
@@ -6924,6 +6941,10 @@ function BoardWorkspace({
         stopPointerBeforeFabric(event);
         return;
       }
+      if (isStalePenTerminationEvent(event)) {
+        clearPendingNativeCreationPointer(event);
+        return;
+      }
       if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
       else finalizeCreationDraft(event);
       clearPendingNativeCreationPointer(event);
@@ -6931,6 +6952,7 @@ function BoardWorkspace({
         const now = Date.now();
         penInputRef.current.active = false;
         penInputRef.current.pointerId = null;
+        penInputRef.current.pointerDownTimeStamp = null;
         penInputRef.current.lastSeenAt = now;
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
