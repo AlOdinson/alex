@@ -76,6 +76,8 @@ const TOUCH_GESTURE_MOVE_THRESHOLD = 6;
 const PALM_CONTACT_RADIUS = 22;
 const PENCIL_GRACE_GESTURE_MAX_RADIUS = 36;
 const PENCIL_GRACE_GESTURE_MIN_SEPARATION = 18;
+const UNIFIED_POINTER_GESTURE_ARM_MS = 24;
+const UNIFIED_POINTER_GESTURE_MOVE_THRESHOLD = 4;
 
 FabricObject.customProperties = [
   'boardObjectId',
@@ -772,6 +774,28 @@ function livePathData(points) {
   return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${Number(point.x)} ${Number(point.y)}`).join(' ');
 }
 
+function smoothedPointerPathData(points) {
+  if (!Array.isArray(points) || !points.length) return '';
+  if (points.length === 1) {
+    const point = points[0];
+    return `M ${Number(point.x)} ${Number(point.y)} L ${Number(point.x) + 0.01} ${Number(point.y) + 0.01}`;
+  }
+  if (points.length === 2) {
+    return `M ${Number(points[0].x)} ${Number(points[0].y)} L ${Number(points[1].x)} ${Number(points[1].y)}`;
+  }
+  const commands = [`M ${Number(points[0].x)} ${Number(points[0].y)}`];
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const point = points[index];
+    const next = points[index + 1];
+    const midpointX = (Number(point.x) + Number(next.x)) / 2;
+    const midpointY = (Number(point.y) + Number(next.y)) / 2;
+    commands.push(`Q ${Number(point.x)} ${Number(point.y)} ${midpointX} ${midpointY}`);
+  }
+  const last = points[points.length - 1];
+  commands.push(`L ${Number(last.x)} ${Number(last.y)}`);
+  return commands.join(' ');
+}
+
 function objectVisuallyIntersectsRect(object, selectionRect) {
   if (!object || object.isEraserPath || object.visible === false || Number(object.opacity ?? 1) <= 0.001) return false;
   const bounds = object.getBoundingRect();
@@ -1080,6 +1104,20 @@ function BoardWorkspace({
   const rejectedPointerIdsRef = useRef(new Set());
   const suppressedTouchIdsRef = useRef(new Set());
   const pencilGraceGestureTouchIdsRef = useRef(new Set());
+  const unifiedPointerInputRef = useRef({
+    mode: 'idle',
+    pointers: new Map(),
+    ignoredPointerIds: new Set(),
+    primaryPointerId: null,
+    points: [],
+    preview: null,
+    objectId: null,
+    sessionId: null,
+    localSessionId: null,
+    tool: null,
+    gesture: null,
+    renderFrame: null,
+  });
   const viewSendRef = useRef({ lastSentAt: 0, timer: null, pending: false });
   const lastTeacherViewRef = useRef(null);
   const autopilotRef = useRef(false);
@@ -6375,11 +6413,458 @@ function BoardWorkspace({
       event.stopImmediatePropagation?.();
     }
 
+    function unifiedPointerTool() {
+      if (!canEditRef.current || eyedropperActiveRef.current) return null;
+      if (activeToolRef.current === 'pencil') return 'pencil';
+      if (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial') return 'partialEraser';
+      return null;
+    }
+
+    function stopUnifiedPointerEvent(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    }
+
+    function unifiedPointerEntry(event) {
+      const rect = touchTarget.getBoundingClientRect();
+      const viewport = new Point(event.clientX - rect.left, event.clientY - rect.top);
+      return {
+        id: event.pointerId,
+        clientX: Number(event.clientX),
+        clientY: Number(event.clientY),
+        viewport,
+        scene: scenePointFromClient(event.clientX, event.clientY),
+        radius: Math.max(Number(event.width ?? 0), Number(event.height ?? 0)),
+        startedAt: performance.now(),
+      };
+    }
+
+    function isNormalUnifiedFinger(entry) {
+      return entry && Number(entry.radius ?? 0) <= PENCIL_GRACE_GESTURE_MAX_RADIUS;
+    }
+
+    function unifiedPointerMetrics(entries) {
+      const first = entries[0];
+      const second = entries[1];
+      return {
+        distance: Math.hypot(second.viewport.x - first.viewport.x, second.viewport.y - first.viewport.y),
+        midpoint: new Point(
+          (first.viewport.x + second.viewport.x) / 2,
+          (first.viewport.y + second.viewport.y) / 2,
+        ),
+      };
+    }
+
+    function removeUnifiedPreview(state) {
+      if (state.renderFrame != null) {
+        window.cancelAnimationFrame(state.renderFrame);
+        state.renderFrame = null;
+      }
+      if (!state.preview) return;
+      const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+      canvas.renderOnAddRemove = false;
+      try {
+        canvas.remove(state.preview);
+      } finally {
+        canvas.renderOnAddRemove = previousRenderOnAddRemove;
+      }
+      state.preview = null;
+    }
+
+    function resetUnifiedDrawingFields(state) {
+      state.primaryPointerId = null;
+      state.points = [];
+      state.preview = null;
+      state.objectId = null;
+      state.sessionId = null;
+      state.localSessionId = null;
+      state.tool = null;
+    }
+
+    function cancelUnifiedFingerDrawing(state) {
+      removeUnifiedPreview(state);
+      if (state.sessionId) finishLiveDraw('cancel', state.sessionId);
+      resetUnifiedDrawingFields(state);
+    }
+
+    function renderUnifiedFingerPreview(state) {
+      state.renderFrame = null;
+      if (state.mode !== 'fingerDrawing' || state.points.length < 2) return;
+      const partialEraser = state.tool === 'partialEraser';
+      const pathData = smoothedPointerPathData(state.points);
+      if (!pathData) return;
+      const preview = new Path(pathData, {
+        stroke: partialEraser ? '#000000' : hexToRgba(colorRef.current, opacityRef.current),
+        strokeWidth: partialEraser ? eraserWidthRef.current : widthRef.current,
+        fill: null,
+        strokeLineCap: 'round',
+        strokeLineJoin: 'round',
+        selectable: false,
+        evented: false,
+        hasControls: false,
+        hasBorders: false,
+        objectCaching: false,
+        objectKind: 'path',
+        boardObjectId: state.objectId,
+        transientPreview: true,
+        creationSessionId: state.sessionId ?? state.localSessionId,
+        creationClientId: clientId,
+        globalCompositeOperation: partialEraser ? 'destination-out' : 'source-over',
+        isEraserPath: partialEraser,
+      });
+      const oldPreview = state.preview;
+      const oldIndex = oldPreview ? canvas.getObjects().indexOf(oldPreview) : canvas.getObjects().length;
+      const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+      canvas.renderOnAddRemove = false;
+      try {
+        canvas.add(preview);
+        if (oldIndex >= 0 && typeof canvas.moveObjectTo === 'function') {
+          canvas.moveObjectTo(preview, Math.min(oldIndex, canvas.getObjects().length - 1));
+        }
+        if (oldPreview) canvas.remove(oldPreview);
+      } finally {
+        canvas.renderOnAddRemove = previousRenderOnAddRemove;
+      }
+      state.preview = preview;
+      canvas.requestRenderAll();
+    }
+
+    function scheduleUnifiedFingerPreview(state) {
+      if (state.renderFrame != null) return;
+      state.renderFrame = window.requestAnimationFrame(() => renderUnifiedFingerPreview(state));
+    }
+
+    function startUnifiedFingerDrawing(state, entry) {
+      if (state.mode !== 'fingerCandidate' || !entry) return;
+      const toolName = unifiedPointerTool();
+      if (!toolName) return;
+      const firstPoint = state.points[0] ?? entry.scene;
+      state.mode = 'fingerDrawing';
+      state.tool = toolName;
+      state.objectId = randomToken(10);
+      state.localSessionId = randomToken(12);
+      state.points = [
+        { x: Number(firstPoint.x), y: Number(firstPoint.y) },
+        { x: Number(entry.scene.x), y: Number(entry.scene.y) },
+      ];
+      if (toolName === 'pencil') {
+        state.sessionId = beginLiveDraw('pencil', state.objectId, firstPoint, {
+          stroke: hexToRgba(colorRef.current, opacityRef.current),
+          width: widthRef.current,
+        });
+        updateLiveDraw(entry.scene);
+      }
+      scheduleUnifiedFingerPreview(state);
+    }
+
+    function appendUnifiedFingerPoint(state, entry) {
+      if (state.mode !== 'fingerDrawing' || !entry) return;
+      const last = state.points[state.points.length - 1];
+      const minimumDistance = Math.max(
+        0.9,
+        Number(state.tool === 'partialEraser' ? eraserWidthRef.current : widthRef.current) * 0.14,
+      );
+      if (last && Math.hypot(entry.scene.x - last.x, entry.scene.y - last.y) < minimumDistance) return;
+      state.points.push({ x: Number(entry.scene.x), y: Number(entry.scene.y) });
+      if (state.points.length > 2400) state.points = state.points.filter((_, index) => index % 2 === 0);
+      if (state.sessionId) updateLiveDraw(entry.scene);
+      scheduleUnifiedFingerPreview(state);
+    }
+
+    function finishUnifiedFingerDrawing(state, { cancelled = false } = {}) {
+      if (state.mode !== 'fingerDrawing') {
+        cancelUnifiedFingerDrawing(state);
+        return;
+      }
+      const toolName = state.tool;
+      const objectId = state.objectId;
+      const sessionId = state.sessionId;
+      const localSessionId = state.localSessionId;
+      const points = [...state.points];
+      removeUnifiedPreview(state);
+      if (cancelled || points.length < 2 || !objectId) {
+        if (sessionId) finishLiveDraw('cancel', sessionId);
+        resetUnifiedDrawingFields(state);
+        state.mode = 'idle';
+        canvas.requestRenderAll();
+        return;
+      }
+
+      const partialEraser = toolName === 'partialEraser';
+      const finalPath = new Path(smoothedPointerPathData(points), {
+        stroke: partialEraser ? '#000000' : hexToRgba(colorRef.current, opacityRef.current),
+        strokeWidth: partialEraser ? eraserWidthRef.current : widthRef.current,
+        fill: null,
+        strokeLineCap: 'round',
+        strokeLineJoin: 'round',
+        selectable: false,
+        evented: false,
+        hasControls: false,
+        hasBorders: false,
+        objectCaching: false,
+        objectKind: 'path',
+        boardObjectId: objectId,
+        creationSessionId: sessionId ?? localSessionId,
+        creationClientId: clientId,
+        globalCompositeOperation: partialEraser ? 'destination-out' : 'source-over',
+        isEraserPath: partialEraser,
+      });
+      canvas.add(finalPath);
+      finalPath.setCoords();
+      if (sessionId) finishLiveDraw('end', sessionId);
+      commitAddedObject(finalPath);
+      resetUnifiedDrawingFields(state);
+      state.mode = 'idle';
+    }
+
+    function releaseStalePencilOwnershipForTransition() {
+      const pending = activePencilRef.current;
+      if (!pending || pending.mouseReleased) return;
+      const now = Date.now();
+      pending.mouseReleased = true;
+      pending.releasedAt = now;
+      window.clearTimeout(pending.cancelTimer);
+      finishLiveDraw('end', pending.sessionId);
+      // Keep the pending record in the matching queue so a delayed Fabric path:created
+      // can still receive the correct id. Only release ownership of future pointerdown.
+      if (activePencilRef.current === pending) activePencilRef.current = null;
+    }
+
+    function beginUnifiedPointerGesture(state) {
+      const entries = [...state.pointers.values()].filter(isNormalUnifiedFinger).slice(0, 2);
+      if (entries.length !== 2) return false;
+      const metrics = unifiedPointerMetrics(entries);
+      if (metrics.distance < PENCIL_GRACE_GESTURE_MIN_SEPARATION) return false;
+      if (state.mode === 'fingerDrawing') cancelUnifiedFingerDrawing(state);
+      state.mode = 'gestureCandidate';
+      state.primaryPointerId = null;
+      state.points = [];
+      state.tool = null;
+      state.gesture = {
+        pointerIds: entries.map((entry) => entry.id),
+        active: false,
+        startedAt: performance.now(),
+        startDistance: Math.max(metrics.distance, 1),
+        startMidpoint: metrics.midpoint,
+        startZoom: canvas.getZoom(),
+        scenePoint: null,
+      };
+      // Two deliberate normal fingers own the input even if the Pencil-up event is
+      // still waiting in Safari's queue. Release only the old logical owner; the
+      // pending queue remains available for a delayed path:created commit.
+      releaseStalePencilOwnershipForTransition();
+      penInputRef.current.active = false;
+      penInputRef.current.pointerId = null;
+      penInputRef.current.suppressUntil = 0;
+      touchGestureRef.current = null;
+      canvas.isDrawingMode = false;
+      canvas.selection = false;
+      return true;
+    }
+
+    function updateUnifiedPointerGesture(state) {
+      const gesture = state.gesture;
+      if (!gesture) return;
+      const entries = gesture.pointerIds
+        .map((pointerId) => state.pointers.get(pointerId))
+        .filter(Boolean);
+      if (entries.length !== 2) return;
+      const metrics = unifiedPointerMetrics(entries);
+      if (!gesture.active) {
+        const elapsed = performance.now() - Number(gesture.startedAt ?? 0);
+        const midpointMovement = Math.hypot(
+          metrics.midpoint.x - gesture.startMidpoint.x,
+          metrics.midpoint.y - gesture.startMidpoint.y,
+        );
+        const distanceMovement = Math.abs(metrics.distance - gesture.startDistance);
+        if (elapsed < UNIFIED_POINTER_GESTURE_ARM_MS
+          || Math.max(midpointMovement, distanceMovement) < UNIFIED_POINTER_GESTURE_MOVE_THRESHOLD) return;
+        const inverse = util.invertTransform(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]);
+        gesture.scenePoint = util.transformPoint(gesture.startMidpoint, inverse);
+        gesture.active = true;
+        state.mode = 'gesture';
+        const hadSelection = Boolean(canvas.getActiveObject());
+        if (hadSelection) {
+          canvas.discardActiveObject();
+          updateSelectionState();
+          updateSelectionStyleState();
+        }
+      }
+      const nextZoom = clamp(
+        gesture.startZoom * (metrics.distance / gesture.startDistance),
+        MIN_ZOOM,
+        MAX_ZOOM,
+      );
+      const nextViewport = [
+        nextZoom,
+        0,
+        0,
+        nextZoom,
+        metrics.midpoint.x - gesture.scenePoint.x * nextZoom,
+        metrics.midpoint.y - gesture.scenePoint.y * nextZoom,
+      ];
+      canvas.setViewportTransform(nextViewport);
+      setZoom(nextZoom);
+      updateBackgroundTransform();
+      sendTeacherViewThrottled();
+      canvas.requestRenderAll();
+    }
+
+    function finishUnifiedPointerGesture(state) {
+      const gestureWasActive = Boolean(state.gesture?.active);
+      const remainingIds = [...state.pointers.keys()];
+      remainingIds.forEach((pointerId) => state.ignoredPointerIds.add(pointerId));
+      state.pointers.clear();
+      state.gesture = null;
+      state.mode = 'idle';
+      state.primaryPointerId = null;
+      state.points = [];
+      lastTouchGestureEndedAtRef.current = performance.now();
+      touchGestureGenerationRef.current += 1;
+      touchGestureRef.current = null;
+      applyCanvasInputMode();
+      if (gestureWasActive) canvas.requestRenderAll();
+    }
+
+    function cancelUnifiedTouchSessionForPen(state) {
+      if (state.mode === 'fingerDrawing') cancelUnifiedFingerDrawing(state);
+      for (const pointerId of state.pointers.keys()) state.ignoredPointerIds.add(pointerId);
+      state.pointers.clear();
+      state.gesture = null;
+      state.mode = 'idle';
+      state.primaryPointerId = null;
+      state.points = [];
+      touchGestureRef.current = null;
+      touchGestureGenerationRef.current += 1;
+      lastTouchGestureEndedAtRef.current = performance.now();
+      releaseStalePencilOwnershipForTransition();
+      applyCanvasInputMode();
+    }
+
+    function resetUnifiedPointerInput({ cancelDrawing = true } = {}) {
+      const state = unifiedPointerInputRef.current;
+      if (cancelDrawing && state.mode === 'fingerDrawing') cancelUnifiedFingerDrawing(state);
+      else removeUnifiedPreview(state);
+      state.pointers.clear();
+      state.ignoredPointerIds.clear();
+      state.gesture = null;
+      state.mode = 'idle';
+      resetUnifiedDrawingFields(state);
+    }
+
+    function handleUnifiedPointerDown(event) {
+      const state = unifiedPointerInputRef.current;
+      if (event.pointerType === 'pen') {
+        if (state.mode !== 'idle' || state.pointers.size) cancelUnifiedTouchSessionForPen(state);
+        return;
+      }
+      if (event.pointerType !== 'touch') return;
+      const toolName = unifiedPointerTool();
+      if (!toolName && !state.pointers.has(event.pointerId) && !state.ignoredPointerIds.has(event.pointerId)) return;
+
+      stopUnifiedPointerEvent(event);
+      try { touchTarget.setPointerCapture(event.pointerId); } catch { /* Safari may reject capture. */ }
+      if (state.ignoredPointerIds.has(event.pointerId)) return;
+
+      const entry = unifiedPointerEntry(event);
+      if (!isNormalUnifiedFinger(entry)) {
+        state.ignoredPointerIds.add(event.pointerId);
+        return;
+      }
+      state.pointers.set(event.pointerId, entry);
+      if (state.pointers.size === 1) {
+        state.mode = 'fingerCandidate';
+        state.primaryPointerId = event.pointerId;
+        state.points = [{ x: Number(entry.scene.x), y: Number(entry.scene.y) }];
+        state.tool = toolName;
+        canvas.isDrawingMode = false;
+        canvas.selection = false;
+        return;
+      }
+      beginUnifiedPointerGesture(state);
+    }
+
+    function handleUnifiedPointerMove(event) {
+      const state = unifiedPointerInputRef.current;
+      if (event.pointerType !== 'touch') return;
+      if (!state.pointers.has(event.pointerId) && !state.ignoredPointerIds.has(event.pointerId)) return;
+      stopUnifiedPointerEvent(event);
+      if (state.ignoredPointerIds.has(event.pointerId)) return;
+
+      const previous = state.pointers.get(event.pointerId);
+      const entry = unifiedPointerEntry(event);
+      entry.startedAt = previous?.startedAt ?? entry.startedAt;
+      state.pointers.set(event.pointerId, entry);
+
+      if (state.pointers.size >= 2 && !['gestureCandidate', 'gesture'].includes(state.mode)) {
+        beginUnifiedPointerGesture(state);
+      }
+      if (state.mode === 'gestureCandidate' || state.mode === 'gesture') {
+        updateUnifiedPointerGesture(state);
+        return;
+      }
+      if (state.mode === 'fingerCandidate' && state.primaryPointerId === event.pointerId) {
+        // While a delayed Pencil-up is still in the queue, keep the first finger as a
+        // candidate. A second finger can still immediately promote it to pan/zoom.
+        if (penInputRef.current.active) return;
+        const first = state.points[0];
+        const movement = first
+          ? Math.hypot(entry.scene.x - first.x, entry.scene.y - first.y)
+          : 0;
+        if (movement >= 3) startUnifiedFingerDrawing(state, entry);
+        return;
+      }
+      if (state.mode === 'fingerDrawing' && state.primaryPointerId === event.pointerId) {
+        appendUnifiedFingerPoint(state, entry);
+      }
+    }
+
+    function finishUnifiedTouchPointer(event, { cancelled = false } = {}) {
+      const state = unifiedPointerInputRef.current;
+      if (event.pointerType !== 'touch') return;
+      if (!state.pointers.has(event.pointerId) && !state.ignoredPointerIds.has(event.pointerId)) return;
+      stopUnifiedPointerEvent(event);
+      if (state.ignoredPointerIds.delete(event.pointerId)) return;
+
+      const wasPrimary = state.primaryPointerId === event.pointerId;
+      state.pointers.delete(event.pointerId);
+      if (state.mode === 'gestureCandidate' || state.mode === 'gesture') {
+        if (state.pointers.size < 2) finishUnifiedPointerGesture(state);
+        return;
+      }
+      if (state.mode === 'fingerDrawing' && wasPrimary) {
+        finishUnifiedFingerDrawing(state, { cancelled });
+        state.pointers.clear();
+        applyCanvasInputMode();
+        return;
+      }
+      if (state.mode === 'fingerCandidate' && wasPrimary) {
+        state.pointers.clear();
+        state.mode = 'idle';
+        resetUnifiedDrawingFields(state);
+        applyCanvasInputMode();
+      }
+    }
+
+    function handleUnifiedPointerUp(event) {
+      finishUnifiedTouchPointer(event, { cancelled: false });
+    }
+
+    function handleUnifiedPointerCancel(event) {
+      finishUnifiedTouchPointer(event, { cancelled: true });
+    }
+
+    function handleUnifiedLostPointerCapture(event) {
+      if (event.pointerType === 'touch') finishUnifiedTouchPointer(event, { cancelled: true });
+    }
+
     function handlePalmPointerDown(event) {
       if (event.pointerType === 'pen') {
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
         // a rejected palm id from an earlier contact.
         rejectedPointerIdsRef.current.delete(event.pointerId);
+        try { touchTarget.setPointerCapture(event.pointerId); } catch { /* Safari may reject Pencil capture. */ }
 
         const interruptedGesture = touchGestureRef.current;
         const interruptedTouchGesture = Boolean(interruptedGesture?.active);
@@ -6592,6 +7077,11 @@ function BoardWorkspace({
       addImageFiles(files, scenePointFromClient(event.clientX, event.clientY));
     }
 
+    touchTarget.addEventListener('pointerdown', handleUnifiedPointerDown, { passive: false, capture: true });
+    touchTarget.addEventListener('pointermove', handleUnifiedPointerMove, { passive: false, capture: true });
+    touchTarget.addEventListener('pointerup', handleUnifiedPointerUp, { passive: false, capture: true });
+    touchTarget.addEventListener('pointercancel', handleUnifiedPointerCancel, { passive: false, capture: true });
+    touchTarget.addEventListener('lostpointercapture', handleUnifiedLostPointerCapture, { passive: false, capture: true });
     touchTarget.addEventListener('pointerdown', handlePalmPointerDown, { passive: false, capture: true });
     touchTarget.addEventListener('pointermove', handlePalmPointerMove, { passive: false, capture: true });
     touchTarget.addEventListener('pointerup', handlePalmPointerEnd, { passive: false, capture: true });
@@ -6742,6 +7232,15 @@ function BoardWorkspace({
     }
 
     function handleTouchStart(event) {
+      const unifiedState = unifiedPointerInputRef.current;
+      if (unifiedPointerTool() || unifiedState.mode !== 'idle'
+        || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
+        beginMobileGameLibraryTouchStage(event);
+        const hasStylus = [...touchArray(event.touches), ...touchArray(event.changedTouches)]
+          .some((touch) => isStylusTouch(touch));
+        if (!hasStylus) rejectTouchEvent(event);
+        return;
+      }
       if (shouldSuppressTouchEvent(event)) return;
       const fingers = unsuppressedFingerTouches(event.touches);
       if (fingers.length !== event.touches.length) return;
@@ -6759,6 +7258,15 @@ function BoardWorkspace({
     }
 
     function handleTouchMove(event) {
+      const unifiedState = unifiedPointerInputRef.current;
+      if (unifiedPointerTool() || unifiedState.mode !== 'idle'
+        || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
+        moveMobileGameLibraryTouchStage(event);
+        const hasStylus = [...touchArray(event.touches), ...touchArray(event.changedTouches)]
+          .some((touch) => isStylusTouch(touch));
+        if (!hasStylus) rejectTouchEvent(event);
+        return;
+      }
       if (shouldSuppressTouchEvent(event)) return;
       const fingers = unsuppressedFingerTouches(event.touches);
       if (fingers.length !== event.touches.length) return;
@@ -6805,6 +7313,15 @@ function BoardWorkspace({
     }
 
     function handleTouchEnd(event) {
+      const unifiedState = unifiedPointerInputRef.current;
+      if (unifiedPointerTool() || unifiedState.mode !== 'idle'
+        || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
+        finishMobileGameLibraryTouchStage(event);
+        const hasStylus = [...touchArray(event.touches), ...touchArray(event.changedTouches)]
+          .some((touch) => isStylusTouch(touch));
+        if (!hasStylus) rejectTouchEvent(event);
+        return;
+      }
       if (shouldSuppressTouchEvent(event, { ending: true })) {
         releaseEndedPencilGraceGestureTouches(event);
         return;
@@ -6837,6 +7354,14 @@ function BoardWorkspace({
 
     function handleTouchCancel(event) {
       resetMobileGameLibraryGesture();
+      const unifiedState = unifiedPointerInputRef.current;
+      if (unifiedPointerTool() || unifiedState.mode !== 'idle'
+        || unifiedState.pointers.size || unifiedState.ignoredPointerIds.size) {
+        const hasStylus = [...touchArray(event.touches), ...touchArray(event.changedTouches)]
+          .some((touch) => isStylusTouch(touch));
+        if (!hasStylus) rejectTouchEvent(event);
+        return;
+      }
       if (shouldSuppressTouchEvent(event, { ending: true })) {
         releaseEndedPencilGraceGestureTouches(event);
         return;
@@ -6866,6 +7391,8 @@ function BoardWorkspace({
       spacePressedRef.current = false;
       const activeText = canvas.getActiveObject();
       if (activeText instanceof IText && activeText.isEditing) activeText.exitEditing();
+      resetUnifiedPointerInput({ cancelDrawing: true });
+      applyCanvasInputMode();
       stopArrowPan();
     }
 
@@ -7041,6 +7568,11 @@ function BoardWorkspace({
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('blur', handleWindowBlur);
       touchTarget.removeEventListener('contextmenu', handleContextMenu);
+      touchTarget.removeEventListener('pointerdown', handleUnifiedPointerDown, true);
+      touchTarget.removeEventListener('pointermove', handleUnifiedPointerMove, true);
+      touchTarget.removeEventListener('pointerup', handleUnifiedPointerUp, true);
+      touchTarget.removeEventListener('pointercancel', handleUnifiedPointerCancel, true);
+      touchTarget.removeEventListener('lostpointercapture', handleUnifiedLostPointerCapture, true);
       touchTarget.removeEventListener('pointerdown', handlePalmPointerDown, true);
       touchTarget.removeEventListener('pointermove', handlePalmPointerMove, true);
       touchTarget.removeEventListener('pointerup', handlePalmPointerEnd, true);
@@ -7065,6 +7597,7 @@ function BoardWorkspace({
       pendingPencilQueueRef.current.forEach((pending) => window.clearTimeout(pending.cancelTimer));
       pendingPencilQueueRef.current = [];
       activePencilRef.current = null;
+      resetUnifiedPointerInput({ cancelDrawing: true });
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
       pencilGraceGestureTouchIdsRef.current.clear();
