@@ -34,135 +34,7 @@ function ShareLinkIcon() {
   );
 }
 
-function releasePointerOwnership(target, pointerId) {
-  if (!target || pointerId == null) return;
-  try {
-    if (typeof target.hasPointerCapture !== 'function' || target.hasPointerCapture(pointerId)) {
-      target.releasePointerCapture?.(pointerId);
-    }
-  } catch {
-    // Safari may report capture after the element has already started losing it.
-  }
-}
-
-function schedulePointerOwnershipRelease(target, pointerId) {
-  releasePointerOwnership(target, pointerId);
-  queueMicrotask(() => releasePointerOwnership(target, pointerId));
-  window.requestAnimationFrame?.(() => releasePointerOwnership(target, pointerId));
-  window.setTimeout(() => releasePointerOwnership(target, pointerId), 0);
-}
-
-function PointerToolControl({
-  title,
-  children,
-  active = false,
-  disabled = false,
-  onActivate,
-  className = '',
-}) {
-  const controlRef = useRef(null);
-  const activePointerIdRef = useRef(null);
-
-  useEffect(() => {
-    const finishPointer = (event) => {
-      const pointerId = activePointerIdRef.current;
-      if (pointerId == null || String(pointerId) !== String(event.pointerId)) return;
-      releasePointerOwnership(controlRef.current, pointerId);
-      activePointerIdRef.current = null;
-      controlRef.current?.blur?.();
-    };
-
-    window.addEventListener('pointerup', finishPointer, true);
-    window.addEventListener('pointercancel', finishPointer, true);
-    return () => {
-      window.removeEventListener('pointerup', finishPointer, true);
-      window.removeEventListener('pointercancel', finishPointer, true);
-      const pointerId = activePointerIdRef.current;
-      if (pointerId != null) releasePointerOwnership(controlRef.current, pointerId);
-    };
-  }, []);
-
-  const handlePointerDown = (event) => {
-    if (disabled || Number(event.button ?? 0) > 0) return;
-
-    const target = event.currentTarget;
-    const pointerId = event.pointerId;
-    activePointerIdRef.current = pointerId;
-
-    // Do not preventDefault/stopImmediatePropagation here. On iPad those calls can keep
-    // the Pencil inside Safari's UI activation lifecycle after the visual tap is over.
-    // Commit the tool synchronously, then explicitly release any implicit capture that
-    // WebKit assigns to this direct-manipulation pointer.
-    onActivate?.(event);
-    schedulePointerOwnershipRelease(target, pointerId);
-    queueMicrotask(() => target?.blur?.());
-  };
-
-  const handleGotPointerCapture = (event) => {
-    const pointerId = event.pointerId;
-    releasePointerOwnership(event.currentTarget, pointerId);
-  };
-
-  const finishLocalPointer = (event) => {
-    const pointerId = event.pointerId;
-    releasePointerOwnership(event.currentTarget, pointerId);
-    if (String(activePointerIdRef.current) === String(pointerId)) {
-      activePointerIdRef.current = null;
-    }
-    event.currentTarget?.blur?.();
-  };
-
-  const handleKeyDown = (event) => {
-    if (disabled || !['Enter', ' '].includes(event.key)) return;
-    event.preventDefault();
-    onActivate?.(event);
-  };
-
-  return (
-    <span
-      ref={controlRef}
-      role="button"
-      tabIndex={disabled ? -1 : 0}
-      aria-label={title}
-      aria-disabled={disabled ? 'true' : undefined}
-      aria-pressed={active ? 'true' : 'false'}
-      className={`tool-button pointer-tool-control ${active ? 'active' : ''} ${disabled ? 'is-disabled' : ''} ${className}`.trim()}
-      title={title}
-      onPointerDown={handlePointerDown}
-      onGotPointerCapture={handleGotPointerCapture}
-      onPointerUp={finishLocalPointer}
-      onPointerCancel={finishLocalPointer}
-      onLostPointerCapture={finishLocalPointer}
-      onKeyDown={handleKeyDown}
-    >
-      <span aria-hidden="true">{children}</span>
-    </span>
-  );
-}
-
-function IconButton({
-  title,
-  children,
-  active = false,
-  disabled = false,
-  onClick,
-  className = '',
-  immediatePointer = false,
-}) {
-  if (immediatePointer) {
-    return (
-      <PointerToolControl
-        title={title}
-        active={active}
-        disabled={disabled}
-        onActivate={onClick}
-        className={className}
-      >
-        {children}
-      </PointerToolControl>
-    );
-  }
-
+function IconButton({ title, children, active = false, disabled = false, onClick, className = '' }) {
   return (
     <button
       type="button"
@@ -277,7 +149,6 @@ export default function Toolbar({
               title={item.label}
               active={tool === item.id}
               disabled={!canEdit}
-              immediatePointer
               onClick={() => {
                 setShapesOpen(false);
                 setTool(item.id);
@@ -292,7 +163,6 @@ export default function Toolbar({
               title="Фигуры"
               active={tool === 'shape' || shapesOpen}
               disabled={!canEdit}
-              immediatePointer
               onClick={() => {
                 setTool('shape');
                 setShapesOpen((value) => !value);
@@ -493,24 +363,22 @@ export default function Toolbar({
         {showEraserSettings && (
           <div className="tool-group eraser-controls">
             <div className="segmented-control" aria-label="Режим ластика">
-              <PointerToolControl
-                title="Стирать областью"
-                active={eraserMode === 'partial'}
+              <button
+                type="button"
+                className={eraserMode === 'partial' ? 'selected' : ''}
                 disabled={!canEdit}
-                className="segmented-tool-control"
-                onActivate={() => setEraserMode('partial')}
+                onClick={() => setEraserMode('partial')}
               >
                 Область
-              </PointerToolControl>
-              <PointerToolControl
-                title="Стирать объект целиком"
-                active={eraserMode === 'object'}
+              </button>
+              <button
+                type="button"
+                className={eraserMode === 'object' ? 'selected' : ''}
                 disabled={!canEdit}
-                className="segmented-tool-control"
-                onActivate={() => setEraserMode('object')}
+                onClick={() => setEraserMode('object')}
               >
                 Объект
-              </PointerToolControl>
+              </button>
             </div>
             {eraserMode === 'partial' && (
               <label className="compact-slider" title={`Размер ластика: ${eraserWidth}px`}>

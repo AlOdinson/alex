@@ -1,85 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ShapeIcon from './ShapeIcon.jsx';
 import { SHAPE_CATEGORIES } from '../lib/shapes.js';
 
 const EDGE_GAP = 6;
 const DESKTOP_WIDTH = 470;
-
-
-function releasePointerOwnership(target, pointerId) {
-  if (!target || pointerId == null) return;
-  try {
-    if (typeof target.hasPointerCapture !== 'function' || target.hasPointerCapture(pointerId)) {
-      target.releasePointerCapture?.(pointerId);
-    }
-  } catch {
-    // The palette may be unmounting while WebKit finishes implicit capture cleanup.
-  }
-}
-
-function schedulePointerOwnershipRelease(target, pointerId) {
-  releasePointerOwnership(target, pointerId);
-  queueMicrotask(() => releasePointerOwnership(target, pointerId));
-  window.requestAnimationFrame?.(() => releasePointerOwnership(target, pointerId));
-  window.setTimeout(() => releasePointerOwnership(target, pointerId), 0);
-}
-
-function ShapeChoice({ id, label, onChoose }) {
-  const controlRef = useRef(null);
-  const activePointerIdRef = useRef(null);
-
-  useEffect(() => () => {
-    const pointerId = activePointerIdRef.current;
-    if (pointerId != null) releasePointerOwnership(controlRef.current, pointerId);
-  }, []);
-
-  const handlePointerDown = (event) => {
-    if (Number(event.button ?? 0) > 0) return;
-    const target = event.currentTarget;
-    const pointerId = event.pointerId;
-    activePointerIdRef.current = pointerId;
-    schedulePointerOwnershipRelease(target, pointerId);
-
-    // Release the palette item before onChoose closes the portal and removes this node.
-    queueMicrotask(() => {
-      releasePointerOwnership(target, pointerId);
-      activePointerIdRef.current = null;
-      onChoose(id);
-    });
-  };
-
-  const finishPointer = (event) => {
-    releasePointerOwnership(event.currentTarget, event.pointerId);
-    if (String(activePointerIdRef.current) === String(event.pointerId)) {
-      activePointerIdRef.current = null;
-    }
-  };
-
-  return (
-    <span
-      ref={controlRef}
-      role="button"
-      tabIndex={0}
-      className="shape-choice pointer-tool-control"
-      title={label}
-      aria-label={label}
-      onPointerDown={handlePointerDown}
-      onGotPointerCapture={(event) => releasePointerOwnership(event.currentTarget, event.pointerId)}
-      onPointerUp={finishPointer}
-      onPointerCancel={finishPointer}
-      onLostPointerCapture={finishPointer}
-      onKeyDown={(event) => {
-        if (!['Enter', ' '].includes(event.key)) return;
-        event.preventDefault();
-        onChoose(id);
-      }}
-    >
-      <ShapeIcon id={id} />
-      <span>{label}</span>
-    </span>
-  );
-}
 
 export default function ShapePalette({ onChoose, onClose, anchorRef }) {
   const [placement, setPlacement] = useState(null);
@@ -146,12 +71,16 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
             <h3>{category.label}</h3>
             <div className="shape-grid">
               {category.shapes.map(([id, label]) => (
-                <ShapeChoice
+                <button
+                  type="button"
+                  className="shape-choice"
                   key={id}
-                  id={id}
-                  label={label}
-                  onChoose={onChoose}
-                />
+                  title={label}
+                  onClick={() => onChoose(id)}
+                >
+                  <ShapeIcon id={id} />
+                  <span>{label}</span>
+                </button>
               ))}
             </div>
           </section>
