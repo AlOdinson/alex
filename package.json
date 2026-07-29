@@ -1,12 +1,13 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.0.6",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check:creation-input": "node scripts/check-creation-controller.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",
