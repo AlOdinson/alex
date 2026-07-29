@@ -74,6 +74,8 @@ const PENCIL_TOUCH_GRACE_MS = 240;
 const TOUCH_GESTURE_ARM_MS = 80;
 const TOUCH_GESTURE_MOVE_THRESHOLD = 6;
 const PALM_CONTACT_RADIUS = 22;
+const PENCIL_GRACE_GESTURE_MAX_RADIUS = 36;
+const PENCIL_GRACE_GESTURE_MIN_SEPARATION = 18;
 
 FabricObject.customProperties = [
   'boardObjectId',
@@ -1077,6 +1079,7 @@ function BoardWorkspace({
   });
   const rejectedPointerIdsRef = useRef(new Set());
   const suppressedTouchIdsRef = useRef(new Set());
+  const pencilGraceGestureTouchIdsRef = useRef(new Set());
   const viewSendRef = useRef({ lastSentAt: 0, timer: null, pending: false });
   const lastTeacherViewRef = useRef(null);
   const autopilotRef = useRef(false);
@@ -6304,19 +6307,66 @@ function BoardWorkspace({
       });
     }
 
+    function releaseEndedPencilGraceGestureTouches(event) {
+      touchArray(event?.changedTouches).forEach((touch) => {
+        const identifier = touchId(touch);
+        if (identifier != null) pencilGraceGestureTouchIdsRef.current.delete(identifier);
+      });
+      if (!event?.touches?.length) pencilGraceGestureTouchIdsRef.current.clear();
+    }
+
+    function isPencilGraceGestureTouch(touch) {
+      const identifier = touchId(touch);
+      return identifier != null && pencilGraceGestureTouchIdsRef.current.has(identifier);
+    }
+
     function unsuppressedFingerTouches(touches) {
       return touchArray(touches).filter((touch) => {
         if (isStylusTouch(touch)) return false;
         const identifier = touchId(touch);
-        return identifier == null || !suppressedTouchIdsRef.current.has(identifier);
+        return identifier == null
+          || pencilGraceGestureTouchIdsRef.current.has(identifier)
+          || !suppressedTouchIdsRef.current.has(identifier);
       });
     }
 
     function touchEventHasSuppressedContact(event) {
       return [...touchArray(event?.touches), ...touchArray(event?.changedTouches)].some((touch) => {
         const identifier = touchId(touch);
-        return identifier != null && suppressedTouchIdsRef.current.has(identifier);
+        return identifier != null
+          && !pencilGraceGestureTouchIdsRef.current.has(identifier)
+          && suppressedTouchIdsRef.current.has(identifier);
       });
+    }
+
+    function armPencilGraceTwoFingerGesture(event) {
+      if (event?.type !== 'touchstart'
+        || penInputRef.current.active
+        || Date.now() >= Number(penInputRef.current.suppressUntil ?? 0)) return false;
+
+      const fingers = touchArray(event.touches).filter((touch) => !isStylusTouch(touch));
+      if (fingers.length !== 2 || fingers.length !== event.touches.length) return false;
+
+      const identifiers = fingers.map((touch) => touchId(touch));
+      if (identifiers.some((identifier) => identifier == null)
+        || identifiers[0] === identifiers[1]) return false;
+
+      const maxRadius = Math.max(...fingers.map((touch) => (
+        Math.max(Number(touch?.radiusX ?? 0), Number(touch?.radiusY ?? 0))
+      )));
+      if (maxRadius > PENCIL_GRACE_GESTURE_MAX_RADIUS) return false;
+
+      const separation = Math.hypot(
+        Number(fingers[0]?.clientX ?? 0) - Number(fingers[1]?.clientX ?? 0),
+        Number(fingers[0]?.clientY ?? 0) - Number(fingers[1]?.clientY ?? 0),
+      );
+      if (separation < PENCIL_GRACE_GESTURE_MIN_SEPARATION) return false;
+
+      identifiers.forEach((identifier) => {
+        suppressedTouchIdsRef.current.delete(identifier);
+        pencilGraceGestureTouchIdsRef.current.add(identifier);
+      });
+      return true;
     }
 
     function rejectTouchEvent(event) {
@@ -6337,7 +6387,10 @@ function BoardWorkspace({
           // Pencil has priority over a pinch that is finishing. Keep the old fingers
           // suppressed until their own touchend so they cannot reopen zoom mid-stroke.
           for (const identifier of interruptedGesture.fingerIds ?? []) {
-            if (identifier != null) suppressedTouchIdsRef.current.add(identifier);
+            if (identifier != null) {
+              pencilGraceGestureTouchIdsRef.current.delete(identifier);
+              suppressedTouchIdsRef.current.add(identifier);
+            }
           }
           touchGestureRef.current = null;
           touchGestureGenerationRef.current += 1;
@@ -6370,10 +6423,16 @@ function BoardWorkspace({
       // drawing pointer. During the brief release grace period only a large contact is
       // rejected, so a deliberate small one-finger stroke can still start immediately.
       if (event.pointerType === 'touch') {
+        const contactRadius = Math.max(Number(event?.width ?? 0), Number(event?.height ?? 0));
         const likelyPalm = isLikelyPalmPointer(event);
         const additionalContact = event.isPrimary === false;
         const duringPencil = penInputRef.current.active && (likelyPalm || additionalContact);
-        const duringGrace = Date.now() < Number(penInputRef.current.suppressUntil ?? 0) && likelyPalm;
+        // During the 240 ms post-Pencil grace, reject the first large contact as a
+        // possible palm. A normal second contact is left for the touch recognizer,
+        // while an exceptionally broad second contact remains blocked as a palm.
+        const duringGrace = Date.now() < Number(penInputRef.current.suppressUntil ?? 0)
+          && likelyPalm
+          && (event.isPrimary !== false || contactRadius > PENCIL_GRACE_GESTURE_MAX_RADIUS);
         if (duringPencil || duringGrace) rejectPointerEvent(event);
       }
     }
@@ -6577,9 +6636,12 @@ function BoardWorkspace({
       const metrics = touchMetrics(fingers, touchTarget);
       const generation = touchGestureGenerationRef.current + 1;
       touchGestureGenerationRef.current = generation;
+      const fingerIds = fingers.map((touch) => touchId(touch)).filter((identifier) => identifier != null);
       touchGestureRef.current = {
         generation,
-        fingerIds: fingers.map((touch) => touchId(touch)).filter((identifier) => identifier != null),
+        fingerIds,
+        pencilGraceBypass: fingerIds.length === 2
+          && fingerIds.every((identifier) => pencilGraceGestureTouchIdsRef.current.has(identifier)),
         active: false,
         startedAt: performance.now(),
         startDistance: Math.max(metrics.distance, 1),
@@ -6599,8 +6661,22 @@ function BoardWorkspace({
       return changedIds.some((identifier) => expectedIds.has(identifier));
     }
 
-    function finishTouchGesture(gesture, { restoreInput = true } = {}) {
+    function finishTouchGesture(gesture, { restoreInput = true, remainingTouches = [] } = {}) {
       if (!gesture || touchGestureRef.current !== gesture) return false;
+      if (gesture.pencilGraceBypass) {
+        const remainingIds = new Set(
+          touchArray(remainingTouches)
+            .filter((touch) => !isStylusTouch(touch))
+            .map((touch) => touchId(touch))
+            .filter((identifier) => identifier != null),
+        );
+        for (const identifier of gesture.fingerIds ?? []) {
+          pencilGraceGestureTouchIdsRef.current.delete(identifier);
+          // If one finger remains after the pinch ends, keep it suppressed until its
+          // own touchend so it cannot turn into an accidental one-finger stroke.
+          if (remainingIds.has(identifier)) suppressedTouchIdsRef.current.add(identifier);
+        }
+      }
       touchGestureRef.current = null;
       touchGestureGenerationRef.current = Math.max(
         touchGestureGenerationRef.current,
@@ -6630,6 +6706,10 @@ function BoardWorkspace({
 
     function shouldSuppressTouchEvent(event, { ending = false } = {}) {
       const now = Date.now();
+      // Two distinct normal contacts may intentionally start pan/zoom immediately
+      // after Pencil-up. They bypass only the post-Pencil grace filter; the existing
+      // 80 ms + 6 px arming thresholds still have to confirm the gesture.
+      armPencilGraceTwoFingerGesture(event);
       if (penInputRef.current.active) {
         // IMPORTANT: do not call preventDefault() for the TouchEvent while Pencil is
         // active. On iPadOS Safari the Pencil can be represented in the same touch
@@ -6644,7 +6724,11 @@ function BoardWorkspace({
 
       if (now < Number(penInputRef.current.suppressUntil ?? 0)) {
         const graceContacts = [...touchArray(event.touches), ...touchArray(event.changedTouches)];
-        const palmContacts = graceContacts.filter((touch) => !isStylusTouch(touch) && isLikelyPalmTouch(touch));
+        const palmContacts = graceContacts.filter((touch) => (
+          !isStylusTouch(touch)
+          && !isPencilGraceGestureTouch(touch)
+          && isLikelyPalmTouch(touch)
+        ));
         if (palmContacts.length) suppressTouchContacts(palmContacts);
       }
 
@@ -6721,35 +6805,51 @@ function BoardWorkspace({
     }
 
     function handleTouchEnd(event) {
-      if (shouldSuppressTouchEvent(event, { ending: true })) return;
-      const gestureAtEventStart = touchGestureRef.current;
-      const belongsToCurrentGesture = !gestureAtEventStart
-        || touchEventBelongsToGesture(event, gestureAtEventStart);
-      const handledSecretGesture = finishMobileGameLibraryTouchStage(event);
-      if (handledSecretGesture) {
-        rejectTouchEvent(event);
-        if (event.touches.length === 0
-          && gestureAtEventStart
-          && belongsToCurrentGesture) {
-          finishTouchGesture(gestureAtEventStart);
-        }
+      if (shouldSuppressTouchEvent(event, { ending: true })) {
+        releaseEndedPencilGraceGestureTouches(event);
         return;
       }
+      try {
+        const gestureAtEventStart = touchGestureRef.current;
+        const belongsToCurrentGesture = !gestureAtEventStart
+          || touchEventBelongsToGesture(event, gestureAtEventStart);
+        const handledSecretGesture = finishMobileGameLibraryTouchStage(event);
+        if (handledSecretGesture) {
+          rejectTouchEvent(event);
+          if (event.touches.length === 0
+            && gestureAtEventStart
+            && belongsToCurrentGesture) {
+            finishTouchGesture(gestureAtEventStart, { remainingTouches: event.touches });
+          }
+          return;
+        }
 
-      const gesture = touchGestureRef.current;
-      if (!gesture || gesture !== gestureAtEventStart || !belongsToCurrentGesture) return;
-      const fingers = unsuppressedFingerTouches(event.touches);
-      if (fingers.length >= 2) return;
-      rejectTouchEvent(event);
-      finishTouchGesture(gesture);
+        const gesture = touchGestureRef.current;
+        if (!gesture || gesture !== gestureAtEventStart || !belongsToCurrentGesture) return;
+        const fingers = unsuppressedFingerTouches(event.touches);
+        if (fingers.length >= 2) return;
+        rejectTouchEvent(event);
+        finishTouchGesture(gesture, { remainingTouches: event.touches });
+      } finally {
+        releaseEndedPencilGraceGestureTouches(event);
+      }
     }
 
     function handleTouchCancel(event) {
       resetMobileGameLibraryGesture();
-      if (shouldSuppressTouchEvent(event, { ending: true })) return;
-      const gesture = touchGestureRef.current;
-      if (gesture && touchEventBelongsToGesture(event, gesture)) finishTouchGesture(gesture);
-      rejectTouchEvent(event);
+      if (shouldSuppressTouchEvent(event, { ending: true })) {
+        releaseEndedPencilGraceGestureTouches(event);
+        return;
+      }
+      try {
+        const gesture = touchGestureRef.current;
+        if (gesture && touchEventBelongsToGesture(event, gesture)) {
+          finishTouchGesture(gesture, { remainingTouches: event.touches });
+        }
+        rejectTouchEvent(event);
+      } finally {
+        releaseEndedPencilGraceGestureTouches(event);
+      }
     }
 
     touchTarget.addEventListener('touchstart', handleTouchStart, { passive: false, capture: true });
@@ -6967,6 +7067,7 @@ function BoardWorkspace({
       activePencilRef.current = null;
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
+      pencilGraceGestureTouchIdsRef.current.clear();
       touchGestureRef.current = null;
       touchGestureGenerationRef.current = 0;
       lastTouchGestureEndedAtRef.current = 0;
