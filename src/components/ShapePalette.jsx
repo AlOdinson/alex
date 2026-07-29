@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ShapeIcon from './ShapeIcon.jsx';
 import { SHAPE_CATEGORIES } from '../lib/shapes.js';
@@ -8,7 +8,6 @@ const DESKTOP_WIDTH = 470;
 
 export default function ShapePalette({ onChoose, onClose, anchorRef }) {
   const [placement, setPlacement] = useState(null);
-  const handledPointerChoiceRef = useRef({ id: null, until: 0 });
 
   useLayoutEffect(() => {
     const updatePlacement = () => {
@@ -72,32 +71,39 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
             <h3>{category.label}</h3>
             <div className="shape-grid">
               {category.shapes.map(([id, label]) => (
-                <button
-                  type="button"
-                  className="shape-choice"
+                <span
+                  role="button"
+                  tabIndex={0}
+                  className="shape-choice pointer-tool-control"
                   key={id}
                   title={label}
-                  onPointerUp={(event) => {
-                    if (!['pen', 'touch'].includes(String(event.pointerType))) return;
-                    handledPointerChoiceRef.current = {
-                      id,
-                      until: performance.now() + 1200,
-                    };
+                  aria-label={label}
+                  onPointerDown={(event) => {
+                    if (Number(event.button ?? 0) > 0) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.nativeEvent?.stopImmediatePropagation?.();
                     onChoose(id);
-                    event.currentTarget.blur?.();
                   }}
-                  onClick={() => {
-                    const handled = handledPointerChoiceRef.current;
-                    if (handled.id === id && performance.now() <= Number(handled.until ?? 0)) {
-                      handledPointerChoiceRef.current = { id: null, until: 0 };
-                      return;
-                    }
+                  onPointerUp={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.nativeEvent?.stopImmediatePropagation?.();
+                  }}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                  }}
+                  onKeyDown={(event) => {
+                    if (!['Enter', ' '].includes(event.key)) return;
+                    event.preventDefault();
+                    event.stopPropagation();
                     onChoose(id);
                   }}
                 >
                   <ShapeIcon id={id} />
                   <span>{label}</span>
-                </button>
+                </span>
               ))}
             </div>
           </section>

@@ -34,6 +34,68 @@ function ShareLinkIcon() {
   );
 }
 
+function PointerToolControl({
+  title,
+  children,
+  active = false,
+  disabled = false,
+  onActivate,
+  className = '',
+}) {
+  const activate = (event) => {
+    if (disabled || Number(event?.button ?? 0) > 0) return;
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    event?.nativeEvent?.stopImmediatePropagation?.();
+    onActivate?.(event);
+  };
+
+  const handlePointerDown = (event) => {
+    // A native <button> starts Safari's delayed Pencil tap/click transaction.
+    // This non-native control commits on the physical pointerdown and suppresses
+    // compatibility click generation, so the next Pencil contact can belong to
+    // the canvas immediately after the tip is lifted.
+    activate(event);
+  };
+
+  const handlePointerUp = (event) => {
+    if (Number(event?.button ?? 0) > 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.nativeEvent?.stopImmediatePropagation?.();
+  };
+
+  const handleClick = (event) => {
+    // Mouse/touch compatibility clicks are deliberately inert. Keyboard activation
+    // is handled below without entering Safari's native button activation lifecycle.
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handleKeyDown = (event) => {
+    if (disabled || !['Enter', ' '].includes(event.key)) return;
+    activate(event);
+  };
+
+  return (
+    <span
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={title}
+      aria-disabled={disabled ? 'true' : undefined}
+      aria-pressed={active ? 'true' : 'false'}
+      className={`tool-button pointer-tool-control ${active ? 'active' : ''} ${disabled ? 'is-disabled' : ''} ${className}`.trim()}
+      title={title}
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+      onClick={handleClick}
+      onKeyDown={handleKeyDown}
+    >
+      <span aria-hidden="true">{children}</span>
+    </span>
+  );
+}
+
 function IconButton({
   title,
   children,
@@ -43,33 +105,19 @@ function IconButton({
   className = '',
   immediatePointer = false,
 }) {
-  const handledDirectPointerRef = useRef({ pointerId: null, until: 0 });
-
-  const handlePointerUp = (event) => {
-    if (!immediatePointer || !['pen', 'touch'].includes(String(event.pointerType))) return;
-    if (disabled || Number(event.button ?? 0) > 0) return;
-
-    // Do not cancel pointerdown on iPadOS. preventDefault() on a button inside the
-    // horizontally scrollable toolbar can leave Safari's native pressed/tap-highlight
-    // transaction alive after the Pencil is lifted, temporarily blocking the next
-    // Pencil or pinch contact. Commit the tool synchronously on the real pointerup;
-    // that event always precedes the next physical contact on the canvas.
-    handledDirectPointerRef.current = {
-      pointerId: event.pointerId ?? null,
-      until: performance.now() + 1200,
-    };
-    onClick?.(event);
-    event.currentTarget.blur?.();
-  };
-
-  const handleClick = (event) => {
-    const direct = handledDirectPointerRef.current;
-    if (performance.now() <= Number(direct.until ?? 0)) {
-      handledDirectPointerRef.current = { pointerId: null, until: 0 };
-      return;
-    }
-    onClick?.(event);
-  };
+  if (immediatePointer) {
+    return (
+      <PointerToolControl
+        title={title}
+        active={active}
+        disabled={disabled}
+        onActivate={onClick}
+        className={className}
+      >
+        {children}
+      </PointerToolControl>
+    );
+  }
 
   return (
     <button
@@ -78,8 +126,7 @@ function IconButton({
       title={title}
       aria-label={title}
       disabled={disabled}
-      onPointerUp={handlePointerUp}
-      onClick={handleClick}
+      onClick={onClick}
     >
       <span aria-hidden="true">{children}</span>
     </button>
@@ -402,32 +449,24 @@ export default function Toolbar({
         {showEraserSettings && (
           <div className="tool-group eraser-controls">
             <div className="segmented-control" aria-label="Режим ластика">
-              <button
-                type="button"
-                className={eraserMode === 'partial' ? 'selected' : ''}
+              <PointerToolControl
+                title="Стирать областью"
+                active={eraserMode === 'partial'}
                 disabled={!canEdit}
-                onPointerUp={(event) => {
-                  if (!['pen', 'touch'].includes(String(event.pointerType))) return;
-                  setEraserMode('partial');
-                  event.currentTarget.blur?.();
-                }}
-                onClick={() => setEraserMode('partial')}
+                className="segmented-tool-control"
+                onActivate={() => setEraserMode('partial')}
               >
                 Область
-              </button>
-              <button
-                type="button"
-                className={eraserMode === 'object' ? 'selected' : ''}
+              </PointerToolControl>
+              <PointerToolControl
+                title="Стирать объект целиком"
+                active={eraserMode === 'object'}
                 disabled={!canEdit}
-                onPointerUp={(event) => {
-                  if (!['pen', 'touch'].includes(String(event.pointerType))) return;
-                  setEraserMode('object');
-                  event.currentTarget.blur?.();
-                }}
-                onClick={() => setEraserMode('object')}
+                className="segmented-tool-control"
+                onActivate={() => setEraserMode('object')}
               >
                 Объект
-              </button>
+              </PointerToolControl>
             </div>
             {eraserMode === 'partial' && (
               <label className="compact-slider" title={`Размер ластика: ${eraserWidth}px`}>
