@@ -34,6 +34,24 @@ function ShareLinkIcon() {
   );
 }
 
+function releasePointerOwnership(target, pointerId) {
+  if (!target || pointerId == null) return;
+  try {
+    if (typeof target.hasPointerCapture !== 'function' || target.hasPointerCapture(pointerId)) {
+      target.releasePointerCapture?.(pointerId);
+    }
+  } catch {
+    // Safari may report capture after the element has already started losing it.
+  }
+}
+
+function schedulePointerOwnershipRelease(target, pointerId) {
+  releasePointerOwnership(target, pointerId);
+  queueMicrotask(() => releasePointerOwnership(target, pointerId));
+  window.requestAnimationFrame?.(() => releasePointerOwnership(target, pointerId));
+  window.setTimeout(() => releasePointerOwnership(target, pointerId), 0);
+}
+
 function PointerToolControl({
   title,
   children,
@@ -42,43 +60,67 @@ function PointerToolControl({
   onActivate,
   className = '',
 }) {
-  const activate = (event) => {
-    if (disabled || Number(event?.button ?? 0) > 0) return;
-    event?.preventDefault?.();
-    event?.stopPropagation?.();
-    event?.nativeEvent?.stopImmediatePropagation?.();
-    onActivate?.(event);
-  };
+  const controlRef = useRef(null);
+  const activePointerIdRef = useRef(null);
+
+  useEffect(() => {
+    const finishPointer = (event) => {
+      const pointerId = activePointerIdRef.current;
+      if (pointerId == null || String(pointerId) !== String(event.pointerId)) return;
+      releasePointerOwnership(controlRef.current, pointerId);
+      activePointerIdRef.current = null;
+      controlRef.current?.blur?.();
+    };
+
+    window.addEventListener('pointerup', finishPointer, true);
+    window.addEventListener('pointercancel', finishPointer, true);
+    return () => {
+      window.removeEventListener('pointerup', finishPointer, true);
+      window.removeEventListener('pointercancel', finishPointer, true);
+      const pointerId = activePointerIdRef.current;
+      if (pointerId != null) releasePointerOwnership(controlRef.current, pointerId);
+    };
+  }, []);
 
   const handlePointerDown = (event) => {
-    // A native <button> starts Safari's delayed Pencil tap/click transaction.
-    // This non-native control commits on the physical pointerdown and suppresses
-    // compatibility click generation, so the next Pencil contact can belong to
-    // the canvas immediately after the tip is lifted.
-    activate(event);
+    if (disabled || Number(event.button ?? 0) > 0) return;
+
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    activePointerIdRef.current = pointerId;
+
+    // Do not preventDefault/stopImmediatePropagation here. On iPad those calls can keep
+    // the Pencil inside Safari's UI activation lifecycle after the visual tap is over.
+    // Commit the tool synchronously, then explicitly release any implicit capture that
+    // WebKit assigns to this direct-manipulation pointer.
+    onActivate?.(event);
+    schedulePointerOwnershipRelease(target, pointerId);
+    queueMicrotask(() => target?.blur?.());
   };
 
-  const handlePointerUp = (event) => {
-    if (Number(event?.button ?? 0) > 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    event.nativeEvent?.stopImmediatePropagation?.();
+  const handleGotPointerCapture = (event) => {
+    const pointerId = event.pointerId;
+    releasePointerOwnership(event.currentTarget, pointerId);
   };
 
-  const handleClick = (event) => {
-    // Mouse/touch compatibility clicks are deliberately inert. Keyboard activation
-    // is handled below without entering Safari's native button activation lifecycle.
-    event.preventDefault();
-    event.stopPropagation();
+  const finishLocalPointer = (event) => {
+    const pointerId = event.pointerId;
+    releasePointerOwnership(event.currentTarget, pointerId);
+    if (String(activePointerIdRef.current) === String(pointerId)) {
+      activePointerIdRef.current = null;
+    }
+    event.currentTarget?.blur?.();
   };
 
   const handleKeyDown = (event) => {
     if (disabled || !['Enter', ' '].includes(event.key)) return;
-    activate(event);
+    event.preventDefault();
+    onActivate?.(event);
   };
 
   return (
     <span
+      ref={controlRef}
       role="button"
       tabIndex={disabled ? -1 : 0}
       aria-label={title}
@@ -87,8 +129,10 @@ function PointerToolControl({
       className={`tool-button pointer-tool-control ${active ? 'active' : ''} ${disabled ? 'is-disabled' : ''} ${className}`.trim()}
       title={title}
       onPointerDown={handlePointerDown}
-      onPointerUp={handlePointerUp}
-      onClick={handleClick}
+      onGotPointerCapture={handleGotPointerCapture}
+      onPointerUp={finishLocalPointer}
+      onPointerCancel={finishLocalPointer}
+      onLostPointerCapture={finishLocalPointer}
       onKeyDown={handleKeyDown}
     >
       <span aria-hidden="true">{children}</span>

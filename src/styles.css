@@ -2282,3 +2282,8 @@ html.game-viewport-locked #root {
   background: #2563eb;
   color: #ffffff;
 }
+
+/* Alex Board 1.0.12 — Safari Pencil capture is released in pointer handlers. */
+.pointer-tool-control {
+  -webkit-user-drag: none;
+}
