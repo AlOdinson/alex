@@ -1002,6 +1002,7 @@ function BoardWorkspace({
   const pendingImageRetryInFlightRef = useRef(false);
   const remoteTransformApplyQueueRef = useRef(Promise.resolve());
   const selectionMemberControlsRef = useRef(new Map());
+  const objectInteractivityRefreshRef = useRef({ timer: null, generation: 0 });
   const boardReadyRef = useRef(false);
   const activeToolRef = useRef('pencil');
   const canEditRef = useRef(initialAccess.permission === 'owner' || initialAccess.permission === 'edit');
@@ -1403,6 +1404,17 @@ function BoardWorkspace({
     // text use Fabric bounds while drawing skips hit-testing completely.
     canvas.perPixelTargetFind = objectEraser;
     canvas.skipTargetFind = eyedropperActiveRef.current || drawingToolActive;
+
+    // Drawing tools do not need every board object to be rewritten on each switch.
+    // skipTargetFind already prevents Fabric from interacting with objects while drawing.
+    // Avoiding this O(n) pass is critical on iPad: a fast Apple Pencil gesture can begin
+    // and end while thousands of objects are synchronously reconfigured.
+    if (drawingToolActive) {
+      if (canvas.getActiveObject()) canvas.discardActiveObject();
+      canvas.requestRenderAll();
+      return;
+    }
+
     const now = Date.now();
     for (const [objectId, lock] of remoteLocksRef.current) {
       if (Number(lock.expiresAt ?? 0) <= now) remoteLocksRef.current.delete(objectId);
@@ -1539,10 +1551,43 @@ function BoardWorkspace({
     }
   }, []);
 
+  const scheduleObjectInteractivityRefresh = useCallback((delay = 160) => {
+    const state = objectInteractivityRefreshRef.current;
+    state.generation += 1;
+    const generation = state.generation;
+    if (state.timer != null) window.clearTimeout(state.timer);
+
+    const run = () => {
+      if (objectInteractivityRefreshRef.current.generation !== generation) return;
+      let inputPending = false;
+      try {
+        inputPending = Boolean(globalThis.navigator?.scheduling?.isInputPending?.({
+          includeContinuous: true,
+        }));
+      } catch {
+        inputPending = false;
+      }
+
+      // Never perform a full-board interactivity scan while Apple Pencil is active or
+      // while another pointer event is waiting. Try again after the physical contact.
+      if (creationInputRef.current.activeSession || penInputRef.current.active || inputPending) {
+        objectInteractivityRefreshRef.current.timer = window.setTimeout(run, 24);
+        return;
+      }
+
+      objectInteractivityRefreshRef.current.timer = null;
+      applyObjectInteractivity();
+    };
+
+    state.timer = window.setTimeout(run, delay);
+  }, [applyObjectInteractivity]);
+
   const configureBrushAndMode = useCallback(() => {
+    // Global input ownership changes synchronously. The expensive per-object refresh is
+    // deferred so the very next Apple Pencil contact cannot be swallowed by a long task.
     applyCanvasInputMode();
-    applyObjectInteractivity();
-  }, [applyCanvasInputMode, applyObjectInteractivity]);
+    scheduleObjectInteractivityRefresh(160);
+  }, [applyCanvasInputMode, scheduleObjectInteractivityRefresh]);
 
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
@@ -5379,6 +5424,9 @@ function BoardWorkspace({
       } finally {
         canvas.renderOnAddRemove = previousRenderOnAddRemove;
       }
+      // The final object must replace the contextTop preview in the same frame. Without
+      // this render, a fast first line can look discarded until another action renders.
+      canvas.requestRenderAll();
     }
 
     function scenePointFromClient(clientX, clientY) {
@@ -7278,6 +7326,31 @@ function BoardWorkspace({
       cancelCreationDraft('lost-pointer-capture', event, true);
     }
 
+    function handleInteractiveToolPointerPreflight(event) {
+      if (!canEditRef.current || event.pointerType !== 'pen') return;
+      if (Number(event.button ?? 0) > 0) return;
+
+      const currentTool = activeToolRef.current;
+      const needsFabricTarget = currentTool === 'select' || currentTool === 'text';
+      if (!needsFabricTarget) return;
+
+      // setTool() already updates skipTargetFind synchronously. Only the object under the
+      // Pencil needs to be made interactive before Fabric handles this exact pointerdown;
+      // the remaining objects can be refreshed later without blocking input.
+      const point = scenePointFromClient(event.clientX, event.clientY);
+      const target = objectAtScenePoint(point, { strictImageBounds: currentTool === 'text' });
+      if (!target || target.isEraserPath || target.transientPreview || target.transientSelectionProxy) return;
+      const lock = target.boardObjectId ? remoteLocksRef.current.get(target.boardObjectId) : null;
+      if (lock && Number(lock.expiresAt ?? 0) > Date.now()) return;
+      if (currentTool === 'text' && !isTextObject(target)) return;
+
+      target.selectable = true;
+      target.evented = true;
+      target.hasControls = currentTool === 'select';
+      target.hasBorders = currentTool === 'select';
+      target.setCoords();
+    }
+
     function creationToolOwnsNativeInput() {
       const activeToolId = creationInputRef.current.activeSession?.toolId
         || creationInputRef.current.selectedToolId
@@ -7309,6 +7382,7 @@ function BoardWorkspace({
       event.stopImmediatePropagation?.();
     }
 
+    creationEventTarget.addEventListener('pointerdown', handleInteractiveToolPointerPreflight, { passive: false, capture: true });
     creationEventTarget.addEventListener('pointerdown', handlePalmPointerDown, { passive: false, capture: true });
     creationEventTarget.addEventListener('pointermove', handlePalmPointerMove, { passive: false, capture: true });
     creationEventTarget.addEventListener('pointerup', handlePalmPointerEnd, { passive: false, capture: true });
@@ -7707,6 +7781,9 @@ function BoardWorkspace({
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
       cancelCreationDraftRef.current = null;
       window.clearTimeout(textChangeTimerRef.current);
+      window.clearTimeout(objectInteractivityRefreshRef.current.timer);
+      objectInteractivityRefreshRef.current.timer = null;
+      objectInteractivityRefreshRef.current.generation += 1;
       window.clearTimeout(objectEraserDelayTimer);
       window.clearTimeout(objectEraserRealtimeTimerRef.current);
       objectEraserRealtimeTimerRef.current = null;
@@ -7723,6 +7800,7 @@ function BoardWorkspace({
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('blur', handleWindowBlur);
       touchTarget.removeEventListener('contextmenu', handleContextMenu);
+      creationEventTarget.removeEventListener('pointerdown', handleInteractiveToolPointerPreflight, true);
       creationEventTarget.removeEventListener('pointerdown', handlePalmPointerDown, true);
       creationEventTarget.removeEventListener('pointermove', handlePalmPointerMove, true);
       creationEventTarget.removeEventListener('pointerup', handlePalmPointerEnd, true);
