@@ -4905,6 +4905,10 @@ function BoardWorkspace({
     const canvas = new Canvas(canvasElement, {
       preserveObjectStacking: true,
       selection: false,
+      // Fabric's legacy touch adapter temporarily removes the down listener for 400 ms
+      // after every touch/stylus release. Native Pointer Events keep the first contact
+      // after a tool switch available immediately and preserve pointerId/pointerType.
+      enablePointerEvents: true,
       enableRetinaScaling: false,
       perPixelTargetFind: false,
       skipOffscreen: true,
@@ -5575,12 +5579,8 @@ function BoardWorkspace({
         }
       }
 
-      // Safari can retain ownership of the previous touch compatibility stream for a
-      // fraction of a frame. Once the old draft has been cancelled, release that stale
-      // id so the first contact of the new creation tool is not swallowed.
-      if (!penInputRef.current.active && !touchGestureRef.current?.active) {
-        canvas.mainTouchId = undefined;
-      }
+      // Fabric runs in Pointer Events mode, so there is no legacy mainTouchId or
+      // delayed touch-to-mouse compatibility stream to release here.
     };
 
     const redrawCreationPreviewAfterCanvasRender = () => {
@@ -6752,14 +6752,14 @@ function BoardWorkspace({
       }
     }
 
-    function releaseFabricTouchOwnership(event) {
-      if (event?.touches?.length !== 0) return;
-      try {
-        if (typeof canvas._onTouchEnd === 'function') canvas._onTouchEnd(event);
-        else canvas.mainTouchId = undefined;
-      } catch {
-        canvas.mainTouchId = undefined;
-      }
+    const fabricSuppressedSecondaryTouchPointers = new Set();
+
+    function stopPointerBeforeFabric(event) {
+      // Do not preventDefault here: the separate TouchEvent stream is still needed by
+      // the two-finger gesture recognizer. Stopping propagation is enough to keep this
+      // secondary PointerEvent out of Fabric's free-drawing listener.
+      event.stopPropagation?.();
+      event.stopImmediatePropagation?.();
     }
 
     function isLikelyPalmPointer(event) {
@@ -6820,6 +6820,17 @@ function BoardWorkspace({
 
     function handlePalmPointerDown(event) {
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
+
+      // In Fabric drawing mode __onMouseDown handles every pointer before checking
+      // isPrimary. Keep a second finger available to our TouchEvent pinch recognizer,
+      // but stop its PointerEvent from starting/replacing the active brush stroke.
+      const fabricFreeDrawingActive = activeToolRef.current === 'pencil'
+        || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial');
+      if (event.pointerType === 'touch' && event.isPrimary === false && fabricFreeDrawingActive) {
+        fabricSuppressedSecondaryTouchPointers.add(event.pointerId);
+        stopPointerBeforeFabric(event);
+        return;
+      }
 
       if (event.pointerType === 'pen') {
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
@@ -6890,6 +6901,10 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerMove(event) {
+      if (fabricSuppressedSecondaryTouchPointers.has(event.pointerId)) {
+        stopPointerBeforeFabric(event);
+        return;
+      }
       if (event.pointerType === 'pen') {
         penInputRef.current.lastSeenAt = Date.now();
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
@@ -6903,6 +6918,12 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerEnd(event) {
+      if (fabricSuppressedSecondaryTouchPointers.has(event.pointerId)) {
+        fabricSuppressedSecondaryTouchPointers.delete(event.pointerId);
+        forgetHandoffTouchPointer(event);
+        stopPointerBeforeFabric(event);
+        return;
+      }
       if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
       else finalizeCreationDraft(event);
       clearPendingNativeCreationPointer(event);
@@ -7255,7 +7276,6 @@ function BoardWorkspace({
       if (fingers.length >= 2) return;
       rejectTouchEvent(event);
       finishTouchGesture(gesture);
-      releaseFabricTouchOwnership(event);
     }
 
     function handleTouchCancel(event) {
@@ -7264,7 +7284,6 @@ function BoardWorkspace({
       const gesture = touchGestureRef.current;
       if (gesture && touchEventBelongsToGesture(event, gesture)) finishTouchGesture(gesture);
       rejectTouchEvent(event);
-      releaseFabricTouchOwnership(event);
     }
 
     touchTarget.addEventListener('touchstart', handleTouchStart, { passive: false, capture: true });
@@ -7489,6 +7508,7 @@ function BoardWorkspace({
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
       handoffTouchPointers.clear();
+      fabricSuppressedSecondaryTouchPointers.clear();
       touchGestureRef.current = null;
       touchGestureGenerationRef.current = 0;
       lastTouchGestureEndedAtRef.current = 0;
