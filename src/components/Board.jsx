@@ -1020,6 +1020,8 @@ function BoardWorkspace({
   const panningRef = useRef(false);
   const lastPanRef = useRef(null);
   const touchGestureRef = useRef(null);
+  const touchGestureGenerationRef = useRef(0);
+  const lastTouchGestureEndedAtRef = useRef(0);
   const undoStackRef = useRef([]);
   const redoStackRef = useRef([]);
   const remoteLocksRef = useRef(new Map());
@@ -1487,15 +1489,25 @@ function BoardWorkspace({
     canvas.requestRenderAll();
   }, [restoreSelectionMemberControls]);
 
-  const configureBrushAndMode = useCallback(() => {
+  const applyCanvasInputMode = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
     const partialEraser = activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial';
+    const objectEraser = activeToolRef.current === 'eraser' && eraserModeRef.current === 'object';
     const shouldDraw = canEditRef.current
       && !eyedropperActiveRef.current
       && (activeToolRef.current === 'pencil' || partialEraser);
+    const drawingToolActive = canEditRef.current
+      && (['pencil', 'line', 'shape'].includes(activeToolRef.current) || partialEraser)
+      && !eyedropperActiveRef.current;
 
+    // This is the lightweight input-mode restoration used after pinch/pan. It must
+    // stay O(1): no object enumeration, no selection rebuild and no render request.
     canvas.isDrawingMode = shouldDraw;
+    canvas.selection = false;
+    canvas.perPixelTargetFind = objectEraser;
+    canvas.skipTargetFind = eyedropperActiveRef.current || drawingToolActive;
+
     const toolCursor = activeToolRef.current === 'shape'
       ? 'crosshair'
       : (activeToolRef.current === 'text' ? 'text' : 'default');
@@ -1511,8 +1523,12 @@ function BoardWorkspace({
       canvas.freeDrawingBrush.color = hexToRgba(colorRef.current, opacityRef.current);
       canvas.freeDrawingBrush.width = widthRef.current;
     }
+  }, []);
+
+  const configureBrushAndMode = useCallback(() => {
+    applyCanvasInputMode();
     applyObjectInteractivity();
-  }, [applyObjectInteractivity]);
+  }, [applyCanvasInputMode, applyObjectInteractivity]);
 
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
@@ -6314,20 +6330,38 @@ function BoardWorkspace({
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
         // a rejected palm id from an earlier contact.
         rejectedPointerIdsRef.current.delete(event.pointerId);
-        const interruptedTouchGesture = Boolean(touchGestureRef.current?.active);
-        if (touchGestureRef.current) touchGestureRef.current = null;
+
+        const interruptedGesture = touchGestureRef.current;
+        const interruptedTouchGesture = Boolean(interruptedGesture?.active);
+        if (interruptedGesture) {
+          // Pencil has priority over a pinch that is finishing. Keep the old fingers
+          // suppressed until their own touchend so they cannot reopen zoom mid-stroke.
+          for (const identifier of interruptedGesture.fingerIds ?? []) {
+            if (identifier != null) suppressedTouchIdsRef.current.add(identifier);
+          }
+          touchGestureRef.current = null;
+          touchGestureGenerationRef.current += 1;
+          lastTouchGestureEndedAtRef.current = performance.now();
+        }
+
         penInputRef.current = {
           pointerId: event.pointerId,
           active: true,
           lastSeenAt: Date.now(),
           suppressUntil: 0,
         };
-        // Do not reconfigure every object on every Pencil-down. On a large lesson
-        // applyObjectInteractivity() is O(number of objects) and caused a growing pause
-        // before each symbol. Restore the mode only when a real gesture disabled it.
-        if (interruptedTouchGesture
-          || (activeToolRef.current === 'pencil' && !canvas.isDrawingMode)) {
-          configureBrushAndMode();
+
+        const justAfterTouchGesture = performance.now()
+          - Number(lastTouchGestureEndedAtRef.current ?? 0) < 350;
+        const drawingToolNeedsRepair = (activeToolRef.current === 'pencil'
+          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial'))
+          && !canvas.isDrawingMode;
+
+        // Restore synchronously in capture phase, before this same pointerdown reaches
+        // Fabric. This prevents the first Pencil contact after zoom from being lost.
+        // The lightweight function never scans the objects on the board.
+        if (interruptedTouchGesture || justAfterTouchGesture || drawingToolNeedsRepair) {
+          applyCanvasInputMode();
         }
         return;
       }
@@ -6370,9 +6404,11 @@ function BoardWorkspace({
         }
         // A normal Pencil-up leaves Fabric in drawing mode. Reconfiguring here used to
         // scan every object after every stroke, so only repair an actually disabled mode.
-        if (activeToolRef.current === 'pencil' && !canvas.isDrawingMode) {
+        if ((activeToolRef.current === 'pencil'
+          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial'))
+          && !canvas.isDrawingMode) {
           window.requestAnimationFrame(() => {
-            if (!touchGestureRef.current?.active && !canvas.isDrawingMode) configureBrushAndMode();
+            if (!touchGestureRef.current?.active && !canvas.isDrawingMode) applyCanvasInputMode();
           });
         }
       }
@@ -6539,7 +6575,11 @@ function BoardWorkspace({
 
     function beginTouchGestureCandidate(fingers) {
       const metrics = touchMetrics(fingers, touchTarget);
+      const generation = touchGestureGenerationRef.current + 1;
+      touchGestureGenerationRef.current = generation;
       touchGestureRef.current = {
+        generation,
+        fingerIds: fingers.map((touch) => touchId(touch)).filter((identifier) => identifier != null),
         active: false,
         startedAt: performance.now(),
         startDistance: Math.max(metrics.distance, 1),
@@ -6547,6 +6587,28 @@ function BoardWorkspace({
         startZoom: canvas.getZoom(),
         scenePoint: null,
       };
+    }
+
+    function touchEventBelongsToGesture(event, gesture) {
+      if (!gesture) return false;
+      const changedIds = touchArray(event?.changedTouches)
+        .map((touch) => touchId(touch))
+        .filter((identifier) => identifier != null);
+      if (!changedIds.length) return true;
+      const expectedIds = new Set(gesture.fingerIds ?? []);
+      return changedIds.some((identifier) => expectedIds.has(identifier));
+    }
+
+    function finishTouchGesture(gesture, { restoreInput = true } = {}) {
+      if (!gesture || touchGestureRef.current !== gesture) return false;
+      touchGestureRef.current = null;
+      touchGestureGenerationRef.current = Math.max(
+        touchGestureGenerationRef.current,
+        Number(gesture.generation ?? 0),
+      ) + 1;
+      lastTouchGestureEndedAtRef.current = performance.now();
+      if (gesture.active && restoreInput) applyCanvasInputMode();
+      return Boolean(gesture.active);
     }
 
     function activateTouchGesture(gesture) {
@@ -6660,33 +6722,33 @@ function BoardWorkspace({
 
     function handleTouchEnd(event) {
       if (shouldSuppressTouchEvent(event, { ending: true })) return;
+      const gestureAtEventStart = touchGestureRef.current;
+      const belongsToCurrentGesture = !gestureAtEventStart
+        || touchEventBelongsToGesture(event, gestureAtEventStart);
       const handledSecretGesture = finishMobileGameLibraryTouchStage(event);
       if (handledSecretGesture) {
         rejectTouchEvent(event);
-        if (event.touches.length === 0 && touchGestureRef.current) {
-          const wasActive = Boolean(touchGestureRef.current.active);
-          touchGestureRef.current = null;
-          if (wasActive) configureBrushAndMode();
+        if (event.touches.length === 0
+          && gestureAtEventStart
+          && belongsToCurrentGesture) {
+          finishTouchGesture(gestureAtEventStart);
         }
         return;
       }
 
       const gesture = touchGestureRef.current;
-      if (!gesture) return;
+      if (!gesture || gesture !== gestureAtEventStart || !belongsToCurrentGesture) return;
       const fingers = unsuppressedFingerTouches(event.touches);
       if (fingers.length >= 2) return;
       rejectTouchEvent(event);
-      const wasActive = Boolean(gesture.active);
-      touchGestureRef.current = null;
-      if (wasActive) configureBrushAndMode();
+      finishTouchGesture(gesture);
     }
 
     function handleTouchCancel(event) {
       resetMobileGameLibraryGesture();
       if (shouldSuppressTouchEvent(event, { ending: true })) return;
       const gesture = touchGestureRef.current;
-      touchGestureRef.current = null;
-      if (gesture?.active) configureBrushAndMode();
+      if (gesture && touchEventBelongsToGesture(event, gesture)) finishTouchGesture(gesture);
       rejectTouchEvent(event);
     }
 
@@ -6906,6 +6968,8 @@ function BoardWorkspace({
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
       touchGestureRef.current = null;
+      touchGestureGenerationRef.current = 0;
+      lastTouchGestureEndedAtRef.current = 0;
       liveTransformSendRef.current.sessionId = null;
       liveTransformSendRef.current.lastSignature = '';
       liveTransformSendRef.current.pendingTarget = null;

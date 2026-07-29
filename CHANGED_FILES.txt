@@ -1,9 +1,9 @@
-Alex Board 0.9.9
+Alex Board 1.0.0
 
-src/components/Board.jsx
-package.json
-README.md
-UPDATE_INSTRUCTIONS_0.9.9_RU.txt
-INTEGRATION_0.9.9_RU.txt
-VALIDATION_0.9.9_RU.txt
-CHANGED_FILES_0.9.9.txt
+Главное изменение: мгновенное восстановление Pencil после двухпальцевого zoom/pan без обхода всех объектов доски.
+
+Смотри:
+- UPDATE_INSTRUCTIONS_1.0.0_RU.txt
+- INTEGRATION_1.0.0_RU.txt
+- VALIDATION_1.0.0_RU.txt
+- CHANGED_FILES_1.0.0.txt
