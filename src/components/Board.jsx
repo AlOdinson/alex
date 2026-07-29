@@ -42,7 +42,6 @@ import { forceExitGameParticipants } from '../lib/gameRealtime.js';
 import { randomToken, sha256 } from '../lib/ids.js';
 import { rememberOwnedBoard } from '../lib/boardLibrary.js';
 import { createShape } from '../lib/shapes.js';
-import { createCreationInputController } from '../lib/creationInputController.js';
 import {
   copySerializedBoardImages,
   isAcceptedImageFile,
@@ -981,7 +980,6 @@ function BoardWorkspace({
   const shapeDraftRef = useRef(null);
   const cancelCreationDraftRef = useRef(null);
   const prepareCreationToolSwitchRef = useRef(null);
-  const creationInputControllerRef = useRef(null);
   const creationToolGenerationRef = useRef(0);
   const erasingRef = useRef(false);
   const objectEraserRecordsRef = useRef(new Map());
@@ -1505,11 +1503,9 @@ function BoardWorkspace({
     if (!canvas) return;
     const partialEraser = activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial';
     const objectEraser = activeToolRef.current === 'eraser' && eraserModeRef.current === 'object';
-    // Creation tools use one native PointerEvent controller. Fabric drawing mode is
-    // reserved for the partial eraser so Pencil, line and shape share the same input path.
     const shouldDraw = canEditRef.current
       && !eyedropperActiveRef.current
-      && partialEraser;
+      && (activeToolRef.current === 'pencil' || partialEraser);
     const drawingToolActive = canEditRef.current
       && (['pencil', 'line', 'shape'].includes(activeToolRef.current) || partialEraser)
       && !eyedropperActiveRef.current;
@@ -1556,19 +1552,9 @@ function BoardWorkspace({
     if (!canEditRef.current) return;
     const previousTool = activeToolRef.current;
     if (nextTool !== previousTool) {
-      const activeCreationSession = creationInputControllerRef.current?.getActiveSession?.() ?? null;
-      const staysInsideUnifiedCreation = CREATION_TOOLS.has(previousTool)
-        && CREATION_TOOLS.has(nextTool);
-
-      // A contact that already started keeps its original renderer until pointerup.
-      // Switching inside the creation family only selects the renderer for the next
-      // contact, exactly like drawing two Pencil strokes one after another.
-      if (!staysInsideUnifiedCreation || !activeCreationSession) {
-        creationInputControllerRef.current?.cancel?.('tool-change');
-        cancelCreationDraftRef.current?.('tool-change');
-        creationToolGenerationRef.current += 1;
-        prepareCreationToolSwitchRef.current?.(previousTool, nextTool);
-      }
+      cancelCreationDraftRef.current?.('tool-change');
+      creationToolGenerationRef.current += 1;
+      prepareCreationToolSwitchRef.current?.(previousTool, nextTool);
     }
     if (eyedropperActiveRef.current && nextTool !== previousTool) {
       eyedropperActiveRef.current = false;
@@ -2164,14 +2150,9 @@ function BoardWorkspace({
   const chooseShapeTool = useCallback((shapeId) => {
     if (!shapeId || !canEditRef.current) return;
     const previousTool = activeToolRef.current;
-    const activeCreationSession = creationInputControllerRef.current?.getActiveSession?.() ?? null;
-    const staysInsideUnifiedCreation = CREATION_TOOLS.has(previousTool);
-    if (!staysInsideUnifiedCreation || !activeCreationSession) {
-      creationInputControllerRef.current?.cancel?.('shape-change');
-      cancelCreationDraftRef.current?.('shape-change');
-      creationToolGenerationRef.current += 1;
-      prepareCreationToolSwitchRef.current?.(previousTool, 'shape');
-    }
+    cancelCreationDraftRef.current?.('shape-change');
+    creationToolGenerationRef.current += 1;
+    prepareCreationToolSwitchRef.current?.(previousTool, 'shape');
     selectedShapeRef.current = shapeId;
     activeToolRef.current = 'shape';
     setToolState('shape');
@@ -2599,9 +2580,6 @@ function BoardWorkspace({
     const activePencilId = activePencilRef.current?.objectId;
     const liveDrawId = liveDrawSendRef.current?.objectId;
     if (activePencilId) ids.add(String(activePencilId));
-    pendingPencilQueueRef.current.forEach((pending) => {
-      if (!pending?.consumed && pending?.objectId) ids.add(String(pending.objectId));
-    });
     if (liveDrawId && liveDrawSendRef.current?.acceptingPoints) ids.add(String(liveDrawId));
     textBeforeRef.current.forEach((_records, objectId) => ids.add(String(objectId)));
 
@@ -5287,7 +5265,6 @@ function BoardWorkspace({
     let creationPreviewFrame = null;
     let pendingNativeCreationPointer = null;
     let nativeCreationContactSequence = 0;
-    let pencilPathEmissionPending = null;
 
     function clearCreationPreview() {
       if (creationPreviewFrame != null) {
@@ -5580,35 +5557,30 @@ function BoardWorkspace({
       return cancelled;
     }
 
-    function releasePendingPencil(pending, phase = 'end') {
-      if (!pending) return false;
-      const cancelling = phase === 'cancel' || pending.cancelled;
-      if (cancelling) pending.cancelled = true;
-
-      if (!pending.mouseReleased) {
-        pending.mouseReleased = true;
-        pending.releasedAt = Date.now();
-        finishLiveDraw(cancelling ? 'cancel' : 'end', pending.sessionId);
-      }
-
-      if (activePencilRef.current === pending) activePencilRef.current = null;
-
-      if (!pending.consumed) {
-        window.clearTimeout(pending.cancelTimer);
-        pending.cancelTimer = window.setTimeout(() => {
-          const index = pendingPencilQueueRef.current.indexOf(pending);
-          if (index >= 0) pendingPencilQueueRef.current.splice(index, 1);
-          if (!pending.consumed) finishLiveDraw('cancel', pending.sessionId);
-        }, pending.cancelled ? 80 : 850);
-      }
-      return true;
-    }
-
     cancelCreationDraftRef.current = cancelCreationDraft;
-    prepareCreationToolSwitchRef.current = () => {
-      // Unified creation input keeps the active renderer attached to the current
-      // physical contact. A toolbar switch only selects the renderer for the next one.
+    prepareCreationToolSwitchRef.current = (previousTool, nextTool) => {
       pendingNativeCreationPointer = null;
+      if (!CREATION_TOOLS.has(previousTool) || !CREATION_TOOLS.has(nextTool)) return;
+
+      // A delayed Fabric drawing session from Pencil must be closed before the first
+      // line/shape pointerdown reaches Canvas. This is a one-contact cleanup only and
+      // never enumerates the objects on the board.
+      if (previousTool === 'pencil' && nextTool !== 'pencil' && canvas._isCurrentlyDrawing) {
+        const syntheticUp = makeSyntheticPenUpEvent();
+        try {
+          if (typeof canvas._onMouseUpInDrawingMode === 'function') {
+            canvas._onMouseUpInDrawingMode(syntheticUp);
+          } else {
+            canvas._isCurrentlyDrawing = false;
+          }
+        } catch {
+          canvas._isCurrentlyDrawing = false;
+          try { canvas.clearContext?.(canvas.contextTop); } catch { /* Ignore cleanup fallback. */ }
+        }
+      }
+
+      // Fabric runs in Pointer Events mode, so there is no legacy mainTouchId or
+      // delayed touch-to-mouse compatibility stream to release here.
     };
 
     const redrawCreationPreviewAfterCanvasRender = () => {
@@ -5743,7 +5715,7 @@ function BoardWorkspace({
     }
 
     canvas.on('path:created', ({ path }) => {
-      const currentToolIsPartialEraser = activeToolRef.current === 'eraser'
+      const isPartialEraserPath = activeToolRef.current === 'eraser'
         && eraserModeRef.current === 'partial';
       const now = Date.now();
       const activePending = activePencilRef.current;
@@ -5770,11 +5742,8 @@ function BoardWorkspace({
         pathStartPoint = null;
       }
 
-      let pendingCandidate = pencilPathEmissionPending
-        && !pencilPathEmissionPending.consumed
-        ? pencilPathEmissionPending
-        : null;
-      if (!pendingCandidate && pathStartPoint) {
+      let pendingCandidate = null;
+      if (pathStartPoint) {
         const tolerance = Math.max(14, 34 / Math.max(canvas.getZoom(), MIN_ZOOM));
         const ranked = candidates
           .map((pending) => ({
@@ -5791,7 +5760,7 @@ function BoardWorkspace({
         if (ranked[0]?.distance <= tolerance) pendingCandidate = ranked[0].pending;
       }
 
-      if (!pendingCandidate && !currentToolIsPartialEraser) {
+      if (!pendingCandidate) {
         const recentlyReleased = candidates
           .filter((pending) => pending.mouseReleased
             && now - Number(pending.releasedAt ?? 0) <= 750)
@@ -5802,10 +5771,9 @@ function BoardWorkspace({
           ?? null;
       }
 
-      // A Pencil path owns its pending session even if the toolbar changed before
-      // pointerup. Only a path with no matching Pencil session may become an eraser path.
-      const pendingPencil = pendingCandidate ?? null;
-      const isPartialEraserPath = !pendingPencil && currentToolIsPartialEraser;
+      const pendingPencil = !isPartialEraserPath && pendingCandidate
+        ? pendingCandidate
+        : null;
       if (pendingPencil) {
         pendingPencil.consumed = true;
         const queueIndex = pendingPencilQueueRef.current.indexOf(pendingPencil);
@@ -5974,10 +5942,6 @@ function BoardWorkspace({
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
-      const unifiedSession = creationInputControllerRef.current?.getActiveSession?.() ?? null;
-      if (unifiedSession
-        && pointerId != null
-        && String(unifiedSession.pointerId) === String(pointerId)) return;
       if (activeToolRef.current === 'pencil') {
         const activeStroke = activePencilRef.current;
         if (activeStroke && !activeStroke.mouseReleased) {
@@ -6346,10 +6310,6 @@ function BoardWorkspace({
     canvas.on('mouse:move', (event) => {
       const nativeEvent = event.e;
       if (nativeEvent?.pointerId != null && rejectedPointerIdsRef.current.has(nativeEvent.pointerId)) return;
-      const unifiedSession = creationInputControllerRef.current?.getActiveSession?.() ?? null;
-      if (unifiedSession
-        && nativeEvent?.pointerId != null
-        && String(unifiedSession.pointerId) === String(nativeEvent.pointerId)) return;
       const cursorScenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = cursorScenePoint;
       if (!liveTransformSendRef.current.sessionId && !liveDrawSendRef.current.sessionId) {
@@ -6760,11 +6720,7 @@ function BoardWorkspace({
       if (!pen.active || Date.now() - Number(pen.lastSeenAt ?? 0) < PENCIL_HANDOFF_IDLE_MS) return false;
       const syntheticUp = makeSyntheticPenUpEvent();
       try {
-        const activeCreationSession = creationInputControllerRef.current?.getActiveSession?.() ?? null;
-        if (activeCreationSession && String(activeCreationSession.pointerId) === String(pen.pointerId)) {
-          creationInputControllerRef.current?.end?.(syntheticUp);
-        } else if (canvas._isCurrentlyDrawing && typeof canvas._onMouseUpInDrawingMode === 'function') {
-          // The partial eraser still uses Fabric drawing mode.
+        if (canvas._isCurrentlyDrawing && typeof canvas._onMouseUpInDrawingMode === 'function') {
           canvas._onMouseUpInDrawingMode(syntheticUp);
         }
       } catch {
@@ -6783,7 +6739,6 @@ function BoardWorkspace({
     }
 
     function abortFabricDrawingForTouchGesture(event) {
-      creationInputControllerRef.current?.cancel?.('touch-gesture');
       if (!canvas._isCurrentlyDrawing) return;
       try {
         if (typeof canvas._onMouseUpInDrawingMode === 'function') {
@@ -6869,7 +6824,7 @@ function BoardWorkspace({
       // In Fabric drawing mode __onMouseDown handles every pointer before checking
       // isPrimary. Keep a second finger available to our TouchEvent pinch recognizer,
       // but stop its PointerEvent from starting/replacing the active brush stroke.
-      const fabricFreeDrawingActive = CREATION_TOOLS.has(activeToolRef.current)
+      const fabricFreeDrawingActive = activeToolRef.current === 'pencil'
         || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial');
       if (event.pointerType === 'touch' && event.isPrimary === false && fabricFreeDrawingActive) {
         fabricSuppressedSecondaryTouchPointers.add(event.pointerId);
@@ -6908,8 +6863,8 @@ function BoardWorkspace({
 
         const justAfterTouchGesture = performance.now()
           - Number(lastTouchGestureEndedAtRef.current ?? 0) < 350;
-        const drawingToolNeedsRepair = activeToolRef.current === 'eraser'
-          && eraserModeRef.current === 'partial'
+        const drawingToolNeedsRepair = (activeToolRef.current === 'pencil'
+          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial'))
           && !canvas.isDrawingMode;
 
         // Restore synchronously in capture phase, before this same pointerdown reaches
@@ -6969,11 +6924,8 @@ function BoardWorkspace({
         stopPointerBeforeFabric(event);
         return;
       }
-      const unifiedSession = creationInputControllerRef.current?.getActiveSession?.() ?? null;
-      if (!unifiedSession) {
-        if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
-        else finalizeCreationDraft(event);
-      }
+      if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
+      else finalizeCreationDraft(event);
       clearPendingNativeCreationPointer(event);
       if (event.pointerType === 'pen' && penInputRef.current.pointerId === event.pointerId) {
         const now = Date.now();
@@ -6983,14 +6935,19 @@ function BoardWorkspace({
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
         penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
-        if (event.type === 'pointercancel' && !unifiedSession) {
+        if (event.type === 'pointercancel') {
           const pending = activePencilRef.current;
-          if (pending?.pointerId === event.pointerId) releasePendingPencil(pending, 'cancel');
+          if (pending?.pointerId === event.pointerId) {
+            pending.cancelled = true;
+            pending.mouseReleased = true;
+            pending.releasedAt = now;
+            finishLiveDraw('cancel', pending.sessionId);
+          }
         }
         // A normal Pencil-up leaves Fabric in drawing mode. Reconfiguring here used to
         // scan every object after every stroke, so only repair an actually disabled mode.
-        if (activeToolRef.current === 'eraser'
-          && eraserModeRef.current === 'partial'
+        if ((activeToolRef.current === 'pencil'
+          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial'))
           && !canvas.isDrawingMode) {
           window.requestAnimationFrame(() => {
             if (!touchGestureRef.current?.active && !canvas.isDrawingMode) applyCanvasInputMode();
@@ -7004,279 +6961,6 @@ function BoardWorkspace({
         window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
       }
       forgetHandoffTouchPointer(event);
-    }
-
-
-    function normalizeCreationInput(event) {
-      const rect = touchTarget.getBoundingClientRect();
-      return {
-        nativeEvent: event,
-        scenePoint: scenePointFromClient(event.clientX, event.clientY),
-        viewportPoint: new Point(
-          Number(event.clientX ?? 0) - rect.left,
-          Number(event.clientY ?? 0) - rect.top,
-        ),
-        pressure: Number(event.pressure ?? 0),
-        buttons: Number(event.buttons ?? 0),
-      };
-    }
-
-    function createPencilPending(input) {
-      const now = Date.now();
-      pendingPencilQueueRef.current = pendingPencilQueueRef.current.filter((pending) => {
-        const stale = pending.consumed
-          || now - Number(pending.startedAt ?? 0) > 1800
-          || (pending.mouseReleased && now - Number(pending.releasedAt ?? now) > 750);
-        if (stale) window.clearTimeout(pending.cancelTimer);
-        return !stale;
-      });
-
-      const objectId = randomToken(10);
-      const sessionId = beginLiveDraw('pencil', objectId, input.scenePoint, {
-        stroke: hexToRgba(colorRef.current, opacityRef.current),
-        width: widthRef.current,
-      });
-      const pending = {
-        objectId,
-        sessionId,
-        pointerId: input.nativeEvent.pointerId,
-        pointerType: input.nativeEvent.pointerType ?? 'unknown',
-        cancelTimer: null,
-        startedAt: now,
-        mouseReleased: false,
-        releasedAt: 0,
-        consumed: false,
-        cancelled: false,
-        firstPoint: {
-          x: Number(input.scenePoint.x),
-          y: Number(input.scenePoint.y),
-        },
-      };
-      pendingPencilQueueRef.current.push(pending);
-      activePencilRef.current = pending;
-      return pending;
-    }
-
-    const unifiedCreationTools = new Map([
-      ['pencil', {
-        begin(_context, _session, input) {
-          const brush = canvas.freeDrawingBrush ?? new PencilBrush(canvas);
-          canvas.freeDrawingBrush = brush;
-          brush.color = hexToRgba(colorRef.current, opacityRef.current);
-          brush.width = widthRef.current;
-          const pending = createPencilPending(input);
-          brush.onMouseDown(input.scenePoint, { e: input.nativeEvent });
-          return { pending, brush };
-        },
-        move(_context, session, input) {
-          if (session.data?.pending?.cancelled) return;
-          session.data?.brush?.onMouseMove(input.scenePoint, { e: input.nativeEvent });
-          if (liveDrawSendRef.current.sessionId === session.data?.pending?.sessionId) {
-            updateLiveDraw(input.scenePoint);
-          }
-        },
-        end(_context, session, input) {
-          const pending = session.data?.pending;
-          pencilPathEmissionPending = pending ?? null;
-          try {
-            session.data?.brush?.onMouseUp({ e: input.nativeEvent });
-          } finally {
-            if (pencilPathEmissionPending === pending) pencilPathEmissionPending = null;
-            releasePendingPencil(pending, pending?.cancelled ? 'cancel' : 'end');
-          }
-        },
-        cancel(_context, session, input) {
-          const pending = session.data?.pending;
-          if (pending) pending.cancelled = true;
-          const endEvent = input?.nativeEvent ?? makeSyntheticPenUpEvent();
-          pencilPathEmissionPending = pending ?? null;
-          try {
-            session.data?.brush?.onMouseUp({ e: endEvent });
-          } catch {
-            // A cancelled draft is removed by the pending-session cleanup below.
-          } finally {
-            if (pencilPathEmissionPending === pending) pencilPathEmissionPending = null;
-          }
-          try { canvas.clearContext?.(canvas.contextTop); } catch { /* Ignore preview cleanup. */ }
-          releasePendingPencil(pending, 'cancel');
-        },
-      }],
-      ['line', {
-        begin(_context, _session, input) {
-          const point = input.scenePoint;
-          const line = new Line([point.x, point.y, point.x, point.y], {
-            stroke: hexToRgba(colorRef.current, opacityRef.current),
-            strokeWidth: widthRef.current,
-            fill: hexToRgba(colorRef.current, opacityRef.current),
-            strokeLineCap: 'round',
-            selectable: false,
-            evented: false,
-          });
-          markObject(line, clientId);
-          const sessionId = beginLiveDraw('line', line.boardObjectId, point, {
-            stroke: hexToRgba(colorRef.current, opacityRef.current),
-            width: widthRef.current,
-          });
-          line.creationSessionId = sessionId;
-          line.creationClientId = clientId;
-          const creationPointer = creationPointerForDraft(input.nativeEvent);
-          const draft = {
-            kind: 'line',
-            object: line,
-            start: new Point(point.x, point.y),
-            pointerKey: creationPointer.key,
-            pointerId: creationPointer.pointerId,
-            pointerType: creationPointer.pointerType,
-            pointerDownTimeStamp: creationPointer.pointerDownTimeStamp,
-            toolGeneration: creationPointer.toolGeneration,
-            contactToken: creationPointer.contactToken,
-            startedAt: Date.now(),
-            sessionId,
-            cancelled: false,
-            finalized: false,
-          };
-          lineRef.current = draft;
-          lineStartRef.current = point;
-          prepareCreationPreviewObject(line);
-          scheduleCreationPreview();
-          return draft;
-        },
-        move(_context, session, input) {
-          const draft = session.data;
-          if (!draft || draft.cancelled || draft.finalized) return;
-          const point = input.scenePoint;
-          if (liveDrawSendRef.current.sessionId === draft.sessionId
-            && liveDrawSendRef.current.tool === 'line') {
-            updateLiveDraw(point);
-          }
-          draft.object.set({ x2: point.x, y2: point.y });
-          draft.object.setCoords();
-          scheduleCreationPreview();
-        },
-        end(_context, _session, input) {
-          finalizeCreationDraft(input.nativeEvent);
-        },
-        cancel(_context, _session, input, reason) {
-          cancelCreationDraft(reason || 'cancel', input?.nativeEvent ?? null);
-        },
-      }],
-      ['shape', {
-        begin(_context, _session, input) {
-          const shapeId = selectedShapeRef.current;
-          if (!shapeId) return null;
-          const point = input.scenePoint;
-          const object = createShape(shapeId, {
-            stroke: hexToRgba(colorRef.current, opacityRef.current),
-            strokeWidth: widthRef.current,
-          });
-          if (!object) return null;
-          markObject(object, clientId);
-          const baseWidth = Math.max(1, Number(object.width ?? 1));
-          const baseHeight = Math.max(1, Number(object.height ?? 1));
-          object.set({
-            left: point.x,
-            top: point.y,
-            originX: 'center',
-            originY: 'center',
-            scaleX: 0.01,
-            scaleY: 0.01,
-            selectable: false,
-            evented: false,
-            hasControls: false,
-            hasBorders: false,
-          });
-          object.setCoords();
-          canvas.discardActiveObject();
-          prepareCreationPreviewObject(object);
-          const creationPointer = creationPointerForDraft(input.nativeEvent);
-          const draft = {
-            kind: 'shape',
-            object,
-            start: new Point(point.x, point.y),
-            baseWidth,
-            baseHeight,
-            pointerKey: creationPointer.key,
-            pointerId: creationPointer.pointerId,
-            pointerType: creationPointer.pointerType,
-            pointerDownTimeStamp: creationPointer.pointerDownTimeStamp,
-            toolGeneration: creationPointer.toolGeneration,
-            contactToken: creationPointer.contactToken,
-            startedAt: Date.now(),
-            sessionId: null,
-            cancelled: false,
-            finalized: false,
-          };
-          shapeDraftRef.current = draft;
-          realtimeRef.current?.sendPreview?.([{
-            object: serializeObject(object),
-            zIndex: Number(object.creationDraftZIndex ?? canvas.getObjects().length),
-          }]);
-          draft.sessionId = beginLiveTransform(object);
-          scheduleCreationPreview();
-          return draft;
-        },
-        move(_context, session, input) {
-          const draft = session.data;
-          if (!draft || draft.cancelled || draft.finalized) return;
-          const dx = input.scenePoint.x - draft.start.x;
-          const dy = input.scenePoint.y - draft.start.y;
-          const drawnWidth = Math.max(2, Math.abs(dx));
-          const drawnHeight = Math.max(2, Math.abs(dy));
-          draft.object.set({
-            left: draft.start.x + dx / 2,
-            top: draft.start.y + dy / 2,
-            scaleX: drawnWidth / draft.baseWidth,
-            scaleY: drawnHeight / draft.baseHeight,
-          });
-          draft.object.dirty = true;
-          draft.object.setCoords();
-          sendLiveTransformThrottled(draft.object);
-          scheduleCreationPreview();
-        },
-        end(_context, _session, input) {
-          finalizeCreationDraft(input.nativeEvent);
-        },
-        cancel(_context, _session, input, reason) {
-          cancelCreationDraft(reason || 'cancel', input?.nativeEvent ?? null);
-        },
-      }],
-    ]);
-
-    const creationInputController = createCreationInputController({
-      getSelectedToolId: () => activeToolRef.current,
-      getTool: (toolId) => unifiedCreationTools.get(toolId) ?? null,
-      createContext: () => ({ canvas }),
-      normalizeEvent: normalizeCreationInput,
-      canStart(event, toolId) {
-        if (!canEditRef.current || !CREATION_TOOLS.has(toolId)) return false;
-        if (eyedropperActiveRef.current || touchGestureRef.current?.active) return false;
-        if (spacePressedRef.current || panningRef.current || mobilePasteAwaitingPointRef.current) return false;
-        if (event.pointerId != null && rejectedPointerIdsRef.current.has(event.pointerId)) return false;
-        if (event.pointerType === 'mouse' && Number(event.button ?? 0) !== 0) return false;
-        if (toolId === 'shape' && !selectedShapeRef.current) return false;
-        return true;
-      },
-      onError(error, detail) {
-        console.error('Unified creation input error', detail?.phase, error);
-        setSaveStatus('Ошибка инструмента рисования');
-      },
-    });
-    creationInputControllerRef.current = creationInputController;
-
-    function handleUnifiedCreationPointerDown(event) {
-      creationInputController.start(event);
-    }
-
-    function handleUnifiedCreationPointerMove(event) {
-      creationInputController.move(event);
-    }
-
-    function handleUnifiedCreationPointerUp(event) {
-      creationInputController.end(event);
-    }
-
-    function handleUnifiedCreationPointerCancel(event) {
-      creationInputController.cancelEvent(event);
     }
 
 
@@ -7396,10 +7080,6 @@ function BoardWorkspace({
     touchTarget.addEventListener('pointermove', handlePalmPointerMove, { passive: false, capture: true });
     touchTarget.addEventListener('pointerup', handlePalmPointerEnd, { passive: false, capture: true });
     touchTarget.addEventListener('pointercancel', handlePalmPointerEnd, { passive: false, capture: true });
-    touchTarget.addEventListener('pointerdown', handleUnifiedCreationPointerDown, { passive: false, capture: true });
-    touchTarget.addEventListener('pointermove', handleUnifiedCreationPointerMove, { passive: false, capture: true });
-    touchTarget.addEventListener('pointerup', handleUnifiedCreationPointerUp, { passive: false, capture: true });
-    touchTarget.addEventListener('pointercancel', handleUnifiedCreationPointerCancel, { passive: false, capture: true });
     touchTarget.addEventListener('pointerdown', handleObjectEraserPointerDown, { passive: false, capture: true });
     touchTarget.addEventListener('pointermove', handleObjectEraserPointerMove, { passive: false, capture: true });
     touchTarget.addEventListener('pointerup', handleObjectEraserPointerEnd, { passive: false, capture: true });
@@ -7408,10 +7088,14 @@ function BoardWorkspace({
     host.addEventListener('drop', handleDrop);
 
     function cancelActiveDrawingForTouchGesture() {
-      const cancelledUnified = creationInputControllerRef.current?.cancel?.('touch-gesture') ?? false;
-      if (!cancelledUnified) cancelCreationDraft('touch-gesture');
+      cancelCreationDraft('touch-gesture');
       const pending = activePencilRef.current;
-      if (!cancelledUnified && pending && !pending.mouseReleased) releasePendingPencil(pending, 'cancel');
+      if (pending && !pending.mouseReleased) {
+        pending.cancelled = true;
+        pending.mouseReleased = true;
+        pending.releasedAt = Date.now();
+        finishLiveDraw('cancel', pending.sessionId);
+      }
       liveDrawSendRef.current.acceptingPoints = false;
     }
 
@@ -7612,7 +7296,6 @@ function BoardWorkspace({
     }
 
     function handleWindowBlur() {
-      creationInputControllerRef.current?.cancel?.('window-blur');
       cancelCreationDraft('window-blur');
       internalClipboardArmedRef.current = false;
       spacePressedRef.current = false;
@@ -7776,9 +7459,7 @@ function BoardWorkspace({
 
     return () => {
       disposed = true;
-      creationInputControllerRef.current?.cancel?.('unmount');
       cancelCreationDraft('unmount');
-      creationInputControllerRef.current = null;
       clearCreationPreview();
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
       cancelCreationDraftRef.current = null;
@@ -7804,10 +7485,6 @@ function BoardWorkspace({
       touchTarget.removeEventListener('pointermove', handlePalmPointerMove, true);
       touchTarget.removeEventListener('pointerup', handlePalmPointerEnd, true);
       touchTarget.removeEventListener('pointercancel', handlePalmPointerEnd, true);
-      touchTarget.removeEventListener('pointerdown', handleUnifiedCreationPointerDown, true);
-      touchTarget.removeEventListener('pointermove', handleUnifiedCreationPointerMove, true);
-      touchTarget.removeEventListener('pointerup', handleUnifiedCreationPointerUp, true);
-      touchTarget.removeEventListener('pointercancel', handleUnifiedCreationPointerCancel, true);
       touchTarget.removeEventListener('pointerdown', handleObjectEraserPointerDown, true);
       touchTarget.removeEventListener('pointermove', handleObjectEraserPointerMove, true);
       touchTarget.removeEventListener('pointerup', handleObjectEraserPointerEnd, true);
