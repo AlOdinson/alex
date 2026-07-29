@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ShapeIcon from './ShapeIcon.jsx';
 import { SHAPE_CATEGORIES } from '../lib/shapes.js';
@@ -8,6 +8,7 @@ const DESKTOP_WIDTH = 470;
 
 export default function ShapePalette({ onChoose, onClose, anchorRef }) {
   const [placement, setPlacement] = useState(null);
+  const handledPointerChoiceRef = useRef(null);
 
   useLayoutEffect(() => {
     const updatePlacement = () => {
@@ -76,7 +77,19 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
                   className="shape-choice"
                   key={id}
                   title={label}
-                  onClick={() => onChoose(id)}
+                  onPointerDown={(event) => {
+                    if (!['pen', 'touch'].includes(String(event.pointerType))) return;
+                    event.preventDefault();
+                    handledPointerChoiceRef.current = id;
+                    onChoose(id);
+                  }}
+                  onClick={() => {
+                    if (handledPointerChoiceRef.current === id) {
+                      handledPointerChoiceRef.current = null;
+                      return;
+                    }
+                    onChoose(id);
+                  }}
                 >
                   <ShapeIcon id={id} />
                   <span>{label}</span>
