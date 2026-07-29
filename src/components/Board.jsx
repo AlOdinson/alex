@@ -4902,6 +4902,10 @@ function BoardWorkspace({
       perPixelTargetFind: false,
       skipOffscreen: true,
       targetFindTolerance: 8,
+      // Fabric must use the same PointerEvent family as the creation controller.
+      // Its default is false, which creates a separate touchstart/mousedown lifecycle
+      // for Apple Pencil in parallel with our pointer controller.
+      enablePointerEvents: true,
       fireRightClick: true,
       stopContextMenu: true,
     });
@@ -6530,6 +6534,11 @@ function BoardWorkspace({
     });
 
     const touchTarget = canvas.upperCanvasEl;
+    // Native creation input is captured on the host (an ancestor of Fabric's upper
+    // canvas), so it runs before Fabric's own target listeners. In 1.0.4-1.0.6 the
+    // controller was attached to upperCanvasEl after Fabric had already registered its
+    // touch/mouse handlers; both engines therefore owned the same Apple Pencil contact.
+    const creationEventTarget = host;
 
     const activeTouchPointers = new Set();
     const handoffTouchPointers = new Map();
@@ -7156,7 +7165,7 @@ function BoardWorkspace({
         lastEventTimestamp: Number(input.timestamp ?? event.timeStamp ?? 0),
         draft: null,
         context: creationToolContext,
-        captureTarget: event.currentTarget,
+        captureTarget: touchTarget,
         explicitPointerCapture: false,
         lastInput: input,
       };
@@ -7169,7 +7178,7 @@ function BoardWorkspace({
       // input still benefits from explicit capture when leaving the canvas bounds.
       if (session.pointerType === 'mouse') {
         try {
-          event.currentTarget.setPointerCapture?.(event.pointerId);
+          touchTarget.setPointerCapture?.(event.pointerId);
           session.explicitPointerCapture = true;
         } catch {
           session.explicitPointerCapture = false;
@@ -7191,8 +7200,28 @@ function BoardWorkspace({
       }
     }
 
+    function pointerEventHasActiveContact(event) {
+      const pointerType = String(event?.pointerType ?? 'unknown');
+      const buttons = Number(event?.buttons ?? 0);
+      const pressure = Number(event?.pressure ?? 0);
+      if (pointerType === 'pen' || pointerType === 'touch') {
+        return buttons !== 0 || pressure > 0;
+      }
+      return (buttons & 1) === 1;
+    }
+
     function handleCreationPointerMove(event) {
-      const session = creationInputRef.current.activeSession;
+      let session = creationInputRef.current.activeSession;
+
+      // Safari can occasionally omit/delay the first pointerdown when the Pencil has
+      // just moved from a toolbar button back to the canvas. Recover from the first
+      // contact move instead of throwing the whole first line/shape away. Hover moves
+      // never enter this path because they have neither pressure nor a pressed button.
+      if (!session && pointerEventHasActiveContact(event) && canStartCreationPointer(event)) {
+        handleCreationPointerDown(event);
+        session = creationInputRef.current.activeSession;
+      }
+
       if (!session || !creationSessionOwnsEvent(session, event)) return;
       consumeCreationPointerEvent(event);
       const samples = typeof event.getCoalescedEvents === 'function'
@@ -7249,19 +7278,57 @@ function BoardWorkspace({
       cancelCreationDraft('lost-pointer-capture', event, true);
     }
 
-    touchTarget.addEventListener('pointerdown', handlePalmPointerDown, { passive: false, capture: true });
-    touchTarget.addEventListener('pointermove', handlePalmPointerMove, { passive: false, capture: true });
-    touchTarget.addEventListener('pointerup', handlePalmPointerEnd, { passive: false, capture: true });
-    touchTarget.addEventListener('pointercancel', handlePalmPointerEnd, { passive: false, capture: true });
-    touchTarget.addEventListener('pointerdown', handleObjectEraserPointerDown, { passive: false, capture: true });
-    touchTarget.addEventListener('pointermove', handleObjectEraserPointerMove, { passive: false, capture: true });
-    touchTarget.addEventListener('pointerup', handleObjectEraserPointerEnd, { passive: false, capture: true });
-    touchTarget.addEventListener('pointercancel', handleObjectEraserPointerEnd, { passive: false, capture: true });
-    touchTarget.addEventListener('pointerdown', handleCreationPointerDown, { passive: false, capture: true });
-    touchTarget.addEventListener('pointermove', handleCreationPointerMove, { passive: false, capture: true });
-    touchTarget.addEventListener('pointerup', handleCreationPointerUp, { passive: false, capture: true });
-    touchTarget.addEventListener('pointercancel', handleCreationPointerCancel, { passive: false, capture: true });
-    touchTarget.addEventListener('lostpointercapture', handleCreationLostPointerCapture, { passive: false, capture: true });
+    function creationToolOwnsNativeInput() {
+      const activeToolId = creationInputRef.current.activeSession?.toolId
+        || creationInputRef.current.selectedToolId
+        || activeToolRef.current;
+      return creationToolRegistryRef.current.has(activeToolId);
+    }
+
+    function touchEventContainsStylus(event) {
+      return [...touchArray(event?.touches), ...touchArray(event?.changedTouches)]
+        .some((touch) => isStylusTouch(touch));
+    }
+
+    function blockFabricStylusTouch(event) {
+      if (!creationToolOwnsNativeInput() || !touchEventContainsStylus(event)) return;
+      // The PointerEvent controller is the only owner of Pencil creation. Prevent
+      // Fabric's parallel TouchEvent lifecycle from starting, moving or finalizing a
+      // second hidden interaction for the same physical contact.
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    }
+
+    function blockFabricCompatibilityMouse(event) {
+      if (!creationToolOwnsNativeInput()) return;
+      // Creation is already handled by PointerEvents for mouse, touch and Pencil. Block
+      // compatibility mouse events so Fabric cannot start its own interaction afterward.
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation?.();
+    }
+
+    creationEventTarget.addEventListener('pointerdown', handlePalmPointerDown, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointermove', handlePalmPointerMove, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointerup', handlePalmPointerEnd, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointercancel', handlePalmPointerEnd, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointerdown', handleObjectEraserPointerDown, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointermove', handleObjectEraserPointerMove, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointerup', handleObjectEraserPointerEnd, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointercancel', handleObjectEraserPointerEnd, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointerdown', handleCreationPointerDown, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointermove', handleCreationPointerMove, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointerup', handleCreationPointerUp, { passive: false, capture: true });
+    creationEventTarget.addEventListener('pointercancel', handleCreationPointerCancel, { passive: false, capture: true });
+    creationEventTarget.addEventListener('lostpointercapture', handleCreationLostPointerCapture, { passive: false, capture: true });
+    creationEventTarget.addEventListener('touchstart', blockFabricStylusTouch, { passive: false, capture: true });
+    creationEventTarget.addEventListener('touchmove', blockFabricStylusTouch, { passive: false, capture: true });
+    creationEventTarget.addEventListener('touchend', blockFabricStylusTouch, { passive: false, capture: true });
+    creationEventTarget.addEventListener('touchcancel', blockFabricStylusTouch, { passive: false, capture: true });
+    creationEventTarget.addEventListener('mousedown', blockFabricCompatibilityMouse, { passive: false, capture: true });
+    creationEventTarget.addEventListener('mousemove', blockFabricCompatibilityMouse, { passive: false, capture: true });
+    creationEventTarget.addEventListener('mouseup', blockFabricCompatibilityMouse, { passive: false, capture: true });
     host.addEventListener('dragover', handleDragOver);
     host.addEventListener('drop', handleDrop);
 
@@ -7656,19 +7723,26 @@ function BoardWorkspace({
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('blur', handleWindowBlur);
       touchTarget.removeEventListener('contextmenu', handleContextMenu);
-      touchTarget.removeEventListener('pointerdown', handlePalmPointerDown, true);
-      touchTarget.removeEventListener('pointermove', handlePalmPointerMove, true);
-      touchTarget.removeEventListener('pointerup', handlePalmPointerEnd, true);
-      touchTarget.removeEventListener('pointercancel', handlePalmPointerEnd, true);
-      touchTarget.removeEventListener('pointerdown', handleObjectEraserPointerDown, true);
-      touchTarget.removeEventListener('pointermove', handleObjectEraserPointerMove, true);
-      touchTarget.removeEventListener('pointerup', handleObjectEraserPointerEnd, true);
-      touchTarget.removeEventListener('pointercancel', handleObjectEraserPointerEnd, true);
-      touchTarget.removeEventListener('pointerdown', handleCreationPointerDown, true);
-      touchTarget.removeEventListener('pointermove', handleCreationPointerMove, true);
-      touchTarget.removeEventListener('pointerup', handleCreationPointerUp, true);
-      touchTarget.removeEventListener('pointercancel', handleCreationPointerCancel, true);
-      touchTarget.removeEventListener('lostpointercapture', handleCreationLostPointerCapture, true);
+      creationEventTarget.removeEventListener('pointerdown', handlePalmPointerDown, true);
+      creationEventTarget.removeEventListener('pointermove', handlePalmPointerMove, true);
+      creationEventTarget.removeEventListener('pointerup', handlePalmPointerEnd, true);
+      creationEventTarget.removeEventListener('pointercancel', handlePalmPointerEnd, true);
+      creationEventTarget.removeEventListener('pointerdown', handleObjectEraserPointerDown, true);
+      creationEventTarget.removeEventListener('pointermove', handleObjectEraserPointerMove, true);
+      creationEventTarget.removeEventListener('pointerup', handleObjectEraserPointerEnd, true);
+      creationEventTarget.removeEventListener('pointercancel', handleObjectEraserPointerEnd, true);
+      creationEventTarget.removeEventListener('pointerdown', handleCreationPointerDown, true);
+      creationEventTarget.removeEventListener('pointermove', handleCreationPointerMove, true);
+      creationEventTarget.removeEventListener('pointerup', handleCreationPointerUp, true);
+      creationEventTarget.removeEventListener('pointercancel', handleCreationPointerCancel, true);
+      creationEventTarget.removeEventListener('lostpointercapture', handleCreationLostPointerCapture, true);
+      creationEventTarget.removeEventListener('touchstart', blockFabricStylusTouch, true);
+      creationEventTarget.removeEventListener('touchmove', blockFabricStylusTouch, true);
+      creationEventTarget.removeEventListener('touchend', blockFabricStylusTouch, true);
+      creationEventTarget.removeEventListener('touchcancel', blockFabricStylusTouch, true);
+      creationEventTarget.removeEventListener('mousedown', blockFabricCompatibilityMouse, true);
+      creationEventTarget.removeEventListener('mousemove', blockFabricCompatibilityMouse, true);
+      creationEventTarget.removeEventListener('mouseup', blockFabricCompatibilityMouse, true);
       touchTarget.removeEventListener('touchstart', handleTouchStart, true);
       touchTarget.removeEventListener('touchmove', handleTouchMove, true);
       touchTarget.removeEventListener('touchend', handleTouchEnd, true);
