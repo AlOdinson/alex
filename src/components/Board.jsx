@@ -5406,21 +5406,42 @@ function BoardWorkspace({
       if (!session || !nativeEvent) return false;
 
       // iPadOS Safari can reuse the same Apple Pencil pointerId for the next physical
-      // contact while a delayed pointerup/pointercancel/lostpointercapture from the
-      // previous contact is still queued. Pointer id alone is therefore not enough.
-      // Reject any delayed event that was generated before this session's pointerdown.
+      // contact while terminal events from the previous contact are still queued.
+      // Pointer id alone is therefore not enough.
       const eventTimestamp = Number(nativeEvent.timeStamp ?? 0);
       const sessionTimestamp = Number(session.pointerDownTimestamp ?? 0);
+      const lastTimestamp = Number(session.lastEventTimestamp ?? sessionTimestamp ?? 0);
       if (eventTimestamp > 0
         && sessionTimestamp > 0
         && eventTimestamp + 0.5 < sessionTimestamp) {
         return false;
       }
-
-      if (session.pointerId != null && nativeEvent.pointerId != null) {
-        return String(session.pointerId) === String(nativeEvent.pointerId);
+      if (eventTimestamp > 0
+        && lastTimestamp > 0
+        && eventTimestamp + 0.5 < lastTimestamp) {
+        return false;
       }
-      return session.pointerType === String(nativeEvent.pointerType ?? 'unknown');
+
+      const pointerMatches = session.pointerId != null && nativeEvent.pointerId != null
+        ? String(session.pointerId) === String(nativeEvent.pointerId)
+        : session.pointerType === String(nativeEvent.pointerType ?? 'unknown');
+      if (!pointerMatches) return false;
+
+      // A delayed terminal event from the preceding Pencil contact can be dispatched
+      // after a new contact has already begun and can even carry a fresh timestamp.
+      // Its coordinates still belong to the old contact, so do not let it finish or
+      // cancel the new line/shape when it is far from the newest sample.
+      const terminalEvent = nativeEvent.type === 'pointerup'
+        || nativeEvent.type === 'pointercancel'
+        || nativeEvent.type === 'lostpointercapture';
+      if (session.pointerType === 'pen' && terminalEvent && session.lastInput?.clientPoint) {
+        const distanceFromLatestSample = Math.hypot(
+          Number(nativeEvent.clientX ?? session.lastInput.clientPoint.x) - Number(session.lastInput.clientPoint.x),
+          Number(nativeEvent.clientY ?? session.lastInput.clientPoint.y) - Number(session.lastInput.clientPoint.y),
+        );
+        if (distanceFromLatestSample > 48) return false;
+      }
+      return true;
     }
 
     function consumeCreationPointerEvent(event) {
@@ -5430,13 +5451,15 @@ function BoardWorkspace({
     }
 
     function releaseCreationPointerCapture(session) {
-      if (!session?.captureTarget || session.pointerId == null) return;
+      if (!session?.explicitPointerCapture || !session?.captureTarget || session.pointerId == null) return;
       try {
         if (session.captureTarget.hasPointerCapture?.(session.pointerId)) {
           session.captureTarget.releasePointerCapture?.(session.pointerId);
         }
       } catch {
-        // Safari may release capture itself before pointerup/pointercancel reaches us.
+        // The browser may release capture itself before pointerup/pointercancel reaches us.
+      } finally {
+        session.explicitPointerCapture = false;
       }
     }
 
@@ -7130,18 +7153,27 @@ function BoardWorkspace({
         tool: selectedTool,
         startedAt: performance.now(),
         pointerDownTimestamp: Number(input.timestamp ?? event.timeStamp ?? 0),
+        lastEventTimestamp: Number(input.timestamp ?? event.timeStamp ?? 0),
         draft: null,
         context: creationToolContext,
         captureTarget: event.currentTarget,
+        explicitPointerCapture: false,
         lastInput: input,
       };
 
       controller.activeSession = session;
       consumeCreationPointerEvent(event);
-      try {
-        event.currentTarget.setPointerCapture?.(event.pointerId);
-      } catch {
-        // Touch and pen normally keep implicit targeting; pointercancel remains the authoritative interruption signal.
+      // Apple Pencil and touch already receive implicit pointer capture in Safari.
+      // Explicit setPointerCapture() is avoided for them because iPadOS can dispatch a
+      // delayed pointercancel/lostpointercapture into the next physical contact. Mouse
+      // input still benefits from explicit capture when leaving the canvas bounds.
+      if (session.pointerType === 'mouse') {
+        try {
+          event.currentTarget.setPointerCapture?.(event.pointerId);
+          session.explicitPointerCapture = true;
+        } catch {
+          session.explicitPointerCapture = false;
+        }
       }
 
       try {
@@ -7171,6 +7203,7 @@ function BoardWorkspace({
         for (const sample of usableSamples) {
           const input = normalizeCreationPointerEvent(sample);
           session.lastInput = input;
+          session.lastEventTimestamp = Number(input.timestamp ?? session.lastEventTimestamp ?? 0);
           lastPointerSceneRef.current = input.scenePoint;
           session.tool.move(session.context, session, input);
         }
@@ -7191,6 +7224,16 @@ function BoardWorkspace({
       const session = creationInputRef.current.activeSession;
       if (!session || !creationSessionOwnsEvent(session, event)) return;
       consumeCreationPointerEvent(event);
+
+      if (session.pointerType === 'pen' && !touchGestureRef.current?.active) {
+        // Safari can emit pointercancel during a valid Apple Pencil contact when input
+        // ownership changes between drawing tools. Discarding the draft loses exactly
+        // the first line/shape after a switch. Preserve the user's work by finalizing at
+        // the latest accepted sample; deliberate pinch/gesture cancellation is handled
+        // earlier by cancelActiveDrawingForTouchGesture().
+        finishCreationSession(null, 'pen-pointercancel-recovery', true);
+        return;
+      }
       cancelCreationDraft('pointercancel', event);
     }
 
@@ -7198,15 +7241,11 @@ function BoardWorkspace({
       const session = creationInputRef.current.activeSession;
       if (!session || !creationSessionOwnsEvent(session, event)) return;
 
-      // Safari may emit a zero-pressure lostpointercapture from the previous Pencil
-      // contact after the next one has already begun with the same pointerId. Real
-      // interruption is also reported through pointercancel, so this release event must
-      // never be allowed to erase the first stroke of a new pen session.
-      if (session.pointerType === 'pen'
-        && Number(event.buttons ?? 0) === 0
-        && Number(event.pressure ?? 0) === 0) {
-        return;
-      }
+      // Creation sessions never request explicit capture for pen/touch. Any late
+      // lostpointercapture for Apple Pencil belongs to browser-level implicit capture
+      // and must not cancel the current draft. Genuine interruptions arrive through
+      // pointercancel or the explicit gesture cancellation path.
+      if (session.pointerType === 'pen' || session.pointerType === 'touch') return;
       cancelCreationDraft('lost-pointer-capture', event, true);
     }
 
