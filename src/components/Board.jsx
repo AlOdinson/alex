@@ -1381,40 +1381,22 @@ function BoardWorkspace({
   const applyObjectInteractivity = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    const selectionEyedropper = eyedropperActiveRef.current
-      && eyedropperModeRef.current === 'selection';
-    const selectable = canEditRef.current
-      && activeToolRef.current === 'select'
-      && !eyedropperActiveRef.current;
-    const textToolActive = canEditRef.current
-      && activeToolRef.current === 'text'
-      && !eyedropperActiveRef.current;
-    const objectEraser = canEditRef.current
-      && activeToolRef.current === 'eraser'
-      && eraserModeRef.current === 'object';
 
-    // Marquee selection is implemented by our own geometry-aware selector below.
-    // Keeping Fabric's native marquee enabled creates a second ActiveSelection at the
-    // same time, which was the source of the first-transform duplication bug.
-    canvas.selection = false;
-    const drawingToolActive = canEditRef.current
-      && (['pencil', 'line', 'shape'].includes(activeToolRef.current)
-        || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial'))
-      && !eyedropperActiveRef.current;
-    // Pixel-perfect target testing is expensive on a lesson made of thousands of
-    // handwritten paths. Enable it only for the object eraser; normal selection and
-    // text use Fabric bounds while drawing skips hit-testing completely.
-    canvas.perPixelTargetFind = objectEraser;
-    canvas.skipTargetFind = eyedropperActiveRef.current || drawingToolActive;
+    // Object interactivity is persistent and no longer depends on the selected tool.
+    // Drawing/text/eraser modes are isolated globally through canvas.skipTargetFind,
+    // so switching tools never has to enumerate every object on the board.
     const now = Date.now();
     for (const [objectId, lock] of remoteLocksRef.current) {
       if (Number(lock.expiresAt ?? 0) <= now) remoteLocksRef.current.delete(objectId);
     }
+
     const activeSelection = canvas.getActiveObject();
     const activeSelectionMembers = activeSelection?.type === 'activeSelection'
       && typeof activeSelection.getObjects === 'function'
       ? new Set(activeSelection.getObjects())
       : new Set();
+    let renderNeeded = false;
+
     for (const object of canvas.getObjects()) {
       const remoteLock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
       const lockedByOther = Boolean(remoteLock && Number(remoteLock.expiresAt ?? 0) > now);
@@ -1423,24 +1405,32 @@ function BoardWorkspace({
         && object.creationClientId === clientIdRef.current
         && localSelectionTransactionRef.current?.proxy === object
       );
-      const canSelectObject = isLocalSelectionProxy
-        || (selectable && !object.isEraserPath && !object.transientPreview && !object.transientSelectionProxy && !lockedByOther);
+      const permanentNonInteractive = Boolean(
+        object.isEraserPath
+        || object.transientPreview
+        || (object.transientSelectionProxy && !isLocalSelectionProxy)
+      );
+      const canInteract = isLocalSelectionProxy
+        || (canEditRef.current && !permanentNonInteractive && !lockedByOther);
       const isActiveSelectionMember = activeSelectionMembers.has(object);
-      const canEditTextHere = textToolActive
-        && isTextObject(object)
-        && !object.transientPreview
-        && !object.transientSelectionProxy
-        && !lockedByOther;
-      object.selectable = canSelectObject || canEditTextHere;
-      object.evented = canSelectObject
-        || canEditTextHere
-        || (objectEraser && !object.isEraserPath && !object.transientPreview && !object.transientSelectionProxy && !lockedByOther);
-      object.hasControls = canSelectObject && !isActiveSelectionMember;
-      object.hasBorders = canSelectObject && !isActiveSelectionMember;
-      object.hoverCursor = lockedByOther ? 'not-allowed' : (canEditTextHere ? 'text' : 'move');
+      const nextControls = canInteract && !isActiveSelectionMember;
+      const nextBorders = canInteract && !isActiveSelectionMember;
+      const nextCursor = lockedByOther ? 'not-allowed' : 'move';
+
+      if (object.selectable !== canInteract) object.selectable = canInteract;
+      if (object.evented !== canInteract) object.evented = canInteract;
+      if (object.hasControls !== nextControls) {
+        object.hasControls = nextControls;
+        renderNeeded = true;
+      }
+      if (object.hasBorders !== nextBorders) {
+        object.hasBorders = nextBorders;
+        renderNeeded = true;
+      }
+      if (object.hoverCursor !== nextCursor) object.hoverCursor = nextCursor;
     }
-    if (!selectable && !selectionEyedropper && !textToolActive) canvas.discardActiveObject();
-    canvas.requestRenderAll();
+
+    if (renderNeeded) canvas.requestRenderAll();
   }, []);
 
   const restoreSelectionMemberControls = useCallback((keep = new Set()) => {
@@ -1507,20 +1497,27 @@ function BoardWorkspace({
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
     const partialEraser = activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial';
-    const objectEraser = activeToolRef.current === 'eraser' && eraserModeRef.current === 'object';
     const shouldDraw = canEditRef.current
       && !eyedropperActiveRef.current
       && (activeToolRef.current === 'pencil' || partialEraser);
-    const drawingToolActive = canEditRef.current
-      && (['pencil', 'line', 'shape'].includes(activeToolRef.current) || partialEraser)
+    const selectionToolActive = canEditRef.current
+      && activeToolRef.current === 'select'
       && !eyedropperActiveRef.current;
+    const keepActiveObject = selectionToolActive
+      || (canEditRef.current && activeToolRef.current === 'text' && !eyedropperActiveRef.current)
+      || (eyedropperActiveRef.current && eyedropperModeRef.current === 'selection');
 
-    // This is the lightweight input-mode restoration used after pinch/pan. It must
-    // stay O(1): no object enumeration, no selection rebuild and no render request.
+    // Every tool switch is O(1). Only the select tool enables Fabric target finding;
+    // every drawing/text/eraser tool uses the board's own pointer logic.
     canvas.isDrawingMode = shouldDraw;
     canvas.selection = false;
-    canvas.perPixelTargetFind = objectEraser;
-    canvas.skipTargetFind = eyedropperActiveRef.current || drawingToolActive;
+    canvas.perPixelTargetFind = false;
+    canvas.skipTargetFind = !selectionToolActive;
+
+    if (!keepActiveObject && canvas.getActiveObject()) {
+      canvas.discardActiveObject();
+      canvas.requestRenderAll();
+    }
 
     const toolCursor = activeToolRef.current === 'shape'
       ? 'crosshair'
@@ -1541,8 +1538,7 @@ function BoardWorkspace({
 
   const configureBrushAndMode = useCallback(() => {
     applyCanvasInputMode();
-    applyObjectInteractivity();
-  }, [applyCanvasInputMode, applyObjectInteractivity]);
+  }, [applyCanvasInputMode]);
 
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
@@ -3632,8 +3628,9 @@ function BoardWorkspace({
     canEditRef.current = mode === 'edit';
     activeToolRef.current = mode === 'edit' ? 'pencil' : 'select';
     setToolState(activeToolRef.current);
+    applyObjectInteractivity();
     configureBrushAndMode();
-  }, [configureBrushAndMode, initialAccess, isOwner, onAccessChange]);
+  }, [applyObjectInteractivity, configureBrushAndMode, initialAccess, isOwner, onAccessChange]);
 
   const copySelection = useCallback(async ({ deselect = false } = {}) => {
     const canvas = fabricCanvasRef.current;
@@ -4989,6 +4986,7 @@ function BoardWorkspace({
           await preloadSerializedImages(snapshot.canvas);
           await canvas.loadFromJSON(snapshot.canvas);
           revisionRef.current = Math.max(Number(revisionRef.current ?? 0), confirmedRevision);
+          applyObjectInteractivity();
           configureBrushAndMode();
           updateBackgroundTransform();
           canvas.requestRenderAll();
@@ -5425,14 +5423,11 @@ function BoardWorkspace({
           return true;
         }
 
-        const selectableNow = canEditRef.current
-          && activeToolRef.current === 'select'
-          && !eyedropperActiveRef.current;
         shapeDraft.object.set({
-          selectable: selectableNow,
-          evented: selectableNow,
-          hasControls: true,
-          hasBorders: true,
+          selectable: canEditRef.current,
+          evented: canEditRef.current,
+          hasControls: canEditRef.current,
+          hasBorders: canEditRef.current,
         });
         shapeDraft.object.setCoords();
         addCreationObjectWithoutImmediateRender(shapeDraft.object);
@@ -5461,6 +5456,13 @@ function BoardWorkspace({
         }
 
         finishLiveDraw('end', lineDraft.sessionId);
+        line.set({
+          selectable: canEditRef.current,
+          evented: canEditRef.current,
+          hasControls: canEditRef.current,
+          hasBorders: canEditRef.current,
+        });
+        line.setCoords();
         addCreationObjectWithoutImmediateRender(line);
         commitAddedObject(line);
         return true;
@@ -5533,11 +5535,12 @@ function BoardWorkspace({
       return util.transformPoint(viewportPoint, inverse);
     }
 
-    function objectAtScenePoint(scenePoint, { strictImageBounds = false } = {}) {
+    function objectAtScenePoint(scenePoint, { strictImageBounds = false, predicate = null } = {}) {
       const tolerance = Math.max(7, 18 / Math.max(canvas.getZoom(), MIN_ZOOM));
       const objects = [...canvas.getObjects()].reverse();
       return objects.find((object) => {
         if (object.isEraserPath || objectEraserRecordsRef.current.has(object.boardObjectId)) return false;
+        if (predicate && !predicate(object)) return false;
         const bounds = object.getBoundingRect();
         const insideExpandedBounds = scenePoint.x >= bounds.left - tolerance
           && scenePoint.x <= bounds.left + bounds.width + tolerance
@@ -5742,9 +5745,18 @@ function BoardWorkspace({
           selectable: false,
           evented: false,
           hasControls: false,
+          hasBorders: false,
         });
         path.dirty = true;
         canvas.requestRenderAll();
+      } else {
+        path.set({
+          selectable: canEditRef.current,
+          evented: canEditRef.current,
+          hasControls: canEditRef.current,
+          hasBorders: canEditRef.current,
+        });
+        path.setCoords();
       }
       commitAddedObject(path);
     });
@@ -6164,7 +6176,13 @@ function BoardWorkspace({
       }
 
       if (activeToolRef.current === 'text') {
-        const targetText = isTextObject(event.target) ? event.target : null;
+        const targetText = objectAtScenePoint(scenePoint, {
+          predicate: (object) => {
+            if (!isTextObject(object) || object.transientPreview || object.transientSelectionProxy) return false;
+            const remoteLock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
+            return !remoteLock || Number(remoteLock.expiresAt ?? 0) <= Date.now();
+          },
+        });
         if (targetText) {
           canvas.setActiveObject(targetText);
           targetText.enterEditing?.();
@@ -6177,7 +6195,6 @@ function BoardWorkspace({
           canvas.requestRenderAll();
           return;
         }
-        if (event.target) return;
         const point = scenePoint;
         const textObject = new IText('Текст', {
           left: point.x,
@@ -7675,8 +7692,9 @@ function BoardWorkspace({
       activeToolRef.current = 'select';
       setToolState('select');
     }
+    applyObjectInteractivity();
     configureBrushAndMode();
-  }, [canEdit, configureBrushAndMode]);
+  }, [applyObjectInteractivity, canEdit, configureBrushAndMode]);
 
   const projectScenePoint = (x, y) => {
     const canvas = fabricCanvasRef.current;

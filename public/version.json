@@ -1,6 +1,7 @@
 {
-  "version": "1.0.13",
-  "base": "1.0.3",
-  "release": "iPad Apple Pencil stylus TouchEvent fallback",
-  "date": "2026-07-30"
+  "version": "1.05",
+  "packageVersion": "1.0.5",
+  "base": "1.0.13",
+  "release": "O(1) tool switching without full canvas object traversal",
+  "date": "2026-07-31"
 }
