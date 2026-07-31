@@ -395,13 +395,13 @@ export function connectBoardRealtime({
     }
   };
 
-  const publishRealtime = async (event, payload) => {
+  const publishRealtime = async (event, payload, { force = false } = {}) => {
     if (disconnected) return 'closed';
 
     // With no remote participant, Fabric continues rendering locally at full FPS
     // and durable operations still go to Supabase, but transient board packets are
     // not published. Presence itself is handled directly by the transport below.
-    if (!realtimeFanoutEnabled) return 'solo';
+    if (!force && !realtimeFanoutEnabled) return 'solo';
 
     if (isSupabaseConfigured && transportKind === 'pending') await transportReady;
     if (disconnected) return 'closed';
@@ -993,13 +993,13 @@ export function connectBoardRealtime({
       };
       return publishRealtime('selection-transaction', payload);
     },
-    sendView(view) {
+    sendView(view, { force = false } = {}) {
       const centerX = Number(Number(view?.centerX).toFixed(3));
       const centerY = Number(Number(view?.centerY).toFixed(3));
       const zoom = Number(Number(view?.zoom).toFixed(4));
       if (![centerX, centerY, zoom].every(Number.isFinite)) return Promise.resolve('ignored');
       const signature = `${centerX}:${centerY}:${zoom}`;
-      if (signature === lastViewSignature) return Promise.resolve('duplicate');
+      if (!force && signature === lastViewSignature) return Promise.resolve('duplicate');
       lastViewSignature = signature;
       return publishRealtime('view', {
         clientId,
@@ -1011,15 +1011,15 @@ export function connectBoardRealtime({
         centerY,
         zoom,
         timestamp: Date.now(),
-      });
+      }, { force });
     },
     sendViewJump(view) {
       const payload = { clientId, name, color, permission, ...view, timestamp: Date.now() };
-      return publishRealtime('view-jump', payload);
+      return publishRealtime('view-jump', payload, { force: true });
     },
     requestView() {
       const payload = { clientId, name, color, permission, timestamp: Date.now() };
-      return publishRealtime('view-request', payload);
+      return publishRealtime('view-request', payload, { force: true });
     },
     requestSync(revision = Number(getKnownRevision?.() ?? 0)) {
       return publishRealtime('sync', { clientId, revision });

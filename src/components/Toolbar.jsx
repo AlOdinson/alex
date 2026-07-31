@@ -138,6 +138,76 @@ function IconButton({ title, children, active = false, disabled = false, onClick
   );
 }
 
+
+function NavigationActionButton({ title, children, active = false, onClick }) {
+  const buttonRef = useRef(null);
+  const actionRef = useRef(onClick);
+  const suppressClickUntilRef = useRef(0);
+  const pendingStylusTouchIdRef = useRef(null);
+  actionRef.current = onClick;
+
+  useEffect(() => {
+    const button = buttonRef.current;
+    if (!button) return undefined;
+
+    function handleStylusTouchStart(event) {
+      const stylus = firstStylusTouch(event);
+      if (!stylus) return;
+      if (event.cancelable) event.preventDefault();
+      event.stopPropagation();
+      suppressClickUntilRef.current = performance.now() + 900;
+      pendingStylusTouchIdRef.current = stylus.identifier ?? null;
+    }
+
+    function handleStylusTouchEnd(event) {
+      if (pendingStylusTouchIdRef.current == null) return;
+      const matching = Array.from(event?.changedTouches ?? []).find(
+        (touch) => touch.identifier === pendingStylusTouchIdRef.current,
+      );
+      if (!matching) return;
+      if (event.cancelable) event.preventDefault();
+      event.stopPropagation();
+      suppressClickUntilRef.current = performance.now() + 900;
+      pendingStylusTouchIdRef.current = null;
+      button.blur();
+      window.requestAnimationFrame(() => actionRef.current?.());
+    }
+
+    function handleStylusTouchCancel() {
+      pendingStylusTouchIdRef.current = null;
+    }
+
+    button.addEventListener('touchstart', handleStylusTouchStart, { passive: false, capture: true });
+    button.addEventListener('touchend', handleStylusTouchEnd, { passive: false, capture: true });
+    button.addEventListener('touchcancel', handleStylusTouchCancel, { passive: true, capture: true });
+    return () => {
+      button.removeEventListener('touchstart', handleStylusTouchStart, true);
+      button.removeEventListener('touchend', handleStylusTouchEnd, true);
+      button.removeEventListener('touchcancel', handleStylusTouchCancel, true);
+    };
+  }, []);
+
+  return (
+    <button
+      ref={buttonRef}
+      type="button"
+      className={`navigation-text-button ${active ? 'active' : ''}`.trim()}
+      title={title}
+      aria-pressed={active}
+      onClick={(event) => {
+        if (performance.now() < suppressClickUntilRef.current) {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+        onClick?.(event);
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function Toolbar({
   canEdit,
   tool,
@@ -180,6 +250,8 @@ export default function Toolbar({
   onZoomOut,
   onResetZoom,
   onBringStudents,
+  autopilot = false,
+  onToggleAutopilot,
   onOpenGames,
   gameLibraryVisible = false,
   saveStatus,
@@ -307,18 +379,26 @@ export default function Toolbar({
           <IconButton title="Увеличить" onClick={onZoomIn}>+</IconButton>
         </div>
 
-        {isOwner && (
-          <div className="tool-group compact navigation-actions" aria-label="Навигация участников">
-            <button
-              type="button"
-              className="navigation-text-button"
+        <div className="tool-group compact navigation-actions" aria-label="Навигация участников">
+          {isOwner ? (
+            <NavigationActionButton
               title="Мгновенно переместить всех учеников к текущему месту на вашей доске"
               onClick={onBringStudents}
             >
               Ко мне
-            </button>
-          </div>
-        )}
+            </NavigationActionButton>
+          ) : (
+            <NavigationActionButton
+              active={autopilot}
+              title={autopilot
+                ? 'Отключить плавное следование за областью доски учителя'
+                : 'Плавно следовать за областью доски учителя'}
+              onClick={onToggleAutopilot}
+            >
+              Автопилот
+            </NavigationActionButton>
+          )}
+        </div>
 
         {gameLibraryVisible && (
           <button
@@ -552,7 +632,9 @@ export default function Toolbar({
           <IconButton title="Копировать" disabled={!canEdit || selectedCount === 0} onClick={onCopy}>⧉</IconButton>
           <IconButton title="Вставить" disabled={!canEdit} onClick={onPaste}>▣</IconButton>
           <IconButton title="Удалить выбранное" disabled={!canEdit || selectedCount === 0} onClick={onDelete}>×</IconButton>
-          <IconButton title="Очистить доску" disabled={!canEdit} onClick={onClear} className="danger-icon">⌫</IconButton>
+          {isOwner && (
+            <IconButton title="Очистить доску" disabled={!canEdit} onClick={onClear} className="danger-icon">⌫</IconButton>
+          )}
         </div>
 
         {selectedCount > 0 && (

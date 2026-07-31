@@ -1173,6 +1173,12 @@ function BoardWorkspace({
   const viewSendRef = useRef({ lastSentAt: 0, timer: null, pending: false });
   const lastTeacherViewRef = useRef(null);
   const autopilotRef = useRef(false);
+  const autopilotAnimationRef = useRef({
+    frame: null,
+    target: null,
+    lastFrameAt: 0,
+    lastUiAt: 0,
+  });
 
   const [permission, setPermission] = useState(initialAccess.permission);
   const [guestMode, setGuestModeState] = useState(initialAccess.guestMode);
@@ -2303,6 +2309,79 @@ function BoardWorkspace({
     canvas.requestRenderAll();
   }, [updateBackgroundTransform]);
 
+  const stopAutopilotAnimation = useCallback(() => {
+    const state = autopilotAnimationRef.current;
+    if (state.frame) window.cancelAnimationFrame(state.frame);
+    state.frame = null;
+    state.target = null;
+    state.lastFrameAt = 0;
+  }, []);
+
+  const animateViewportTo = useCallback((sceneX, sceneY, requestedZoom = null) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas || !Number.isFinite(Number(sceneX)) || !Number.isFinite(Number(sceneY))) return;
+    const state = autopilotAnimationRef.current;
+    state.target = {
+      centerX: Number(sceneX),
+      centerY: Number(sceneY),
+      zoom: Number.isFinite(Number(requestedZoom))
+        ? clamp(Number(requestedZoom), MIN_ZOOM, MAX_ZOOM)
+        : canvas.getZoom(),
+    };
+    if (state.frame) return;
+    state.lastFrameAt = performance.now();
+
+    const step = (now) => {
+      state.frame = null;
+      const target = state.target;
+      const activeCanvas = fabricCanvasRef.current;
+      if (!autopilotRef.current || !target || !activeCanvas) {
+        state.target = null;
+        return;
+      }
+
+      const currentCenter = getViewportSceneCenter();
+      const currentZoom = activeCanvas.getZoom();
+      const dt = Math.min(50, Math.max(1, now - Number(state.lastFrameAt || now)));
+      state.lastFrameAt = now;
+      // Time-based smoothing prevents jumps and behaves consistently on 60/120 Hz displays.
+      const alpha = 1 - Math.exp(-dt / 105);
+      const nextCenterX = currentCenter.x + (target.centerX - currentCenter.x) * alpha;
+      const nextCenterY = currentCenter.y + (target.centerY - currentCenter.y) * alpha;
+      const nextZoom = currentZoom + (target.zoom - currentZoom) * alpha;
+      const centerError = Math.hypot(target.centerX - nextCenterX, target.centerY - nextCenterY);
+      const zoomError = Math.abs(target.zoom - nextZoom);
+      const settled = centerError <= Math.max(0.12, 0.35 / Math.max(nextZoom, MIN_ZOOM))
+        && zoomError <= 0.0008;
+      const appliedCenterX = settled ? target.centerX : nextCenterX;
+      const appliedCenterY = settled ? target.centerY : nextCenterY;
+      const appliedZoom = settled ? target.zoom : nextZoom;
+
+      activeCanvas.setViewportTransform([
+        appliedZoom,
+        0,
+        0,
+        appliedZoom,
+        activeCanvas.getWidth() / 2 - appliedCenterX * appliedZoom,
+        activeCanvas.getHeight() / 2 - appliedCenterY * appliedZoom,
+      ]);
+      if (settled || now - Number(state.lastUiAt || 0) >= 90) {
+        state.lastUiAt = now;
+        setZoom(appliedZoom);
+      }
+      updateBackgroundTransform();
+      activeCanvas.requestRenderAll();
+
+      if (settled) {
+        state.target = null;
+        return;
+      }
+      state.frame = window.requestAnimationFrame(step);
+    };
+
+    state.frame = window.requestAnimationFrame(step);
+  }, [getViewportSceneCenter, updateBackgroundTransform]);
+
   const sendTeacherViewNow = useCallback((kind = 'view') => {
     if (!isOwner) return;
     const canvas = fabricCanvasRef.current;
@@ -2313,21 +2392,22 @@ function BoardWorkspace({
       centerX: Number(center.x.toFixed(3)),
       centerY: Number(center.y.toFixed(3)),
       zoom: Number(canvas.getZoom().toFixed(4)),
+      teacher: true,
       force: kind === 'jump',
       jumpId: kind === 'jump' ? randomToken(8) : undefined,
     };
     if (kind === 'jump') realtime.sendViewJump?.(payload);
-    else realtime.sendView?.(payload);
+    else realtime.sendView?.(payload, { force: kind === 'response' });
   }, [getViewportSceneCenter, isOwner]);
 
   const sendTeacherViewThrottled = useCallback(() => {
-    if (!isOwner || !autopilotRef.current) return;
+    if (!isOwner) return;
     const state = viewSendRef.current;
     state.pending = true;
     const elapsed = Date.now() - state.lastSentAt;
     const send = () => {
       state.timer = null;
-      if (!state.pending || !autopilotRef.current) return;
+      if (!state.pending || !isOwner) return;
       state.pending = false;
       state.lastSentAt = Date.now();
       sendTeacherViewNow('view');
@@ -2337,44 +2417,43 @@ function BoardWorkspace({
   }, [isOwner, sendTeacherViewNow]);
 
   const handleRemoteView = useCallback((message) => {
-    if (isOwner || message?.permission !== 'owner') return;
+    if (isOwner || (message?.permission !== 'owner' && message?.teacher !== true)) return;
     if (!Number.isFinite(Number(message?.centerX)) || !Number.isFinite(Number(message?.centerY))) return;
     lastTeacherViewRef.current = message;
-    if (autopilotRef.current) centerViewportAt(message.centerX, message.centerY, message.zoom);
-  }, [centerViewportAt, isOwner]);
+    if (autopilotRef.current) animateViewportTo(message.centerX, message.centerY, message.zoom);
+  }, [animateViewportTo, isOwner]);
 
   const handleRemoteViewJump = useCallback((message) => {
     if (isOwner) return;
     if (!Number.isFinite(Number(message?.centerX)) || !Number.isFinite(Number(message?.centerY))) return;
-    // `force` is set only by the owner-facing “Ко мне” action. Accept it even if an
-    // older connection reported the owner role as edit/view, which previously made
-    // the button silently do nothing for every student.
-    if (message?.permission !== 'owner' && message?.force !== true) return;
+    if (message?.permission !== 'owner' && message?.teacher !== true && message?.force !== true) return;
     lastTeacherViewRef.current = message;
+    stopAutopilotAnimation();
     centerViewportAt(message.centerX, message.centerY, message.zoom);
-  }, [centerViewportAt, isOwner]);
+  }, [centerViewportAt, isOwner, stopAutopilotAnimation]);
 
   const handleRemoteViewRequest = useCallback(() => {
-    if (isOwner) sendTeacherViewNow('view');
+    if (isOwner) sendTeacherViewNow('response');
   }, [isOwner, sendTeacherViewNow]);
 
   const toggleAutopilot = useCallback(() => {
+    if (isOwner) return;
     const next = !autopilotRef.current;
     autopilotRef.current = next;
     setAutopilot(next);
     if (!next) {
-      window.clearTimeout(viewSendRef.current.timer);
-      viewSendRef.current.timer = null;
-      viewSendRef.current.pending = false;
+      stopAutopilotAnimation();
+      return;
     }
-    if (next) {
-      if (isOwner) sendTeacherViewNow('view');
-      else if (lastTeacherViewRef.current) {
-        centerViewportAt(lastTeacherViewRef.current.centerX, lastTeacherViewRef.current.centerY, lastTeacherViewRef.current.zoom);
-      }
-      realtimeRef.current?.requestView?.();
+    if (lastTeacherViewRef.current) {
+      animateViewportTo(
+        lastTeacherViewRef.current.centerX,
+        lastTeacherViewRef.current.centerY,
+        lastTeacherViewRef.current.zoom,
+      );
     }
-  }, [centerViewportAt, isOwner, sendTeacherViewNow]);
+    realtimeRef.current?.requestView?.();
+  }, [animateViewportTo, isOwner, stopAutopilotAnimation]);
 
   const bringStudentsToTeacher = useCallback(() => {
     if (isOwner) sendTeacherViewNow('jump');
@@ -4249,7 +4328,7 @@ function BoardWorkspace({
 
   const clearBoard = useCallback(() => {
     const canvas = fabricCanvasRef.current;
-    if (!canvas || !canEditRef.current) return;
+    if (!canvas || !isOwner) return;
     if (!window.confirm('Удалить все линии и штрихи с доски?')) return;
     const objects = canvas.getObjects();
     if (!objects.length) return;
@@ -4265,7 +4344,7 @@ function BoardWorkspace({
     sendDeletes(ids);
     recordAction({ type: 'delete', records });
     schedulePersistence();
-  }, [getObjectRecords, recordAction, schedulePersistence, sendDeletes, updateSelectionState]);
+  }, [getObjectRecords, isOwner, recordAction, schedulePersistence, sendDeletes, updateSelectionState]);
 
   const changeZoom = useCallback((factor) => {
     const canvas = fabricCanvasRef.current;
@@ -5939,16 +6018,89 @@ function BoardWorkspace({
       return null;
     }
 
-    function preciseEyedropperTarget(scenePoint) {
-      if (!scenePoint) return null;
-      // A per-pixel Fabric transparency test can render every candidate object and
-      // stall a busy iPad canvas for seconds. The eyedropper only needs the uppermost
-      // visible object near the contact, so use the same inexpensive bounds/geometry
-      // hit test as the object tools. Image contacts still stay inside image bounds.
-      return objectAtScenePoint(scenePoint, {
-        strictImageBounds: true,
-        predicate: (object) => !object.transientPreview && !object.transientSelectionProxy,
-      });
+    function preciseEyedropperTarget(scenePoint, viewportPoint) {
+      if (!scenePoint || !viewportPoint) return null;
+      const zoomLevel = Math.max(canvas.getZoom(), MIN_ZOOM);
+      const sceneTolerance = Math.max(1.5, 4 / zoomLevel);
+      const candidates = [];
+      const objects = canvas.getObjects();
+      for (let index = objects.length - 1; index >= 0 && candidates.length < 8; index -= 1) {
+        const object = objects[index];
+        if (!object || object.canvas !== canvas || object.isEraserPath
+          || object.transientPreview || object.transientSelectionProxy
+          || objectEraserRecordsRef.current.has(object.boardObjectId)) continue;
+        const bounds = object.getBoundingRect();
+        if (scenePoint.x < bounds.left - sceneTolerance
+          || scenePoint.x > bounds.left + bounds.width + sceneTolerance
+          || scenePoint.y < bounds.top - sceneTolerance
+          || scenePoint.y > bounds.top + bounds.height + sceneTolerance) continue;
+        candidates.push(object);
+      }
+
+      const distanceToSegment = (point, start, end) => {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= 0.000001) return Math.hypot(point.x - start.x, point.y - start.y);
+        const ratio = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+        return Math.hypot(point.x - (start.x + dx * ratio), point.y - (start.y + dy * ratio));
+      };
+
+      const lineHit = (object) => {
+        if (!(object instanceof Line) && object.type !== 'line') return false;
+        try {
+          const local = typeof object.calcLinePoints === 'function'
+            ? object.calcLinePoints()
+            : { x1: object.x1, y1: object.y1, x2: object.x2, y2: object.y2 };
+          const matrix = object.calcTransformMatrix();
+          const first = util.transformPoint(new Point(Number(local.x1), Number(local.y1)), matrix);
+          const second = util.transformPoint(new Point(Number(local.x2), Number(local.y2)), matrix);
+          const scale = Math.max(
+            Math.hypot(Number(matrix[0] ?? 1), Number(matrix[1] ?? 0)),
+            Math.hypot(Number(matrix[2] ?? 0), Number(matrix[3] ?? 1)),
+            1,
+          );
+          const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * scale / 2);
+          return distanceToSegment(scenePoint, first, second) <= strokeRadius + sceneTolerance;
+        } catch {
+          return false;
+        }
+      };
+
+      // Lines get a cheap mathematical hit-test, including a small near-line tolerance.
+      // Other objects use Fabric's pixel transparency check, but only for at most eight
+      // nearby candidates rather than every object on the board.
+      for (const object of candidates) {
+        if (lineHit(object)) return object;
+        try {
+          if (typeof canvas.isTargetTransparent === 'function'
+            && !canvas.isTargetTransparent(object, viewportPoint.x, viewportPoint.y)) {
+            return object;
+          }
+          if (typeof canvas.isTargetTransparent !== 'function'
+            && typeof object.containsPoint === 'function'
+            && object.containsPoint(scenePoint)) {
+            return object;
+          }
+        } catch {
+          // Continue to the next nearby candidate.
+        }
+      }
+
+      // Permit a very small miss around strokes/shapes without expanding image frames.
+      const nearOffsets = [[2, 0], [-2, 0], [0, 2], [0, -2]];
+      for (const object of candidates.slice(0, 4)) {
+        if (isImageObject(object) || typeof canvas.isTargetTransparent !== 'function') continue;
+        try {
+          const closeEnough = nearOffsets.some(([dx, dy]) => (
+            !canvas.isTargetTransparent(object, viewportPoint.x + dx, viewportPoint.y + dy)
+          ));
+          if (closeEnough) return object;
+        } catch {
+          // Ignore a failed pixel probe and report no target.
+        }
+      }
+      return null;
     }
 
     function flushObjectEraserDeletePreview() {
@@ -6344,13 +6496,8 @@ function BoardWorkspace({
         nativeEvent.preventDefault?.();
         nativeEvent.stopPropagation?.();
         const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
-        const directTarget = event.target
-          && !isActiveSelectionObject(event.target)
-          && !event.target.transientPreview
-          && !event.target.transientSelectionProxy
-          ? event.target
-          : null;
-        const target = directTarget ?? preciseEyedropperTarget(point);
+        const viewportPoint = event.viewportPoint ?? canvas.getViewportPoint(nativeEvent);
+        const target = preciseEyedropperTarget(point, viewportPoint);
         const mode = eyedropperModeRef.current;
         if (mode === 'drawing' && canvas.getActiveObject()) canvas.discardActiveObject();
         const transactionId = eyedropperSelectionTransactionIdRef.current;
@@ -8046,6 +8193,11 @@ function BoardWorkspace({
       objectEraserRealtimeTimerRef.current = null;
       objectEraserRealtimeDeleteIdsRef.current.clear();
       window.clearTimeout(viewSendRef.current.timer);
+      if (autopilotAnimationRef.current.frame) {
+        window.cancelAnimationFrame(autopilotAnimationRef.current.frame);
+        autopilotAnimationRef.current.frame = null;
+      }
+      autopilotAnimationRef.current.target = null;
       window.clearTimeout(remotePreviewPendingRef.current.timer);
       remotePreviewPendingRef.current.timer = null;
       remotePreviewPendingRef.current.draining = false;
@@ -8152,11 +8304,21 @@ function BoardWorkspace({
   }, []);
 
   useEffect(() => {
-    if (!isOwner || !autopilot) return undefined;
+    if (!isOwner) return undefined;
+    const hasRemoteParticipant = users.some((user) => String(user?.clientId ?? '') !== String(clientId));
+    if (!hasRemoteParticipant) return undefined;
     sendTeacherViewNow('view');
-    const timer = window.setInterval(() => sendTeacherViewNow('view'), 500);
+    // A low-frequency heartbeat repairs missed viewport packets after a mobile reconnect.
+    // Actual panning and zooming are still sent immediately through the throttled path.
+    const timer = window.setInterval(() => sendTeacherViewNow('view'), 2500);
     return () => window.clearInterval(timer);
-  }, [autopilot, isOwner, sendTeacherViewNow]);
+  }, [clientId, isOwner, sendTeacherViewNow, users]);
+
+  useEffect(() => {
+    if (isOwner || !autopilot) return undefined;
+    realtimeRef.current?.requestView?.();
+    return undefined;
+  }, [autopilot, isOwner, users]);
 
   useEffect(() => {
     canEditRef.current = canEdit;
@@ -8279,6 +8441,8 @@ function BoardWorkspace({
         onZoomOut={() => changeZoom(1 / 1.2)}
         onResetZoom={resetZoom}
         onBringStudents={bringStudentsToTeacher}
+        autopilot={autopilot}
+        onToggleAutopilot={toggleAutopilot}
         onOpenGames={openGameLibrary}
         gameLibraryVisible={gameLibraryVisible}
         saveStatus={saveStatus}
