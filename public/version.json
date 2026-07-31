@@ -1,7 +1,7 @@
 {
-  "version": "1.09",
-  "packageVersion": "1.0.9",
-  "base": "1.08",
-  "release": "Cancelable marquee finalization and stale ActiveSelection cleanup",
+  "version": "1.10",
+  "packageVersion": "1.10",
+  "base": "1.09",
+  "release": "hard-active-selection-dismantle",
   "date": "2026-07-31"
 }

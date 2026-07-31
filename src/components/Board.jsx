@@ -343,6 +343,30 @@ function createOuterOnlyActiveSelection(objects, canvas) {
   return selection;
 }
 
+function dismantleActiveSelection(canvas, selection) {
+  if (!canvas || !isActiveSelectionObject(selection)) return [];
+  const members = typeof selection.getObjects === 'function'
+    ? [...new Set(selection.getObjects().filter(Boolean))]
+    : [];
+
+  // Fabric normally calls ActiveSelection.onDeselect(), which removes every member
+  // from the temporary group. Do it explicitly as well so a failed/partial deselect
+  // can never leave an empty wrapper or members still owned by the old selection.
+  if (canvas.getActiveObject() === selection) canvas.discardActiveObject();
+  if (typeof selection.getObjects === 'function'
+    && selection.getObjects().length
+    && typeof selection.removeAll === 'function') {
+    selection.removeAll();
+  }
+  members.forEach((object) => {
+    if (object?.group === selection && typeof selection.exitGroup === 'function') {
+      selection.exitGroup(object);
+    }
+    object?.setCoords?.();
+  });
+  return members;
+}
+
 function hexToRgba(hex, opacity) {
   const normalized = hex.replace('#', '');
   const value = Number.parseInt(normalized.length === 3
@@ -1104,6 +1128,7 @@ function BoardWorkspace({
   const selectionBoxRef = useRef(null);
   const selectionFinalizeTimerRef = useRef(null);
   const selectionFinalizeGenerationRef = useRef(0);
+  const groupTransformCleanupRef = useRef(null);
   const localSelectionTransactionRef = useRef(null);
   const remoteSelectionTransactionsRef = useRef(new Map());
   const remoteSelectionOperationIdsRef = useRef(new Map());
@@ -1613,29 +1638,11 @@ function BoardWorkspace({
     const members = isActiveSelectionObject(active) && typeof active.getObjects === 'function'
       ? active.getObjects()
       : [];
-    const memberSet = new Set(members);
-    restoreSelectionMemberControls(memberSet);
 
+    // Older releases temporarily replaced child control renderers. Always restore
+    // those methods first; the ActiveSelection wrapper alone renders the outer frame.
+    restoreSelectionMemberControls(new Set());
     if (members.length > 1) {
-      members.forEach((object) => {
-        if (!selectionMemberControlsRef.current.has(object)) {
-          selectionMemberControlsRef.current.set(object, {
-            hadOwnRenderControls: Object.prototype.hasOwnProperty.call(object, '_renderControls'),
-            renderControls: object._renderControls,
-            hadOwnDrawBorders: Object.prototype.hasOwnProperty.call(object, 'drawBorders'),
-            drawBorders: object.drawBorders,
-            hadOwnDrawControls: Object.prototype.hasOwnProperty.call(object, 'drawControls'),
-            drawControls: object.drawControls,
-          });
-        }
-        object._renderControls = () => undefined;
-        object.drawBorders = () => object;
-        object.drawControls = () => object;
-        object.hasControls = false;
-        object.hasBorders = false;
-      });
-      // Fabric's ActiveSelection renders controls for every child. Bypass that
-      // implementation and call the base object renderer once for the outer frame.
       const outerRenderer = FabricObject.prototype._renderControls;
       if (typeof outerRenderer === 'function') {
         active._renderControls = function renderOnlyOuterSelection(ctx, styleOverride) {
@@ -1664,6 +1671,7 @@ function BoardWorkspace({
   const clearActiveSelectionState = useCallback(({ render = true, releaseLocks = true } = {}) => {
     const canvas = fabricCanvasRef.current;
     cancelPendingSelectionFinalize();
+    groupTransformCleanupRef.current = null;
     selectionDragRef.current = null;
     if (selectionBoxRef.current && canvas) {
       canvas.remove(selectionBoxRef.current);
@@ -1672,12 +1680,15 @@ function BoardWorkspace({
     if (!canvas) return;
 
     const active = canvas.getActiveObject();
-    const touched = active
-      ? (isActiveSelectionObject(active) && typeof active.getObjects === 'function'
-        ? [active, ...active.getObjects()]
-        : [active])
-      : [];
-    if (active) canvas.discardActiveObject();
+    let touched = [];
+    if (isActiveSelectionObject(active)) {
+      const members = dismantleActiveSelection(canvas, active);
+      touched = [active, ...members];
+    } else if (active) {
+      touched = [active];
+      canvas.discardActiveObject();
+    }
+
     restoreSelectionMemberControls(new Set());
     selectionUiTouchedRef.current.clear();
     modifiedBeforeRef.current = [];
@@ -6112,6 +6123,9 @@ function BoardWorkspace({
         return;
       }
       modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
+      groupTransformCleanupRef.current = isActiveSelectionObject(transform.target)
+        ? { target: transform.target, startedAt: Date.now() }
+        : null;
       sendLocalLock(transform.target, true);
       beginLiveTransform(transform.target);
       lastLockBroadcastRef.current = Date.now();
@@ -6139,38 +6153,48 @@ function BoardWorkspace({
         canvas.requestRenderAll();
         return;
       }
-      const restoreGroupSelection = isActiveSelectionObject(target);
+
+      const groupSelection = isActiveSelectionObject(target);
       const selectedObjects = flattenTarget(target).filter(Boolean);
-      endLiveTransform(target);
-
-      // Fabric keeps members of ActiveSelection in group-local coordinates until the
-      // selection is discarded. Persisting them before this step makes the remote
-      // device revive extra-looking copies in incorrect positions.
-      if (restoreGroupSelection) {
-        canvas.discardActiveObject();
-        selectedObjects.forEach((object) => object.setCoords());
-      }
-
-      const objects = selectedObjects.map((object) => markObject(object, clientId));
-      const after = getObjectRecords(objects);
       const beforeTransforms = modifiedBeforeRef.current;
-      const afterTransforms = transformFramesForObjects(objects, canvas);
-      modifiedBeforeRef.current = [];
-      sendRecordUpserts(after);
-      sendLocalLock(objects, false);
-      if (beforeTransforms.length && afterTransforms.length) {
-        recordAction({ type: 'transform', before: beforeTransforms, after: afterTransforms });
-      }
-      schedulePersistence();
+      let afterTransforms = [];
+      try {
+        endLiveTransform(target);
+        // Capture absolute matrices while the ActiveSelection transform is still
+        // applied. Its members use group-local left/top values until dismantled.
+        afterTransforms = transformFramesForObjects(selectedObjects, canvas);
 
-      // Do not recreate ActiveSelection after a group transform. Keeping the old
-      // wrapper alive lets delayed selection events capture stale or removed members
-      // and can block every other tool. The group move is already recorded above;
-      // the user can create a fresh selection for the next group action.
-      deduplicateRegisteredObjectIds(objects.map((object) => object.boardObjectId));
-      updateSelectionState();
-      updateSelectionStyleState();
-      canvas.requestRenderAll();
+        if (groupSelection) {
+          dismantleActiveSelection(canvas, target);
+          selectedObjects.forEach((object) => object.setCoords());
+        }
+
+        const objects = selectedObjects.map((object) => markObject(object, clientId));
+        const after = getObjectRecords(objects);
+        sendRecordUpserts(after);
+        sendLocalLock(objects, false);
+        if (beforeTransforms.length && afterTransforms.length) {
+          recordAction({ type: 'transform', before: beforeTransforms, after: afterTransforms });
+        }
+        schedulePersistence();
+        deduplicateRegisteredObjectIds(objects.map((object) => object.boardObjectId));
+      } catch (caught) {
+        console.error('Не удалось завершить трансформацию выделения', caught);
+      } finally {
+        modifiedBeforeRef.current = [];
+        groupTransformCleanupRef.current = null;
+        if (groupSelection) {
+          // A second idempotent pass protects against Fabric/WebKit leaving the
+          // wrapper active when another listener interrupted selection:cleared.
+          dismantleActiveSelection(canvas, target);
+          restoreSelectionMemberControls(new Set());
+          selectionUiTouchedRef.current.clear();
+          applyObjectInteractivityToObjects(selectedObjects, { render: false });
+        }
+        updateSelectionState();
+        updateSelectionStyleState();
+        canvas.requestRenderAll();
+      }
     });
 
     const refreshSelectionUi = () => {
@@ -6811,6 +6835,23 @@ function BoardWorkspace({
             updateSelectionStyleState();
           }, 0);
         }
+      }
+
+      const pendingGroupCleanup = groupTransformCleanupRef.current;
+      if (pendingGroupCleanup) {
+        window.setTimeout(() => {
+          if (groupTransformCleanupRef.current !== pendingGroupCleanup) return;
+          groupTransformCleanupRef.current = null;
+          const active = canvas.getActiveObject();
+          const target = isActiveSelectionObject(active) ? active : pendingGroupCleanup.target;
+          const members = dismantleActiveSelection(canvas, target);
+          restoreSelectionMemberControls(new Set());
+          selectionUiTouchedRef.current.clear();
+          applyObjectInteractivityToObjects(members, { render: false });
+          updateSelectionState();
+          updateSelectionStyleState();
+          canvas.requestRenderAll();
+        }, 0);
       }
 
       if (lineRef.current) {
