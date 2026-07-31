@@ -1102,6 +1102,8 @@ function BoardWorkspace({
   const remotePreviewChunksRef = useRef(new Map());
   const selectionDragRef = useRef(null);
   const selectionBoxRef = useRef(null);
+  const selectionFinalizeTimerRef = useRef(null);
+  const selectionFinalizeGenerationRef = useRef(0);
   const localSelectionTransactionRef = useRef(null);
   const remoteSelectionTransactionsRef = useRef(new Map());
   const remoteSelectionOperationIdsRef = useRef(new Map());
@@ -1651,6 +1653,52 @@ function BoardWorkspace({
     canvas.requestRenderAll();
   }, [restoreSelectionMemberControls]);
 
+  const cancelPendingSelectionFinalize = useCallback(() => {
+    selectionFinalizeGenerationRef.current += 1;
+    if (selectionFinalizeTimerRef.current) {
+      window.clearTimeout(selectionFinalizeTimerRef.current);
+      selectionFinalizeTimerRef.current = null;
+    }
+  }, []);
+
+  const clearActiveSelectionState = useCallback(({ render = true, releaseLocks = true } = {}) => {
+    const canvas = fabricCanvasRef.current;
+    cancelPendingSelectionFinalize();
+    selectionDragRef.current = null;
+    if (selectionBoxRef.current && canvas) {
+      canvas.remove(selectionBoxRef.current);
+      selectionBoxRef.current = null;
+    }
+    if (!canvas) return;
+
+    const active = canvas.getActiveObject();
+    const touched = active
+      ? (isActiveSelectionObject(active) && typeof active.getObjects === 'function'
+        ? [active, ...active.getObjects()]
+        : [active])
+      : [];
+    if (active) canvas.discardActiveObject();
+    restoreSelectionMemberControls(new Set());
+    selectionUiTouchedRef.current.clear();
+    modifiedBeforeRef.current = [];
+    applyObjectInteractivityToObjects(touched, { render: false });
+
+    if (releaseLocks && localLockIdsRef.current.length) {
+      realtimeRef.current?.sendLock?.(localLockIdsRef.current, false);
+      localLockIdsRef.current = [];
+    }
+
+    updateSelectionState();
+    updateSelectionStyleState();
+    if (render) canvas.requestRenderAll();
+  }, [
+    applyObjectInteractivityToObjects,
+    cancelPendingSelectionFinalize,
+    restoreSelectionMemberControls,
+    updateSelectionState,
+    updateSelectionStyleState,
+  ]);
+
   const applyCanvasInputMode = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
@@ -1700,9 +1748,13 @@ function BoardWorkspace({
 
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
+    cancelPendingSelectionFinalize();
     if (nextTool !== activeToolRef.current) {
       cancelCreationDraftRef.current?.('tool-change');
     }
+    // An explicit tool-button press always closes the current Fabric selection.
+    // This also provides a guaranteed escape from a stale or empty selection wrapper.
+    clearActiveSelectionState({ render: true, releaseLocks: true });
     if (eyedropperActiveRef.current && nextTool !== activeToolRef.current) {
       eyedropperActiveRef.current = false;
       eyedropperModeRef.current = null;
@@ -1714,7 +1766,7 @@ function BoardWorkspace({
     activeToolRef.current = nextTool;
     setToolState(nextTool);
     configureBrushAndMode();
-  }, [configureBrushAndMode]);
+  }, [cancelPendingSelectionFinalize, clearActiveSelectionState, configureBrushAndMode]);
 
   const setColor = useCallback((nextColor) => {
     colorRef.current = nextColor;
@@ -3552,6 +3604,7 @@ function BoardWorkspace({
 
   const undo = useCallback(async () => {
     if (historyCommandBusyRef.current || !canEditRef.current || !undoStackRef.current.length) return;
+    clearActiveSelectionState({ render: false, releaseLocks: true });
     const action = undoStackRef.current.pop();
     redoStackRef.current.push(action);
     updateHistoryButtons();
@@ -3567,10 +3620,11 @@ function BoardWorkspace({
     } finally {
       historyCommandBusyRef.current = false;
     }
-  }, [applyHistoryAction, updateHistoryButtons]);
+  }, [applyHistoryAction, clearActiveSelectionState, updateHistoryButtons]);
 
   const redo = useCallback(async () => {
     if (historyCommandBusyRef.current || !canEditRef.current || !redoStackRef.current.length) return;
+    clearActiveSelectionState({ render: false, releaseLocks: true });
     const action = redoStackRef.current.pop();
     undoStackRef.current.push(action);
     updateHistoryButtons();
@@ -3586,7 +3640,7 @@ function BoardWorkspace({
     } finally {
       historyCommandBusyRef.current = false;
     }
-  }, [applyHistoryAction, updateHistoryButtons]);
+  }, [applyHistoryAction, clearActiveSelectionState, updateHistoryButtons]);
 
   const applyRemoteOps = useCallback((
     ops,
@@ -4112,6 +4166,7 @@ function BoardWorkspace({
 
 
   const deleteSelection = useCallback(() => {
+    cancelPendingSelectionFinalize();
     const canvas = fabricCanvasRef.current;
     if (!canvas || !canEditRef.current) return;
     const transaction = localSelectionTransactionRef.current;
@@ -4158,7 +4213,7 @@ function BoardWorkspace({
     sendDeletes(ids);
     recordAction({ type: 'delete', records });
     schedulePersistence();
-  }, [getObjectRecords, recordAction, schedulePersistence, sendDeletes, updateSelectionState, updateSelectionStyleState]);
+  }, [cancelPendingSelectionFinalize, getObjectRecords, recordAction, schedulePersistence, sendDeletes, updateSelectionState, updateSelectionStyleState]);
 
   const clearBoard = useCallback(() => {
     const canvas = fabricCanvasRef.current;
@@ -6108,9 +6163,10 @@ function BoardWorkspace({
       }
       schedulePersistence();
 
-      if (restoreGroupSelection && activeToolRef.current === 'select' && objects.length > 1) {
-        canvas.setActiveObject(createOuterOnlyActiveSelection(objects, canvas));
-      }
+      // Do not recreate ActiveSelection after a group transform. Keeping the old
+      // wrapper alive lets delayed selection events capture stale or removed members
+      // and can block every other tool. The group move is already recorded above;
+      // the user can create a fresh selection for the next group action.
       deduplicateRegisteredObjectIds(objects.map((object) => object.boardObjectId));
       updateSelectionState();
       updateSelectionStyleState();
@@ -6130,10 +6186,36 @@ function BoardWorkspace({
       updateSelectionStyleState();
     };
     const startTransactionalSelection = () => {
-      // Keep Fabric's native ActiveSelection locally. Detect it through the class/API,
-      // not the legacy lowercase type string. Apply outer-only controls before the
-      // first render so a large marquee selection does not draw controls for each child.
-      const active = canvas.getActiveObject();
+      // Keep only live members that still belong to this canvas. A delayed marquee,
+      // undo, realtime replacement or deduplication can otherwise leave Fabric with
+      // an empty ActiveSelection wrapper that captures all pointer input.
+      let active = canvas.getActiveObject();
+      if (isActiveSelectionObject(active) && typeof active.getObjects === 'function') {
+        const canvasObjects = new Set(canvas.getObjects());
+        const members = [...new Set(active.getObjects().filter((object) => (
+          object
+          && canvasObjects.has(object)
+          && !object.isEraserPath
+          && !object.transientPreview
+          && !object.transientSelectionProxy
+        )))];
+
+        if (members.length < 2) {
+          canvas.discardActiveObject();
+          restoreSelectionMemberControls(new Set());
+          if (members.length === 1 && activeToolRef.current === 'select') {
+            canvas.setActiveObject(members[0]);
+            active = members[0];
+          } else {
+            active = null;
+          }
+        } else if (members.length !== active.getObjects().length) {
+          canvas.discardActiveObject();
+          active = createOuterOnlyActiveSelection(members, canvas);
+          canvas.setActiveObject(active);
+        }
+      }
+
       if (isActiveSelectionObject(active)) {
         const outerRenderer = FabricObject.prototype._renderControls;
         if (typeof outerRenderer === 'function') {
@@ -6420,6 +6502,14 @@ function BoardWorkspace({
       }
 
       if (activeToolRef.current === 'select' && !event.target && primarySelectionPointer) {
+        cancelPendingSelectionFinalize();
+        if (canvas.getActiveObject()) {
+          canvas.discardActiveObject();
+          restoreSelectionMemberControls(new Set());
+          selectionUiTouchedRef.current.clear();
+          updateSelectionState();
+          updateSelectionStyleState();
+        }
         const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
         selectionDragRef.current = { start: point, end: point };
         if (selectionBoxRef.current) canvas.remove(selectionBoxRef.current);
@@ -6696,8 +6786,17 @@ function BoardWorkspace({
       if (selectionDrag && activeToolRef.current === 'select') {
         const selectionRect = normalizedSceneRect(selectionDrag.start, selectionDrag.end);
         if (selectionRect.width >= 3 || selectionRect.height >= 3) {
-          window.setTimeout(() => {
+          cancelPendingSelectionFinalize();
+          const generation = selectionFinalizeGenerationRef.current;
+          selectionFinalizeTimerRef.current = window.setTimeout(() => {
+            selectionFinalizeTimerRef.current = null;
+            if (generation !== selectionFinalizeGenerationRef.current
+              || activeToolRef.current !== 'select'
+              || !canEditRef.current
+              || fabricCanvasRef.current !== canvas) return;
+
             canvas.discardActiveObject();
+            restoreSelectionMemberControls(new Set());
             const selected = canvas.getObjects().filter((object) => {
               if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || !object.selectable) return false;
               const lock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
@@ -6706,10 +6805,10 @@ function BoardWorkspace({
             });
             if (selected.length === 1) canvas.setActiveObject(selected[0]);
             else if (selected.length > 1) canvas.setActiveObject(createOuterOnlyActiveSelection(selected, canvas));
+            else selectionUiTouchedRef.current.clear();
             updateSelectionVisuals();
             updateSelectionState();
             updateSelectionStyleState();
-            canvas.requestRenderAll();
           }, 0);
         }
       }
@@ -7915,6 +8014,9 @@ function BoardWorkspace({
       window.clearTimeout(objectEraserDelayTimer);
       window.clearTimeout(objectEraserRealtimeTimerRef.current);
       objectEraserRealtimeTimerRef.current = null;
+      window.clearTimeout(selectionFinalizeTimerRef.current);
+      selectionFinalizeTimerRef.current = null;
+      selectionFinalizeGenerationRef.current += 1;
       objectEraserRealtimeDeleteIdsRef.current.clear();
       window.clearTimeout(viewSendRef.current.timer);
       window.clearTimeout(remotePreviewPendingRef.current.timer);

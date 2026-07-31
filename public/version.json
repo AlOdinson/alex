@@ -1,7 +1,7 @@
 {
-  "version": "1.08",
-  "packageVersion": "1.0.8",
-  "base": "1.07",
-  "release": "Fabric 7 ActiveSelection compatibility and group history fix",
+  "version": "1.09",
+  "packageVersion": "1.0.9",
+  "base": "1.08",
+  "release": "Cancelable marquee finalization and stale ActiveSelection cleanup",
   "date": "2026-07-31"
 }
