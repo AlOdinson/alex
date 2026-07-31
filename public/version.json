@@ -1,7 +1,7 @@
 {
-  "version": "1.05",
-  "packageVersion": "1.0.5",
-  "base": "1.0.13",
-  "release": "O(1) tool switching without full canvas object traversal",
+  "version": "1.06",
+  "packageVersion": "1.0.6",
+  "base": "1.05",
+  "release": "Targeted selection, indexed undo/redo, and batched object eraser",
   "date": "2026-07-31"
 }

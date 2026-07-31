@@ -998,6 +998,7 @@ function BoardWorkspace({
   const pendingImageRetryInFlightRef = useRef(false);
   const remoteTransformApplyQueueRef = useRef(Promise.resolve());
   const selectionMemberControlsRef = useRef(new Map());
+  const selectionUiTouchedRef = useRef(new Set());
   const boardReadyRef = useRef(false);
   const activeToolRef = useRef('pencil');
   const canEditRef = useRef(initialAccess.permission === 'owner' || initialAccess.permission === 'edit');
@@ -1015,6 +1016,11 @@ function BoardWorkspace({
   const textBeforeRef = useRef(new Map());
   const textChangeTimerRef = useRef(null);
   const objectEraserPointerRef = useRef(null);
+  const objectRegistryRef = useRef(new Map());
+  const objectEraserGridRef = useRef(new Map());
+  const objectEraserGlobalCandidatesRef = useRef([]);
+  const objectEraserZIndexRef = useRef(new Map());
+  const objectEraserRenderFrameRef = useRef(null);
   const backgroundRef = useRef(
     BACKGROUNDS.has(initialAccess.snapshot?.background)
       ? initialAccess.snapshot.background
@@ -1207,8 +1213,83 @@ function BoardWorkspace({
     object.updatedAt = Date.now();
     object.updatedBy = clientId;
     object.setCoords();
+    const key = String(object.boardObjectId);
+    const bucket = objectRegistryRef.current.get(key) ?? new Set();
+    bucket.add(object);
+    objectRegistryRef.current.set(key, bucket);
     return object;
   }, []);
+
+  const registerCanvasObject = useCallback((object) => {
+    const id = object?.boardObjectId;
+    if (!id) return;
+    const key = String(id);
+    const bucket = objectRegistryRef.current.get(key) ?? new Set();
+    bucket.add(object);
+    objectRegistryRef.current.set(key, bucket);
+  }, []);
+
+  const unregisterCanvasObject = useCallback((object) => {
+    const id = object?.boardObjectId;
+    if (!id) return;
+    const key = String(id);
+    const bucket = objectRegistryRef.current.get(key);
+    if (!bucket) return;
+    bucket.delete(object);
+    if (!bucket.size) objectRegistryRef.current.delete(key);
+  }, []);
+
+  const rebuildObjectRegistry = useCallback(() => {
+    const canvas = fabricCanvasRef.current;
+    objectRegistryRef.current = new Map();
+    canvas?.getObjects().forEach(registerCanvasObject);
+  }, [registerCanvasObject]);
+
+  const registeredObjectsById = useCallback((objectId) => {
+    if (!objectId) return [];
+    const canvas = fabricCanvasRef.current;
+    const key = String(objectId);
+    let objects = [...(objectRegistryRef.current.get(key) ?? [])]
+      .filter((object) => object?.canvas === canvas);
+    if (!objects.length && canvas) {
+      objects = canvas.getObjects().filter((object) => String(object.boardObjectId ?? '') === key);
+      objects.forEach(registerCanvasObject);
+    }
+    return objects;
+  }, [registerCanvasObject]);
+
+  const removeRegisteredObjectsById = useCallback((objectId) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas || !objectId) return [];
+    const objects = registeredObjectsById(objectId);
+    objects.forEach((object) => canvas.remove(object));
+    return objects;
+  }, [registeredObjectsById]);
+
+  const deduplicateRegisteredObjectIds = useCallback((objectIds) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return 0;
+    let removed = 0;
+    const chooseKeep = (objects) => [...objects].sort((left, right) => {
+      const leftAuthoritative = left.transientPreview || left.transientTransformFallback ? 0 : 1;
+      const rightAuthoritative = right.transientPreview || right.transientTransformFallback ? 0 : 1;
+      if (leftAuthoritative !== rightAuthoritative) return rightAuthoritative - leftAuthoritative;
+      return Number(right.updatedAt ?? right.previewReceivedAt ?? 0)
+        - Number(left.updatedAt ?? left.previewReceivedAt ?? 0);
+    })[0];
+
+    for (const objectId of new Set((objectIds ?? []).filter(Boolean).map(String))) {
+      const objects = registeredObjectsById(objectId);
+      if (objects.length < 2) continue;
+      const keep = chooseKeep(objects);
+      objects.forEach((object) => {
+        if (object === keep) return;
+        canvas.remove(object);
+        removed += 1;
+      });
+    }
+    return removed;
+  }, [registeredObjectsById]);
 
   const getObjectRecords = useCallback((objects) => {
     const canvas = fabricCanvasRef.current;
@@ -1376,6 +1457,47 @@ function BoardWorkspace({
     host.style.setProperty('--board-offset-x', `${viewport[4] % spacing}px`);
     host.style.setProperty('--board-offset-y', `${viewport[5] % spacing}px`);
     setViewportVersion((value) => value + 1);
+  }, []);
+
+  const applyObjectInteractivityToObjects = useCallback((objects, { render = true } = {}) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return;
+    const now = Date.now();
+    const activeSelection = canvas.getActiveObject();
+    const activeSelectionMembers = activeSelection?.type === 'activeSelection'
+      && typeof activeSelection.getObjects === 'function'
+      ? new Set(activeSelection.getObjects())
+      : new Set();
+    let renderNeeded = false;
+
+    for (const object of new Set((objects ?? []).filter(Boolean))) {
+      const remoteLock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
+      const lockedByOther = Boolean(remoteLock && Number(remoteLock.expiresAt ?? 0) > now);
+      const isLocalSelectionProxy = Boolean(
+        object.transientSelectionProxy
+        && object.creationClientId === clientIdRef.current
+        && localSelectionTransactionRef.current?.proxy === object
+      );
+      const permanentNonInteractive = Boolean(
+        object.isEraserPath
+        || object.transientPreview
+        || (object.transientSelectionProxy && !isLocalSelectionProxy)
+      );
+      const canInteract = isLocalSelectionProxy
+        || (canEditRef.current && !permanentNonInteractive && !lockedByOther);
+      const isActiveSelectionMember = activeSelectionMembers.has(object);
+      const nextControls = canInteract && !isActiveSelectionMember;
+      const nextBorders = canInteract && !isActiveSelectionMember;
+      const nextCursor = lockedByOther ? 'not-allowed' : 'move';
+
+      if (object.selectable !== canInteract) object.selectable = canInteract;
+      if (object.evented !== canInteract) object.evented = canInteract;
+      if (object.hasControls !== nextControls) { object.hasControls = nextControls; renderNeeded = true; }
+      if (object.hasBorders !== nextBorders) { object.hasBorders = nextBorders; renderNeeded = true; }
+      if (object.hoverCursor !== nextCursor) object.hoverCursor = nextCursor;
+    }
+
+    if (render && renderNeeded) canvas.requestRenderAll();
   }, []);
 
   const applyObjectInteractivity = useCallback(() => {
@@ -1782,7 +1904,7 @@ function BoardWorkspace({
       localSelectionTransactionRef.current = transaction;
       canvas.setActiveObject(proxy);
       applyingRemoteRef.current = false;
-      applyObjectInteractivity();
+      applyObjectInteractivityToObjects([proxy], { render: false });
       updateSelectionState();
       updateSelectionStyleState();
       canvas.requestRenderAll();
@@ -1816,7 +1938,7 @@ function BoardWorkspace({
       selectionTransactionTransitionRef.current = false;
     }
   }, [
-    applyObjectInteractivity,
+    applyObjectInteractivityToObjects,
     getObjectRecords,
     updateSelectionState,
     updateSelectionStyleState,
@@ -1952,7 +2074,7 @@ function BoardWorkspace({
       realtimeRef.current?.sendLock?.(transaction.sourceIds, false);
       localLockIdsRef.current = [];
       localSelectionTransactionRef.current = null;
-      applyObjectInteractivity();
+      applyObjectInteractivityToObjects(finalObjects, { render: false });
       schedulePersistence();
       updateSelectionState();
       updateSelectionStyleState();
@@ -1976,6 +2098,7 @@ function BoardWorkspace({
         }
       });
       applyingRemoteRef.current = false;
+      applyObjectInteractivityToObjects(restored, { render: false });
       localSelectionTransactionRef.current = null;
       realtimeRef.current?.sendLock?.(transaction.sourceIds, false);
       localLockIdsRef.current = [];
@@ -1986,6 +2109,7 @@ function BoardWorkspace({
     }
   }, [
     applyObjectInteractivity,
+    applyObjectInteractivityToObjects,
     getObjectRecords,
     recordAction,
     schedulePersistence,
@@ -2517,7 +2641,7 @@ function BoardWorkspace({
     for (const record of records) {
       const id = record.object?.boardObjectId;
       if (!id) continue;
-      removeBoardObjectsById(canvas, id);
+      removeRegisteredObjectsById(id);
       await preloadSerializedImages(record.object);
       const [revived] = await util.enlivenObjects([record.object]);
       if (!revived) continue;
@@ -2525,25 +2649,25 @@ function BoardWorkspace({
       revived.evented = false;
       revived.hasControls = false;
       canvas.add(revived);
+      applyObjectInteractivityToObjects([revived], { render: false });
       if (Number.isInteger(record.zIndex) && typeof canvas.moveObjectTo === 'function') {
         canvas.moveObjectTo(revived, clamp(record.zIndex, 0, canvas.getObjects().length - 1));
       }
     }
-    applyObjectInteractivity();
     canvas.requestRenderAll();
     updateSelectionState();
     updateSelectionStyleState();
-  }, [applyObjectInteractivity, updateSelectionState, updateSelectionStyleState]);
+  }, [applyObjectInteractivityToObjects, removeRegisteredObjectsById, updateSelectionState, updateSelectionStyleState]);
 
   const removeIdsLocally = useCallback((ids) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    for (const id of ids) removeBoardObjectsById(canvas, id);
+    for (const id of ids) removeRegisteredObjectsById(id);
     canvas.discardActiveObject();
     canvas.requestRenderAll();
     updateSelectionState();
     updateSelectionStyleState();
-  }, [updateSelectionState, updateSelectionStyleState]);
+  }, [removeRegisteredObjectsById, updateSelectionState, updateSelectionStyleState]);
 
   const applyBackground = useCallback((nextBackground, { broadcast = false, persist = false } = {}) => {
     if (!BACKGROUNDS.has(nextBackground)) return;
@@ -2669,7 +2793,9 @@ function BoardWorkspace({
         try {
           await preloadSerializedImages(effectiveSnapshot.canvas);
           await canvas.loadFromJSON(effectiveSnapshot.canvas);
+          rebuildObjectRegistry();
           deduplicateBoardObjects(canvas);
+          rebuildObjectRegistry();
           if (BACKGROUNDS.has(effectiveSnapshot.background)) applyBackground(effectiveSnapshot.background);
           canvas.setViewportTransform(viewport);
           applyObjectInteractivity();
@@ -2706,6 +2832,7 @@ function BoardWorkspace({
   }, [
     applyBackground,
     applyObjectInteractivity,
+    rebuildObjectRegistry,
     boardId,
     updateBackgroundTransform,
     updateSelectionState,
@@ -3301,12 +3428,10 @@ function BoardWorkspace({
     } finally {
       applyingRemoteRef.current = false;
       applyingHistoryRef.current = false;
-      applyObjectInteractivity();
       schedulePersistence();
     }
   }, [
     applyBackground,
-    applyObjectInteractivity,
     applyRecordsLocally,
     removeIdsLocally,
     schedulePersistence,
@@ -3876,7 +4001,6 @@ function BoardWorkspace({
       localLockIdsRef.current = [];
       localSelectionTransactionRef.current = null;
       selectionTransactionTransitionRef.current = false;
-      applyObjectInteractivity();
       canvas.requestRenderAll();
       updateSelectionState();
       updateSelectionStyleState();
@@ -3897,7 +4021,7 @@ function BoardWorkspace({
     sendDeletes(ids);
     recordAction({ type: 'delete', records });
     schedulePersistence();
-  }, [applyObjectInteractivity, getObjectRecords, recordAction, schedulePersistence, sendDeletes, updateSelectionState, updateSelectionStyleState]);
+  }, [getObjectRecords, recordAction, schedulePersistence, sendDeletes, updateSelectionState, updateSelectionStyleState]);
 
   const clearBoard = useCallback(() => {
     const canvas = fabricCanvasRef.current;
@@ -3956,8 +4080,9 @@ function BoardWorkspace({
       ids.forEach((id) => remoteLocksRef.current.set(id, message));
     }
     setRemoteLocks([...remoteLocksRef.current.entries()].map(([objectId, lock]) => ({ objectId, ...lock })));
-    applyObjectInteractivity();
-  }, [applyObjectInteractivity]);
+    const touched = ids.flatMap((id) => registeredObjectsById(id));
+    applyObjectInteractivityToObjects(touched);
+  }, [applyObjectInteractivityToObjects, registeredObjectsById]);
 
   const sendCursorThrottled = useCallback((scenePoint) => {
     if (!scenePoint || !realtimeRef.current) return;
@@ -4985,6 +5110,7 @@ function BoardWorkspace({
         try {
           await preloadSerializedImages(snapshot.canvas);
           await canvas.loadFromJSON(snapshot.canvas);
+          rebuildObjectRegistry();
           revisionRef.current = Math.max(Number(revisionRef.current ?? 0), confirmedRevision);
           applyObjectInteractivity();
           configureBrushAndMode();
@@ -5535,29 +5661,32 @@ function BoardWorkspace({
       return util.transformPoint(viewportPoint, inverse);
     }
 
-    function objectAtScenePoint(scenePoint, { strictImageBounds = false, predicate = null } = {}) {
+    function objectAtScenePoint(scenePoint, { strictImageBounds = false, predicate = null, candidates = null } = {}) {
       const tolerance = Math.max(7, 18 / Math.max(canvas.getZoom(), MIN_ZOOM));
-      const objects = [...canvas.getObjects()].reverse();
-      return objects.find((object) => {
-        if (object.isEraserPath || objectEraserRecordsRef.current.has(object.boardObjectId)) return false;
-        if (predicate && !predicate(object)) return false;
-        const bounds = object.getBoundingRect();
+      const entries = Array.isArray(candidates) ? candidates : [...canvas.getObjects()].reverse();
+      for (const entry of entries) {
+        const object = entry?.object ?? entry;
+        if (!object || object.canvas !== canvas) continue;
+        if (object.isEraserPath || objectEraserRecordsRef.current.has(object.boardObjectId)) continue;
+        if (predicate && !predicate(object)) continue;
+        const bounds = entry?.bounds ?? object.getBoundingRect();
         const insideExpandedBounds = scenePoint.x >= bounds.left - tolerance
           && scenePoint.x <= bounds.left + bounds.width + tolerance
           && scenePoint.y >= bounds.top - tolerance
           && scenePoint.y <= bounds.top + bounds.height + tolerance;
-        if (!insideExpandedBounds) return false;
+        if (!insideExpandedBounds) continue;
         try {
           if (typeof object.containsPoint === 'function') {
             const contains = object.containsPoint(scenePoint);
-            if (contains) return true;
-            if (strictImageBounds && isImageObject(object)) return false;
+            if (contains) return object;
+            if (strictImageBounds && isImageObject(object)) continue;
           }
         } catch {
           // Thin paths and grouped shapes are handled by their expanded bounding box.
         }
-        return true;
-      });
+        return object;
+      }
+      return null;
     }
 
     function preciseEyedropperTarget(scenePoint, viewportPoint) {
@@ -5617,6 +5746,27 @@ function BoardWorkspace({
       }
     }
 
+    function objectEraserCandidatesNear(scenePoint) {
+      const cellSize = 192;
+      const cellX = Math.floor(scenePoint.x / cellSize);
+      const cellY = Math.floor(scenePoint.y / cellSize);
+      const nearby = [...objectEraserGlobalCandidatesRef.current];
+      const seen = new Set(nearby.map((entry) => entry.object));
+      for (let y = cellY - 1; y <= cellY + 1; y += 1) {
+        for (let x = cellX - 1; x <= cellX + 1; x += 1) {
+          const bucket = objectEraserGridRef.current.get(`${x}:${y}`);
+          if (!bucket) continue;
+          bucket.forEach((entry) => {
+            if (seen.has(entry.object)) return;
+            seen.add(entry.object);
+            nearby.push(entry);
+          });
+        }
+      }
+      nearby.sort((left, right) => Number(right.zIndex ?? 0) - Number(left.zIndex ?? 0));
+      return nearby;
+    }
+
     function eraseAtClientPoint(clientX, clientY) {
       const pointer = objectEraserPointerRef.current;
       if (pointer?.active && pointer.lastX != null
@@ -5625,9 +5775,15 @@ function BoardWorkspace({
         pointer.lastX = clientX;
         pointer.lastY = clientY;
       }
-      const target = objectAtScenePoint(scenePointFromClient(clientX, clientY));
+      const scenePoint = scenePointFromClient(clientX, clientY);
+      const target = objectAtScenePoint(scenePoint, {
+        candidates: objectEraserCandidatesNear(scenePoint),
+      });
       if (!target) return;
-      const [record] = getObjectRecords([target]);
+      const record = {
+        object: serializeObject(target),
+        zIndex: objectEraserZIndexRef.current.get(target) ?? 0,
+      };
       const id = record?.object?.boardObjectId;
       if (!id || objectEraserRecordsRef.current.has(id)) return;
       objectEraserRecordsRef.current.set(id, record);
@@ -5635,18 +5791,30 @@ function BoardWorkspace({
       applyingRemoteRef.current = true;
       canvas.remove(target);
       applyingRemoteRef.current = false;
-      canvas.discardActiveObject();
-      updateSelectionState();
-      updateSelectionStyleState();
-      canvas.requestRenderAll();
+      if (!objectEraserRenderFrameRef.current) {
+        objectEraserRenderFrameRef.current = window.requestAnimationFrame(() => {
+          objectEraserRenderFrameRef.current = null;
+          canvas.requestRenderAll();
+        });
+      }
     }
 
     function finishObjectEraser() {
       if (!erasingRef.current) return;
       erasingRef.current = false;
       objectEraserPointerRef.current = null;
+      objectEraserGridRef.current.clear();
+      objectEraserGlobalCandidatesRef.current = [];
+      objectEraserZIndexRef.current.clear();
+      if (objectEraserRenderFrameRef.current) {
+        window.cancelAnimationFrame(objectEraserRenderFrameRef.current);
+        objectEraserRenderFrameRef.current = null;
+        canvas.requestRenderAll();
+      }
       const records = [...objectEraserRecordsRef.current.values()];
       objectEraserRecordsRef.current = new Map();
+      updateSelectionState();
+      updateSelectionStyleState();
       if (!records.length) return;
       const ids = records.map((record) => record.object.boardObjectId).filter(Boolean);
       flushObjectEraserDeletePreview();
@@ -5821,16 +5989,21 @@ function BoardWorkspace({
       if (restoreGroupSelection && activeToolRef.current === 'select' && objects.length > 1) {
         canvas.setActiveObject(createOuterOnlyActiveSelection(objects, canvas));
       }
-      deduplicateBoardObjects(canvas);
+      deduplicateRegisteredObjectIds(objects.map((object) => object.boardObjectId));
       updateSelectionState();
       updateSelectionStyleState();
       canvas.requestRenderAll();
     });
 
     const refreshSelectionUi = () => {
-      applyObjectInteractivity();
+      const active = canvas.getActiveObject();
+      const currentTouched = new Set(active?.type === 'activeSelection' && typeof active.getObjects === 'function'
+        ? [active, ...active.getObjects()]
+        : [active].filter(Boolean));
+      const touched = new Set([...selectionUiTouchedRef.current, ...currentTouched]);
+      selectionUiTouchedRef.current = currentTouched;
+      applyObjectInteractivityToObjects([...touched], { render: false });
       updateSelectionVisuals();
-      window.requestAnimationFrame(updateSelectionVisuals);
       updateSelectionState();
       updateSelectionStyleState();
     };
@@ -5855,6 +6028,11 @@ function BoardWorkspace({
         window.setTimeout(() => commitLocalSelectionTransaction(), 0);
       }
     };
+    const handleRegistryObjectAdded = ({ target }) => registerCanvasObject(target);
+    const handleRegistryObjectRemoved = ({ target }) => unregisterCanvasObject(target);
+    canvas.on('object:added', handleRegistryObjectAdded);
+    canvas.on('object:removed', handleRegistryObjectRemoved);
+
     canvas.on('selection:created', startTransactionalSelection);
     canvas.on('selection:updated', startTransactionalSelection);
     canvas.on('selection:cleared', finishTransactionalSelection);
@@ -7074,6 +7252,39 @@ function BoardWorkspace({
       objectEraserDelayTimer = null;
       erasingRef.current = true;
       objectEraserRecordsRef.current = new Map();
+      const eraserObjects = canvas.getObjects();
+      objectEraserZIndexRef.current = new Map(eraserObjects.map((object, index) => [object, index]));
+      const eraserEntries = eraserObjects.map((object, zIndex) => ({
+        object,
+        zIndex,
+        bounds: object.getBoundingRect(),
+      }));
+      objectEraserGridRef.current = new Map();
+      objectEraserGlobalCandidatesRef.current = [];
+      const cellSize = 192;
+      eraserEntries.forEach((entry) => {
+        const { bounds } = entry;
+        const minX = Math.floor(bounds.left / cellSize);
+        const maxX = Math.floor((bounds.left + bounds.width) / cellSize);
+        const minY = Math.floor(bounds.top / cellSize);
+        const maxY = Math.floor((bounds.top + bounds.height) / cellSize);
+        const cellCount = (maxX - minX + 1) * (maxY - minY + 1);
+        if (cellCount > 64) {
+          objectEraserGlobalCandidatesRef.current.push(entry);
+          return;
+        }
+        for (let y = minY; y <= maxY; y += 1) {
+          for (let x = minX; x <= maxX; x += 1) {
+            const key = `${x}:${y}`;
+            const bucket = objectEraserGridRef.current.get(key) ?? [];
+            bucket.push(entry);
+            objectEraserGridRef.current.set(key, bucket);
+          }
+        }
+      });
+      canvas.discardActiveObject();
+      updateSelectionState();
+      updateSelectionStyleState();
       objectEraserPointerRef.current = {
         id: event.pointerId,
         startX: event.clientX,
@@ -7663,6 +7874,17 @@ function BoardWorkspace({
         selectionBoxRef.current = null;
       }
       restoreSelectionMemberControls();
+      if (objectEraserRenderFrameRef.current) {
+        window.cancelAnimationFrame(objectEraserRenderFrameRef.current);
+        objectEraserRenderFrameRef.current = null;
+      }
+      canvas.off('object:added', handleRegistryObjectAdded);
+      canvas.off('object:removed', handleRegistryObjectRemoved);
+      objectRegistryRef.current.clear();
+      objectEraserGridRef.current.clear();
+      objectEraserGlobalCandidatesRef.current = [];
+      objectEraserZIndexRef.current.clear();
+      selectionUiTouchedRef.current.clear();
       resizeObserver.disconnect();
       realtimeRef.current?.disconnect();
       realtimeRef.current = null;
