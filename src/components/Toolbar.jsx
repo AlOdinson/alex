@@ -42,10 +42,11 @@ function firstStylusTouch(event) {
   ) ?? null;
 }
 
-function IconButton({ title, children, active = false, disabled = false, onClick, className = '' }) {
+function IconButton({ title, children, active = false, disabled = false, onClick, className = '', stylusActionPhase = 'start' }) {
   const buttonRef = useRef(null);
   const actionRef = useRef(onClick);
   const suppressClickUntilRef = useRef(0);
+  const pendingStylusTouchIdRef = useRef(null);
   actionRef.current = onClick;
 
   useEffect(() => {
@@ -53,23 +54,65 @@ function IconButton({ title, children, active = false, disabled = false, onClick
     if (!button) return undefined;
 
     function handleStylusTouchStart(event) {
-      if (disabled || !firstStylusTouch(event)) return;
-      // On iPadOS a Pencil tap on a native control can keep the browser's stylus
-      // recognizer busy after the visual click has completed. Claim the stylus touch
-      // before the compatibility click is created and run the action immediately.
+      const stylus = firstStylusTouch(event);
+      if (disabled || !stylus) return;
+      // Tool switches need to happen on touchstart so the next Pencil contact can draw
+      // immediately. Commands that mutate the board (Undo/Redo, delete, paste, etc.)
+      // must wait until touchend; starting them while the Pencil is still pressed keeps
+      // WebKit's stylus recognizer and the main thread competing for the same contact.
       if (event.cancelable) event.preventDefault();
       event.stopPropagation();
       suppressClickUntilRef.current = performance.now() + 900;
-      actionRef.current?.({ inputType: 'stylus-touch', nativeEvent: event });
+      pendingStylusTouchIdRef.current = stylus.identifier ?? null;
+      if (stylusActionPhase === 'start') {
+        pendingStylusTouchIdRef.current = null;
+        actionRef.current?.({ inputType: 'stylus-touch', nativeEvent: event });
+        button.blur();
+      }
+    }
+
+    function handleStylusTouchEnd(event) {
+      if (stylusActionPhase !== 'end' || pendingStylusTouchIdRef.current == null) return;
+      const changed = Array.from(event?.changedTouches ?? []);
+      const matching = changed.find((touch) => (
+        touch.identifier === pendingStylusTouchIdRef.current
+      ));
+      if (!matching) return;
+      if (event.cancelable) event.preventDefault();
+      event.stopPropagation();
+      suppressClickUntilRef.current = performance.now() + 900;
+      pendingStylusTouchIdRef.current = null;
       button.blur();
+      window.requestAnimationFrame(() => {
+        actionRef.current?.({ inputType: 'stylus-touch-end', nativeEvent: event });
+      });
+    }
+
+    function handleStylusTouchCancel(event) {
+      const changed = Array.from(event?.changedTouches ?? []);
+      if (changed.some((touch) => touch.identifier === pendingStylusTouchIdRef.current)) {
+        pendingStylusTouchIdRef.current = null;
+      }
     }
 
     button.addEventListener('touchstart', handleStylusTouchStart, {
       passive: false,
       capture: true,
     });
-    return () => button.removeEventListener('touchstart', handleStylusTouchStart, true);
-  }, [disabled]);
+    button.addEventListener('touchend', handleStylusTouchEnd, {
+      passive: false,
+      capture: true,
+    });
+    button.addEventListener('touchcancel', handleStylusTouchCancel, {
+      passive: true,
+      capture: true,
+    });
+    return () => {
+      button.removeEventListener('touchstart', handleStylusTouchStart, true);
+      button.removeEventListener('touchend', handleStylusTouchEnd, true);
+      button.removeEventListener('touchcancel', handleStylusTouchCancel, true);
+    };
+  }, [disabled, stylusActionPhase]);
 
   function handleClick(event) {
     if (performance.now() < suppressClickUntilRef.current) {
@@ -250,8 +293,8 @@ export default function Toolbar({
         </div>
 
         <div className="tool-group compact" aria-label="Отмена и возврат">
-          <IconButton title="Отменить — Ctrl/Command + Z" disabled={!canEdit || !canUndo} onClick={onUndo}>↶</IconButton>
-          <IconButton title="Вернуть — Ctrl/Command + Shift + Z" disabled={!canEdit || !canRedo} onClick={onRedo}>↷</IconButton>
+          <IconButton title="Отменить — Ctrl/Command + Z" disabled={!canEdit || !canUndo} onClick={onUndo} stylusActionPhase="end">↶</IconButton>
+          <IconButton title="Вернуть — Ctrl/Command + Shift + Z" disabled={!canEdit || !canRedo} onClick={onRedo} stylusActionPhase="end">↷</IconButton>
         </div>
 
         <div className="toolbar-spacer" />

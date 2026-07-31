@@ -1,7 +1,7 @@
 {
-  "version": "1.06",
-  "packageVersion": "1.0.6",
-  "base": "1.05",
-  "release": "Targeted selection, indexed undo/redo, and batched object eraser",
+  "version": "1.07",
+  "packageVersion": "1.0.7",
+  "base": "1.06",
+  "release": "Pencil-safe history controls and native multi-selection",
   "date": "2026-07-31"
 }
