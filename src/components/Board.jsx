@@ -103,6 +103,7 @@ FabricObject.customProperties = [
   'transientSelectionProxy',
   'selectionTransactionId',
   'selectionSourceIds',
+  'textPlaceholder',
 ];
 
 function getKeyFromUrl() {
@@ -6421,6 +6422,22 @@ function BoardWorkspace({
       if (!target?.boardObjectId) return;
       textBeforeRef.current.set(target.boardObjectId, getObjectRecords([target]));
       sendLocalLock(target, true);
+
+      // New text objects use a visible placeholder. The first time the user enters
+      // editing, remove it so typing can begin immediately without manual deletion.
+      if (target.textPlaceholder && String(target.text ?? '') === 'text') {
+        target.set({ text: '', textPlaceholder: false });
+        target.selectionStart = 0;
+        target.selectionEnd = 0;
+        if (target.hiddenTextarea) {
+          target.hiddenTextarea.value = '';
+          target.hiddenTextarea.setSelectionRange?.(0, 0);
+        }
+        target.dirty = true;
+        target.setCoords?.();
+        canvas.fire('text:changed', { target });
+        canvas.requestRenderAll();
+      }
     });
 
     canvas.on('text:changed', ({ target }) => {
@@ -6768,7 +6785,7 @@ function BoardWorkspace({
           return;
         }
         const point = scenePoint;
-        const textObject = new IText('Текст', {
+        const textObject = new IText('text', {
           left: point.x,
           top: point.y,
           originX: 'left',
@@ -6778,6 +6795,7 @@ function BoardWorkspace({
           fontSize: fontSizeRef.current,
           objectKind: 'text',
           editable: true,
+          textPlaceholder: true,
         });
         markObject(textObject, clientId);
         canvas.add(textObject);

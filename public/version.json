@@ -1,9 +1,9 @@
 {
-  "version": "1.13.1",
-  "packageVersion": "1.13.1",
-  "base": "1.13",
-  "release": "Hotfix: restore Board rendering after 1.13",
-  "date": "2026-07-31",
-  "name": "board-render-hotfix-client-id-ref",
-  "label": "Alex Board 1.13.1"
+  "version": "1.13.2",
+  "packageVersion": "1.13.2",
+  "base": "1.13.1",
+  "release": "Text placeholder editing fix",
+  "date": "2026-08-01",
+  "name": "text-placeholder-immediate-edit",
+  "label": "Alex Board 1.13.2"
 }
