@@ -14,6 +14,11 @@ const BULK_ACTION_THRESHOLD = 220_000;
 const BULK_ACTION_CHUNK_TARGET = 180_000;
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
 
+function isSerializedActiveSelection(object) {
+  const type = String(object?.type ?? '');
+  return type === 'ActiveSelection' || type === 'activeSelection';
+}
+
 function getLocalBoard(boardId) {
   const raw = localStorage.getItem(`${LOCAL_PREFIX}${boardId}`);
   return raw ? JSON.parse(raw) : null;
@@ -149,7 +154,14 @@ export function applyOpsToSnapshot(sourceSnapshot, ops, background = null) {
   if (!Array.isArray(snapshot.canvas.objects)) snapshot.canvas.objects = [];
 
   const objects = snapshot.canvas.objects;
-  const sourceOps = Array.isArray(ops) ? ops : [];
+  // ActiveSelection is only a temporary Fabric UI wrapper. Older experimental
+  // releases could persist it as a board object, which may block or hang loading.
+  for (let index = objects.length - 1; index >= 0; index -= 1) {
+    if (isSerializedActiveSelection(objects[index])) objects.splice(index, 1);
+  }
+  const sourceOps = (Array.isArray(ops) ? ops : []).filter((op) => (
+    op?.type !== 'upsert' || !isSerializedActiveSelection(op.object)
+  ));
   const isExplicitReorder = (op) => op?.type === 'upsert'
     && Boolean(op.reorder || op.restore)
     && op.object?.boardObjectId;
