@@ -382,7 +382,7 @@ export default function Toolbar({
               />
             </label>
 
-            {['pencil', 'line'].includes(tool) && (
+            {['pencil', 'line', 'shape'].includes(tool) && (
               <IconButton
                 title="Пипетка — скопировать параметры объекта или цвет пикселя картинки"
                 active={eyedropperActive}
@@ -454,19 +454,19 @@ export default function Toolbar({
             <div className="segmented-control" aria-label="Режим ластика">
               <button
                 type="button"
-                className={eraserMode === 'partial' ? 'selected' : ''}
-                disabled={!canEdit}
-                onClick={() => setEraserMode('partial')}
-              >
-                Область
-              </button>
-              <button
-                type="button"
                 className={eraserMode === 'object' ? 'selected' : ''}
                 disabled={!canEdit}
                 onClick={() => setEraserMode('object')}
               >
                 Объект
+              </button>
+              <button
+                type="button"
+                className={eraserMode === 'partial' ? 'selected' : ''}
+                disabled={!canEdit}
+                onClick={() => setEraserMode('partial')}
+              >
+                Область
               </button>
             </div>
             {eraserMode === 'partial' && (

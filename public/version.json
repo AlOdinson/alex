@@ -1,8 +1,8 @@
 {
-  "version": "1.11",
-  "packageVersion": "1.11",
-  "base": "1.07",
-  "release": "Stable selection lifecycle with group move Undo",
+  "version": "1.12",
+  "packageVersion": "1.12",
+  "base": "1.11",
+  "release": "Persistent selection, per-tool styles, desktop creation and faster eyedropper",
   "date": "2026-07-31",
-  "name": "stable-selection-lifecycle-group-undo"
+  "name": "persistent-selection-tool-styles-desktop-creation-eyedropper"
 }

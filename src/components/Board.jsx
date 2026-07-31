@@ -77,6 +77,12 @@ const PALM_CONTACT_RADIUS = 22;
 const PENCIL_HANDOFF_IDLE_MS = 18;
 const PENCIL_HANDOFF_MAX_RADIUS = 34;
 const PENCIL_HANDOFF_MIN_SEPARATION = 20;
+const DRAWING_STYLE_TOOL_IDS = new Set(['pencil', 'line', 'shape']);
+const DEFAULT_DRAWING_STYLES = {
+  pencil: { color: '#111827', opacity: 1, width: 3 },
+  line: { color: '#111827', opacity: 1, width: 3 },
+  shape: { color: '#111827', opacity: 1, width: 3 },
+};
 
 FabricObject.customProperties = [
   'boardObjectId',
@@ -612,7 +618,7 @@ function AccessMessage({ title, children }) {
 }
 
 function serializeObject(object) {
-  return object.toObject([
+  const serialized = object.toObject([
     'boardObjectId',
     'updatedAt',
     'updatedBy',
@@ -627,6 +633,38 @@ function serializeObject(object) {
     'selectionTransactionId',
     'selectionSourceIds',
   ]);
+
+  // Members of an ActiveSelection keep local coordinates relative to the temporary
+  // wrapper. Persist their full scene matrix instead, without dismantling the user's
+  // selection. This lets the frame remain visible after a group move while Supabase,
+  // Ably and Undo still receive absolute board coordinates.
+  if (object?.group && isActiveSelectionObject(object.group)
+    && typeof object.calcTransformMatrix === 'function'
+    && typeof util.qrDecompose === 'function') {
+    const matrix = object.calcTransformMatrix();
+    const decomposed = util.qrDecompose(matrix);
+    let scaleX = Number(decomposed?.scaleX ?? 1);
+    let scaleY = Number(decomposed?.scaleY ?? 1);
+    const flipX = scaleX < 0;
+    const flipY = scaleY < 0;
+    scaleX = Math.abs(scaleX);
+    scaleY = Math.abs(scaleY);
+    Object.assign(serialized, {
+      left: Number(decomposed?.translateX ?? serialized.left ?? 0),
+      top: Number(decomposed?.translateY ?? serialized.top ?? 0),
+      originX: 'center',
+      originY: 'center',
+      angle: Number(decomposed?.angle ?? 0),
+      scaleX: Number.isFinite(scaleX) ? scaleX : 1,
+      scaleY: Number.isFinite(scaleY) ? scaleY : 1,
+      skewX: Number(decomposed?.skewX ?? 0),
+      skewY: Number(decomposed?.skewY ?? 0),
+      flipX,
+      flipY,
+    });
+  }
+
+  return serialized;
 }
 
 function isActiveSelectionObject(target) {
@@ -1029,15 +1067,20 @@ function BoardWorkspace({
   const selectionUiTouchedRef = useRef(new Set());
   const boardReadyRef = useRef(false);
   const activeToolRef = useRef('pencil');
+  const drawingStylesRef = useRef({
+    pencil: { ...DEFAULT_DRAWING_STYLES.pencil },
+    line: { ...DEFAULT_DRAWING_STYLES.line },
+    shape: { ...DEFAULT_DRAWING_STYLES.shape },
+  });
   const canEditRef = useRef(initialAccess.permission === 'owner' || initialAccess.permission === 'edit');
-  const colorRef = useRef('#111827');
-  const opacityRef = useRef(1);
-  const widthRef = useRef(3);
+  const colorRef = useRef(DEFAULT_DRAWING_STYLES.pencil.color);
+  const opacityRef = useRef(DEFAULT_DRAWING_STYLES.pencil.opacity);
+  const widthRef = useRef(DEFAULT_DRAWING_STYLES.pencil.width);
   const eyedropperActiveRef = useRef(false);
   const eyedropperModeRef = useRef(null);
   const eyedropperSelectionIdsRef = useRef([]);
   const eyedropperSelectionTransactionIdRef = useRef(null);
-  const eraserModeRef = useRef('partial');
+  const eraserModeRef = useRef('object');
   const eraserWidthRef = useRef(28);
   const fontFamilyRef = useRef('Arial');
   const fontSizeRef = useRef(34);
@@ -1134,11 +1177,11 @@ function BoardWorkspace({
   const [permission, setPermission] = useState(initialAccess.permission);
   const [guestMode, setGuestModeState] = useState(initialAccess.guestMode);
   const [tool, setToolState] = useState(initialAccess.permission === 'view' ? 'select' : 'pencil');
-  const [color, setColorState] = useState('#111827');
-  const [opacity, setOpacityState] = useState(1);
-  const [width, setWidthState] = useState(3);
+  const [color, setColorState] = useState(DEFAULT_DRAWING_STYLES.pencil.color);
+  const [opacity, setOpacityState] = useState(DEFAULT_DRAWING_STYLES.pencil.opacity);
+  const [width, setWidthState] = useState(DEFAULT_DRAWING_STYLES.pencil.width);
   const [eyedropperActive, setEyedropperActive] = useState(false);
-  const [eraserMode, setEraserModeState] = useState('partial');
+  const [eraserMode, setEraserModeState] = useState('object');
   const [eraserWidth, setEraserWidthState] = useState(28);
   const [fontFamily, setFontFamilyState] = useState('Arial');
   const [fontSize, setFontSizeState] = useState(34);
@@ -1667,7 +1710,8 @@ function BoardWorkspace({
     canvas.isDrawingMode = shouldDraw;
     canvas.selection = false;
     canvas.perPixelTargetFind = false;
-    canvas.skipTargetFind = !selectionToolActive;
+    const drawingEyedropperActive = eyedropperActiveRef.current && eyedropperModeRef.current === 'drawing';
+    canvas.skipTargetFind = !(selectionToolActive || drawingEyedropperActive);
 
     if (!keepActiveObject && canvas.getActiveObject()) {
       canvas.discardActiveObject();
@@ -1695,16 +1739,31 @@ function BoardWorkspace({
     applyCanvasInputMode();
   }, [applyCanvasInputMode]);
 
+  const activateDrawingStyle = useCallback((toolId) => {
+    if (!DRAWING_STYLE_TOOL_IDS.has(toolId)) return;
+    const style = drawingStylesRef.current[toolId] ?? DEFAULT_DRAWING_STYLES[toolId];
+    const nextColor = style?.color ?? '#111827';
+    const nextOpacity = clamp(Number(style?.opacity ?? 1), 0.05, 1);
+    const nextWidth = clamp(Math.round(Number(style?.width ?? 3)), 1, 24);
+    colorRef.current = nextColor;
+    opacityRef.current = nextOpacity;
+    widthRef.current = nextWidth;
+    setColorState(nextColor);
+    setOpacityState(nextOpacity);
+    setWidthState(nextWidth);
+  }, []);
+
   const setTool = useCallback((nextTool) => {
     if (!canEditRef.current) return;
     const canvas = fabricCanvasRef.current;
-    if (canvas?.getActiveObject()) {
+    const switchingTool = nextTool !== activeToolRef.current;
+    if (switchingTool && canvas?.getActiveObject()) {
       canvas.discardActiveObject();
       updateSelectionState();
       updateSelectionStyleState();
       canvas.requestRenderAll();
     }
-    if (nextTool !== activeToolRef.current) {
+    if (switchingTool) {
       cancelCreationDraftRef.current?.('tool-change');
     }
     if (eyedropperActiveRef.current && nextTool !== activeToolRef.current) {
@@ -1716,32 +1775,53 @@ function BoardWorkspace({
     }
     if (nextTool !== 'shape') selectedShapeRef.current = null;
     activeToolRef.current = nextTool;
+    activateDrawingStyle(nextTool);
     setToolState(nextTool);
     configureBrushAndMode();
-  }, [configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
+  }, [activateDrawingStyle, configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
 
   const setColor = useCallback((nextColor) => {
     colorRef.current = nextColor;
+    if (DRAWING_STYLE_TOOL_IDS.has(activeToolRef.current)) {
+      drawingStylesRef.current[activeToolRef.current] = {
+        ...drawingStylesRef.current[activeToolRef.current],
+        color: nextColor,
+      };
+    }
     setColorState(nextColor);
     configureBrushAndMode();
   }, [configureBrushAndMode]);
 
   const setOpacity = useCallback((nextOpacity) => {
-    opacityRef.current = nextOpacity;
-    setOpacityState(nextOpacity);
+    const normalized = clamp(Number(nextOpacity), 0.05, 1);
+    opacityRef.current = normalized;
+    if (DRAWING_STYLE_TOOL_IDS.has(activeToolRef.current)) {
+      drawingStylesRef.current[activeToolRef.current] = {
+        ...drawingStylesRef.current[activeToolRef.current],
+        opacity: normalized,
+      };
+    }
+    setOpacityState(normalized);
     configureBrushAndMode();
   }, [configureBrushAndMode]);
 
   const setWidth = useCallback((nextWidth) => {
-    widthRef.current = nextWidth;
-    setWidthState(nextWidth);
+    const normalized = clamp(Math.round(Number(nextWidth)), 1, 24);
+    widthRef.current = normalized;
+    if (DRAWING_STYLE_TOOL_IDS.has(activeToolRef.current)) {
+      drawingStylesRef.current[activeToolRef.current] = {
+        ...drawingStylesRef.current[activeToolRef.current],
+        width: normalized,
+      };
+    }
+    setWidthState(normalized);
     configureBrushAndMode();
   }, [configureBrushAndMode]);
 
   const toggleEyedropper = useCallback(() => {
     if (!canEditRef.current) return;
     const canvas = fabricCanvasRef.current;
-    const drawingMode = ['pencil', 'line'].includes(activeToolRef.current);
+    const drawingMode = ['pencil', 'line', 'shape'].includes(activeToolRef.current);
     const active = canvas?.getActiveObject();
     const transaction = active?.transientSelectionProxy
       ? localSelectionTransactionRef.current
@@ -2305,10 +2385,11 @@ function BoardWorkspace({
     cancelCreationDraftRef.current?.('shape-change');
     selectedShapeRef.current = shapeId;
     activeToolRef.current = 'shape';
+    activateDrawingStyle('shape');
     setToolState('shape');
     setSaveStatus('Фигура выбрана — протяните её мышкой или пальцем');
     configureBrushAndMode();
-  }, [configureBrushAndMode]);
+  }, [activateDrawingStyle, configureBrushAndMode]);
 
 
   const addImageFiles = useCallback(async (files, scenePoint = null) => {
@@ -3890,10 +3971,11 @@ function BoardWorkspace({
     if (mode !== 'edit') cancelCreationDraftRef.current?.('permission-change');
     canEditRef.current = mode === 'edit';
     activeToolRef.current = mode === 'edit' ? 'pencil' : 'select';
+    if (mode === 'edit') activateDrawingStyle('pencil');
     setToolState(activeToolRef.current);
     applyObjectInteractivity();
     configureBrushAndMode();
-  }, [applyObjectInteractivity, configureBrushAndMode, initialAccess, isOwner, onAccessChange]);
+  }, [activateDrawingStyle, applyObjectInteractivity, configureBrushAndMode, initialAccess, isOwner, onAccessChange]);
 
   const copySelection = useCallback(async ({ deselect = false } = {}) => {
     const canvas = fabricCanvasRef.current;
@@ -5786,6 +5868,49 @@ function BoardWorkspace({
       return util.transformPoint(viewportPoint, inverse);
     }
 
+    function updateCreationDraftFromNativeEvent(nativeEvent) {
+      if (!nativeEvent || !['line', 'shape'].includes(activeToolRef.current)) return false;
+      const draft = shapeDraftRef.current ?? lineRef.current;
+      if (!draft || draft.cancelled || draft.finalized || !creationDraftOwnsEvent(draft, nativeEvent)) {
+        return false;
+      }
+      const clientX = Number(nativeEvent.clientX);
+      const clientY = Number(nativeEvent.clientY);
+      if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+      const point = scenePointFromClient(clientX, clientY);
+      lastPointerSceneRef.current = point;
+
+      if (draft.kind === 'shape') {
+        const dx = point.x - draft.start.x;
+        const dy = point.y - draft.start.y;
+        const drawnWidth = Math.max(2, Math.abs(dx));
+        const drawnHeight = Math.max(2, Math.abs(dy));
+        draft.object.set({
+          left: draft.start.x + dx / 2,
+          top: draft.start.y + dy / 2,
+          scaleX: drawnWidth / draft.baseWidth,
+          scaleY: drawnHeight / draft.baseHeight,
+        });
+        draft.object.dirty = true;
+        draft.object.setCoords();
+        sendLiveTransformThrottled(draft.object);
+        scheduleCreationPreview();
+        return true;
+      }
+
+      if (draft.kind === 'line') {
+        if (liveDrawSendRef.current.sessionId === draft.sessionId
+          && liveDrawSendRef.current.tool === 'line') {
+          updateLiveDraw(point);
+        }
+        draft.object.set({ x2: point.x, y2: point.y });
+        draft.object.setCoords();
+        scheduleCreationPreview();
+        return true;
+      }
+      return false;
+    }
+
     function objectAtScenePoint(scenePoint, { strictImageBounds = false, predicate = null, candidates = null } = {}) {
       const tolerance = Math.max(7, 18 / Math.max(canvas.getZoom(), MIN_ZOOM));
       const entries = Array.isArray(candidates) ? candidates : [...canvas.getObjects()].reverse();
@@ -5814,42 +5939,16 @@ function BoardWorkspace({
       return null;
     }
 
-    function preciseEyedropperTarget(scenePoint, viewportPoint) {
-      if (!scenePoint || !viewportPoint) return null;
-      const objects = [...canvas.getObjects()].reverse();
-      for (const object of objects) {
-        if (object.isEraserPath || objectEraserRecordsRef.current.has(object.boardObjectId)) continue;
-
-        const bounds = object.getBoundingRect();
-        const insideBounds = scenePoint.x >= bounds.left
-          && scenePoint.x <= bounds.left + bounds.width
-          && scenePoint.y >= bounds.top
-          && scenePoint.y <= bounds.top + bounds.height;
-        if (!insideBounds) continue;
-
-        try {
-          if (typeof canvas.isTargetTransparent === 'function') {
-            const transparent = canvas.isTargetTransparent(
-              object,
-              viewportPoint.x,
-              viewportPoint.y,
-            );
-            if (transparent) continue;
-            return object;
-          }
-        } catch (error) {
-          console.warn('Точная проверка попадания пипетки недоступна', error);
-        }
-
-        try {
-          if (typeof object.containsPoint === 'function' && object.containsPoint(scenePoint)) {
-            return object;
-          }
-        } catch {
-          // Безопасный запасной вариант ниже.
-        }
-      }
-      return null;
+    function preciseEyedropperTarget(scenePoint) {
+      if (!scenePoint) return null;
+      // A per-pixel Fabric transparency test can render every candidate object and
+      // stall a busy iPad canvas for seconds. The eyedropper only needs the uppermost
+      // visible object near the contact, so use the same inexpensive bounds/geometry
+      // hit test as the object tools. Image contacts still stay inside image bounds.
+      return objectAtScenePoint(scenePoint, {
+        strictImageBounds: true,
+        predicate: (object) => !object.transientPreview && !object.transientSelectionProxy,
+      });
     }
 
     function flushObjectEraserDeletePreview() {
@@ -6126,8 +6225,11 @@ function BoardWorkspace({
         if (pendingGroupTransformCommitRef.current !== commitToken) return;
         pendingGroupTransformCommitRef.current = null;
         if (fabricCanvasRef.current !== canvas) return;
-        if (canvas.getActiveObject() === target) canvas.discardActiveObject();
+        // Keep the user's ActiveSelection after a move. Fabric will clear it naturally
+        // when the user clicks empty space or chooses another tool. Mutating or
+        // rebuilding the wrapper here caused stale/empty selections in older releases.
         selectedObjects.forEach((object) => object.setCoords());
+        target.setCoords?.();
         commitObjects();
       });
     });
@@ -6242,9 +6344,15 @@ function BoardWorkspace({
         nativeEvent.preventDefault?.();
         nativeEvent.stopPropagation?.();
         const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
-        const viewportPoint = event.viewportPoint ?? canvas.getViewportPoint(nativeEvent);
-        const target = preciseEyedropperTarget(point, viewportPoint);
+        const directTarget = event.target
+          && !isActiveSelectionObject(event.target)
+          && !event.target.transientPreview
+          && !event.target.transientSelectionProxy
+          ? event.target
+          : null;
+        const target = directTarget ?? preciseEyedropperTarget(point);
         const mode = eyedropperModeRef.current;
+        if (mode === 'drawing' && canvas.getActiveObject()) canvas.discardActiveObject();
         const transactionId = eyedropperSelectionTransactionIdRef.current;
         const preservedSelectionIds = [...eyedropperSelectionIdsRef.current];
 
@@ -6296,7 +6404,7 @@ function BoardWorkspace({
         let success = false;
         let selectionObjects = [];
 
-        if (mode === 'drawing' && ['pencil', 'line'].includes(activeToolRef.current)) {
+        if (mode === 'drawing' && ['pencil', 'line', 'shape'].includes(activeToolRef.current)) {
           if (sampled.canColor && sampled.color) {
             colorRef.current = sampled.color;
             setColorState(sampled.color);
@@ -6313,6 +6421,13 @@ function BoardWorkspace({
             widthRef.current = nextWidth;
             setWidthState(nextWidth);
             success = true;
+          }
+          if (success && DRAWING_STYLE_TOOL_IDS.has(activeToolRef.current)) {
+            drawingStylesRef.current[activeToolRef.current] = {
+              color: colorRef.current,
+              opacity: opacityRef.current,
+              width: widthRef.current,
+            };
           }
         }
 
@@ -7323,12 +7438,14 @@ function BoardWorkspace({
         penInputRef.current.lastSeenAt = Date.now();
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
+        updateCreationDraftFromNativeEvent(event);
         return;
       }
       if (event.pointerType === 'touch' && handoffTouchPointers.has(event.pointerId)) {
         rememberHandoffTouchPointer(event);
       }
       if (rejectedPointerIdsRef.current.has(event.pointerId)) rejectPointerEvent(event);
+      else updateCreationDraftFromNativeEvent(event);
     }
 
     function handlePalmPointerEnd(event) {
@@ -7340,7 +7457,13 @@ function BoardWorkspace({
         return;
       }
       if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
-      else finalizeCreationDraft(event);
+      else {
+        // Capture the final desktop mouse/Pencil coordinate before the capture-phase
+        // pointerup finalizes the draft. Fabric's later mouse:up event may not carry
+        // another move, which previously left a zero-length point on desktop.
+        updateCreationDraftFromNativeEvent(event);
+        finalizeCreationDraft(event);
+      }
       clearPendingNativeCreationPointer(event);
       if (event.pointerType === 'pen' && penInputRef.current.pointerId === event.pointerId) {
         const now = Date.now();
