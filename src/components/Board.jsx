@@ -629,9 +629,17 @@ function serializeObject(object) {
   ]);
 }
 
+function isActiveSelectionObject(target) {
+  if (!target) return false;
+  if (target instanceof ActiveSelection) return true;
+  if (typeof target.isType === 'function' && target.isType('ActiveSelection')) return true;
+  // Compatibility with older Fabric snapshots and previous Alex Board releases.
+  return target.type === 'ActiveSelection' || target.type === 'activeSelection';
+}
+
 function flattenTarget(target) {
   if (!target) return [];
-  if (target.type === 'activeSelection' && typeof target.getObjects === 'function') {
+  if (isActiveSelectionObject(target) && typeof target.getObjects === 'function') {
     return target.getObjects();
   }
   return [target];
@@ -1316,7 +1324,13 @@ function BoardWorkspace({
   const getObjectRecords = useCallback((objects) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return [];
-    return objects.map((object) => ({
+    // Never serialize Fabric's temporary ActiveSelection wrapper as a board object.
+    // Flatten it to its real members and remove duplicates first. This is a second
+    // safety layer in case a future caller accidentally passes the selection itself.
+    const candidates = [...new Set((Array.isArray(objects) ? objects : [])
+      .flatMap((object) => flattenTarget(object))
+      .filter((object) => object && !isActiveSelectionObject(object)))];
+    return candidates.map((object) => ({
       object: serializeObject(object),
       zIndex: canvas.getObjects().indexOf(object),
     }));
@@ -1486,7 +1500,7 @@ function BoardWorkspace({
     if (!canvas) return;
     const now = Date.now();
     const activeSelection = canvas.getActiveObject();
-    const activeSelectionMembers = activeSelection?.type === 'activeSelection'
+    const activeSelectionMembers = isActiveSelectionObject(activeSelection)
       && typeof activeSelection.getObjects === 'function'
       ? new Set(activeSelection.getObjects())
       : new Set();
@@ -1535,7 +1549,7 @@ function BoardWorkspace({
     }
 
     const activeSelection = canvas.getActiveObject();
-    const activeSelectionMembers = activeSelection?.type === 'activeSelection'
+    const activeSelectionMembers = isActiveSelectionObject(activeSelection)
       && typeof activeSelection.getObjects === 'function'
       ? new Set(activeSelection.getObjects())
       : new Set();
@@ -1594,7 +1608,7 @@ function BoardWorkspace({
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
     const active = canvas.getActiveObject();
-    const members = active?.type === 'activeSelection' && typeof active.getObjects === 'function'
+    const members = isActiveSelectionObject(active) && typeof active.getObjects === 'function'
       ? active.getObjects()
       : [];
     const memberSet = new Set(members);
@@ -2456,7 +2470,7 @@ function BoardWorkspace({
     }
     const objects = canvas.getActiveObjects().filter((object) => !object.isEraserPath);
     if (!objects.length) return;
-    const restoreActiveSelection = active?.type === 'activeSelection' && objects.length > 1;
+    const restoreActiveSelection = isActiveSelectionObject(active) && objects.length > 1;
     if (restoreActiveSelection) {
       canvas.discardActiveObject();
       objects.forEach((object) => object.setCoords());
@@ -2561,7 +2575,7 @@ function BoardWorkspace({
       .filter((object) => !object.isEraserPath && !object.transientPreview && !object.transientSelectionProxy);
     if (!objects.length) return [];
     const active = canvas.getActiveObject();
-    const restoreActiveSelection = active?.type === 'activeSelection' && objects.length > 1;
+    const restoreActiveSelection = isActiveSelectionObject(active) && objects.length > 1;
     if (restoreActiveSelection) {
       canvas.discardActiveObject();
       objects.forEach((object) => object.setCoords());
@@ -4128,7 +4142,7 @@ function BoardWorkspace({
     }
     const objects = canvas.getActiveObjects().filter((object) => !object.isEraserPath);
     if (!objects.length) return;
-    if (canvas.getActiveObject()?.type === 'activeSelection') {
+    if (isActiveSelectionObject(canvas.getActiveObject())) {
       canvas.discardActiveObject();
       objects.forEach((object) => object.setCoords());
     }
@@ -6070,7 +6084,7 @@ function BoardWorkspace({
         canvas.requestRenderAll();
         return;
       }
-      const restoreGroupSelection = target.type === 'activeSelection';
+      const restoreGroupSelection = isActiveSelectionObject(target);
       const selectedObjects = flattenTarget(target).filter(Boolean);
       endLiveTransform(target);
 
@@ -6105,7 +6119,7 @@ function BoardWorkspace({
 
     const refreshSelectionUi = () => {
       const active = canvas.getActiveObject();
-      const currentTouched = new Set(active?.type === 'activeSelection' && typeof active.getObjects === 'function'
+      const currentTouched = new Set(isActiveSelectionObject(active) && typeof active.getObjects === 'function'
         ? [active, ...active.getObjects()]
         : [active].filter(Boolean));
       const touched = new Set([...selectionUiTouchedRef.current, ...currentTouched]);
@@ -6116,10 +6130,25 @@ function BoardWorkspace({
       updateSelectionStyleState();
     };
     const startTransactionalSelection = () => {
-      // Keep Fabric's native ActiveSelection locally. It already produces stable live
-      // transform frames for every selected object and is committed atomically by the
-      // existing object:modified handler. Replacing it immediately with a serialized
-      // proxy used to clone every selected path at Pencil-up and freeze busy boards.
+      // Keep Fabric's native ActiveSelection locally. Detect it through the class/API,
+      // not the legacy lowercase type string. Apply outer-only controls before the
+      // first render so a large marquee selection does not draw controls for each child.
+      const active = canvas.getActiveObject();
+      if (isActiveSelectionObject(active)) {
+        const outerRenderer = FabricObject.prototype._renderControls;
+        if (typeof outerRenderer === 'function') {
+          active._renderControls = function renderOnlyOuterSelection(ctx, styleOverride) {
+            return outerRenderer.call(this, ctx, styleOverride);
+          };
+        }
+        active.set({
+          hasControls: true,
+          hasBorders: true,
+          subTargetCheck: false,
+          objectCaching: false,
+        });
+        active.setCoords();
+      }
       refreshSelectionUi();
     };
     const finishTransactionalSelection = () => {
