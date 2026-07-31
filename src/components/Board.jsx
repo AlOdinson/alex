@@ -8305,14 +8305,17 @@ function BoardWorkspace({
 
   useEffect(() => {
     if (!isOwner) return undefined;
-    const hasRemoteParticipant = users.some((user) => String(user?.clientId ?? '') !== String(clientId));
+    const localClientId = String(clientIdRef.current ?? '');
+    const hasRemoteParticipant = users.some(
+      (user) => String(user?.clientId ?? '') !== localClientId,
+    );
     if (!hasRemoteParticipant) return undefined;
     sendTeacherViewNow('view');
     // A low-frequency heartbeat repairs missed viewport packets after a mobile reconnect.
     // Actual panning and zooming are still sent immediately through the throttled path.
     const timer = window.setInterval(() => sendTeacherViewNow('view'), 2500);
     return () => window.clearInterval(timer);
-  }, [clientId, isOwner, sendTeacherViewNow, users]);
+  }, [isOwner, sendTeacherViewNow, users]);
 
   useEffect(() => {
     if (isOwner || !autopilot) return undefined;

@@ -1,8 +1,9 @@
 {
-  "version": "1.13",
-  "packageVersion": "1.13",
-  "base": "1.12",
-  "release": "Teacher navigation, smooth student autopilot, precise eyedropper and owner-only clear",
+  "version": "1.13.1",
+  "packageVersion": "1.13.1",
+  "base": "1.13",
+  "release": "Hotfix: restore Board rendering after 1.13",
   "date": "2026-07-31",
-  "name": "teacher-navigation-smooth-autopilot-precise-eyedropper-owner-clear"
+  "name": "board-render-hotfix-client-id-ref",
+  "label": "Alex Board 1.13.1"
 }
