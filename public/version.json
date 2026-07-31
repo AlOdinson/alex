@@ -1,9 +1,9 @@
 {
-  "version": "1.13.2",
-  "packageVersion": "1.13.2",
-  "base": "1.13.1",
-  "release": "Text placeholder editing fix",
+  "version": "1.14",
+  "packageVersion": "1.14.0",
+  "base": "1.13.2",
+  "release": "Mobile text editor, precise object eraser, scene-locked background",
   "date": "2026-08-01",
-  "name": "text-placeholder-immediate-edit",
-  "label": "Alex Board 1.13.2"
+  "name": "mobile-text-precise-eraser-scene-background",
+  "label": "Alex Board 1.14"
 }

@@ -83,6 +83,11 @@ const DEFAULT_DRAWING_STYLES = {
   line: { color: '#111827', opacity: 1, width: 3 },
   shape: { color: '#111827', opacity: 1, width: 3 },
 };
+const COMPACT_KEYBOARD_ROWS = {
+  en: ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'],
+  ru: ['йцукенгшщзхъ', 'фывапролджэ', 'ячсмитьбю'],
+};
+const COMPACT_KEYBOARD_SYMBOLS = ['.', ',', '-', '+', '=', '(', ')', '?', '!', ':'];
 
 FabricObject.customProperties = [
   'boardObjectId',
@@ -1087,6 +1092,8 @@ function BoardWorkspace({
   const fontSizeRef = useRef(34);
   const textBeforeRef = useRef(new Map());
   const textChangeTimerRef = useRef(null);
+  const textTapCandidateRef = useRef(null);
+  const mobileTextEditorRef = useRef(null);
   const objectEraserPointerRef = useRef(null);
   const objectRegistryRef = useRef(new Map());
   const objectEraserGridRef = useRef(new Map());
@@ -1192,6 +1199,7 @@ function BoardWorkspace({
   const [eraserWidth, setEraserWidthState] = useState(28);
   const [fontFamily, setFontFamilyState] = useState('Arial');
   const [fontSize, setFontSizeState] = useState(34);
+  const [mobileTextEditor, setMobileTextEditor] = useState(null);
   const [background, setBackgroundState] = useState(backgroundRef.current);
   const [zoom, setZoom] = useState(1);
   const [saveStatus, setSaveStatus] = useState('Загружено');
@@ -1219,6 +1227,11 @@ function BoardWorkspace({
 
   const isOwner = permission === 'owner';
   const canEdit = permission === 'owner' || permission === 'edit';
+  const compactKeyboardEnabled = useMemo(() => (
+    typeof navigator !== 'undefined'
+    && Number(navigator.maxTouchPoints ?? 0) > 0
+    && (window.matchMedia?.('(pointer: coarse)')?.matches || window.innerWidth <= 1180)
+  ), []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -1337,6 +1350,172 @@ function BoardWorkspace({
     }
     return objects;
   }, [registerCanvasObject]);
+
+  const clearTextPlaceholderForEditing = useCallback((target, canvas = fabricCanvasRef.current) => {
+    if (!target || !target.textPlaceholder || String(target.text ?? '') !== 'text') return false;
+    target.set({ text: '', textPlaceholder: false });
+    target.selectionStart = 0;
+    target.selectionEnd = 0;
+    if (target.hiddenTextarea) {
+      target.hiddenTextarea.value = '';
+      target.hiddenTextarea.setSelectionRange?.(0, 0);
+    }
+    target.dirty = true;
+    target.initDimensions?.();
+    target.setCoords?.();
+    canvas?.fire?.('text:changed', { target });
+    canvas?.requestRenderAll?.();
+    return true;
+  }, []);
+
+  const closeMobileTextEditor = useCallback(({ exitEditing = true } = {}) => {
+    const current = mobileTextEditorRef.current;
+    mobileTextEditorRef.current = null;
+    setMobileTextEditor(null);
+    if (!current?.objectId) return;
+    const target = registeredObjectsById(current.objectId).find((object) => isTextObject(object));
+    if (!target) return;
+    const textarea = target.hiddenTextarea;
+    if (textarea) {
+      textarea.readOnly = false;
+      textarea.inputMode = 'text';
+      textarea.setAttribute?.('inputmode', 'text');
+      if ('virtualKeyboardPolicy' in textarea) textarea.virtualKeyboardPolicy = 'auto';
+    }
+    if (exitEditing && target.isEditing) target.exitEditing?.();
+    fabricCanvasRef.current?.requestRenderAll?.();
+  }, [registeredObjectsById]);
+
+  const openTextEditor = useCallback((target, { compact = compactKeyboardEnabled } = {}) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas || !target || !isTextObject(target)) return false;
+    const current = mobileTextEditorRef.current;
+    if (current?.objectId && String(current.objectId) !== String(target.boardObjectId ?? '')) {
+      closeMobileTextEditor();
+    }
+    canvas.setActiveObject(target);
+    target.enterEditing?.();
+    clearTextPlaceholderForEditing(target, canvas);
+    const end = String(target.text ?? '').length;
+    target.selectionStart = end;
+    target.selectionEnd = end;
+
+    if (compact) {
+      const editorState = {
+        objectId: String(target.boardObjectId ?? ''),
+        layout: mobileTextEditorRef.current?.layout ?? 'en',
+        shift: false,
+      };
+      mobileTextEditorRef.current = editorState;
+      setMobileTextEditor(editorState);
+      const suppressSystemKeyboard = () => {
+        const textarea = target.hiddenTextarea;
+        if (!textarea) return;
+        textarea.inputMode = 'none';
+        textarea.setAttribute?.('inputmode', 'none');
+        textarea.readOnly = true;
+        textarea.autocomplete = 'off';
+        textarea.autocapitalize = 'off';
+        textarea.spellcheck = false;
+        if ('virtualKeyboardPolicy' in textarea) textarea.virtualKeyboardPolicy = 'manual';
+        navigator.virtualKeyboard?.hide?.();
+      };
+      suppressSystemKeyboard();
+      window.requestAnimationFrame(suppressSystemKeyboard);
+      window.setTimeout(suppressSystemKeyboard, 80);
+    } else {
+      target.hiddenTextarea?.focus?.();
+    }
+
+    canvas.requestRenderAll();
+    return true;
+  }, [clearTextPlaceholderForEditing, closeMobileTextEditor, compactKeyboardEnabled]);
+
+  const applyCompactKeyboardAction = useCallback((action) => {
+    const editor = mobileTextEditorRef.current;
+    const canvas = fabricCanvasRef.current;
+    if (!editor?.objectId || !canvas) return;
+    const target = registeredObjectsById(editor.objectId).find((object) => isTextObject(object));
+    if (!target) {
+      closeMobileTextEditor({ exitEditing: false });
+      return;
+    }
+
+    if (action === 'close') {
+      closeMobileTextEditor();
+      return;
+    }
+    if (action === 'layout') {
+      const next = { ...editor, layout: editor.layout === 'ru' ? 'en' : 'ru', shift: false };
+      mobileTextEditorRef.current = next;
+      setMobileTextEditor(next);
+      return;
+    }
+    if (action === 'shift') {
+      const next = { ...editor, shift: !editor.shift };
+      mobileTextEditorRef.current = next;
+      setMobileTextEditor(next);
+      return;
+    }
+
+    const source = String(target.text ?? '');
+    let start = clamp(Number(target.selectionStart ?? source.length), 0, source.length);
+    let end = clamp(Number(target.selectionEnd ?? start), 0, source.length);
+    if (end < start) [start, end] = [end, start];
+    let nextText = source;
+    let nextCaret = start;
+
+    if (action === 'left') {
+      nextCaret = Math.max(0, start - 1);
+      target.selectionStart = nextCaret;
+      target.selectionEnd = nextCaret;
+      canvas.requestRenderAll();
+      return;
+    }
+    if (action === 'right') {
+      nextCaret = Math.min(source.length, end + 1);
+      target.selectionStart = nextCaret;
+      target.selectionEnd = nextCaret;
+      canvas.requestRenderAll();
+      return;
+    }
+    if (action === 'backspace') {
+      if (start !== end) {
+        nextText = `${source.slice(0, start)}${source.slice(end)}`;
+        nextCaret = start;
+      } else if (start > 0) {
+        nextText = `${source.slice(0, start - 1)}${source.slice(end)}`;
+        nextCaret = start - 1;
+      } else {
+        return;
+      }
+    } else {
+      let inserted = action === 'space' ? ' ' : action === 'enter' ? '\n' : String(action ?? '');
+      if (!inserted) return;
+      if (editor.shift && inserted.length === 1) inserted = inserted.toLocaleUpperCase(editor.layout === 'ru' ? 'ru-RU' : 'en-US');
+      nextText = `${source.slice(0, start)}${inserted}${source.slice(end)}`;
+      nextCaret = start + inserted.length;
+    }
+
+    target.set({ text: nextText, textPlaceholder: false });
+    target.selectionStart = nextCaret;
+    target.selectionEnd = nextCaret;
+    target.dirty = true;
+    target.initDimensions?.();
+    target.setCoords?.();
+    if (target.hiddenTextarea) {
+      target.hiddenTextarea.value = nextText;
+      target.hiddenTextarea.setSelectionRange?.(nextCaret, nextCaret);
+    }
+    canvas.fire('text:changed', { target });
+    canvas.requestRenderAll();
+
+    if (editor.shift && action !== 'backspace') {
+      const next = { ...editor, shift: false };
+      mobileTextEditorRef.current = next;
+      setMobileTextEditor(next);
+    }
+  }, [closeMobileTextEditor, registeredObjectsById]);
 
   const removeRegisteredObjectsById = useCallback((objectId) => {
     const canvas = fabricCanvasRef.current;
@@ -1764,6 +1943,7 @@ function BoardWorkspace({
     if (!canEditRef.current) return;
     const canvas = fabricCanvasRef.current;
     const switchingTool = nextTool !== activeToolRef.current;
+    if (switchingTool && mobileTextEditorRef.current) closeMobileTextEditor();
     if (switchingTool && canvas?.getActiveObject()) {
       canvas.discardActiveObject();
       updateSelectionState();
@@ -1785,7 +1965,7 @@ function BoardWorkspace({
     activateDrawingStyle(nextTool);
     setToolState(nextTool);
     configureBrushAndMode();
-  }, [activateDrawingStyle, configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
+  }, [activateDrawingStyle, closeMobileTextEditor, configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
 
   const setColor = useCallback((nextColor) => {
     colorRef.current = nextColor;
@@ -2914,6 +3094,7 @@ function BoardWorkspace({
     backgroundRef.current = nextBackground;
     setBackgroundState(nextBackground);
     updateBackgroundTransform();
+    fabricCanvasRef.current?.requestRenderAll?.();
     if (broadcast) realtimeRef.current?.sendSettings({ background: nextBackground });
     if (persist) schedulePersistence();
   }, [schedulePersistence, updateBackgroundTransform]);
@@ -5312,6 +5493,61 @@ function BoardWorkspace({
     });
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
+
+    const drawBoardBackgroundOnCanvas = (event = {}) => {
+      const context = event.ctx ?? canvas.contextContainer;
+      if (!context) return;
+      const width = canvas.getWidth();
+      const height = canvas.getHeight();
+      const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
+      const zoomLevel = Math.max(canvas.getZoom(), MIN_ZOOM);
+
+      context.save();
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, width, height);
+      const boardBackground = backgroundRef.current;
+      if (boardBackground === 'blank') {
+        context.restore();
+        return;
+      }
+
+      // Keep the background in the same scene coordinate system as Fabric objects.
+      // At very small zooms, draw every 2nd/4th grid line instead of thousands of
+      // sub-pixel lines; every visible line still represents an exact board coordinate.
+      let sceneSpacing = 32;
+      while (sceneSpacing * zoomLevel < 7) sceneSpacing *= 2;
+      const screenSpacing = sceneSpacing * zoomLevel;
+      const startX = ((Number(viewport[4] ?? 0) % screenSpacing) + screenSpacing) % screenSpacing;
+      const startY = ((Number(viewport[5] ?? 0) % screenSpacing) + screenSpacing) % screenSpacing;
+
+      if (boardBackground === 'grid') {
+        context.beginPath();
+        context.strokeStyle = 'rgba(203, 213, 225, 0.72)';
+        context.lineWidth = 1;
+        for (let x = startX; x <= width; x += screenSpacing) {
+          context.moveTo(x, 0);
+          context.lineTo(x, height);
+        }
+        for (let y = startY; y <= height; y += screenSpacing) {
+          context.moveTo(0, y);
+          context.lineTo(width, y);
+        }
+        context.stroke();
+      } else if (boardBackground === 'dots') {
+        context.fillStyle = 'rgba(148, 163, 184, 0.86)';
+        const radius = clamp(0.85 + zoomLevel * 0.18, 0.9, 1.45);
+        for (let x = startX; x <= width; x += screenSpacing) {
+          for (let y = startY; y <= height; y += screenSpacing) {
+            context.beginPath();
+            context.arc(x, y, radius, 0, Math.PI * 2);
+            context.fill();
+          }
+        }
+      }
+      context.restore();
+    };
+    canvas.on('before:render', drawBoardBackgroundOnCanvas);
     configureBrushAndMode();
 
     const resize = () => {
@@ -6104,6 +6340,63 @@ function BoardWorkspace({
       return null;
     }
 
+    function preciseObjectEraserTarget(scenePoint, viewportPoint, entries) {
+      if (!scenePoint || !viewportPoint) return null;
+      const zoomLevel = Math.max(canvas.getZoom(), MIN_ZOOM);
+      const sceneTolerance = Math.max(0.35, 1.15 / zoomLevel);
+      const distanceToSegment = (point, start, end) => {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= 0.000001) return Math.hypot(point.x - start.x, point.y - start.y);
+        const ratio = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+        return Math.hypot(point.x - (start.x + dx * ratio), point.y - (start.y + dy * ratio));
+      };
+
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        const object = entry?.object ?? entry;
+        if (!object || object.canvas !== canvas || object.isEraserPath
+          || object.transientPreview || object.transientSelectionProxy
+          || objectEraserRecordsRef.current.has(object.boardObjectId)) continue;
+        const bounds = entry?.bounds ?? object.getBoundingRect();
+        if (scenePoint.x < bounds.left - sceneTolerance
+          || scenePoint.x > bounds.left + bounds.width + sceneTolerance
+          || scenePoint.y < bounds.top - sceneTolerance
+          || scenePoint.y > bounds.top + bounds.height + sceneTolerance) continue;
+
+        if (object instanceof Line || object.type === 'line') {
+          try {
+            const local = typeof object.calcLinePoints === 'function'
+              ? object.calcLinePoints()
+              : { x1: object.x1, y1: object.y1, x2: object.x2, y2: object.y2 };
+            const matrix = object.calcTransformMatrix();
+            const first = util.transformPoint(new Point(Number(local.x1), Number(local.y1)), matrix);
+            const second = util.transformPoint(new Point(Number(local.x2), Number(local.y2)), matrix);
+            const scale = Math.max(
+              Math.hypot(Number(matrix[0] ?? 1), Number(matrix[1] ?? 0)),
+              Math.hypot(Number(matrix[2] ?? 0), Number(matrix[3] ?? 1)),
+              1,
+            );
+            const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * scale / 2);
+            if (distanceToSegment(scenePoint, first, second) <= strokeRadius + sceneTolerance) return object;
+          } catch {
+            // Continue with the pixel-level test below.
+          }
+        }
+
+        try {
+          if (typeof canvas.isTargetTransparent === 'function') {
+            if (!canvas.isTargetTransparent(object, viewportPoint.x, viewportPoint.y)) return object;
+            continue;
+          }
+          if (typeof object.containsPoint === 'function' && object.containsPoint(scenePoint)) return object;
+        } catch {
+          // A failed transparency probe is treated as a miss, never as a frame hit.
+        }
+      }
+      return null;
+    }
+
     function flushObjectEraserDeletePreview() {
       window.clearTimeout(objectEraserRealtimeTimerRef.current);
       objectEraserRealtimeTimerRef.current = null;
@@ -6153,9 +6446,13 @@ function BoardWorkspace({
         pointer.lastY = clientY;
       }
       const scenePoint = scenePointFromClient(clientX, clientY);
-      const target = objectAtScenePoint(scenePoint, {
-        candidates: objectEraserCandidatesNear(scenePoint),
-      });
+      const canvasRect = canvas.upperCanvasEl.getBoundingClientRect();
+      const viewportPoint = new Point(clientX - canvasRect.left, clientY - canvasRect.top);
+      const target = preciseObjectEraserTarget(
+        scenePoint,
+        viewportPoint,
+        objectEraserCandidatesNear(scenePoint),
+      );
       if (!target) return;
       const record = {
         object: serializeObject(target),
@@ -6422,22 +6719,9 @@ function BoardWorkspace({
       if (!target?.boardObjectId) return;
       textBeforeRef.current.set(target.boardObjectId, getObjectRecords([target]));
       sendLocalLock(target, true);
-
       // New text objects use a visible placeholder. The first time the user enters
       // editing, remove it so typing can begin immediately without manual deletion.
-      if (target.textPlaceholder && String(target.text ?? '') === 'text') {
-        target.set({ text: '', textPlaceholder: false });
-        target.selectionStart = 0;
-        target.selectionEnd = 0;
-        if (target.hiddenTextarea) {
-          target.hiddenTextarea.value = '';
-          target.hiddenTextarea.setSelectionRange?.(0, 0);
-        }
-        target.dirty = true;
-        target.setCoords?.();
-        canvas.fire('text:changed', { target });
-        canvas.requestRenderAll();
-      }
+      clearTextPlaceholderForEditing(target, canvas);
     });
 
     canvas.on('text:changed', ({ target }) => {
@@ -6452,6 +6736,16 @@ function BoardWorkspace({
 
     canvas.on('text:editing:exited', ({ target }) => {
       if (!target || applyingRemoteRef.current || applyingHistoryRef.current) return;
+      if (String(mobileTextEditorRef.current?.objectId ?? '') === String(target.boardObjectId ?? '')) {
+        mobileTextEditorRef.current = null;
+        setMobileTextEditor(null);
+      }
+      if (target.hiddenTextarea) {
+        target.hiddenTextarea.readOnly = false;
+        target.hiddenTextarea.inputMode = 'text';
+        target.hiddenTextarea.setAttribute?.('inputmode', 'text');
+        if ('virtualKeyboardPolicy' in target.hiddenTextarea) target.hiddenTextarea.virtualKeyboardPolicy = 'auto';
+      }
       window.clearTimeout(textChangeTimerRef.current);
       const before = textBeforeRef.current.get(target.boardObjectId) ?? [];
       textBeforeRef.current.delete(target.boardObjectId);
@@ -6495,6 +6789,17 @@ function BoardWorkspace({
         return;
       }
       if (!canEditRef.current) return;
+
+      textTapCandidateRef.current = null;
+      if (activeToolRef.current === 'select' && isTextObject(event.target)) {
+        textTapCandidateRef.current = {
+          target: event.target,
+          pointerId,
+          startX: Number(nativeEvent?.clientX ?? 0),
+          startY: Number(nativeEvent?.clientY ?? 0),
+          moved: false,
+        };
+      }
 
       if (mobilePasteAwaitingPointRef.current && (nativeEvent.pointerType === 'touch' || nativeEvent.pointerType === 'pen' || (Number(navigator.maxTouchPoints ?? 0) > 0 && nativeEvent.button == null))) {
         nativeEvent.preventDefault?.();
@@ -6773,15 +7078,9 @@ function BoardWorkspace({
           },
         });
         if (targetText) {
-          canvas.setActiveObject(targetText);
-          targetText.enterEditing?.();
-          const end = String(targetText.text ?? '').length;
-          targetText.selectionStart = end;
-          targetText.selectionEnd = end;
-          targetText.hiddenTextarea?.focus?.();
+          openTextEditor(targetText);
           updateSelectionState();
           updateSelectionStyleState();
-          canvas.requestRenderAll();
           return;
         }
         const point = scenePoint;
@@ -6849,6 +7148,15 @@ function BoardWorkspace({
     canvas.on('mouse:move', (event) => {
       const nativeEvent = event.e;
       if (nativeEvent?.pointerId != null && rejectedPointerIdsRef.current.has(nativeEvent.pointerId)) return;
+      const textTapCandidate = textTapCandidateRef.current;
+      if (textTapCandidate
+        && (textTapCandidate.pointerId == null || nativeEvent?.pointerId == null || textTapCandidate.pointerId === nativeEvent.pointerId)
+        && Math.hypot(
+          Number(nativeEvent?.clientX ?? 0) - textTapCandidate.startX,
+          Number(nativeEvent?.clientY ?? 0) - textTapCandidate.startY,
+        ) >= 6) {
+        textTapCandidate.moved = true;
+      }
       const cursorScenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = cursorScenePoint;
       if (!liveTransformSendRef.current.sessionId && !liveDrawSendRef.current.sessionId) {
@@ -6931,6 +7239,8 @@ function BoardWorkspace({
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
+      const textTapCandidate = textTapCandidateRef.current;
+      textTapCandidateRef.current = null;
       if (liveTransformSendRef.current.sessionId && !shapeDraftRef.current) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
       }
@@ -6998,6 +7308,17 @@ function BoardWorkspace({
             canvas.requestRenderAll();
           }, 0);
         }
+      }
+
+      if (activeToolRef.current === 'select'
+        && textTapCandidate
+        && !textTapCandidate.moved
+        && (textTapCandidate.pointerId == null || pointerId == null || textTapCandidate.pointerId === pointerId)
+        && textTapCandidate.target?.canvas === canvas) {
+        openTextEditor(textTapCandidate.target);
+        updateSelectionState();
+        updateSelectionStyleState();
+        return;
       }
 
       if (lineRef.current) {
@@ -8306,6 +8627,7 @@ function BoardWorkspace({
       }
       canvas.off('object:added', handleRegistryObjectAdded);
       canvas.off('object:removed', handleRegistryObjectRemoved);
+      canvas.off('before:render', drawBoardBackgroundOnCanvas);
       objectRegistryRef.current.clear();
       objectEraserGridRef.current.clear();
       objectEraserGlobalCandidatesRef.current = [];
@@ -8413,6 +8735,9 @@ function BoardWorkspace({
       };
     })
     .filter((lock) => lock?.position);
+  const compactKeyboardRows = mobileTextEditor
+    ? COMPACT_KEYBOARD_ROWS[mobileTextEditor.layout] ?? COMPACT_KEYBOARD_ROWS.en
+    : COMPACT_KEYBOARD_ROWS.en;
 
   if (fatalError) {
     return <AccessMessage title="Ошибка доски">{fatalError}</AccessMessage>;
@@ -8517,6 +8842,99 @@ function BoardWorkspace({
           ))}
         </div>
       </section>
+
+      {mobileTextEditor && compactKeyboardEnabled && (
+        <div
+          className="compact-board-keyboard"
+          role="application"
+          aria-label="Компактная клавиатура доски"
+          onPointerDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          <div className="compact-board-keyboard-row compact-board-keyboard-number-row">
+            {'1234567890'.split('').map((key) => (
+              <button key={key} type="button" onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                applyCompactKeyboardAction(key);
+              }}>{key}</button>
+            ))}
+            <button type="button" className="keyboard-wide-key" aria-label="Удалить символ" onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              applyCompactKeyboardAction('backspace');
+            }}>⌫</button>
+          </div>
+
+          {compactKeyboardRows.map((row, rowIndex) => (
+            <div className={`compact-board-keyboard-row keyboard-letter-row keyboard-letter-row-${rowIndex + 1}`} key={`${mobileTextEditor.layout}-${rowIndex}`}>
+              {row.split('').map((key) => {
+                const label = mobileTextEditor.shift
+                  ? key.toLocaleUpperCase(mobileTextEditor.layout === 'ru' ? 'ru-RU' : 'en-US')
+                  : key;
+                return (
+                  <button key={key} type="button" onPointerDown={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    applyCompactKeyboardAction(key);
+                  }}>{label}</button>
+                );
+              })}
+            </div>
+          ))}
+
+          <div className="compact-board-keyboard-row compact-board-keyboard-symbol-row">
+            {COMPACT_KEYBOARD_SYMBOLS.map((key) => (
+              <button key={key} type="button" onPointerDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                applyCompactKeyboardAction(key);
+              }}>{key}</button>
+            ))}
+          </div>
+
+          <div className="compact-board-keyboard-row compact-board-keyboard-control-row">
+            <button type="button" className="keyboard-control-key" onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              applyCompactKeyboardAction('layout');
+            }}>{mobileTextEditor.layout === 'ru' ? 'EN' : 'RU'}</button>
+            <button type="button" className={mobileTextEditor.shift ? 'keyboard-control-key selected' : 'keyboard-control-key'} onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              applyCompactKeyboardAction('shift');
+            }}>⇧</button>
+            <button type="button" className="keyboard-control-key" onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              applyCompactKeyboardAction('left');
+            }}>←</button>
+            <button type="button" className="keyboard-space-key" onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              applyCompactKeyboardAction('space');
+            }}>Пробел</button>
+            <button type="button" className="keyboard-control-key" onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              applyCompactKeyboardAction('right');
+            }}>→</button>
+            <button type="button" className="keyboard-control-key" onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              applyCompactKeyboardAction('enter');
+            }}>↵</button>
+            <button type="button" className="keyboard-done-key" onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              applyCompactKeyboardAction('close');
+            }}>Готово</button>
+          </div>
+        </div>
+      )}
 
       {shareOpen && isOwner && (
         <ShareDialog

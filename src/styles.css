@@ -1006,6 +1006,13 @@ button:disabled {
   );
 }
 
+/* Grid and dots are rendered in the Fabric scene coordinate system. Keeping a CSS
+   pattern here would introduce independent browser rounding at fractional zooms. */
+.canvas-host.background-grid,
+.canvas-host.background-dots {
+  background-image: none;
+}
+
 @media (max-width: 760px) {
   .toolbar-primary-row,
   .toolbar-secondary-row {
@@ -2226,5 +2233,124 @@ html.game-viewport-locked #root {
     top: 62px;
     right: 8px;
     width: min(270px, calc(100vw - 16px));
+  }
+}
+
+.compact-board-keyboard {
+  position: fixed;
+  z-index: 90;
+  left: 50%;
+  bottom: max(10px, env(safe-area-inset-bottom));
+  width: min(680px, calc(100vw - 16px));
+  padding: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.72);
+  border-radius: 14px;
+  background: rgba(248, 250, 252, 0.97);
+  box-shadow: 0 14px 38px rgba(15, 23, 42, 0.24);
+  transform: translateX(-50%);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+}
+
+.compact-board-keyboard-row {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin: 3px 0;
+}
+
+.compact-board-keyboard button {
+  flex: 0 1 44px;
+  min-width: 28px;
+  height: 31px;
+  padding: 0 5px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #0f172a;
+  font: 600 15px/1 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.08);
+  touch-action: none;
+}
+
+.compact-board-keyboard button:active,
+.compact-board-keyboard button.selected {
+  background: #dbeafe;
+  border-color: #60a5fa;
+  transform: translateY(1px);
+}
+
+.compact-board-keyboard .keyboard-wide-key,
+.compact-board-keyboard .keyboard-control-key {
+  flex-basis: 49px;
+}
+
+.compact-board-keyboard .keyboard-space-key {
+  flex: 1 1 180px;
+  max-width: 260px;
+}
+
+.compact-board-keyboard .keyboard-done-key {
+  flex-basis: 72px;
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #ffffff;
+}
+
+.keyboard-letter-row-2 {
+  padding-inline: 18px;
+}
+
+.keyboard-letter-row-3 {
+  padding-inline: 36px;
+}
+
+@media (max-width: 680px) {
+  .compact-board-keyboard {
+    width: calc(100vw - 8px);
+    padding: 5px 3px;
+    border-radius: 11px;
+  }
+
+  .compact-board-keyboard-row {
+    gap: 2px;
+    margin: 2px 0;
+  }
+
+  .compact-board-keyboard button {
+    flex-basis: 34px;
+    min-width: 24px;
+    height: 29px;
+    padding: 0 3px;
+    border-radius: 6px;
+    font-size: 13px;
+  }
+
+  .compact-board-keyboard-symbol-row button:nth-child(n + 9) {
+    display: none;
+  }
+
+  .compact-board-keyboard .keyboard-wide-key,
+  .compact-board-keyboard .keyboard-control-key {
+    flex-basis: 38px;
+  }
+
+  .compact-board-keyboard .keyboard-space-key {
+    flex-basis: 100px;
+  }
+
+  .compact-board-keyboard .keyboard-done-key {
+    flex-basis: 58px;
+  }
+
+  .keyboard-letter-row-2 {
+    padding-inline: 8px;
+  }
+
+  .keyboard-letter-row-3 {
+    padding-inline: 18px;
   }
 }
