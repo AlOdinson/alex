@@ -60,6 +60,7 @@ import {
 const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 4;
+const MAX_CANVAS_PIXEL_RATIO = 2;
 const HISTORY_LIMIT = 100;
 const LIVE_TRANSFORM_INTERVAL = 50;
 const LIVE_TRANSFORM_LOCK_TTL = 7000;
@@ -401,6 +402,26 @@ function isTextObject(object) {
 
 function isImageObject(object) {
   return object?.type === 'image' || object?.objectKind === 'image';
+}
+
+// Apply one rendering policy to every current and future vector object. Fabric can
+// otherwise reuse a bitmap cache while the viewport is zoomed, which makes paths,
+// text and grouped shapes look soft at small zoom levels. Raster images keep their
+// native source resolution, but any vector/group wrapper is rendered from geometry.
+function applySharpRenderingPolicy(object, visited = new Set()) {
+  if (!object || visited.has(object)) return object;
+  visited.add(object);
+
+  const children = typeof object.getObjects === 'function' ? object.getObjects() : [];
+  children.forEach((child) => applySharpRenderingPolicy(child, visited));
+  if (object.clipPath) applySharpRenderingPolicy(object.clipPath, visited);
+
+  if (!isImageObject(object)) {
+    object.objectCaching = false;
+    object.noScaleCache = false;
+    object.dirty = true;
+  }
+  return object;
 }
 
 function sampleImagePixelColor(imageObject, scenePoint) {
@@ -1298,6 +1319,7 @@ function BoardWorkspace({
   }, []);
 
   const markObject = useCallback((object, clientId) => {
+    applySharpRenderingPolicy(object);
     if (!object.boardObjectId) object.boardObjectId = randomToken(10);
     object.updatedAt = Date.now();
     object.updatedBy = clientId;
@@ -1310,6 +1332,7 @@ function BoardWorkspace({
   }, []);
 
   const registerCanvasObject = useCallback((object) => {
+    applySharpRenderingPolicy(object);
     const id = object?.boardObjectId;
     if (!id) return;
     const key = String(id);
@@ -5486,13 +5509,19 @@ function BoardWorkspace({
     const canvas = new Canvas(canvasElement, {
       preserveObjectStacking: true,
       selection: false,
-      enableRetinaScaling: false,
+      enableRetinaScaling: true,
       perPixelTargetFind: false,
       skipOffscreen: true,
       targetFindTolerance: 8,
       fireRightClick: true,
       stopContextMenu: true,
     });
+    // Full devicePixelRatio can be 3-4 on phones and would multiply the canvas area
+    // by 9-16. A capped 2x backing store keeps vector edges sharp without making a
+    // busy board unnecessarily heavy. setDimensions() below rebuilds both canvases
+    // using this value.
+    const renderPixelRatio = clamp(Number(window.devicePixelRatio ?? 1), 1, MAX_CANVAS_PIXEL_RATIO);
+    canvas.getRetinaScaling = () => renderPixelRatio;
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
 
@@ -5505,7 +5534,8 @@ function BoardWorkspace({
       const zoomLevel = Math.max(canvas.getZoom(), MIN_ZOOM);
 
       context.save();
-      context.setTransform(1, 0, 0, 1, 0, 0);
+      const retinaScale = Math.max(1, Number(canvas.getRetinaScaling?.() ?? 1));
+      context.setTransform(retinaScale, 0, 0, retinaScale, 0, 0);
       context.fillStyle = '#ffffff';
       context.fillRect(0, 0, width, height);
       const boardBackground = backgroundRef.current;

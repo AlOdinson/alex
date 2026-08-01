@@ -1,9 +1,9 @@
 {
-  "version": "1.15",
-  "packageVersion": "1.15.0",
-  "base": "1.14",
-  "release": "Painted-geometry-only cursor selection",
+  "version": "1.16",
+  "packageVersion": "1.16.0",
+  "base": "1.15",
+  "release": "Sharp vector rendering at every zoom level",
   "date": "2026-08-01",
-  "name": "precise-painted-object-selection",
-  "label": "Alex Board 1.15"
+  "name": "retina-vector-rendering-policy",
+  "label": "Alex Board 1.16"
 }
