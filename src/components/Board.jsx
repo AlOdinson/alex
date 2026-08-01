@@ -889,15 +889,11 @@ function objectVisuallyIntersectsRect(object, selectionRect) {
     }
     return false;
   } catch (error) {
+    // Never fall back to the object's bounding rectangle: that would select hollow
+    // shapes, text and transparent image areas even when the marquee touched only
+    // empty space. A failed exact probe is a miss.
     console.warn('Точная проверка рамочного выделения недоступна', error);
-    try {
-      return object.intersectsWithRect(
-        new Point(selectionRect.left, selectionRect.top),
-        new Point(selectionRect.right, selectionRect.bottom),
-      );
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
@@ -1895,8 +1891,14 @@ function BoardWorkspace({
     // every drawing/text/eraser tool uses the board's own pointer logic.
     canvas.isDrawingMode = shouldDraw;
     canvas.selection = false;
-    canvas.perPixelTargetFind = false;
     const drawingEyedropperActive = eyedropperActiveRef.current && eyedropperModeRef.current === 'drawing';
+
+    // Cursor selection must hit the painted object itself, not the empty part of its
+    // bounding rectangle. Keep only a tiny screen-space tolerance so thin strokes
+    // remain usable with touch/Pencil without turning the whole object frame into a
+    // target. Other tools keep their existing custom pointer routes.
+    canvas.perPixelTargetFind = selectionToolActive;
+    canvas.targetFindTolerance = selectionToolActive ? 2 : 8;
     canvas.skipTargetFind = !(selectionToolActive || drawingEyedropperActive);
 
     if (!keepActiveObject && canvas.getActiveObject()) {
