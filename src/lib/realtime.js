@@ -19,6 +19,8 @@ const PERSIST_BATCH_LIMIT = 32;
 const PERSIST_BATCH_MAX_BYTES = 700_000;
 const PENDING_UI_INTERVAL = 250;
 const SOLO_REALTIME_GRACE_MS = 3000;
+const NORMAL_COMMIT_TIMEOUT = 45_000;
+const LARGE_COMMIT_TIMEOUT = 120_000;
 
 function wait(milliseconds) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -423,14 +425,45 @@ export function connectBoardRealtime({
     return 'unavailable';
   };
 
+  const mergeAppliedOpsWithClientIntent = (actionOps, appliedOps) => {
+    const requestedOps = Array.isArray(actionOps) ? actionOps : [];
+    const authoritativeOps = Array.isArray(appliedOps) ? appliedOps : [];
+    if (!authoritativeOps.length) return requestedOps;
+
+    const requestedUpserts = new Map(requestedOps
+      .filter((op) => op?.type === 'upsert' && op.object?.boardObjectId)
+      .map((op) => [String(op.object.boardObjectId), op]));
+
+    return authoritativeOps.map((op) => {
+      if (op?.type !== 'upsert' || !op.object?.boardObjectId) return op;
+      const requested = requestedUpserts.get(String(op.object.boardObjectId));
+      if (!requested) return op;
+      return {
+        ...op,
+        // These flags describe how receiving clients must apply an authoritative
+        // upsert. Some server RPC versions normalize applied_ops and omit them.
+        // Losing `restore` leaves a delete tombstone active on every other client,
+        // so an Undo appears only on the device that performed it.
+        restore: Boolean(op.restore || requested.restore),
+        reorder: Boolean(op.reorder || requested.reorder),
+        preserveOrder: Boolean(op.preserveOrder || requested.preserveOrder),
+      };
+    });
+  };
+
   const broadcastCommittedActions = async (actions, results) => {
     const items = actions.map((action, index) => {
       const result = results[index] ?? {};
+      const rejected = Array.isArray(result.rejectedObjectIds)
+        && result.rejectedObjectIds.length > 0;
+      const ops = rejected
+        ? []
+        : mergeAppliedOpsWithClientIntent(action.ops, result.appliedOps);
       return {
         actionId: action.actionId,
         revision: result.revision,
-        needsSync: Boolean(result.needsSync),
-        ops: Array.isArray(result.appliedOps) ? result.appliedOps : action.ops,
+        needsSync: Boolean(result.needsSync) || rejected,
+        ops,
         background: result.appliedBackground ?? action.background ?? null,
       };
     });
@@ -471,12 +504,23 @@ export function connectBoardRealtime({
     if (disconnected || writesPaused || !actions.length) return null;
     if (announceSaving) onStatus?.('SAVING');
     try {
-      const resultRows = await commitWithRetry(() => applyBoardActionBatch(
-        boardId,
-        boardKey,
-        actions.map((action) => ({ ...action, clientId })),
-        Number(getKnownRevision?.() ?? 0),
-      ));
+      const batchBytes = actions.reduce(
+        (total, action) => total + Math.max(0, Number(action?.byteSize ?? 0)),
+        0,
+      );
+      const commitTimeout = batchBytes > 400_000
+        ? LARGE_COMMIT_TIMEOUT
+        : NORMAL_COMMIT_TIMEOUT;
+      const resultRows = await commitWithRetry(() => withTimeout(
+        applyBoardActionBatch(
+          boardId,
+          boardKey,
+          actions.map((action) => ({ ...action, clientId })),
+          Number(getKnownRevision?.() ?? 0),
+        ),
+        commitTimeout,
+        'Сервер слишком долго подтверждает очередь изменений',
+      ), { attempts: 3 });
       const rows = Array.isArray(resultRows) ? resultRows : [];
       const byId = new Map(rows.map((result) => [result.actionId, result]));
       const processedActions = [];

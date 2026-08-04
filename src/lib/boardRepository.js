@@ -11,7 +11,8 @@ import {
 
 const LOCAL_PREFIX = 'alex-board:board:';
 const BULK_ACTION_THRESHOLD = 220_000;
-const BULK_ACTION_CHUNK_TARGET = 180_000;
+const BULK_ACTION_CHUNK_TARGET = 150_000;
+const BULK_UPLOAD_CONCURRENCY = 4;
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
 
 function isSerializedActiveSelection(object) {
@@ -45,6 +46,13 @@ function serializedSize(value) {
   }
 }
 
+function isMissingFunctionError(error) {
+  const message = String(error?.message ?? error ?? '');
+  return error?.code === 'PGRST202'
+    || /function .* does not exist/i.test(message)
+    || /could not find the function/i.test(message);
+}
+
 function splitOperationChunks(ops, targetSize = BULK_ACTION_CHUNK_TARGET) {
   const chunks = [];
   let current = [];
@@ -63,11 +71,102 @@ function splitOperationChunks(ops, targetSize = BULK_ACTION_CHUNK_TARGET) {
   return chunks;
 }
 
+async function runWithConcurrency(items, limit, worker) {
+  const source = Array.isArray(items) ? items : [];
+  if (!source.length) return;
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(Number(limit ?? 1), source.length)) },
+    async () => {
+      while (nextIndex < source.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        // eslint-disable-next-line no-await-in-loop
+        await worker(source[index], index);
+      }
+    },
+  );
+  await Promise.all(workers);
+}
+
+async function applyStandardActionRpc(boardId, keyHash, action) {
+  const args = {
+    p_id: boardId,
+    p_key_hash: keyHash,
+    p_action_id: action.actionId,
+    p_client_id: action.clientId,
+    p_ops: Array.isArray(action.ops) ? action.ops : [],
+    p_background: action.background ?? null,
+    p_client_revision: Number(action.knownRevision ?? 0),
+  };
+  let usedModern = true;
+  let { data, error } = await supabase.rpc('apply_board_action_v7', args);
+  if (error && isMissingFunctionError(error)) {
+    ({ data, error } = await supabase.rpc('apply_board_action_v5', args));
+  }
+  if (error && isMissingFunctionError(error)) {
+    usedModern = false;
+    ({ data, error } = await supabase.rpc('apply_board_action_v4', args));
+  }
+  return { data, error, usedModern };
+}
+
+async function applyLargeBoardActionFallback(boardId, keyHash, action) {
+  const chunks = splitOperationChunks(action.ops);
+  let revision = Number(action.knownRevision ?? 0);
+  let needsSync = chunks.length > 1;
+  let changed = false;
+  let alreadyApplied = true;
+  let updatedAt = null;
+  const rejectedObjectIds = [];
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index];
+    const chunkBackground = index === chunks.length - 1 ? action.background : null;
+    // Deterministic child ids make a retry safe even if some chunks were already
+    // committed before a network interruption.
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error, usedModern } = await applyStandardActionRpc(boardId, keyHash, {
+      actionId: `${action.actionId}:chunk:${index}`,
+      clientId: action.clientId,
+      ops: chunk,
+      background: chunkBackground,
+      knownRevision: revision,
+    });
+    if (error) throw error;
+    const result = normalizeActionResult(data, {
+      fallbackOps: chunk,
+      fallbackBackground: chunkBackground,
+      legacy: !usedModern,
+    });
+    revision = Math.max(revision, Number(result.revision ?? revision));
+    needsSync = needsSync || Boolean(result.needsSync) || !usedModern;
+    changed = changed || Boolean(result.changed);
+    alreadyApplied = alreadyApplied && Boolean(result.alreadyApplied);
+    updatedAt = result.updatedAt ?? updatedAt;
+    rejectedObjectIds.push(...(result.rejectedObjectIds ?? []));
+    if (result.rejectedObjectIds?.length) break;
+  }
+
+  return {
+    revision,
+    needs_sync: needsSync,
+    updated_at: updatedAt,
+    already_applied: alreadyApplied,
+    changed,
+    // The parent pending action still represents one logical paste. Keep its complete
+    // operation set in the local confirmed cache even though the compatibility server
+    // accepted it as several deterministic child actions.
+    applied_ops: rejectedObjectIds.length ? [] : action.ops,
+    applied_background: rejectedObjectIds.length ? null : (action.background ?? null),
+    rejected_object_ids: [...new Set(rejectedObjectIds.map(String))],
+  };
+}
+
 async function applyLargeBoardAction(boardId, keyHash, action) {
   const chunks = splitOperationChunks(action.ops);
   const importId = `bulk:${action.actionId}`;
-  for (let index = 0; index < chunks.length; index += 1) {
-    // eslint-disable-next-line no-await-in-loop
+  const uploadChunk = async (chunk, index) => {
     const { data, error } = await supabase.rpc('upload_board_import_chunk_v6', {
       p_id: boardId,
       p_key_hash: keyHash,
@@ -75,11 +174,20 @@ async function applyLargeBoardAction(boardId, keyHash, action) {
       p_chunk_index: index,
       p_action_id: action.actionId,
       p_client_id: action.clientId,
-      p_ops: chunks[index],
+      p_ops: chunk,
     });
     if (error) throw error;
     if (!data) throw new Error('Сервер отклонил часть большой операции');
-  }
+  };
+
+  // Upload the first chunk before parallel workers in case the server initializes the
+  // import session lazily. Remaining independent chunks can then travel concurrently.
+  if (chunks.length) await uploadChunk(chunks[0], 0);
+  await runWithConcurrency(
+    chunks.slice(1).map((chunk, offset) => ({ chunk, index: offset + 1 })),
+    BULK_UPLOAD_CONCURRENCY,
+    ({ chunk, index }) => uploadChunk(chunk, index),
+  );
 
   let { data, error } = await supabase.rpc('commit_board_import_v7', {
     p_id: boardId,
@@ -91,7 +199,7 @@ async function applyLargeBoardAction(boardId, keyHash, action) {
     p_background: action.background,
     p_client_revision: Number(action.knownRevision ?? 0),
   });
-  if (error && /function .* does not exist/i.test(error.message ?? '')) {
+  if (error && isMissingFunctionError(error)) {
     ({ data, error } = await supabase.rpc('commit_board_import_v6', {
       p_id: boardId,
       p_key_hash: keyHash,
@@ -233,7 +341,7 @@ export async function createBoard(title = 'Новая доска', studentName =
         p_title: title,
         p_student_name: studentName,
       });
-      if (metadataError && !/function .* does not exist/i.test(metadataError.message ?? '')) {
+      if (metadataError && !isMissingFunctionError(metadataError)) {
         throw metadataError;
       }
     }
@@ -268,19 +376,19 @@ export async function getBoardAccess(boardId, key) {
       p_id: boardId,
       p_key_hash: keyHash,
     }));
-    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+    if (error && isMissingFunctionError(error)) {
       ({ data, error } = await supabase.rpc('get_board_access_v5', {
         p_id: boardId,
         p_key_hash: keyHash,
       }));
     }
-    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+    if (error && isMissingFunctionError(error)) {
       ({ data, error } = await supabase.rpc('get_board_access_v4', {
         p_id: boardId,
         p_key_hash: keyHash,
       }));
     }
-    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+    if (error && isMissingFunctionError(error)) {
       ({ data, error } = await supabase.rpc('get_board_access', {
         p_id: boardId,
         p_key_hash: keyHash,
@@ -344,14 +452,14 @@ export async function getBoardSyncState(boardId, key) {
       p_id: boardId,
       p_key_hash: keyHash,
     });
-    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+    if (error && isMissingFunctionError(error)) {
       ({ data, error } = await supabase.rpc('get_board_sync_state_v4', {
         p_id: boardId,
         p_key_hash: keyHash,
       }));
     }
     if (error) {
-      if (/function .* does not exist/i.test(error.message ?? '')) {
+      if (isMissingFunctionError(error)) {
         const fallback = await getBoardRevision(boardId, key);
         return fallback ? { ...fallback, objectCount: null, stateHash: null } : null;
       }
@@ -422,7 +530,7 @@ export async function getBoardChanges(boardId, key, sinceRevision, limit = 500) 
   };
   const { data, error } = await supabase.rpc('get_board_changes_v5', args);
   if (error) {
-    if (/function .* does not exist/i.test(error.message ?? '')) return null;
+    if (isMissingFunctionError(error)) return null;
     throw error;
   }
   return (Array.isArray(data) ? data : []).map((row) => ({
@@ -442,14 +550,14 @@ export async function getBoardRecovery(boardId, key) {
     p_id: boardId,
     p_key_hash: keyHash,
   });
-  if (error && /function .* does not exist/i.test(error.message ?? '')) {
+  if (error && isMissingFunctionError(error)) {
     ({ data, error } = await supabase.rpc('get_board_recovery_v4', {
       p_id: boardId,
       p_key_hash: keyHash,
     }));
   }
   if (error) {
-    if (/function .* does not exist/i.test(error.message ?? '')) return null;
+    if (isMissingFunctionError(error)) return null;
     throw error;
   }
   const result = Array.isArray(data) ? data[0] : data;
@@ -500,7 +608,7 @@ export async function setGameLibraryVisibility(boardId, ownerKey, visible) {
       p_visible: nextVisible,
     });
     if (error) {
-      if (/function .* does not exist/i.test(error.message ?? '')) {
+      if (isMissingFunctionError(error)) {
         throw new Error('Сначала запустите supabase/game_library_visibility_upgrade_0.8.1.sql');
       }
       throw error;
@@ -610,7 +718,7 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
       p_new_realtime_key: newRealtimeKey,
     };
     let { data, error } = await supabase.rpc('duplicate_board_v7', duplicateArgs);
-    if (error && /function .* does not exist/i.test(error.message ?? '')) {
+    if (error && isMissingFunctionError(error)) {
       ({ data, error } = await supabase.rpc('duplicate_board_v4', duplicateArgs));
     }
     if (error) throw error;
@@ -707,7 +815,7 @@ export async function applyBoardActionBatch(boardId, key, actions, knownRevision
       p_client_revision: Number(knownRevision ?? 0),
     });
     if (error) {
-      if (/function .* does not exist/i.test(error.message ?? '')) {
+      if (isMissingFunctionError(error)) {
         const results = [];
         let revision = Number(knownRevision ?? 0);
         for (const action of safeActions) {
@@ -750,15 +858,6 @@ export async function applyBoardAction(
 
   if (isSupabaseConfigured) {
     const safeOps = Array.isArray(ops) ? ops : [];
-    const args = {
-      p_id: boardId,
-      p_key_hash: keyHash,
-      p_action_id: actionId,
-      p_client_id: clientId,
-      p_ops: safeOps,
-      p_background: background,
-      p_client_revision: Number(knownRevision ?? 0),
-    };
     let data;
     let error;
     let usedModern = true;
@@ -773,22 +872,31 @@ export async function applyBoardAction(
           knownRevision,
         });
       } catch (bulkError) {
-        if (/function .* does not exist/i.test(bulkError?.message ?? '')) {
-          throw new Error('Для большой вставки сначала выполните supabase/collaboration_upgrade_0.9.7.sql');
+        if (isMissingFunctionError(bulkError)) {
+          // Older backends may not have staged-import RPCs. Do not leave the action
+          // permanently at the head of IndexedDB: commit deterministic smaller child
+          // actions through the normal RPC path instead.
+          data = await applyLargeBoardActionFallback(boardId, keyHash, {
+            actionId,
+            clientId,
+            ops: safeOps,
+            background,
+            knownRevision,
+          });
+        } else {
+          throw bulkError;
         }
-        throw bulkError;
       }
     } else {
-      ({ data, error } = await supabase.rpc('apply_board_action_v7', args));
-      if (error && /function .* does not exist/i.test(error.message ?? '')) {
-        ({ data, error } = await supabase.rpc('apply_board_action_v5', args));
-      }
-      if (error && /function .* does not exist/i.test(error.message ?? '')) {
-        usedModern = false;
-        ({ data, error } = await supabase.rpc('apply_board_action_v4', args));
-      }
+      ({ data, error, usedModern } = await applyStandardActionRpc(boardId, keyHash, {
+        actionId,
+        clientId,
+        ops: safeOps,
+        background,
+        knownRevision,
+      }));
       if (error) {
-        if (/function .* does not exist/i.test(error.message ?? '')) {
+        if (isMissingFunctionError(error)) {
           return applyBoardOps(boardId, key, safeOps, { background, knownRevision });
         }
         throw error;

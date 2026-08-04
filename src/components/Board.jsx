@@ -61,6 +61,7 @@ const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 4;
 const MAX_CANVAS_PIXEL_RATIO = 2;
+const DURABLE_OP_CHUNK_TARGET = 150_000;
 const HISTORY_LIMIT = 100;
 const LIVE_TRANSFORM_INTERVAL = 50;
 const LIVE_TRANSFORM_LOCK_TTL = 7000;
@@ -118,6 +119,34 @@ function getKeyFromUrl() {
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
+}
+
+function serializedCharSize(value) {
+  try {
+    return JSON.stringify(value).length;
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+function splitDurableOperations(ops, targetChars = DURABLE_OP_CHUNK_TARGET) {
+  const source = Array.isArray(ops) ? ops.filter(Boolean) : [];
+  if (!source.length) return [];
+  const chunks = [];
+  let chunk = [];
+  let chunkSize = 2;
+  for (const op of source) {
+    const opSize = serializedCharSize(op) + 1;
+    if (chunk.length && chunkSize + opSize > targetChars) {
+      chunks.push(chunk);
+      chunk = [];
+      chunkSize = 2;
+    }
+    chunk.push(op);
+    chunkSize += opSize;
+  }
+  if (chunk.length) chunks.push(chunk);
+  return chunks;
 }
 
 function compactTransformMatrix(matrix) {
@@ -2096,16 +2125,28 @@ function BoardWorkspace({
     setFontSizeState(nextSize);
   }, []);
 
+  const sendDurableOps = useCallback((ops) => {
+    const realtime = realtimeRef.current;
+    const chunks = splitDurableOperations(ops);
+    if (!realtime || !chunks.length) return Promise.resolve([]);
+    // Invoke every sendOps synchronously so IndexedDB preserves the complete logical
+    // order before the browser can process an immediate Undo/Redo command. Each part
+    // remains below the staged-import threshold, avoiding one enormous request that
+    // can block every later board mutation.
+    const tasks = chunks.map((chunk) => realtime.sendOps(chunk));
+    return Promise.all(tasks);
+  }, []);
+
   const sendRecordUpserts = useCallback((records, { restore = false, reorder = false } = {}) => {
-    if (!records.length || !realtimeRef.current) return Promise.resolve(null);
-    return realtimeRef.current.sendOps(records.map((record) => ({
+    if (!records.length) return Promise.resolve([]);
+    return sendDurableOps(records.map((record) => ({
       type: 'upsert',
       object: record.object,
       zIndex: record.zIndex,
       restore,
       reorder,
     })));
-  }, []);
+  }, [sendDurableOps]);
 
   const sendPreviewBatches = useCallback(async (records) => {
     const realtime = realtimeRef.current;
@@ -2147,10 +2188,10 @@ function BoardWorkspace({
   const sendDeletes = useCallback((ids, { announce = true } = {}) => {
     const safeIds = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean).map(String))];
     const realtime = realtimeRef.current;
-    if (!safeIds.length || !realtime) return Promise.resolve(null);
+    if (!safeIds.length || !realtime) return Promise.resolve([]);
     if (announce) realtime.sendDeletePreview?.(safeIds).catch?.(() => undefined);
-    return realtime.sendOps(safeIds.map((id) => ({ type: 'delete', id })));
-  }, []);
+    return sendDurableOps(safeIds.map((id) => ({ type: 'delete', id })));
+  }, [sendDurableOps]);
 
 
   const beginLocalSelectionTransaction = useCallback(async (objects) => {
@@ -2398,7 +2439,7 @@ function BoardWorkspace({
         object: record.object,
         zIndex: record.zIndex,
       }));
-      const commitResult = await realtimeRef.current?.sendOps?.(ops);
+      const commitResult = await sendDurableOps(ops);
       if (!commitResult && navigator.onLine !== false) {
         console.warn('Групповое изменение сохранено локально и ожидает подтверждения сервера');
       }
@@ -2449,6 +2490,7 @@ function BoardWorkspace({
     getObjectRecords,
     recordAction,
     schedulePersistence,
+    sendDurableOps,
     updateSelectionState,
     updateSelectionStyleState,
   ]);
@@ -3817,6 +3859,21 @@ function BoardWorkspace({
     });
   }, [applyObjectInteractivity, syncFromServer]);
 
+  const refreshHistoryRecords = useCallback((records) => {
+    const baseTimestamp = Date.now();
+    return (Array.isArray(records) ? records : []).map((record, index) => ({
+      ...record,
+      object: {
+        ...record.object,
+        // Restoring a deleted object is a new authoritative mutation. Reusing the
+        // pre-delete timestamp can make server conflict checks or remote tombstones
+        // treat the upsert as stale, even though it was restored locally.
+        updatedAt: baseTimestamp + index,
+        updatedBy: clientIdRef.current,
+      },
+    }));
+  }, []);
+
   const applyHistoryAction = useCallback(async (action, direction) => {
     if (!action) return;
     applyingHistoryRef.current = true;
@@ -3827,39 +3884,43 @@ function BoardWorkspace({
         if (direction === 'undo') {
           const ids = action.records.map((record) => record.object.boardObjectId).filter(Boolean);
           removeIdsLocally(ids);
-          sendDeletes(ids);
+          await sendDeletes(ids);
         } else {
-          await applyRecordsLocally(action.records);
-          sendRecordUpserts(action.records, { restore: true, reorder: true });
+          const restoredRecords = refreshHistoryRecords(action.records);
+          await applyRecordsLocally(restoredRecords);
+          await sendRecordUpserts(restoredRecords, { restore: true, reorder: true });
         }
       }
 
       if (action.type === 'delete') {
         if (direction === 'undo') {
-          await applyRecordsLocally(action.records);
-          sendRecordUpserts(action.records, { restore: true, reorder: true });
+          const restoredRecords = refreshHistoryRecords(action.records);
+          await applyRecordsLocally(restoredRecords);
+          await sendRecordUpserts(restoredRecords, { restore: true, reorder: true });
         } else {
           const ids = action.records.map((record) => record.object.boardObjectId).filter(Boolean);
           removeIdsLocally(ids);
-          sendDeletes(ids);
+          await sendDeletes(ids);
         }
       }
 
       if (action.type === 'modify') {
-        const records = direction === 'undo' ? action.before : action.after;
+        const records = refreshHistoryRecords(direction === 'undo' ? action.before : action.after);
         await applyRecordsLocally(records);
-        sendRecordUpserts(records, { reorder: Boolean(action.reorder) });
+        await sendRecordUpserts(records, { reorder: Boolean(action.reorder) });
       }
 
       if (action.type === 'replace') {
         const removeRecords = direction === 'undo' ? action.after : action.before;
-        const restoreRecords = direction === 'undo' ? action.before : action.after;
+        const restoreRecords = refreshHistoryRecords(
+          direction === 'undo' ? action.before : action.after,
+        );
         const removeIds = removeRecords
           .map((record) => record.object?.boardObjectId)
           .filter(Boolean);
         removeIdsLocally(removeIds);
         await applyRecordsLocally(restoreRecords);
-        realtimeRef.current?.sendOps?.([
+        await sendDurableOps([
           ...removeIds.map((id) => ({ type: 'delete', id })),
           ...restoreRecords.map((record) => ({
             type: 'upsert',
@@ -3918,9 +3979,11 @@ function BoardWorkspace({
     getObjectRecords,
     markObject,
     registeredObjectsById,
+    refreshHistoryRecords,
     removeIdsLocally,
     schedulePersistence,
     sendDeletes,
+    sendDurableOps,
     sendRecordUpserts,
     updateSelectionState,
     updateSelectionStyleState,
@@ -4458,10 +4521,13 @@ function BoardWorkspace({
       const records = getObjectRecords(added);
       canvas.discardActiveObject();
       canvas.requestRenderAll();
-      const previewPromise = sendPreviewBatches(records);
-      sendRecordUpserts(records).catch?.(() => undefined);
-      await Promise.allSettled([previewPromise]);
+      // The local history entry must exist as soon as the objects become visible.
+      // Waiting for preview delivery made Ctrl/Cmd+Z appear broken on a large paste.
       recordAction({ type: 'add', records });
+      // Queue every durable chunk now, in order, before returning control to a possible
+      // immediate Undo. Preview fanout is best-effort and must never block history/UI.
+      sendRecordUpserts(records).catch(() => undefined);
+      sendPreviewBatches(records).catch(() => undefined);
       schedulePersistence();
       updateSelectionVisuals();
       updateSelectionState();

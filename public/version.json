@@ -1,9 +1,9 @@
 {
-  "version": "1.19",
-  "packageVersion": "1.19.0",
-  "base": "1.18",
-  "release": "Apple Pencil eyedropper commit-on-release fix",
+  "version": "1.21",
+  "packageVersion": "1.21.0",
+  "base": "1.20",
+  "release": "Immediate paste undo and large queue acceleration",
   "date": "2026-08-04",
-  "name": "pencil-eyedropper-apply-after-pointerup",
-  "label": "Alex Board 1.19"
+  "name": "paste-history-and-bulk-queue-fix",
+  "label": "Alex Board 1.21"
 }
