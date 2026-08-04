@@ -61,7 +61,11 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
       const viewportOffsetLeft = Number(viewport?.offsetLeft ?? 0);
       const viewportOffsetTop = Number(viewport?.offsetTop ?? 0);
       const rect = anchor.getBoundingClientRect();
-      const width = Math.max(250, Math.min(DESKTOP_WIDTH, viewportWidth - EDGE_GAP * 2));
+      const compactTouchLayout = Number(navigator.maxTouchPoints ?? 0) > 0
+        && (window.matchMedia?.('(pointer: coarse)')?.matches || viewportWidth <= 1180);
+      const preferredWidth = compactTouchLayout ? 370 : DESKTOP_WIDTH;
+      const minimumWidth = compactTouchLayout ? 230 : 250;
+      const width = Math.max(minimumWidth, Math.min(preferredWidth, viewportWidth - EDGE_GAP * 2));
       const preferredLeft = rect.left + viewportOffsetLeft - 76;
       const left = Math.min(
         Math.max(viewportOffsetLeft + EDGE_GAP, preferredLeft),

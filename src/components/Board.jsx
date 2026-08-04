@@ -41,7 +41,7 @@ import {
 import { connectBoardRealtime } from '../lib/realtime.js';
 import { forceExitGameParticipants } from '../lib/gameRealtime.js';
 import { randomToken, sha256 } from '../lib/ids.js';
-import { rememberOwnedBoard } from '../lib/boardLibrary.js';
+import { getOwnedBoard, rememberOwnedBoard } from '../lib/boardLibrary.js';
 import { createShape } from '../lib/shapes.js';
 import {
   copySerializedBoardImages,
@@ -81,6 +81,21 @@ const PENCIL_HANDOFF_IDLE_MS = 18;
 const PENCIL_HANDOFF_MAX_RADIUS = 34;
 const PENCIL_HANDOFF_MIN_SEPARATION = 20;
 const DRAWING_STYLE_TOOL_IDS = new Set(['pencil', 'line', 'shape']);
+
+function isPhoneSizedTouchViewport() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  if (Number(navigator.maxTouchPoints ?? 0) <= 0) return false;
+  const viewport = window.visualViewport;
+  const width = Number(viewport?.width ?? window.innerWidth ?? 0);
+  const height = Number(viewport?.height ?? window.innerHeight ?? 0);
+  return Math.min(width, height) <= 600;
+}
+
+function autopilotZoomForCurrentDevice(requestedZoom) {
+  const numericZoom = Number(requestedZoom);
+  if (!Number.isFinite(numericZoom)) return requestedZoom;
+  return isPhoneSizedTouchViewport() ? numericZoom * 0.5 : numericZoom;
+}
 const DEFAULT_DRAWING_STYLES = {
   pencil: { color: '#111827', opacity: 1, width: 3 },
   line: { color: '#111827', opacity: 1, width: 3 },
@@ -116,6 +131,68 @@ FabricObject.customProperties = [
 
 function getKeyFromUrl() {
   return new URLSearchParams(window.location.search).get('key') ?? '';
+}
+
+function listLikeValues(list) {
+  if (!list) return [];
+  try {
+    return Array.from(list);
+  } catch {
+    const values = [];
+    const length = Math.max(0, Number(list.length ?? 0));
+    for (let index = 0; index < length; index += 1) {
+      const value = list[index] ?? list.item?.(index);
+      if (value != null) values.push(value);
+    }
+    return values;
+  }
+}
+
+function droppedFilesFromDataTransfer(dataTransfer) {
+  if (!dataTransfer) return [];
+  const files = listLikeValues(dataTransfer.files).filter(Boolean);
+
+  // Safari may expose Finder files through DataTransferItemList while keeping
+  // dataTransfer.files empty until the drop event. Read both collections and
+  // de-duplicate them without relying on iterable DOM-list support.
+  for (const item of listLikeValues(dataTransfer.items)) {
+    if (item?.kind !== 'file') continue;
+    try {
+      const file = item.getAsFile?.();
+      if (file) files.push(file);
+    } catch {
+      // Ignore one inaccessible item and continue with the remaining files.
+    }
+  }
+
+  const seen = new Set();
+  return files.filter((file) => {
+    const signature = [
+      file?.name ?? '',
+      Number(file?.size ?? -1),
+      Number(file?.lastModified ?? -1),
+      file?.type ?? '',
+    ].join(':');
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  });
+}
+
+function dataTransferMayContainFiles(dataTransfer) {
+  if (!dataTransfer) return false;
+  if (listLikeValues(dataTransfer.files).length) return true;
+  if (listLikeValues(dataTransfer.items).some((item) => item?.kind === 'file')) return true;
+
+  const types = listLikeValues(dataTransfer.types)
+    .map((type) => String(type).toLowerCase());
+  if (!types.length) return true; // Safari can hide drag types until drop.
+  return types.some((type) => (
+    type === 'files'
+    || type.includes('file')
+    || type.startsWith('image/')
+    || type === 'public.image'
+  ));
 }
 
 function clamp(value, min, max) {
@@ -1058,7 +1135,12 @@ function objectVisuallyIntersectsRect(object, selectionRect) {
 
 
 export default function Board({ boardId }) {
-  const boardKey = useMemo(getKeyFromUrl, []);
+  const urlBoardKey = useMemo(getKeyFromUrl, [boardId]);
+  const rememberedOwnerKey = useMemo(
+    () => getOwnedBoard(boardId)?.ownerKey ?? '',
+    [boardId],
+  );
+  const [boardKey, setBoardKey] = useState(rememberedOwnerKey || urlBoardKey);
   const [workspaceMode, setWorkspaceMode] = useState('board');
   const participantClientIdRef = useRef(randomToken(10));
   const [access, setAccess] = useState(null);
@@ -1069,22 +1151,55 @@ export default function Board({ boardId }) {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      if (!boardKey) {
+      if (!rememberedOwnerKey && !urlBoardKey) {
         setError('В ссылке отсутствует ключ доступа.');
         setLoading(false);
         return;
       }
       try {
-        const result = await getBoardAccess(boardId, boardKey);
+        let result = null;
+        let resolvedKey = '';
+        let rememberedKeyError = null;
+
+        // A board created in this browser keeps its owner key in localStorage.
+        // Prefer it even when the teacher opens the student/share URL, so the
+        // teacher panel opens automatically on the original browser/device.
+        if (rememberedOwnerKey) {
+          try {
+            const rememberedAccess = await getBoardAccess(boardId, rememberedOwnerKey);
+            if (rememberedAccess?.permission === 'owner') {
+              result = rememberedAccess;
+              resolvedKey = rememberedOwnerKey;
+            }
+          } catch (caught) {
+            rememberedKeyError = caught;
+          }
+        }
+
+        // A stale local owner key must never block a valid student link.
+        if (!result && urlBoardKey && urlBoardKey !== rememberedOwnerKey) {
+          result = await getBoardAccess(boardId, urlBoardKey);
+          if (result) resolvedKey = urlBoardKey;
+        }
+
+        if (!result && urlBoardKey && urlBoardKey === rememberedOwnerKey) {
+          if (rememberedKeyError) throw rememberedKeyError;
+          result = await getBoardAccess(boardId, urlBoardKey);
+          if (result) resolvedKey = urlBoardKey;
+        }
+
+        if (!result && rememberedKeyError && !urlBoardKey) throw rememberedKeyError;
+
         if (result?.permission === 'owner') {
           rememberOwnedBoard({
             boardId,
-            ownerKey: boardKey,
+            ownerKey: resolvedKey,
             title: result.title,
             studentName: result.studentName ?? '',
           });
         }
         if (!cancelled) {
+          setBoardKey(resolvedKey || rememberedOwnerKey || urlBoardKey);
           setAccess(result);
           setLoading(false);
         }
@@ -1099,7 +1214,7 @@ export default function Board({ boardId }) {
     return () => {
       cancelled = true;
     };
-  }, [boardId, boardKey]);
+  }, [boardId, rememberedOwnerKey, urlBoardKey]);
 
   const returnToBoard = useCallback(async (options = {}) => {
     const forceLibraryHidden = options?.gameLibraryVisible === false;
@@ -1250,6 +1365,7 @@ function BoardWorkspace({
   const fontFamilyRef = useRef('Arial');
   const fontSizeRef = useRef(34);
   const textBeforeRef = useRef(new Map());
+  const newTextDraftIdsRef = useRef(new Set());
   const textChangeTimerRef = useRef(null);
   const textTapCandidateRef = useRef(null);
   const mobileTextEditorRef = useRef(null);
@@ -1602,8 +1718,8 @@ function BoardWorkspace({
       return;
     }
 
-    if (action === 'close') {
-      closeMobileTextEditor();
+    if (action === 'close' || action === 'enter') {
+      target.exitEditing?.();
       return;
     }
     if (action === 'layout') {
@@ -1651,7 +1767,7 @@ function BoardWorkspace({
         return;
       }
     } else {
-      let inserted = action === 'space' ? ' ' : action === 'enter' ? '\n' : String(action ?? '');
+      let inserted = action === 'space' ? ' ' : String(action ?? '');
       if (!inserted) return;
       if (editor.shift && inserted.length === 1) inserted = inserted.toLocaleUpperCase(editor.layout === 'ru' ? 'ru-RU' : 'en-US');
       nextText = `${source.slice(0, start)}${inserted}${source.slice(end)}`;
@@ -2638,6 +2754,7 @@ function BoardWorkspace({
     markObject,
     recordAction,
     schedulePersistence,
+    selectInsertedObjects,
     sendPreviewBatches,
     sendRecordUpserts,
     updateSelectionState,
@@ -2782,7 +2899,13 @@ function BoardWorkspace({
     if (isOwner || (message?.permission !== 'owner' && message?.teacher !== true)) return;
     if (!Number.isFinite(Number(message?.centerX)) || !Number.isFinite(Number(message?.centerY))) return;
     lastTeacherViewRef.current = message;
-    if (autopilotRef.current) animateViewportTo(message.centerX, message.centerY, message.zoom);
+    if (autopilotRef.current) {
+      animateViewportTo(
+        message.centerX,
+        message.centerY,
+        autopilotZoomForCurrentDevice(message.zoom),
+      );
+    }
   }, [animateViewportTo, isOwner]);
 
   const handleRemoteViewJump = useCallback((message) => {
@@ -2811,7 +2934,7 @@ function BoardWorkspace({
       animateViewportTo(
         lastTeacherViewRef.current.centerX,
         lastTeacherViewRef.current.centerY,
-        lastTeacherViewRef.current.zoom,
+        autopilotZoomForCurrentDevice(lastTeacherViewRef.current.zoom),
       );
     }
     realtimeRef.current?.requestView?.();
@@ -2832,6 +2955,22 @@ function BoardWorkspace({
     configureBrushAndMode();
   }, [activateDrawingStyle, configureBrushAndMode]);
 
+
+  const selectInsertedObjects = useCallback((objects) => {
+    const canvas = fabricCanvasRef.current;
+    const inserted = (objects ?? []).filter((object) => object?.canvas === canvas);
+    if (!canvas || !inserted.length) return;
+    selectedShapeRef.current = null;
+    activeToolRef.current = 'select';
+    setToolState('select');
+    configureBrushAndMode();
+    canvas.discardActiveObject();
+    if (inserted.length === 1) canvas.setActiveObject(inserted[0]);
+    else canvas.setActiveObject(createOuterOnlyActiveSelection(inserted, canvas));
+    updateSelectionState();
+    updateSelectionStyleState();
+    canvas.requestRenderAll();
+  }, [configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
 
   const addImageFiles = useCallback(async (files, scenePoint = null) => {
     const canvas = fabricCanvasRef.current;
@@ -2919,15 +3058,7 @@ function BoardWorkspace({
       }
     }
 
-    activeToolRef.current = 'select';
-    setToolState('select');
-    configureBrushAndMode();
-    canvas.discardActiveObject();
-    if (completed.length === 1) canvas.setActiveObject(completed[0]);
-    else if (completed.length > 1) canvas.setActiveObject(createOuterOnlyActiveSelection(completed, canvas));
-    updateSelectionState();
-    updateSelectionStyleState();
-    canvas.requestRenderAll();
+    if (completed.length) selectInsertedObjects(completed);
 
     if (failedMessages.length) {
       setSaveStatus(completed.length
@@ -2949,6 +3080,7 @@ function BoardWorkspace({
     schedulePersistence,
     sendDeletes,
     sendRecordUpserts,
+    selectInsertedObjects,
     updateSelectionState,
     updateSelectionStyleState,
   ]);
@@ -4551,9 +4683,10 @@ function BoardWorkspace({
         splitByGrapheme: false,
       })
       : new IText(text, common);
-    addObjectsToBoard([textObject]);
+    const result = addObjectsToBoard([textObject]);
+    if (result?.added?.length) selectInsertedObjects(result.added);
     return true;
-  }, [addObjectsToBoard, getViewportSceneCenter]);
+  }, [addObjectsToBoard, getViewportSceneCenter, selectInsertedObjects]);
 
   const pasteSelection = useCallback(async (requestedPoint = null) => {
     const canvas = fabricCanvasRef.current;
@@ -4625,12 +4758,10 @@ function BoardWorkspace({
         return object;
       });
 
-      // Capture one authoritative absolute-coordinate batch before any selection can
-      // convert members into group-local coordinates. Pasted groups intentionally
-      // remain unselected so a selection transaction cannot race the paste commit.
+      // Capture one authoritative absolute-coordinate batch before ActiveSelection
+      // converts members into group-local coordinates, then select the inserted batch.
       const records = getObjectRecords(added);
-      canvas.discardActiveObject();
-      canvas.requestRenderAll();
+      selectInsertedObjects(added);
       // The local history entry must exist as soon as the objects become visible.
       // Waiting for preview delivery made Ctrl/Cmd+Z appear broken on a large paste.
       recordAction({ type: 'add', records });
@@ -4656,6 +4787,7 @@ function BoardWorkspace({
     getViewportSceneCenter,
     recordAction,
     schedulePersistence,
+    selectInsertedObjects,
     sendPreviewBatches,
     sendRecordUpserts,
     updateSelectionState,
@@ -4746,7 +4878,8 @@ function BoardWorkspace({
   const resetZoom = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    // Keep the same scene point under the centre of the screen. Only the scale changes.
+    canvas.zoomToPoint(new Point(canvas.getWidth() / 2, canvas.getHeight() / 2), 1);
     setZoom(1);
     updateBackgroundTransform();
     sendTeacherViewThrottled();
@@ -6961,12 +7094,51 @@ function BoardWorkspace({
       window.clearTimeout(textChangeTimerRef.current);
       const before = textBeforeRef.current.get(target.boardObjectId) ?? [];
       textBeforeRef.current.delete(target.boardObjectId);
-      markObject(target, clientId);
-      const after = getObjectRecords([target]);
-      sendRecordUpserts(after);
+      const objectId = String(target.boardObjectId ?? '');
+      const newTextDraft = newTextDraftIdsRef.current.delete(objectId);
+      const emptyText = String(target.text ?? '').trim().length === 0;
+
+      if (emptyText) {
+        const records = getObjectRecords([target]);
+        applyingRemoteRef.current = true;
+        canvas.remove(target);
+        applyingRemoteRef.current = false;
+        if (objectId) sendDeletes([objectId]);
+        const latestAction = undoStackRef.current.at(-1);
+        const latestAddedId = String(latestAction?.records?.[0]?.object?.boardObjectId ?? '');
+        if (newTextDraft && latestAction?.type === 'add'
+          && latestAction.records?.length === 1 && latestAddedId === objectId) {
+          undoStackRef.current.pop();
+          updateHistoryButtons();
+        } else if (records.length) {
+          recordAction({ type: 'delete', records });
+        }
+      } else {
+        markObject(target, clientId);
+        const after = getObjectRecords([target]);
+        sendRecordUpserts(after);
+        const latestAction = undoStackRef.current.at(-1);
+        const latestAddedId = String(latestAction?.records?.[0]?.object?.boardObjectId ?? '');
+        if (newTextDraft && latestAction?.type === 'add'
+          && latestAction.records?.length === 1 && latestAddedId === objectId) {
+          latestAction.records = after;
+          updateHistoryButtons();
+        } else if (before.length && after.length) {
+          recordAction({ type: 'modify', before, after });
+        }
+      }
+
       sendLocalLock(target, false);
-      if (before.length && after.length) recordAction({ type: 'modify', before, after });
+      selectedShapeRef.current = null;
+      activeToolRef.current = 'select';
+      setToolState('select');
+      configureBrushAndMode();
+      canvas.discardActiveObject();
+      updateSelectionState();
+      updateSelectionStyleState();
+      canvas.requestRenderAll();
       schedulePersistence();
+      setSaveStatus(emptyText ? 'Пустой текст удалён' : 'Текст сохранён');
     });
 
     canvas.on('mouse:down', (event) => {
@@ -6991,6 +7163,17 @@ function BoardWorkspace({
       }
       const scenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = scenePoint;
+
+      const editingText = canvas.getActiveObject();
+      if (activeToolRef.current === 'text'
+        && editingText instanceof IText
+        && editingText.isEditing
+        && event.target !== editingText) {
+        nativeEvent.preventDefault?.();
+        nativeEvent.stopPropagation?.();
+        editingText.exitEditing?.();
+        return;
+      }
       if (nativeEvent.button === 1 || nativeEvent.button === 2 || spacePressedRef.current) {
         nativeEvent.preventDefault?.();
         panningRef.current = true;
@@ -7335,13 +7518,15 @@ function BoardWorkspace({
           textPlaceholder: true,
         });
         markObject(textObject, clientId);
+        newTextDraftIdsRef.current.add(String(textObject.boardObjectId));
         canvas.add(textObject);
         canvas.setActiveObject(textObject);
         canvas.requestRenderAll();
         commitAddedObject(textObject);
+        openTextEditor(textObject);
         updateSelectionState();
         updateSelectionStyleState();
-        setSaveStatus('Текст создан — нажмите внутри рамки, чтобы печатать');
+        setSaveStatus('Введите текст');
         return;
       }
 
@@ -8400,18 +8585,37 @@ function BoardWorkspace({
     }
 
     function handleDragOver(event) {
-      if (!canEditRef.current || ![...event.dataTransfer.items].some((item) => item.kind === 'file')) return;
+      if (!canEditRef.current || !dataTransferMayContainFiles(event.dataTransfer)) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = 'copy';
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     }
 
     function handleDrop(event) {
       if (!canEditRef.current) return;
-      const files = [...(event.dataTransfer?.files ?? [])].filter(isAcceptedImageFile);
-      if (!files.length) return;
+      const droppedFiles = droppedFilesFromDataTransfer(event.dataTransfer);
+      if (!droppedFiles.length && !dataTransferMayContainFiles(event.dataTransfer)) return;
       event.preventDefault();
       event.stopPropagation();
-      addImageFiles(files, scenePointFromClient(event.clientX, event.clientY));
+      event.stopImmediatePropagation?.();
+
+      const files = droppedFiles.filter(isAcceptedImageFile);
+      if (!files.length) {
+        setSaveStatus('Поддерживаются JPG, PNG, WebP, GIF, HEIC и HEIF');
+        setSyncTone('error');
+        return;
+      }
+
+      const bounds = host.getBoundingClientRect();
+      const hasUsableCoordinates = Number.isFinite(event.clientX)
+        && Number.isFinite(event.clientY)
+        && event.clientX >= bounds.left
+        && event.clientX <= bounds.right
+        && event.clientY >= bounds.top
+        && event.clientY <= bounds.bottom;
+      const dropPoint = hasUsableCoordinates
+        ? scenePointFromClient(event.clientX, event.clientY)
+        : getViewportSceneCenter();
+      void addImageFiles(files, dropPoint);
     }
 
     touchTarget.addEventListener('pointerdown', handlePalmPointerDown, { passive: false, capture: true });
@@ -8422,6 +8626,7 @@ function BoardWorkspace({
     touchTarget.addEventListener('pointermove', handleObjectEraserPointerMove, { passive: false, capture: true });
     touchTarget.addEventListener('pointerup', handleObjectEraserPointerEnd, { passive: false, capture: true });
     touchTarget.addEventListener('pointercancel', handleObjectEraserPointerEnd, { passive: false, capture: true });
+    host.addEventListener('dragenter', handleDragOver);
     host.addEventListener('dragover', handleDragOver);
     host.addEventListener('drop', handleDrop);
 
@@ -8711,6 +8916,14 @@ function BoardWorkspace({
       const activeObject = canvas.getActiveObject();
       const isCanvasTextEditing = activeObject instanceof IText && activeObject.isEditing;
 
+      if (isCanvasTextEditing && event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        activeObject.exitEditing?.();
+        return;
+      }
+
       if (isOwner && !isTextInput && !isCanvasTextEditing && !event.repeat
         && !isShortcut && !event.altKey && !event.shiftKey) {
         const now = performance.now();
@@ -8795,7 +9008,7 @@ function BoardWorkspace({
       }
     }
 
-    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, true);
     window.addEventListener('keyup', handleKeyUp);
     window.addEventListener('paste', handlePaste);
     window.addEventListener('blur', handleWindowBlur);
@@ -8824,7 +9037,7 @@ function BoardWorkspace({
       remotePreviewPendingRef.current.records.clear();
       remotePreviewChunksRef.current.clear();
       stopArrowPan();
-      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp);
       window.removeEventListener('paste', handlePaste);
       window.removeEventListener('blur', handleWindowBlur);
@@ -8841,6 +9054,7 @@ function BoardWorkspace({
       touchTarget.removeEventListener('touchmove', handleTouchMove, true);
       touchTarget.removeEventListener('touchend', handleTouchEnd, true);
       touchTarget.removeEventListener('touchcancel', handleTouchCancel, true);
+      host.removeEventListener('dragenter', handleDragOver);
       host.removeEventListener('dragover', handleDragOver);
       host.removeEventListener('drop', handleDrop);
       window.clearInterval(syncInterval);

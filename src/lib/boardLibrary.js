@@ -17,6 +17,11 @@ export function getOwnedBoards() {
   return readAll().sort((a, b) => Number(b.lastOpenedAt ?? 0) - Number(a.lastOpenedAt ?? 0));
 }
 
+export function getOwnedBoard(boardId) {
+  if (!boardId) return null;
+  return readAll().find((entry) => entry.boardId === boardId) ?? null;
+}
+
 export function rememberOwnedBoard(entry) {
   if (!entry?.boardId || !entry?.ownerKey) return;
   const entries = readAll();

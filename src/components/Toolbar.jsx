@@ -275,7 +275,6 @@ export default function Toolbar({
   const [shapesOpen, setShapesOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const shapeAnchorRef = useRef(null);
-  const fileInputRef = useRef(null);
   const exportAnchorRef = useRef(null);
 
   const showDrawingSettings = ['pencil', 'line', 'shape', 'text'].includes(tool);
@@ -343,25 +342,25 @@ export default function Toolbar({
             )}
           </div>
 
-          <IconButton
+          <label
+            className={`tool-button image-upload-button ${!canEdit ? 'disabled' : ''}`.trim()}
             title="Добавить картинку"
-            disabled={!canEdit}
-            onClick={() => fileInputRef.current?.click()}
+            aria-label="Добавить картинку"
           >
-            ▧
-          </IconButton>
-          <input
-            ref={fileInputRef}
-            className="sr-only"
-            type="file"
-            accept="image/*,.heic,.heif"
-            multiple
-            onChange={(event) => {
-              const files = [...(event.target.files ?? [])];
-              if (files.length) onAddImages(files);
-              event.target.value = '';
-            }}
-          />
+            <span aria-hidden="true">▧</span>
+            <input
+              className="image-file-input"
+              type="file"
+              accept="image/*,.heic,.heif"
+              multiple
+              disabled={!canEdit}
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                if (files.length) onAddImages(files);
+                event.target.value = '';
+              }}
+            />
+          </label>
         </div>
 
         <div className="tool-group compact" aria-label="Отмена и возврат">

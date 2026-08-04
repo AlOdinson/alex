@@ -2354,3 +2354,83 @@ html.game-viewport-locked #root {
     padding-inline: 18px;
   }
 }
+
+/* Alex Board 1.23 — native image picker hit target for Apple Pencil */
+.image-upload-button {
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.image-upload-button.disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+.image-file-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 100px;
+}
+
+/* The iPad palette keeps every category scrollable but uses smaller cards so the
+   menu itself does not dominate the board. Phones keep their separate layout. */
+@media (pointer: coarse) and (min-width: 521px) and (max-width: 1180px) {
+  .shape-palette {
+    border-radius: 12px;
+  }
+
+  .shape-palette-heading {
+    padding: 7px 9px;
+  }
+
+  .palette-close {
+    width: 26px;
+    height: 26px;
+    font-size: 19px;
+  }
+
+  .shape-palette-scroll {
+    max-height: calc(var(--shape-palette-max-height, 690px) - 41px);
+    padding: 6px;
+  }
+
+  .shape-category + .shape-category {
+    margin-top: 7px;
+  }
+
+  .shape-category h3 {
+    margin-bottom: 4px;
+    font-size: 9px;
+  }
+
+  .shape-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .shape-choice {
+    min-height: 55px;
+    gap: 1px;
+    padding: 3px 2px;
+    border-radius: 8px;
+  }
+
+  .shape-choice svg {
+    width: 36px;
+    height: 27px;
+  }
+
+  .shape-choice span {
+    font-size: 7.5px;
+  }
+}
