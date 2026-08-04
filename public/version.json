@@ -1,9 +1,9 @@
 {
-  "version": "1.21",
-  "packageVersion": "1.21.0",
-  "base": "1.20",
-  "release": "Immediate paste undo and large queue acceleration",
+  "version": "1.22",
+  "packageVersion": "1.22.0",
+  "base": "1.21",
+  "release": "Dedicated move handle for multi-object selections",
   "date": "2026-08-04",
-  "name": "paste-history-and-bulk-queue-fix",
-  "label": "Alex Board 1.21"
+  "name": "selection-move-hand-control",
+  "label": "Alex Board 1.22"
 }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActiveSelection,
   Canvas,
+  Control,
   FabricImage,
   FabricObject,
   Group,
@@ -366,6 +367,113 @@ function transformMatrixDistance(left, right) {
   return linear + translation;
 }
 
+
+const SELECTION_MOVE_CONTROL_KEY = 'selectionMoveHandle';
+const SELECTION_MOVE_HANDLE_OFFSET = 52;
+
+function renderSelectionMoveHandle(context, left, top) {
+  context.save();
+  context.translate(left, top);
+
+  // High-contrast white badge keeps the black hand readable above any board content.
+  context.beginPath();
+  context.arc(0, 0, 17, 0, Math.PI * 2);
+  context.fillStyle = '#ffffff';
+  context.fill();
+  context.lineWidth = 2;
+  context.strokeStyle = '#111111';
+  context.stroke();
+
+  context.fillStyle = '#111111';
+  context.strokeStyle = '#111111';
+  context.lineCap = 'round';
+  context.lineJoin = 'round';
+
+  // Palm and wrist.
+  context.beginPath();
+  context.moveTo(-7, -2);
+  context.quadraticCurveTo(-8, -1, -8, 2);
+  context.lineTo(-7, 8);
+  context.quadraticCurveTo(-6, 11, -2, 12);
+  context.lineTo(4, 12);
+  context.quadraticCurveTo(8, 11, 9, 7);
+  context.lineTo(9, -1);
+  context.quadraticCurveTo(9, -4, 6, -4);
+  context.lineTo(-4, -4);
+  context.quadraticCurveTo(-6, -4, -7, -2);
+  context.closePath();
+  context.fill();
+
+  // Four raised fingers. Rounded strokes form a compact monochrome hand silhouette.
+  context.lineWidth = 3.4;
+  [
+    [-5.5, -3, -5.5, -10],
+    [-1.7, -3, -1.7, -12],
+    [2.1, -3, 2.1, -11],
+    [5.9, -3, 5.9, -8.5],
+  ].forEach(([x1, y1, x2, y2]) => {
+    context.beginPath();
+    context.moveTo(x1, y1);
+    context.lineTo(x2, y2);
+    context.stroke();
+  });
+
+  // Thumb.
+  context.lineWidth = 3.8;
+  context.beginPath();
+  context.moveTo(-6.5, 1.5);
+  context.lineTo(-11, -2.5);
+  context.stroke();
+
+  context.restore();
+}
+
+function moveSelectionFromHandle(eventData, transform, x, y) {
+  const target = transform?.target;
+  if (!isActiveSelectionObject(target)) return false;
+
+  const previousLeft = Number(target.left ?? 0);
+  const previousTop = Number(target.top ?? 0);
+  const offsetX = Number(transform?.offsetX ?? 0);
+  const offsetY = Number(transform?.offsetY ?? 0);
+  const nextLeft = target.lockMovementX ? previousLeft : Number(x) - offsetX;
+  const nextTop = target.lockMovementY ? previousTop : Number(y) - offsetY;
+  const movedX = Number.isFinite(nextLeft) && Math.abs(nextLeft - previousLeft) > 0.0001;
+  const movedY = Number.isFinite(nextTop) && Math.abs(nextTop - previousTop) > 0.0001;
+  if (!movedX && !movedY) return false;
+
+  target.set({
+    left: movedX ? nextLeft : previousLeft,
+    top: movedY ? nextTop : previousTop,
+  });
+  return true;
+}
+
+const selectionMoveControl = new Control({
+  x: 0,
+  y: 0.5,
+  offsetY: SELECTION_MOVE_HANDLE_OFFSET,
+  withConnection: true,
+  actionName: 'drag',
+  cursorStyle: 'move',
+  sizeX: 40,
+  sizeY: 40,
+  touchSizeX: 56,
+  touchSizeY: 56,
+  actionHandler: moveSelectionFromHandle,
+  render: renderSelectionMoveHandle,
+});
+
+function installSelectionMoveHandle(selection) {
+  if (!isActiveSelectionObject(selection) || typeof selection.getObjects !== 'function') return;
+  if (selection.getObjects().filter(Boolean).length < 2) return;
+  if (selection.controls?.[SELECTION_MOVE_CONTROL_KEY] === selectionMoveControl) return;
+  selection.controls = {
+    ...selection.controls,
+    [SELECTION_MOVE_CONTROL_KEY]: selectionMoveControl,
+  };
+}
+
 function createOuterOnlyActiveSelection(objects, canvas) {
   const members = Array.isArray(objects) ? objects.filter(Boolean) : [];
   const selection = new ActiveSelection(members, {
@@ -381,6 +489,7 @@ function createOuterOnlyActiveSelection(objects, canvas) {
       return outerRenderer.call(this, context, styleOverride);
     };
   }
+  installSelectionMoveHandle(selection);
   selection.setCoords();
   return selection;
 }
@@ -1918,6 +2027,7 @@ function BoardWorkspace({
           return outerRenderer.call(this, ctx, styleOverride);
         };
       }
+      installSelectionMoveHandle(active);
       active.set({
         hasControls: true,
         hasBorders: true,
