@@ -651,8 +651,12 @@ export function connectBoardRealtime({
     }, PERSIST_BATCH_DELAY);
   };
 
-  const enqueueAction = (ops, background = null) => {
+  const enqueueAction = (ops, background = null, options = {}) => {
     const safeOps = Array.isArray(ops) ? ops : [];
+    const providedSerializedSize = Number(options?.serializedSize);
+    const serializedSize = Number.isFinite(providedSerializedSize) && providedSerializedSize >= 0
+      ? providedSerializedSize
+      : null;
     const action = {
       actionId: randomToken(24),
       boardId,
@@ -661,7 +665,11 @@ export function connectBoardRealtime({
       background,
       knownRevision: Number(getKnownRevision?.() ?? 0),
       createdAt: Date.now() * 1000 + (actionSequence++ % 1000),
-      byteSize: estimateActionBytes({ ops: safeOps, background }),
+      serializedSize,
+      atomic: Boolean(options?.atomic),
+      byteSize: serializedSize == null
+        ? estimateActionBytes({ ops: safeOps, background })
+        : Math.max(2, serializedSize * 2),
     };
 
     inMemoryPending.set(action.actionId, action);
@@ -893,9 +901,9 @@ export function connectBoardRealtime({
 
 
   return {
-    sendOps(ops) {
+    sendOps(ops, options = {}) {
       if (!Array.isArray(ops) || !ops.length) return Promise.resolve(null);
-      return enqueueAction(ops, null);
+      return enqueueAction(ops, null, options);
     },
     sendMode(mode) {
       return publishRealtime('mode', { clientId, mode });

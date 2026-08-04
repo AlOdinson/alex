@@ -1,9 +1,9 @@
 {
-  "version": "1.27.1",
-  "packageVersion": "1.27.1",
-  "base": "1.27.0",
-  "release": "Safari Apple Pencil marquee completion hotfix",
+  "version": "1.28.0",
+  "packageVersion": "1.28.0",
+  "base": "1.27.1",
+  "release": "Instant Apple Pencil transform completion and coalesced persistence",
   "date": "2026-08-05",
-  "name": "pencil-marquee-release-finalization",
-  "label": "Alex Board 1.27.1"
+  "name": "instant-pencil-transform-finalization",
+  "label": "Alex Board 1.28"
 }

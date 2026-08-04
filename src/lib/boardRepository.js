@@ -797,9 +797,17 @@ export async function applyBoardActionBatch(boardId, key, actions, knownRevision
       clientId: action.clientId ?? '',
       ops: Array.isArray(action.ops) ? action.ops : [],
       background: action.background ?? null,
+      serializedSize: Number.isFinite(Number(action.serializedSize))
+        ? Number(action.serializedSize)
+        : null,
+      atomic: Boolean(action.atomic),
     }));
   if (!safeActions.length) return [];
-  if (safeActions.length === 1 || safeActions.some((action) => serializedSize(action.ops) > BULK_ACTION_THRESHOLD)) {
+  if (safeActions.length === 1 || safeActions.some((action) => (
+    Number.isFinite(Number(action.serializedSize))
+      ? Number(action.serializedSize) > BULK_ACTION_THRESHOLD
+      : serializedSize(action.ops) > BULK_ACTION_THRESHOLD
+  ))) {
     const results = [];
     let revision = Number(knownRevision ?? 0);
     for (const action of safeActions) {
@@ -863,7 +871,14 @@ export async function applyBoardActionBatch(boardId, key, actions, knownRevision
 export async function applyBoardAction(
   boardId,
   key,
-  { actionId, clientId, ops = [], background = null, knownRevision = 0 },
+  {
+    actionId,
+    clientId,
+    ops = [],
+    background = null,
+    knownRevision = 0,
+    serializedSize: providedSerializedSize = null,
+  },
 ) {
   const keyHash = await sha256(key);
 
@@ -873,7 +888,10 @@ export async function applyBoardAction(
     let error;
     let usedModern = true;
 
-    if (serializedSize(safeOps) > BULK_ACTION_THRESHOLD) {
+    const safeOpsSerializedSize = Number.isFinite(Number(providedSerializedSize))
+      ? Number(providedSerializedSize)
+      : serializedSize(safeOps);
+    if (safeOpsSerializedSize > BULK_ACTION_THRESHOLD) {
       try {
         data = await applyLargeBoardAction(boardId, keyHash, {
           actionId,

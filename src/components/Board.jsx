@@ -862,12 +862,11 @@ function AccessMessage({ title, children }) {
   );
 }
 
-function patchSerializedObjectTransform(serialized, object) {
-  const next = { ...(serialized ?? {}) };
-  if (!object) return next;
+function captureSerializedObjectTransform(object, fallback = {}) {
+  if (!object) return {};
 
   // Members of an ActiveSelection keep local coordinates relative to the temporary
-  // wrapper. Persist their full scene matrix without dismantling the visible selection.
+  // wrapper. Capture their complete scene transform without dismantling the selection.
   if (object.group && isActiveSelectionObject(object.group)
     && typeof object.calcTransformMatrix === 'function'
     && typeof util.qrDecompose === 'function') {
@@ -878,9 +877,9 @@ function patchSerializedObjectTransform(serialized, object) {
     const flipY = scaleY < 0;
     scaleX = Math.abs(scaleX);
     scaleY = Math.abs(scaleY);
-    Object.assign(next, {
-      left: Number(decomposed?.translateX ?? next.left ?? 0),
-      top: Number(decomposed?.translateY ?? next.top ?? 0),
+    return {
+      left: Number(decomposed?.translateX ?? fallback.left ?? 0),
+      top: Number(decomposed?.translateY ?? fallback.top ?? 0),
       originX: 'center',
       originY: 'center',
       angle: Number(decomposed?.angle ?? 0),
@@ -890,25 +889,27 @@ function patchSerializedObjectTransform(serialized, object) {
       skewY: Number(decomposed?.skewY ?? 0),
       flipX,
       flipY,
-    });
-    return next;
+    };
   }
 
-  // A normal object can be updated from its lightweight transform fields. This avoids
-  // serializing a long Pencil path again merely because it moved a few pixels.
-  Object.assign(next, {
-    left: Number(object.left ?? next.left ?? 0),
-    top: Number(object.top ?? next.top ?? 0),
-    originX: object.originX ?? next.originX ?? 'left',
-    originY: object.originY ?? next.originY ?? 'top',
-    angle: Number(object.angle ?? next.angle ?? 0),
-    scaleX: Number(object.scaleX ?? next.scaleX ?? 1),
-    scaleY: Number(object.scaleY ?? next.scaleY ?? 1),
-    skewX: Number(object.skewX ?? next.skewX ?? 0),
-    skewY: Number(object.skewY ?? next.skewY ?? 0),
+  return {
+    left: Number(object.left ?? fallback.left ?? 0),
+    top: Number(object.top ?? fallback.top ?? 0),
+    originX: object.originX ?? fallback.originX ?? 'left',
+    originY: object.originY ?? fallback.originY ?? 'top',
+    angle: Number(object.angle ?? fallback.angle ?? 0),
+    scaleX: Number(object.scaleX ?? fallback.scaleX ?? 1),
+    scaleY: Number(object.scaleY ?? fallback.scaleY ?? 1),
+    skewX: Number(object.skewX ?? fallback.skewX ?? 0),
+    skewY: Number(object.skewY ?? fallback.skewY ?? 0),
     flipX: Boolean(object.flipX),
     flipY: Boolean(object.flipY),
-  });
+  };
+}
+
+function patchSerializedObjectTransform(serialized, object) {
+  const next = { ...(serialized ?? {}) };
+  Object.assign(next, captureSerializedObjectTransform(object, next));
   return next;
 }
 
@@ -1519,7 +1520,16 @@ function BoardWorkspace({
     moveFramePending: false,
     compatibilityGuardUntil: 0,
   });
-  const transformGestureRef = useRef({ activeId: null, lastCommittedId: null, signature: '', committedAt: 0 });
+  const transformGestureRef = useRef({
+    activeId: null,
+    lastCommittedId: null,
+    signature: '',
+    committedAt: 0,
+    pointerType: null,
+  });
+  const deferredTransformFlushRef = useRef(null);
+  const selectionUiRefreshFrameRef = useRef(null);
+  const selectionStyleRefreshTimerRef = useRef(null);
   const serializedObjectCacheRef = useRef(new WeakMap());
   const selectionVisualSignatureRef = useRef('');
   const selectionVisualActiveRef = useRef(null);
@@ -1940,30 +1950,51 @@ function BoardWorkspace({
     });
   }, []);
 
-  const getTransformRecords = useCallback((objects) => {
+  const captureTransformRecordInputs = useCallback((objects, providedZIndexMap = null) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return [];
     const candidates = [...new Set((Array.isArray(objects) ? objects : [])
       .flatMap((object) => flattenTarget(object))
       .filter((object) => object && !isActiveSelectionObject(object)))];
-    const zIndexMap = new Map(canvas.getObjects().map((object, index) => [object, index]));
+    const zIndexMap = providedZIndexMap
+      ?? new Map(canvas.getObjects().map((object, index) => [object, index]));
     const baseTimestamp = Date.now();
     return candidates.map((object, index) => {
-      let cached = serializedObjectCacheRef.current.get(object);
-      if (!cached) cached = serializeObject(object);
-      const serialized = patchSerializedObjectTransform(cached, object);
-      serialized.boardObjectId = object.boardObjectId ?? serialized.boardObjectId;
-      serialized.updatedAt = baseTimestamp + index;
-      serialized.updatedBy = clientIdRef.current;
-      object.updatedAt = serialized.updatedAt;
-      object.updatedBy = serialized.updatedBy;
-      serializedObjectCacheRef.current.set(object, serialized);
+      const cached = serializedObjectCacheRef.current.get(object) ?? null;
+      const updatedAt = baseTimestamp + index;
+      object.updatedAt = updatedAt;
+      object.updatedBy = clientIdRef.current;
       return {
-        object: serialized,
+        id: String(object.boardObjectId ?? cached?.boardObjectId ?? ''),
+        object,
+        cached,
+        transform: captureSerializedObjectTransform(object, cached ?? {}),
+        updatedAt,
+        updatedBy: clientIdRef.current,
         zIndex: zIndexMap.get(object) ?? -1,
       };
-    });
+    }).filter((entry) => entry.id);
   }, []);
+
+  const materializeTransformRecords = useCallback((entries) => (
+    (Array.isArray(entries) ? entries : []).map((entry) => {
+      let base = entry.cached ?? serializedObjectCacheRef.current.get(entry.object);
+      if (!base) base = serializeObject(entry.object);
+      const serialized = {
+        ...base,
+        ...entry.transform,
+        boardObjectId: entry.id,
+        updatedAt: entry.updatedAt,
+        updatedBy: entry.updatedBy,
+      };
+      serializedObjectCacheRef.current.set(entry.object, serialized);
+      return { object: serialized, zIndex: entry.zIndex };
+    })
+  ), []);
+
+  const getTransformRecords = useCallback((objects) => (
+    materializeTransformRecords(captureTransformRecordInputs(objects))
+  ), [captureTransformRecordInputs, materializeTransformRecords]);
 
   const updateHistoryButtons = useCallback(() => {
     setCanUndo(undoStackRef.current.length > 0);
@@ -2253,18 +2284,24 @@ function BoardWorkspace({
     if (renderNeeded) canvas.requestRenderAll();
   }, []);
 
-  const restoreSelectionMemberControls = useCallback((keep = new Set()) => {
-    for (const [object, state] of selectionMemberControlsRef.current) {
-      if (keep.has(object)) continue;
-      if (state.hadOwnRenderControls) object._renderControls = state.renderControls;
-      else delete object._renderControls;
-      if (state.hadOwnDrawBorders) object.drawBorders = state.drawBorders;
-      else delete object.drawBorders;
-      if (state.hadOwnDrawControls) object.drawControls = state.drawControls;
-      else delete object.drawControls;
-      selectionMemberControlsRef.current.delete(object);
-    }
+  const restoreSelectionMemberControl = useCallback((object) => {
+    const state = selectionMemberControlsRef.current.get(object);
+    if (!state) return false;
+    if (state.hadOwnRenderControls) object._renderControls = state.renderControls;
+    else delete object._renderControls;
+    if (state.hadOwnDrawBorders) object.drawBorders = state.drawBorders;
+    else delete object.drawBorders;
+    if (state.hadOwnDrawControls) object.drawControls = state.drawControls;
+    else delete object.drawControls;
+    selectionMemberControlsRef.current.delete(object);
+    return true;
   }, []);
+
+  const restoreSelectionMemberControls = useCallback((keep = new Set()) => {
+    for (const object of [...selectionMemberControlsRef.current.keys()]) {
+      if (!keep.has(object)) restoreSelectionMemberControl(object);
+    }
+  }, [restoreSelectionMemberControl]);
 
   const updateSelectionVisuals = useCallback(() => {
     const canvas = fabricCanvasRef.current;
@@ -2281,47 +2318,54 @@ function BoardWorkspace({
     selectionVisualActiveRef.current = active;
     selectionVisualSignatureRef.current = signature;
 
-    const memberSet = new Set(members);
-    const hadStoredControls = selectionMemberControlsRef.current.size > 0;
-    restoreSelectionMemberControls(memberSet);
-    let renderNeeded = hadStoredControls;
-
-    if (members.length > 1) {
-      members.forEach((object) => {
-        if (!selectionMemberControlsRef.current.has(object)) {
-          selectionMemberControlsRef.current.set(object, {
-            hadOwnRenderControls: Object.prototype.hasOwnProperty.call(object, '_renderControls'),
-            renderControls: object._renderControls,
-            hadOwnDrawBorders: Object.prototype.hasOwnProperty.call(object, 'drawBorders'),
-            drawBorders: object.drawBorders,
-            hadOwnDrawControls: Object.prototype.hasOwnProperty.call(object, 'drawControls'),
-            drawControls: object.drawControls,
-          });
-        }
-        object._renderControls = () => undefined;
-        object.drawBorders = () => object;
-        object.drawControls = () => object;
-        object.hasControls = false;
-        object.hasBorders = false;
-      });
-      const outerRenderer = FabricObject.prototype._renderControls;
-      if (typeof outerRenderer === 'function') {
-        active._renderControls = function renderOnlyOuterSelection(ctx, styleOverride) {
-          return outerRenderer.call(this, ctx, styleOverride);
-        };
+    // Dismantling a large ActiveSelection is already work for Fabric. Restoring custom
+    // control methods on every former member in the same pointer event doubled that
+    // cost and caused the second Apple Pencil freeze on an empty tap. Keep inactive
+    // members visually dormant and restore only the object that becomes active next.
+    if (members.length <= 1) {
+      const restored = active ? restoreSelectionMemberControl(active) : false;
+      if (active && canEditRef.current) {
+        active.hasControls = true;
+        active.hasBorders = true;
       }
-      installSelectionMoveHandle(active);
-      active.set({
-        hasControls: true,
-        hasBorders: true,
-        subTargetCheck: false,
-        objectCaching: false,
-      });
-      active.setCoords();
-      renderNeeded = true;
+      if (restored) canvas.requestRenderAll();
+      return;
     }
-    if (renderNeeded) canvas.requestRenderAll();
-  }, [restoreSelectionMemberControls]);
+
+    members.forEach((object) => {
+      if (!selectionMemberControlsRef.current.has(object)) {
+        selectionMemberControlsRef.current.set(object, {
+          hadOwnRenderControls: Object.prototype.hasOwnProperty.call(object, '_renderControls'),
+          renderControls: object._renderControls,
+          hadOwnDrawBorders: Object.prototype.hasOwnProperty.call(object, 'drawBorders'),
+          drawBorders: object.drawBorders,
+          hadOwnDrawControls: Object.prototype.hasOwnProperty.call(object, 'drawControls'),
+          drawControls: object.drawControls,
+        });
+      }
+      object._renderControls = () => undefined;
+      object.drawBorders = () => object;
+      object.drawControls = () => object;
+      object.hasControls = false;
+      object.hasBorders = false;
+    });
+    const outerRenderer = FabricObject.prototype._renderControls;
+    if (typeof outerRenderer === 'function') {
+      active._renderControls = function renderOnlyOuterSelection(ctx, styleOverride) {
+        return outerRenderer.call(this, ctx, styleOverride);
+      };
+    }
+    installSelectionMoveHandle(active);
+    active.set({
+      hasControls: true,
+      hasBorders: true,
+      subTargetCheck: false,
+      objectCaching: false,
+    });
+    active.setCoords();
+    canvas.requestRenderAll();
+  }, [restoreSelectionMemberControl]);
+
 
 
   const applyCanvasInputMode = useCallback(() => {
@@ -2527,27 +2571,56 @@ function BoardWorkspace({
     setFontSizeState(nextSize);
   }, []);
 
-  const sendDurableOps = useCallback((ops) => {
-    const realtime = realtimeRef.current;
-    const chunks = splitDurableOperations(ops);
-    if (!realtime || !chunks.length) return Promise.resolve([]);
-    // Invoke every sendOps synchronously so IndexedDB preserves the complete logical
-    // order before the browser can process an immediate Undo/Redo command. Each part
-    // remains below the staged-import threshold, avoiding one enormous request that
-    // can block every later board mutation.
-    const tasks = chunks.map((chunk) => realtime.sendOps(chunk));
-    return Promise.all(tasks);
+  const sendDurableOps = useCallback((ops, {
+    atomic = false,
+    skipDeferredFlush = false,
+    serializedSize: providedSerializedSize = null,
+  } = {}) => {
+    const source = Array.isArray(ops) ? ops.filter(Boolean) : [];
+    const run = () => {
+      const realtime = realtimeRef.current;
+      const chunks = atomic ? (source.length ? [source] : []) : splitDurableOperations(source);
+      if (!realtime || !chunks.length) return Promise.resolve([]);
+      // A transform of many objects stays one logical action. The repository already
+      // has a staged large-action path, so splitting here only inflated the visible
+      // queue and let one Pencil gesture become many pending actions.
+      const tasks = chunks.map((chunk, index) => {
+        const serializedSize = chunks.length === 1 && Number.isFinite(Number(providedSerializedSize))
+          ? Number(providedSerializedSize)
+          : serializedCharSize(chunk);
+        return realtime.sendOps(chunk, { serializedSize, atomic: atomic && index === 0 });
+      });
+      return Promise.all(tasks);
+    };
+
+    if (!skipDeferredFlush && deferredTransformFlushRef.current) {
+      const objectIds = affectedOperationIds(source);
+      if (objectIds.size) {
+        return Promise.resolve(deferredTransformFlushRef.current({
+          force: true,
+          objectIds,
+        })).then(run);
+      }
+    }
+    return run();
   }, []);
 
-  const sendRecordUpserts = useCallback((records, { restore = false, reorder = false } = {}) => {
+
+  const sendRecordUpserts = useCallback((records, {
+    restore = false,
+    reorder = false,
+    atomic = false,
+    skipDeferredFlush = false,
+  } = {}) => {
     if (!records.length) return Promise.resolve([]);
-    return sendDurableOps(records.map((record) => ({
+    const ops = records.map((record) => ({
       type: 'upsert',
       object: record.object,
       zIndex: record.zIndex,
       restore,
       reorder,
-    })));
+    }));
+    return sendDurableOps(ops, { atomic, skipDeferredFlush });
   }, [sendDurableOps]);
 
   const sendPreviewBatches = useCallback(async (records) => {
@@ -5251,7 +5324,10 @@ function BoardWorkspace({
       .filter(Boolean);
     if (!ids.length || !realtimeRef.current) return;
     if (locked) localLockIdsRef.current = ids;
-    else localLockIdsRef.current = localLockIdsRef.current.filter((id) => !ids.includes(id));
+    else {
+      const releasedIds = new Set(ids);
+      localLockIdsRef.current = localLockIdsRef.current.filter((id) => !releasedIds.has(id));
+    }
     realtimeRef.current.sendLock(ids, locked);
   }, []);
 
@@ -5271,7 +5347,9 @@ function BoardWorkspace({
     if (!state.sessionId) state.sessionId = randomToken(12);
     const objects = getLiveTransformObjects(target);
     if (!objects.length) return;
-    const signature = JSON.stringify(objects.map((frame) => [frame.id, frame.matrix]));
+    const signature = objects
+      .map((frame) => `${frame.id}:${frame.matrix.join(',')}`)
+      .join('|');
     if (phase === 'update' && signature === state.lastSignature) return;
     state.lastSignature = signature;
     state.sequence += 1;
@@ -5290,7 +5368,7 @@ function BoardWorkspace({
     });
   }, [getLiveTransformObjects]);
 
-  const beginLiveTransform = useCallback((target) => {
+  const beginLiveTransform = useCallback((target, { zIndexMap = null } = {}) => {
     const state = liveTransformSendRef.current;
     window.clearTimeout(state.timer);
     state.timer = null;
@@ -5301,18 +5379,26 @@ function BoardWorkspace({
     state.lastSentAt = 0;
     state.lastSignature = '';
     const canvas = fabricCanvasRef.current;
-    state.zIndexMap = canvas
+    state.zIndexMap = zIndexMap ?? (canvas
       ? new Map(canvas.getObjects().map((object, index) => [object, index]))
-      : null;
+      : null);
 
-    // Every member must keep one stable identity before the first frame is sent.
-    // Live transform messages never create objects on another device; they only move
-    // the already existing object with this id/session.
-    flattenTarget(target).forEach((object) => markObject(object, clientIdRef.current));
+    // Existing board objects already have rendering policy and coordinates. Re-running
+    // markObject for every member used to recurse through complex groups and call
+    // setCoords at the start of every Pencil move.
+    const now = Date.now();
+    flattenTarget(target).forEach((object, index) => {
+      if (!object.boardObjectId) markObject(object, clientIdRef.current);
+      else {
+        object.updatedAt = now + index;
+        object.updatedBy = clientIdRef.current;
+        registerCanvasObject(object);
+      }
+    });
     const sessionId = state.sessionId;
     sendLiveTransformNow(target, 'start');
     return sessionId;
-  }, [markObject, sendLiveTransformNow]);
+  }, [markObject, registerCanvasObject, sendLiveTransformNow]);
 
   const sendLiveTransformThrottled = useCallback((target) => {
     if (!target || !realtimeRef.current?.sendTransform) return;
@@ -6607,11 +6693,16 @@ function BoardWorkspace({
     };
     const syncOnVisibility = () => {
       if (document.visibilityState === 'visible') syncOnFocus();
+      else flushDeferredTransformPersistence({ force: true }).catch(() => undefined);
     };
     const syncOnPageShow = () => syncOnFocus();
+    const syncOnPageHide = () => {
+      flushDeferredTransformPersistence({ force: true }).catch(() => undefined);
+    };
     const syncOnOnline = () => syncOnFocus();
     window.addEventListener('focus', syncOnFocus);
     window.addEventListener('pageshow', syncOnPageShow);
+    window.addEventListener('pagehide', syncOnPageHide);
     window.addEventListener('online', syncOnOnline);
     document.addEventListener('visibilitychange', syncOnVisibility);
 
@@ -6630,6 +6721,132 @@ function BoardWorkspace({
       schedulePersistence();
       canvas.requestRenderAll();
     }
+
+    // Pencil transforms are captured as tiny coordinate patches at pointer-up. The
+    // expensive full-object JSON is materialized only after the complete Pencil/select
+    // interaction has been idle. Repeated moves of the same object overwrite the older
+    // pending patch, so a fast sequence creates one durable action instead of a queue.
+    const deferredTransformEntries = new Map();
+    let deferredTransformTimer = null;
+    let deferredTransformIdleHandle = null;
+    let deferredTransformFlushPromise = null;
+    let deferredTransformServerPending = 0;
+
+    function cancelDeferredTransformIdle() {
+      if (deferredTransformIdleHandle == null) return;
+      if (typeof window.cancelIdleCallback === 'function') {
+        window.cancelIdleCallback(deferredTransformIdleHandle);
+      } else {
+        window.clearTimeout(deferredTransformIdleHandle);
+      }
+      deferredTransformIdleHandle = null;
+    }
+
+    function pencilTransformInputIsQuiet() {
+      return !penInputRef.current.active
+        && !selectionPenSessionRef.current.active
+        && !selectionDragRef.current
+        && !liveTransformSendRef.current.sessionId
+        && !pendingGroupTransformCommitRef.current
+        && performance.now() >= Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0) + 180;
+    }
+
+    function runDeferredTransformInIdle() {
+      cancelDeferredTransformIdle();
+      const run = () => {
+        deferredTransformIdleHandle = null;
+        flushDeferredTransformPersistence().catch(() => undefined);
+      };
+      if (typeof window.requestIdleCallback === 'function') {
+        deferredTransformIdleHandle = window.requestIdleCallback(run, { timeout: 1800 });
+      } else {
+        // Safari versions without requestIdleCallback still get two paint opportunities
+        // before JSON/IndexedDB work begins.
+        deferredTransformIdleHandle = window.setTimeout(() => {
+          window.requestAnimationFrame(() => window.requestAnimationFrame(run));
+        }, 32);
+      }
+    }
+
+    function scheduleDeferredTransformFlush(delay = 760) {
+      window.clearTimeout(deferredTransformTimer);
+      cancelDeferredTransformIdle();
+      deferredTransformTimer = window.setTimeout(() => {
+        deferredTransformTimer = null;
+        if (!pencilTransformInputIsQuiet()) {
+          scheduleDeferredTransformFlush(220);
+          return;
+        }
+        runDeferredTransformInIdle();
+      }, Math.max(80, Number(delay ?? 760)));
+    }
+
+    function queueDeferredTransformPersistence(entries) {
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        if (!entry?.id) continue;
+        deferredTransformEntries.set(String(entry.id), entry);
+      }
+      scheduleDeferredTransformFlush();
+    }
+
+    async function flushDeferredTransformPersistence({
+      force = false,
+      objectIds = null,
+    } = {}) {
+      if (deferredTransformFlushPromise) return deferredTransformFlushPromise;
+      if (!deferredTransformEntries.size) return null;
+      // Keep at most one normal Pencil-transform write waiting for the server. Further
+      // moves remain coalesced in memory as the latest coordinates and are enqueued only
+      // after that action confirms. A forced flush is reserved for an overlapping
+      // delete/undo/page-hide where operation ordering matters more than queue length.
+      if (!force && deferredTransformServerPending > 0) {
+        scheduleDeferredTransformFlush(260);
+        return null;
+      }
+
+      const requestedIds = objectIds instanceof Set
+        ? objectIds
+        : new Set((Array.isArray(objectIds) ? objectIds : []).map(String));
+      if (requestedIds.size) {
+        const overlaps = [...requestedIds].some((id) => deferredTransformEntries.has(String(id)));
+        if (!overlaps) return null;
+      }
+
+      if (!force && !pencilTransformInputIsQuiet()) {
+        scheduleDeferredTransformFlush(220);
+        return null;
+      }
+
+      window.clearTimeout(deferredTransformTimer);
+      deferredTransformTimer = null;
+      cancelDeferredTransformIdle();
+      const entries = [...deferredTransformEntries.values()];
+      deferredTransformEntries.clear();
+      deferredTransformFlushPromise = Promise.resolve().then(() => {
+        const records = materializeTransformRecords(entries);
+        if (!records.length) return null;
+        // enqueuePendingAction receives one action for the whole gesture. The promise
+        // returned by sendOps represents server confirmation; do not await it here or
+        // make the next local input wait for network latency.
+        deferredTransformServerPending += 1;
+        sendRecordUpserts(records, {
+          atomic: true,
+          skipDeferredFlush: true,
+        }).catch(() => undefined).finally(() => {
+          deferredTransformServerPending = Math.max(0, deferredTransformServerPending - 1);
+          schedulePersistence();
+          if (deferredTransformEntries.size) scheduleDeferredTransformFlush(120);
+        });
+        return null;
+      }).finally(() => {
+        deferredTransformFlushPromise = null;
+        if (deferredTransformEntries.size) scheduleDeferredTransformFlush();
+      });
+      return deferredTransformFlushPromise;
+    }
+
+    deferredTransformFlushRef.current = flushDeferredTransformPersistence;
+
 
 
     let creationPreviewFrame = null;
@@ -7340,18 +7557,21 @@ function BoardWorkspace({
       commitAddedObject(path);
     });
 
-    canvas.on('before:transform', ({ transform }) => {
+    canvas.on('before:transform', ({ transform, e: nativeEvent }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
+      const pointerType = nativeEvent?.pointerType
+        ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
+      transformGestureRef.current.pointerType = pointerType;
+      const zIndexMap = new Map(canvas.getObjects().map((object, index) => [object, index]));
       if (transform.target.transientSelectionProxy) {
         modifiedBeforeRef.current = [];
-        transformGestureRef.current.activeId = beginLiveTransform(transform.target);
+        transformGestureRef.current.activeId = beginLiveTransform(transform.target, { zIndexMap });
         lastLockBroadcastRef.current = Date.now();
         return;
       }
-      const zIndexMap = new Map(canvas.getObjects().map((object, index) => [object, index]));
       modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas, zIndexMap);
       sendLocalLock(transform.target, true);
-      transformGestureRef.current.activeId = beginLiveTransform(transform.target);
+      transformGestureRef.current.activeId = beginLiveTransform(transform.target, { zIndexMap });
       lastLockBroadcastRef.current = Date.now();
     });
 
@@ -7374,17 +7594,24 @@ function BoardWorkspace({
         target.previewReceivedAt = Date.now();
         target.setCoords();
         modifiedBeforeRef.current = [];
+        transformGestureRef.current.activeId = null;
+        transformGestureRef.current.pointerType = null;
         canvas.requestRenderAll();
         return;
       }
+
       const groupSelection = isActiveSelectionObject(target);
       const selectedObjects = flattenTarget(target).filter(Boolean);
+      selectedObjects.forEach((object) => {
+        if (!object.boardObjectId) object.boardObjectId = randomToken(10);
+        registerCanvasObject(object);
+      });
       const beforeTransforms = modifiedBeforeRef.current;
-      const afterTransforms = transformFramesForObjects(
-        selectedObjects,
-        canvas,
-        liveTransformSendRef.current.zIndexMap,
-      );
+      const zIndexMap = liveTransformSendRef.current.zIndexMap;
+      const afterTransforms = transformFramesForObjects(selectedObjects, canvas, zIndexMap);
+      const recordInputs = captureTransformRecordInputs(selectedObjects, zIndexMap);
+      const pointerType = transformGestureRef.current.pointerType;
+      const gestureId = transformGestureRef.current.activeId;
       modifiedBeforeRef.current = [];
       endLiveTransform(target);
 
@@ -7393,38 +7620,41 @@ function BoardWorkspace({
         .sort()
         .join('|');
       const commitNow = performance.now();
-      const gestureId = transformGestureRef.current.activeId;
       const duplicateGesture = Boolean(gestureId)
         && transformGestureRef.current.lastCommittedId === gestureId;
-      const duplicateFallback = !gestureId
-        && commitSignature
+      // Safari may expose the same physical Pencil release once as pen and once as a
+      // compatibility mouse release. Always deduplicate the final matrix, even when the
+      // second route opened a fresh Fabric gesture id.
+      const duplicateSignature = Boolean(commitSignature)
         && transformGestureRef.current.signature === commitSignature
-        && commitNow - Number(transformGestureRef.current.committedAt ?? 0) < 120;
-      if (duplicateGesture || duplicateFallback) {
+        && commitNow - Number(transformGestureRef.current.committedAt ?? 0) < 1800;
+      if (duplicateGesture || duplicateSignature) {
+        transformGestureRef.current.activeId = null;
+        transformGestureRef.current.pointerType = null;
         sendLocalLock(selectedObjects, false);
         return;
       }
       transformGestureRef.current.lastCommittedId = gestureId;
       transformGestureRef.current.signature = commitSignature;
       transformGestureRef.current.committedAt = commitNow;
+      transformGestureRef.current.activeId = null;
+      transformGestureRef.current.pointerType = null;
 
       const commitObjects = () => {
-        selectedObjects.forEach((object) => {
-          if (!object.boardObjectId) object.boardObjectId = randomToken(10);
-          registerCanvasObject(object);
-          object.setCoords?.();
-        });
-        const after = getTransformRecords(selectedObjects);
-        sendRecordUpserts(after);
+        // Fabric has already rendered the final transform. Release collaboration locks
+        // and record Undo immediately; persistence must not hold the pointer-up frame.
         sendLocalLock(selectedObjects, false);
         if (beforeTransforms.length && afterTransforms.length) {
           recordAction({ type: 'transform', before: beforeTransforms, after: afterTransforms });
         }
-        schedulePersistence();
-        deduplicateRegisteredObjectIds(selectedObjects.map((object) => object.boardObjectId));
-        updateSelectionState();
-        updateSelectionStyleState();
-        canvas.requestRenderAll();
+
+        if (pointerType === 'pen') {
+          queueDeferredTransformPersistence(recordInputs);
+        } else {
+          const records = materializeTransformRecords(recordInputs);
+          sendRecordUpserts(records, { atomic: true })
+            .finally(() => schedulePersistence());
+        }
       };
 
       if (!groupSelection) {
@@ -7432,46 +7662,50 @@ function BoardWorkspace({
         return;
       }
 
-      // Do not alter ActiveSelection while Fabric is still completing object:modified.
-      // On Safari/iPad that created a stale wrapper which captured all later input.
-      // Commit on the next animation frame, after Fabric has fully completed mouse:up.
+      // Let Fabric finish dismantling its internal transform state first. The next frame
+      // only queues the lightweight persistence patch; it no longer re-runs setCoords on
+      // every member or serializes every selected path.
       const commitToken = {};
       pendingGroupTransformCommitRef.current = commitToken;
       window.requestAnimationFrame(() => {
         if (pendingGroupTransformCommitRef.current !== commitToken) return;
         pendingGroupTransformCommitRef.current = null;
         if (fabricCanvasRef.current !== canvas) return;
-        // Keep the user's ActiveSelection after a move. Fabric will clear it naturally
-        // when the user clicks empty space or chooses another tool. Mutating or
-        // rebuilding the wrapper here caused stale/empty selections in older releases.
-        selectedObjects.forEach((object) => object.setCoords());
-        target.setCoords?.();
         commitObjects();
       });
     });
 
     const refreshSelectionUi = () => {
       const active = canvas.getActiveObject();
-      const currentTouched = new Set(isActiveSelectionObject(active) && typeof active.getObjects === 'function'
-        ? [active, ...active.getObjects()]
-        : [active].filter(Boolean));
-      const touched = new Set([...selectionUiTouchedRef.current, ...currentTouched]);
-      selectionUiTouchedRef.current = currentTouched;
-      applyObjectInteractivityToObjects([...touched], { render: false });
+      selectionUiTouchedRef.current = new Set([active].filter(Boolean));
+      // The selected members are already interactive board objects. Re-applying flags to
+      // every member during selection:cleared made deselect O(group size) and duplicated
+      // Fabric's own ActiveSelection dismantling. Only the active wrapper/object needs UI.
+      applyObjectInteractivityToObjects([active].filter(Boolean), { render: false });
       updateSelectionVisuals();
       updateSelectionState();
-      updateSelectionStyleState();
+      window.clearTimeout(selectionStyleRefreshTimerRef.current);
+      selectionStyleRefreshTimerRef.current = window.setTimeout(() => {
+        selectionStyleRefreshTimerRef.current = null;
+        if (fabricCanvasRef.current === canvas) updateSelectionStyleState();
+      }, 0);
+    };
+    const queueSelectionUiRefresh = () => {
+      if (selectionUiRefreshFrameRef.current != null) return;
+      selectionUiRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        selectionUiRefreshFrameRef.current = null;
+        if (fabricCanvasRef.current === canvas) refreshSelectionUi();
+      });
     };
     const startTransactionalSelection = () => {
-      // Keep Fabric's native ActiveSelection locally. It already produces stable live
-      // transform frames for every selected object and is committed atomically by the
-      // existing object:modified handler. Replacing it immediately with a serialized
-      // proxy used to clone every selected path at Pencil-up and freeze busy boards.
-      refreshSelectionUi();
+      // Selection UI is cosmetic. Run it after Fabric has completed the current pointer
+      // event so clearing a large ActiveSelection cannot block the Pencil contact itself.
+      queueSelectionUiRefresh();
     };
     const finishTransactionalSelection = () => {
-      refreshSelectionUi();
+      queueSelectionUiRefresh();
     };
+
     const handleRegistryObjectAdded = ({ target }) => registerCanvasObject(target);
     const handleRegistryObjectRemoved = ({ target }) => unregisterCanvasObject(target);
     canvas.on('object:added', handleRegistryObjectAdded);
@@ -7893,7 +8127,7 @@ function BoardWorkspace({
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
       if (activeToolRef.current === 'select'
-        && nativeEvent?.pointerType !== 'pen'
+        && (nativeEvent?.pointerType == null || nativeEvent?.pointerType === 'mouse')
         && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
         nativeEvent?.preventDefault?.();
         nativeEvent?.stopPropagation?.();
@@ -8058,10 +8292,10 @@ function BoardWorkspace({
 
       if (activeToolRef.current === 'select' && !event.target && primarySelectionPointer) {
         if (canvas.getActiveObject()) {
+          // discardActiveObject already emits selection:cleared. The coalesced selection
+          // listener updates controls/state once on the next frame; doing it again here
+          // caused the second freeze when tapping empty space with Apple Pencil.
           canvas.discardActiveObject();
-          updateSelectionState();
-          updateSelectionStyleState();
-          canvas.requestRenderAll();
         }
         const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
         selectionDragRef.current = {
@@ -8193,7 +8427,7 @@ function BoardWorkspace({
     canvas.on('mouse:move', (event) => {
       const nativeEvent = event.e;
       if (activeToolRef.current === 'select'
-        && nativeEvent?.pointerType !== 'pen'
+        && (nativeEvent?.pointerType == null || nativeEvent?.pointerType === 'mouse')
         && Number(nativeEvent?.buttons ?? 0) > 0
         && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) return;
       if (nativeEvent?.pointerId != null && rejectedPointerIdsRef.current.has(nativeEvent.pointerId)) return;
@@ -8280,7 +8514,7 @@ function BoardWorkspace({
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
       if (activeToolRef.current === 'select'
-        && nativeEvent?.pointerType !== 'pen'
+        && (nativeEvent?.pointerType == null || nativeEvent?.pointerType === 'mouse')
         && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
         nativeEvent?.preventDefault?.();
         nativeEvent?.stopPropagation?.();
@@ -8296,7 +8530,17 @@ function BoardWorkspace({
       const textTapCandidate = textTapCandidateRef.current;
       textTapCandidateRef.current = null;
       if (liveTransformSendRef.current.sessionId && !shapeDraftRef.current) {
-        endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
+        // object:modified owns normal transform completion. Keep the cached z-index map
+        // alive through that event; only close a session on the next frame if Fabric did
+        // not emit object:modified (for example after a cancelled/no-op drag).
+        const pendingSessionId = liveTransformSendRef.current.sessionId;
+        window.requestAnimationFrame(() => {
+          if (liveTransformSendRef.current.sessionId !== pendingSessionId) return;
+          endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject(), pendingSessionId);
+          transformGestureRef.current.activeId = null;
+          transformGestureRef.current.pointerType = null;
+          modifiedBeforeRef.current = [];
+        });
       }
       if (localLockIdsRef.current.length) {
         realtimeRef.current?.sendLock(localLockIdsRef.current, false);
@@ -8899,7 +9143,6 @@ function BoardWorkspace({
       session.pointerId = event.pointerId;
       session.active = true;
       session.moveFramePending = false;
-      armExactSelectionTargetFind();
       try { touchTarget.setPointerCapture(event.pointerId); } catch { /* Safari may reject capture. */ }
       return false;
     }
@@ -8914,7 +9157,7 @@ function BoardWorkspace({
       // suppressed by the guard below; relying on that event left the DOM marquee open.
       finalizeSelectionMarquee(event, { cancelled });
 
-      session.compatibilityGuardUntil = performance.now() + 280;
+      session.compatibilityGuardUntil = performance.now() + 700;
       session.active = false;
       session.moveFramePending = false;
       if (cancelled) {
@@ -8941,7 +9184,7 @@ function BoardWorkspace({
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
 
       if (activeToolRef.current === 'select'
-        && event.pointerType !== 'pen'
+        && (event.pointerType == null || event.pointerType === 'mouse')
         && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
         suppressSelectionCompatibilityEvent(event);
         return;
@@ -9044,7 +9287,7 @@ function BoardWorkspace({
         return;
       }
       if (activeToolRef.current === 'select'
-        && event.pointerType !== 'pen'
+        && (event.pointerType == null || event.pointerType === 'mouse')
         && Number(event.buttons ?? 0) > 0
         && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
         suppressSelectionCompatibilityEvent(event);
@@ -9089,7 +9332,7 @@ function BoardWorkspace({
     function handlePalmPointerEnd(event) {
       if (finishEyedropperPenContact(event)) return;
       if (activeToolRef.current === 'select'
-        && event.pointerType !== 'pen'
+        && (event.pointerType == null || event.pointerType === 'mouse')
         && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
         suppressSelectionCompatibilityEvent(event);
         return;
@@ -9555,6 +9798,7 @@ function BoardWorkspace({
       selectionDragRef.current = null;
       hideSelectionMarquee();
       endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
+      flushDeferredTransformPersistence({ force: true }).catch(() => undefined);
       if (localLockIdsRef.current.length) {
         realtimeRef.current?.sendLock(localLockIdsRef.current, false);
         localLockIdsRef.current = [];
@@ -9779,6 +10023,17 @@ function BoardWorkspace({
       window.clearTimeout(liveDrawSendRef.current.timer);
       window.clearTimeout(selectionTargetFindResetRef.current);
       selectionTargetFindResetRef.current = null;
+      window.clearTimeout(deferredTransformTimer);
+      deferredTransformTimer = null;
+      cancelDeferredTransformIdle();
+      deferredTransformEntries.clear();
+      deferredTransformFlushRef.current = null;
+      window.clearTimeout(selectionStyleRefreshTimerRef.current);
+      selectionStyleRefreshTimerRef.current = null;
+      if (selectionUiRefreshFrameRef.current != null) {
+        window.cancelAnimationFrame(selectionUiRefreshFrameRef.current);
+        selectionUiRefreshFrameRef.current = null;
+      }
       hideSelectionMarquee();
       pendingPencilQueueRef.current.forEach((pending) => window.clearTimeout(pending.cancelTimer));
       pendingPencilQueueRef.current = [];
@@ -9815,6 +10070,7 @@ function BoardWorkspace({
         lastCommittedId: null,
         signature: '',
         committedAt: 0,
+        pointerType: null,
       };
       liveDrawSendRef.current.sessionId = null;
       liveDrawSendRef.current.lastSentPointIndex = 0;
@@ -9842,6 +10098,7 @@ function BoardWorkspace({
       snapshotPersistRunnerRef.current = null;
       window.removeEventListener('focus', syncOnFocus);
       window.removeEventListener('pageshow', syncOnPageShow);
+      window.removeEventListener('pagehide', syncOnPageHide);
       window.removeEventListener('online', syncOnOnline);
       document.removeEventListener('visibilitychange', syncOnVisibility);
       boardReadyRef.current = false;
