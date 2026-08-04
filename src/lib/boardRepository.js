@@ -240,23 +240,16 @@ async function rebuildLocalSnapshot(boardId, fallbackSnapshot, fallbackRevision 
   };
   let revision = Number(cached?.revision ?? fallbackRevision ?? 0);
   const confirmed = await getConfirmedActionsAfter(boardId, revision);
+  snapshot = applyActionsToSnapshot(snapshot, confirmed);
   for (const action of confirmed) {
-    snapshot = applyOpsToSnapshot(snapshot, action.ops ?? [], action.background ?? null);
     revision = Math.max(revision, Number(action.revision ?? revision));
   }
   const pending = await getPendingActions(boardId);
-  for (const action of pending) {
-    snapshot = applyOpsToSnapshot(snapshot, action.ops ?? [], action.background ?? null);
-  }
+  snapshot = applyActionsToSnapshot(snapshot, pending);
   return { snapshot, revision, pending };
 }
 
-export function applyOpsToSnapshot(sourceSnapshot, ops, background = null) {
-  const snapshot = cloneSnapshot(sourceSnapshot ?? {
-    version: 2,
-    background: 'grid',
-    canvas: { objects: [] },
-  });
+function applyOpsToMutableSnapshot(snapshot, ops, background = null) {
   snapshot.version = 2;
   if (!snapshot.canvas || typeof snapshot.canvas !== 'object') snapshot.canvas = { objects: [] };
   if (!Array.isArray(snapshot.canvas.objects)) snapshot.canvas.objects = [];
@@ -307,6 +300,27 @@ export function applyOpsToSnapshot(sourceSnapshot, ops, background = null) {
 
   if (['grid', 'dots', 'blank'].includes(background)) snapshot.background = background;
   snapshot.savedAt = new Date().toISOString();
+  return snapshot;
+}
+
+export function applyOpsToSnapshot(sourceSnapshot, ops, background = null) {
+  const snapshot = cloneSnapshot(sourceSnapshot ?? {
+    version: 2,
+    background: 'grid',
+    canvas: { objects: [] },
+  });
+  return applyOpsToMutableSnapshot(snapshot, ops, background);
+}
+
+export function applyActionsToSnapshot(sourceSnapshot, actions) {
+  const snapshot = cloneSnapshot(sourceSnapshot ?? {
+    version: 2,
+    background: 'grid',
+    canvas: { objects: [] },
+  });
+  for (const action of Array.isArray(actions) ? actions : []) {
+    applyOpsToMutableSnapshot(snapshot, action?.ops ?? [], action?.background ?? null);
+  }
   return snapshot;
 }
 
@@ -563,10 +577,7 @@ export async function getBoardRecovery(boardId, key) {
   const result = Array.isArray(data) ? data[0] : data;
   if (!result) return null;
   const actions = Array.isArray(result.actions) ? result.actions : [];
-  let snapshot = result.snapshot;
-  for (const action of actions) {
-    snapshot = applyOpsToSnapshot(snapshot, action.ops ?? [], action.background ?? null);
-  }
+  const snapshot = applyActionsToSnapshot(result.snapshot, actions);
   return {
     snapshot,
     revision: Number(result.current_revision ?? result.snapshot_revision ?? 0),

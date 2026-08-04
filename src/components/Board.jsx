@@ -20,12 +20,14 @@ import Toolbar from './Toolbar.jsx';
 import ShareDialog from './ShareDialog.jsx';
 import GameLibrary from './GameLibrary.jsx';
 import {
+  applyActionsToSnapshot,
   applyOpsToSnapshot,
   getBoardAccess,
   getBoardChanges,
   getBoardRecovery,
   getBoardSyncState,
   isSupabaseConfigured,
+  saveBoardSnapshot,
   setGameLibraryVisibility,
   setGuestMode,
 } from '../lib/boardRepository.js';
@@ -73,6 +75,7 @@ const INSURANCE_SYNC_PAGE_SIZE = 500;
 const INTEGRITY_CHECK_INTERVAL = 5 * 60_000;
 const LOCAL_LOCK_REFRESH_INTERVAL = 2_500;
 const IMAGE_RETRY_INTERVAL = 5_000;
+const SNAPSHOT_COMPACTION_IDLE_MS = 2_500;
 const PENCIL_TOUCH_GRACE_MS = 240;
 const TOUCH_GESTURE_ARM_MS = 80;
 const TOUCH_GESTURE_MOVE_THRESHOLD = 6;
@@ -1053,6 +1056,45 @@ function createPendingImagePlaceholder(serialized) {
   return placeholder;
 }
 
+function serializedImagePayload(serialized) {
+  if (!serialized || typeof serialized !== 'object') return null;
+  if (serialized.pendingImageSerialized?.src) return serialized.pendingImageSerialized;
+  const type = String(serialized.type ?? '').toLowerCase();
+  if ((type === 'image' || serialized.objectKind === 'image') && typeof serialized.src === 'string') {
+    return serialized;
+  }
+  return null;
+}
+
+async function loadCanvasJsonProgressively(canvas, canvasJson) {
+  const source = canvasJson && typeof canvasJson === 'object'
+    ? canvasJson
+    : { objects: [] };
+  const sourceObjects = Array.isArray(source.objects) ? source.objects : [];
+  const pendingImages = [];
+  const immediateObjects = [];
+
+  sourceObjects.forEach((serialized, zIndex) => {
+    const imagePayload = serializedImagePayload(serialized);
+    if (imagePayload) pendingImages.push({ serialized: imagePayload, zIndex });
+    else immediateObjects.push(serialized);
+  });
+
+  await canvas.loadFromJSON({ ...source, objects: immediateObjects });
+
+  // Do not make the whole board wait for a slow image host. Every picture gets a
+  // correctly positioned placeholder and then hydrates independently in the background.
+  pendingImages.forEach(({ serialized, zIndex }) => {
+    const placeholder = createPendingImagePlaceholder(serialized);
+    canvas.add(placeholder);
+    if (typeof canvas.moveObjectTo === 'function') {
+      canvas.moveObjectTo(placeholder, clamp(zIndex, 0, canvas.getObjects().length - 1));
+    }
+  });
+
+  return pendingImages.length;
+}
+
 function touchMetrics(touches, element) {
   const first = touches[0];
   const second = touches[1];
@@ -1329,6 +1371,18 @@ function BoardWorkspace({
   const clipboardCenterRef = useRef(null);
   const clipboardSourceBoardIdRef = useRef(null);
   const mobilePasteAwaitingPointRef = useRef(false);
+  const toolbarPastePointRef = useRef(null);
+  const toolbarPasteAwaitingPointRef = useRef(false);
+  const snapshotPersistTimerRef = useRef(null);
+  const snapshotPersistInFlightRef = useRef(false);
+  const snapshotPersistQueuedRef = useRef(false);
+  const snapshotPersistRunnerRef = useRef(null);
+  const initialSnapshotRevision = Number(initialAccess.snapshotRevision ?? 0);
+  const lastSnapshotSavedRevisionRef = useRef(initialSnapshotRevision);
+  const snapshotCompactBaseRef = useRef(initialAccess.snapshot ?? null);
+  const snapshotCompactBaseRevisionRef = useRef(initialSnapshotRevision);
+  const snapshotCompactActionsRef = useRef([]);
+  const snapshotCompactTargetRevisionRef = useRef(initialSnapshotRevision);
   const revisionRef = useRef(Number(initialAccess.snapshotRevision ?? initialAccess.revision ?? 0));
   const pendingServerWritesRef = useRef(0);
   const syncRequestedRef = useRef(false);
@@ -1887,10 +1941,43 @@ function BoardWorkspace({
     updateHistoryButtons();
   }, [updateHistoryButtons]);
 
-  // 0.9.7: every completed edit is already persisted as one durable operation by
-  // realtime.sendOps/sendSettings. This compatibility callback intentionally does
-  // nothing, so ordinary tools never call canvas.toJSON() or rewrite a full local board.
-  const schedulePersistence = useCallback(() => {}, []);
+  // Durable operations remain the source of truth. After a short idle pause, also
+  // compact the current board into one full snapshot. A fresh browser can then paint
+  // the complete lesson immediately instead of replaying a long operation journal.
+  const schedulePersistence = useCallback((delay = SNAPSHOT_COMPACTION_IDLE_MS) => {
+    if (!isSupabaseConfigured || !canEditRef.current) return;
+    window.clearTimeout(snapshotPersistTimerRef.current);
+    snapshotPersistTimerRef.current = window.setTimeout(() => {
+      snapshotPersistTimerRef.current = null;
+      snapshotPersistRunnerRef.current?.();
+    }, Math.max(250, Number(delay ?? SNAPSHOT_COMPACTION_IDLE_MS)));
+  }, []);
+
+  const bufferSnapshotAction = useCallback((ops, background, revision) => {
+    const incomingRevision = Number(revision ?? 0);
+    if (incomingRevision <= 0) return;
+    const targetRevision = Number(snapshotCompactTargetRevisionRef.current ?? 0);
+    if (incomingRevision <= targetRevision) return;
+
+    if (incomingRevision !== targetRevision + 1) {
+      // A missed revision means the buffered compact state can no longer be trusted.
+      // The idle compactor will request one authoritative recovery snapshot instead.
+      snapshotCompactBaseRef.current = null;
+      snapshotCompactBaseRevisionRef.current = 0;
+      snapshotCompactActionsRef.current = [];
+      snapshotCompactTargetRevisionRef.current = incomingRevision;
+      schedulePersistence(1_000);
+      return;
+    }
+
+    snapshotCompactActionsRef.current.push({
+      revision: incomingRevision,
+      ops: Array.isArray(ops) ? ops : [],
+      background: BACKGROUNDS.has(background) ? background : null,
+    });
+    snapshotCompactTargetRevisionRef.current = incomingRevision;
+    schedulePersistence();
+  }, [schedulePersistence]);
 
   const applyGameLibraryVisibility = useCallback((visible) => {
     const nextVisible = Boolean(visible);
@@ -3439,6 +3526,109 @@ function BoardWorkspace({
     return ids;
   }, []);
 
+  const persistFullSnapshot = useCallback(async () => {
+    if (!canEditRef.current || !boardReadyRef.current) return;
+
+    if (snapshotPersistInFlightRef.current) {
+      snapshotPersistQueuedRef.current = true;
+      return;
+    }
+    if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
+      schedulePersistence(1_200);
+      return;
+    }
+
+    const requestedRevision = Number(revisionRef.current ?? 0);
+    if (requestedRevision <= Number(lastSnapshotSavedRevisionRef.current ?? 0)) return;
+
+    snapshotPersistInFlightRef.current = true;
+    snapshotPersistQueuedRef.current = false;
+    try {
+      let snapshot = null;
+      let snapshotRevision = requestedRevision;
+      const baseSnapshot = snapshotCompactBaseRef.current;
+      const baseRevision = Number(snapshotCompactBaseRevisionRef.current ?? 0);
+      const bufferedActions = snapshotCompactActionsRef.current
+        .filter((action) => Number(action?.revision ?? 0) <= requestedRevision)
+        .sort((left, right) => Number(left.revision ?? 0) - Number(right.revision ?? 0));
+
+      let expectedRevision = baseRevision;
+      let bufferedSequenceComplete = Boolean(baseSnapshot) && baseRevision <= requestedRevision;
+      const compactActions = [];
+      if (bufferedSequenceComplete) {
+        for (const action of bufferedActions) {
+          const actionRevision = Number(action.revision ?? 0);
+          if (actionRevision <= baseRevision) continue;
+          if (actionRevision !== expectedRevision + 1) {
+            bufferedSequenceComplete = false;
+            break;
+          }
+          compactActions.push(action);
+          expectedRevision = actionRevision;
+        }
+        if (expectedRevision !== requestedRevision) bufferedSequenceComplete = false;
+      }
+
+      if (bufferedSequenceComplete) {
+        // Clone once and apply the buffered actions in exact revision order. This avoids
+        // traversing the live Fabric canvas after a pause, so Pencil input stays responsive.
+        snapshot = applyActionsToSnapshot(baseSnapshot, compactActions);
+      } else if (isSupabaseConfigured) {
+        const recovery = await getBoardRecovery(boardId, boardKey);
+        if (!recovery?.snapshot) throw new Error('Сервер не вернул снимок для сжатия');
+        snapshot = applyOpsToSnapshot(recovery.snapshot, []);
+        snapshotRevision = Number(recovery.revision ?? requestedRevision);
+        if (snapshotRevision < requestedRevision) {
+          schedulePersistence(1_500);
+          return;
+        }
+      } else {
+        return;
+      }
+
+      const savedRevision = await saveBoardSnapshot(
+        boardId,
+        boardKey,
+        snapshot,
+        snapshotRevision,
+      );
+      if (Number(savedRevision ?? snapshotRevision) < snapshotRevision) {
+        throw new Error('Сервер сохранил снимок более старой ревизии');
+      }
+      // The JSON was built for snapshotRevision, so never claim that it represents a
+      // later drawing revision even if an older backend returns a larger service value.
+      lastSnapshotSavedRevisionRef.current = snapshotRevision;
+      snapshotCompactBaseRef.current = snapshot;
+      snapshotCompactBaseRevisionRef.current = snapshotRevision;
+      snapshotCompactActionsRef.current = snapshotCompactActionsRef.current.filter(
+        (action) => Number(action?.revision ?? 0) > snapshotRevision,
+      );
+      snapshotCompactTargetRevisionRef.current = snapshotCompactActionsRef.current.length
+        ? Number(snapshotCompactActionsRef.current.at(-1)?.revision ?? snapshotRevision)
+        : snapshotRevision;
+
+      await setCachedSnapshot(boardId, {
+        snapshot,
+        revision: snapshotRevision,
+        savedAt: Date.now(),
+      });
+      await pruneConfirmedActionsThrough(boardId, snapshotRevision);
+
+      if (Number(revisionRef.current ?? 0) > snapshotRevision) schedulePersistence(900);
+    } catch (caught) {
+      console.warn('Не удалось сжать доску в быстрый снимок', caught);
+      schedulePersistence(4_000);
+    } finally {
+      snapshotPersistInFlightRef.current = false;
+      if (snapshotPersistQueuedRef.current) {
+        snapshotPersistQueuedRef.current = false;
+        schedulePersistence(800);
+      }
+    }
+  }, [boardId, boardKey, getLocalMutationIds, schedulePersistence]);
+
+  snapshotPersistRunnerRef.current = persistFullSnapshot;
+
   const retryPendingServerImages = useCallback(async () => {
     if (pendingImageRetryInFlightRef.current) return;
     const canvas = fabricCanvasRef.current;
@@ -3451,36 +3641,43 @@ function BoardWorkspace({
     if (!pending.length) return;
 
     pendingImageRetryInFlightRef.current = true;
+    const queue = [...pending];
     try {
-      for (const placeholder of pending) {
-        const serialized = placeholder.pendingImageSerialized;
-        const objectId = String(placeholder.boardObjectId ?? '');
-        if (!serialized || !objectId || getLocalMutationIds().has(objectId)) continue;
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          await preloadSerializedImages(serialized);
-          // eslint-disable-next-line no-await-in-loop
-          const [revived] = await util.enlivenObjects([serialized]);
-          if (!revived) continue;
-          const current = boardObjectsById(canvas, objectId).find((object) => object.pendingImage);
-          if (!current) continue;
-          const zIndex = canvas.getObjects().indexOf(current);
-          applyingRemoteRef.current = true;
-          canvas.remove(current);
-          revived.pendingImage = false;
-          revived.pendingImageSerialized = undefined;
-          revived.transientPreview = false;
-          canvas.add(revived);
-          if (zIndex >= 0 && typeof canvas.moveObjectTo === 'function') {
-            canvas.moveObjectTo(revived, clamp(zIndex, 0, canvas.getObjects().length - 1));
+      const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+        while (queue.length) {
+          const placeholder = queue.shift();
+          const serialized = placeholder?.pendingImageSerialized;
+          const objectId = String(placeholder?.boardObjectId ?? '');
+          if (!serialized || !objectId || getLocalMutationIds().has(objectId)) continue;
+          try {
+            // Different pictures load independently, so one slow CDN response cannot
+            // hold every other image on the board behind it.
+            // eslint-disable-next-line no-await-in-loop
+            await preloadSerializedImages(serialized);
+            // eslint-disable-next-line no-await-in-loop
+            const [revived] = await util.enlivenObjects([serialized]);
+            if (!revived) continue;
+            const current = boardObjectsById(canvas, objectId).find((object) => object.pendingImage);
+            if (!current) continue;
+            const zIndex = canvas.getObjects().indexOf(current);
+            applyingRemoteRef.current = true;
+            canvas.remove(current);
+            revived.pendingImage = false;
+            revived.pendingImageSerialized = undefined;
+            revived.transientPreview = false;
+            canvas.add(revived);
+            if (zIndex >= 0 && typeof canvas.moveObjectTo === 'function') {
+              canvas.moveObjectTo(revived, clamp(zIndex, 0, canvas.getObjects().length - 1));
+            }
+            revived.setCoords?.();
+          } catch {
+            // Storage/CDN can still be warming up. The next retry keeps the same objectId.
+          } finally {
+            applyingRemoteRef.current = false;
           }
-          revived.setCoords?.();
-        } catch {
-          // Storage/CDN can still be warming up. The next retry keeps the same objectId.
-        } finally {
-          applyingRemoteRef.current = false;
         }
-      }
+      });
+      await Promise.all(workers);
       applyObjectInteractivity();
       canvas.requestRenderAll();
     } finally {
@@ -3525,8 +3722,7 @@ function BoardWorkspace({
 
         applyingRemoteRef.current = true;
         try {
-          await preloadSerializedImages(effectiveSnapshot.canvas);
-          await canvas.loadFromJSON(effectiveSnapshot.canvas);
+          await loadCanvasJsonProgressively(canvas, effectiveSnapshot.canvas);
           rebuildObjectRegistry();
           deduplicateBoardObjects(canvas);
           rebuildObjectRegistry();
@@ -3546,6 +3742,10 @@ function BoardWorkspace({
           }
 
           revisionRef.current = Number(revision ?? revisionRef.current);
+          snapshotCompactBaseRef.current = sanitizedSnapshot;
+          snapshotCompactBaseRevisionRef.current = revisionRef.current;
+          snapshotCompactActionsRef.current = [];
+          snapshotCompactTargetRevisionRef.current = revisionRef.current;
           updateBackgroundTransform();
           updateSelectionState();
           updateSelectionStyleState();
@@ -3556,6 +3756,8 @@ function BoardWorkspace({
             savedAt: Date.now(),
           });
           await pruneConfirmedActionsThrough(boardId, revisionRef.current);
+          retryPendingServerImages();
+          schedulePersistence(1_000);
         } finally {
           applyingRemoteRef.current = false;
         }
@@ -3568,6 +3770,8 @@ function BoardWorkspace({
     applyObjectInteractivity,
     rebuildObjectRegistry,
     boardId,
+    retryPendingServerImages,
+    schedulePersistence,
     updateBackgroundTransform,
     updateSelectionState,
     updateSelectionStyleState,
@@ -4512,6 +4716,7 @@ function BoardWorkspace({
             }
           }
           revisionRef.current = incomingRevision;
+          bufferSnapshotAction(ops, incomingBackground, incomingRevision);
           updateSelectionState();
           updateSelectionStyleState();
           return true;
@@ -4534,6 +4739,7 @@ function BoardWorkspace({
   }, [
     applyBackground,
     applyObjectInteractivity,
+    bufferSnapshotAction,
     getLocalMutationIds,
     syncFromServer,
     updateSelectionState,
@@ -4645,11 +4851,19 @@ function BoardWorkspace({
     }
   }, [boardId, getViewportSceneCenter, updateSelectionState, updateSelectionStyleState, updateSelectionVisuals]);
 
-  const copySelectionFromToolbar = useCallback(() => {
+  const copySelectionFromToolbar = useCallback(async () => {
     const mobile = Number(navigator.maxTouchPoints ?? 0) > 0
       && (window.matchMedia?.('(pointer: coarse)')?.matches || window.innerWidth <= 1024);
-    copySelection({ deselect: mobile });
-  }, [copySelection]);
+    const copied = await copySelection({ deselect: mobile });
+    if (!copied) return;
+
+    // The pointer has to travel from the board to the toolbar before the Paste button
+    // can be pressed. Keep a stable click anchor instead of using the later hover point
+    // under the toolbar. Keyboard Ctrl/Cmd+V intentionally keeps its old cursor logic.
+    toolbarPastePointRef.current = lastPointerSceneRef.current ?? getViewportSceneCenter();
+    toolbarPasteAwaitingPointRef.current = true;
+    if (!mobile) setSaveStatus('Скопировано. Нажмите точку вставки, затем «Вставить»');
+  }, [copySelection, getViewportSceneCenter]);
 
   const insertPastedText = useCallback((rawText, point = null) => {
     const canvas = fabricCanvasRef.current;
@@ -5904,19 +6118,81 @@ function BoardWorkspace({
     resizeObserver.observe(host);
 
     let disposed = false;
-    async function loadInitialData() {
-      const savedClipboard = await getCrossBoardClipboard();
-      if (Array.isArray(savedClipboard?.objects)
-        && savedClipboard.objects.length
-        && Date.now() - Number(savedClipboard.copiedAt ?? 0) < 24 * 60 * 60_000) {
-        clipboardRef.current = savedClipboard.objects;
-        clipboardCenterRef.current = new Point(
-          Number(savedClipboard?.center?.x ?? 0),
-          Number(savedClipboard?.center?.y ?? 0),
-        );
-        internalClipboardArmedRef.current = true;
-        clipboardSourceBoardIdRef.current = savedClipboard.sourceBoardId ?? null;
+    async function rebuildInitialSnapshot(baseSnapshot, baseRevision) {
+      let confirmedRevision = Number(baseRevision ?? 0);
+      let confirmedRevisionGap = false;
+      const confirmedActions = await getConfirmedActionsAfter(boardId, confirmedRevision);
+      for (const action of confirmedActions) {
+        const actionRevision = Number(action.revision ?? 0);
+        if (!confirmedRevisionGap && actionRevision === confirmedRevision + 1) {
+          confirmedRevision = actionRevision;
+        } else if (actionRevision > confirmedRevision) {
+          confirmedRevisionGap = true;
+        }
       }
+      const confirmedSnapshot = applyActionsToSnapshot(baseSnapshot, confirmedActions);
+      const pendingActions = await getPendingActions(boardId);
+      const snapshot = applyActionsToSnapshot(confirmedSnapshot, pendingActions);
+      return {
+        snapshot,
+        confirmedRevision,
+        confirmedRevisionGap,
+        confirmedSnapshot,
+        confirmedActions,
+      };
+    }
+
+    async function paintInitialSnapshot(snapshot, confirmedRevision) {
+      if (!snapshot?.canvas || disposed) return;
+      const initialBackground = BACKGROUNDS.has(snapshot.background) ? snapshot.background : 'grid';
+      applyBackground(initialBackground);
+      applyingRemoteRef.current = true;
+      try {
+        await loadCanvasJsonProgressively(canvas, snapshot.canvas);
+        rebuildObjectRegistry();
+        revisionRef.current = Number(confirmedRevision ?? 0);
+        applyObjectInteractivity();
+        configureBrushAndMode();
+        updateBackgroundTransform();
+        canvas.requestRenderAll();
+      } finally {
+        applyingRemoteRef.current = false;
+      }
+      retryPendingServerImages();
+    }
+
+    async function loadInitialData() {
+      // Start the full recovery request immediately. It runs in parallel with IndexedDB
+      // and with the first paint instead of blocking the board behind every old action.
+      const accessSnapshotRevision = Number(
+        initialAccess.snapshotRevision ?? initialAccess.revision ?? 0,
+      );
+      const accessCurrentRevision = Number(initialAccess.revision ?? accessSnapshotRevision);
+      const needsServerRecovery = isSupabaseConfigured
+        && (!initialAccess.snapshot || accessSnapshotRevision < accessCurrentRevision);
+      const recoveryPromise = needsServerRecovery
+        ? getBoardRecovery(boardId, boardKey).catch((recoveryError) => {
+          console.warn('Snapshot recovery fallback', recoveryError);
+          return null;
+        })
+        : Promise.resolve(null);
+
+      // Clipboard restoration is unrelated to showing the lesson. Never make the board
+      // wait for it on Safari/iPad where IndexedDB startup can occasionally be slow.
+      getCrossBoardClipboard().then((savedClipboard) => {
+        if (disposed) return;
+        if (Array.isArray(savedClipboard?.objects)
+          && savedClipboard.objects.length
+          && Date.now() - Number(savedClipboard.copiedAt ?? 0) < 24 * 60 * 60_000) {
+          clipboardRef.current = savedClipboard.objects;
+          clipboardCenterRef.current = new Point(
+            Number(savedClipboard?.center?.x ?? 0),
+            Number(savedClipboard?.center?.y ?? 0),
+          );
+          internalClipboardArmedRef.current = true;
+          clipboardSourceBoardIdRef.current = savedClipboard.sourceBoardId ?? null;
+        }
+      }).catch(() => undefined);
 
       const cached = await getCachedSnapshot(boardId);
       let baseSnapshot = initialAccess.snapshot ?? {
@@ -5924,71 +6200,31 @@ function BoardWorkspace({
         background: 'grid',
         canvas: { objects: [] },
       };
-      let baseRevision = Number(initialAccess.snapshotRevision ?? initialAccess.revision ?? 0);
+      let baseRevision = accessSnapshotRevision;
       let authoritativeBase = Boolean(initialAccess.snapshot);
 
-      if (!isSupabaseConfigured && cached?.snapshot) {
+      // Use a newer local snapshot even while online. This gives reloads on the same
+      // device an immediate full board, while server synchronization still verifies it.
+      const cachedRevision = Number(cached?.revision ?? -1);
+      if (cached?.snapshot
+        && cachedRevision >= baseRevision
+        && (!isSupabaseConfigured || cachedRevision <= accessCurrentRevision)) {
         baseSnapshot = cached.snapshot;
-        baseRevision = Number(cached.revision ?? baseRevision);
+        baseRevision = cachedRevision;
+        authoritativeBase = true;
       }
 
-      if (isSupabaseConfigured) {
-        try {
-          const recovery = await getBoardRecovery(boardId, boardKey);
-          if (recovery?.snapshot) {
-            baseSnapshot = recovery.snapshot;
-            baseRevision = Number(recovery.revision ?? baseRevision);
-            authoritativeBase = true;
-          }
-        } catch (recoveryError) {
-          console.warn('Snapshot recovery fallback', recoveryError);
-        }
-      }
+      const localState = await rebuildInitialSnapshot(baseSnapshot, baseRevision);
+      snapshotCompactBaseRef.current = applyOpsToSnapshot(localState.confirmedSnapshot, []);
+      snapshotCompactBaseRevisionRef.current = localState.confirmedRevision;
+      snapshotCompactActionsRef.current = [];
+      snapshotCompactTargetRevisionRef.current = localState.confirmedRevision;
+      await paintInitialSnapshot(localState.snapshot, localState.confirmedRevision);
+      if (disposed) return;
 
-      // Rebuild without reading Fabric Canvas: base snapshot + locally confirmed
-      // operations after it + still-pending operations. Server-only missing revisions
-      // are appended by syncFromServer immediately after the Canvas becomes ready.
-      let snapshot = applyOpsToSnapshot(baseSnapshot, []);
-      let confirmedRevision = baseRevision;
-      let confirmedRevisionGap = false;
-      const confirmedActions = await getConfirmedActionsAfter(boardId, baseRevision);
-      for (const action of confirmedActions) {
-        snapshot = applyOpsToSnapshot(snapshot, action.ops ?? [], action.background ?? null);
-        const actionRevision = Number(action.revision ?? 0);
-        if (!confirmedRevisionGap && actionRevision === confirmedRevision + 1) {
-          confirmedRevision = actionRevision;
-        } else if (actionRevision > confirmedRevision) {
-          // Keep the local visual result, but never jump over a missing server revision.
-          // syncFromServer will fetch the gap and then idempotently reapply this action.
-          confirmedRevisionGap = true;
-        }
-      }
-      const confirmedSnapshot = snapshot;
-      const pendingActions = await getPendingActions(boardId);
-      for (const action of pendingActions) {
-        snapshot = applyOpsToSnapshot(snapshot, action.ops ?? [], action.background ?? null);
-      }
+      boardReadyRef.current = true;
+      syncFromServer(false);
 
-      const initialBackground = BACKGROUNDS.has(snapshot?.background) ? snapshot.background : 'grid';
-      applyBackground(initialBackground);
-      if (snapshot?.canvas && !disposed) {
-        applyingRemoteRef.current = true;
-        try {
-          await preloadSerializedImages(snapshot.canvas);
-          await canvas.loadFromJSON(snapshot.canvas);
-          rebuildObjectRegistry();
-          revisionRef.current = Math.max(Number(revisionRef.current ?? 0), confirmedRevision);
-          applyObjectInteractivity();
-          configureBrushAndMode();
-          updateBackgroundTransform();
-          canvas.requestRenderAll();
-        } finally {
-          applyingRemoteRef.current = false;
-        }
-      }
-
-      // Cache only an authoritative/base JSON received from storage or Supabase.
-      // Pending operations remain separate, so a reload can replay them exactly once.
       if (authoritativeBase && baseSnapshot?.canvas) {
         const sanitizedBaseSnapshot = applyOpsToSnapshot(baseSnapshot, []);
         await setCachedSnapshot(boardId, {
@@ -5998,18 +6234,42 @@ function BoardWorkspace({
         });
         await pruneConfirmedActionsThrough(boardId, baseRevision);
       }
-      if (!isSupabaseConfigured && !confirmedRevisionGap
-        && confirmedActions.length && confirmedSnapshot?.canvas) {
+      if (!isSupabaseConfigured && !localState.confirmedRevisionGap
+        && localState.confirmedActions.length && localState.confirmedSnapshot?.canvas) {
         await setCachedSnapshot(boardId, {
-          snapshot: confirmedSnapshot,
-          revision: confirmedRevision,
+          snapshot: localState.confirmedSnapshot,
+          revision: localState.confirmedRevision,
           savedAt: Date.now(),
         });
-        await pruneConfirmedActionsThrough(boardId, confirmedRevision);
+        await pruneConfirmedActionsThrough(boardId, localState.confirmedRevision);
       }
 
-      boardReadyRef.current = true;
-      syncFromServer(false);
+      const recovery = await recoveryPromise;
+      if (disposed || !recovery?.snapshot) {
+        schedulePersistence(1_000);
+        return;
+      }
+
+      // Reapply edits that are still waiting to reach Supabase, so a recovery response
+      // can never make the user's newest local work disappear.
+      const pendingActions = await getPendingActions(boardId);
+      const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);
+
+      if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
+        syncFromServer(true);
+        schedulePersistence(1_500);
+        return;
+      }
+
+      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
+      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
+      if (Number(revisionRef.current ?? 0) === recoveryRevision) {
+        snapshotCompactBaseRef.current = applyOpsToSnapshot(recovery.snapshot, []);
+        snapshotCompactBaseRevisionRef.current = recoveryRevision;
+        snapshotCompactActionsRef.current = [];
+        snapshotCompactTargetRevisionRef.current = recoveryRevision;
+        schedulePersistence(700);
+      }
     }
     loadInitialData().catch((caught) => {
       console.error(caught);
@@ -6044,7 +6304,7 @@ function BoardWorkspace({
       onSyncRequired() {
         syncFromServer(true);
       },
-      onCommit(result) {
+      onCommit(result, action) {
         const currentRevision = Number(revisionRef.current ?? 0);
         const committedRevision = Number(result?.revision ?? currentRevision);
         const rejected = Array.isArray(result?.rejectedObjectIds)
@@ -6064,6 +6324,13 @@ function BoardWorkspace({
           // The local Canvas already contains this action. Advance only across the one
           // server revision that was just confirmed; never Math.max over missed actions.
           revisionRef.current = committedRevision;
+          bufferSnapshotAction(
+            Array.isArray(result?.appliedOps) && result.appliedOps.length
+              ? result.appliedOps
+              : (action?.ops ?? []),
+            result?.appliedBackground ?? action?.background ?? null,
+            committedRevision,
+          );
         } else {
           syncFromServer(true);
         }
@@ -6075,11 +6342,14 @@ function BoardWorkspace({
           setSaveStatus(count === 1 ? 'Сохраняется…' : `${count} изменений ожидают отправки`);
           setSyncTone('saving');
         }
-        if (count === 0 && syncRequestedRef.current) {
-          const force = syncForceRef.current;
-          syncRequestedRef.current = false;
-          syncForceRef.current = false;
-          window.setTimeout(() => syncFromServer(force), 0);
+        if (count === 0) {
+          schedulePersistence(800);
+          if (syncRequestedRef.current) {
+            const force = syncForceRef.current;
+            syncRequestedRef.current = false;
+            syncForceRef.current = false;
+            window.setTimeout(() => syncFromServer(force), 0);
+          }
         }
       },
       onStatus(status) {
@@ -7162,6 +7432,11 @@ function BoardWorkspace({
       }
       const scenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = scenePoint;
+      if (toolbarPasteAwaitingPointRef.current) {
+        toolbarPastePointRef.current = new Point(scenePoint.x, scenePoint.y);
+        toolbarPasteAwaitingPointRef.current = false;
+        setSaveStatus('Точка вставки выбрана — нажмите «Вставить»');
+      }
 
       const editingText = canvas.getActiveObject();
       if (activeToolRef.current === 'text'
@@ -7198,6 +7473,8 @@ function BoardWorkspace({
       if (mobilePasteAwaitingPointRef.current && (nativeEvent.pointerType === 'touch' || nativeEvent.pointerType === 'pen' || (Number(navigator.maxTouchPoints ?? 0) > 0 && nativeEvent.button == null))) {
         nativeEvent.preventDefault?.();
         nativeEvent.stopPropagation?.();
+        toolbarPastePointRef.current = new Point(scenePoint.x, scenePoint.y);
+        toolbarPasteAwaitingPointRef.current = false;
         mobilePasteAwaitingPointRef.current = false;
         canvas.discardActiveObject();
         updateSelectionVisuals();
@@ -9104,6 +9381,9 @@ function BoardWorkspace({
       }
       localSelectionTransactionRef.current = null;
       window.clearTimeout(transientStatusTimerRef.current);
+      window.clearTimeout(snapshotPersistTimerRef.current);
+      snapshotPersistTimerRef.current = null;
+      snapshotPersistRunnerRef.current = null;
       window.removeEventListener('focus', syncOnFocus);
       window.removeEventListener('pageshow', syncOnPageShow);
       window.removeEventListener('online', syncOnOnline);
@@ -9265,7 +9545,7 @@ function BoardWorkspace({
         canUndo={canUndo}
         canRedo={canRedo}
         onCopy={copySelectionFromToolbar}
-        onPaste={() => pasteSelection()}
+        onPaste={() => pasteSelection(toolbarPastePointRef.current)}
         onDelete={deleteSelection}
         onClear={clearBoard}
         onAddShape={chooseShapeTool}

@@ -1,9 +1,9 @@
 {
-  "version": "1.24.1",
-  "packageVersion": "1.24.1",
-  "base": "1.24",
-  "release": "Blank-screen hotfix: remove use-before-initialization dependency introduced in 1.23",
+  "version": "1.25",
+  "packageVersion": "1.25.0",
+  "base": "1.25",
+  "release": "Stable toolbar paste anchor and immediate progressive full-board recovery",
   "date": "2026-08-05",
-  "name": "blank-screen-tdz-hotfix",
-  "label": "Alex Board 1.24.1"
+  "name": "paste-anchor-instant-board-load",
+  "label": "Alex Board 1.25"
 }
