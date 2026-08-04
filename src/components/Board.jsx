@@ -1410,10 +1410,14 @@ function BoardWorkspace({
   const eyedropperModeRef = useRef(null);
   const eyedropperSelectionIdsRef = useRef([]);
   const eyedropperSelectionTransactionIdRef = useRef(null);
-  // Apple Pencil sampling is committed only after the physical contact ends.
-  // The ref stores the pending sample until pointerup so the accepted color is
-  // never applied while WebKit still owns the same stylus/touch stream.
+  // A Pencil eyedropper contact is owned entirely by the native capture route.
+  // Fabric never sees that pointer stream, so the next stroke can start immediately
+  // after pointerup without waiting for a timer or for WebKit to release old state.
   const eyedropperPenContactRef = useRef(null);
+  // Safari may mirror one Pencil contact into PointerEvent, TouchEvent and
+  // compatibility mouse events. This short guard keeps the mirrored tail away from
+  // Fabric after the atomic eyedropper session has already completed.
+  const eyedropperCompatibilityGuardUntilRef = useRef(0);
   const eraserModeRef = useRef('object');
   const eraserWidthRef = useRef(28);
   const fontFamilyRef = useRef('Arial');
@@ -2325,6 +2329,9 @@ function BoardWorkspace({
       cancelCreationDraftRef.current?.('tool-change');
     }
     if (eyedropperActiveRef.current && nextTool !== activeToolRef.current) {
+      const pendingPenSample = eyedropperPenContactRef.current;
+      if (pendingPenSample) window.clearTimeout(pendingPenSample.watchdog);
+      eyedropperPenContactRef.current = null;
       eyedropperActiveRef.current = false;
       eyedropperModeRef.current = null;
       eyedropperSelectionIdsRef.current = [];
@@ -2392,6 +2399,11 @@ function BoardWorkspace({
     const selectionMode = activeToolRef.current === 'select' && selectionObjects.length > 0;
     if (!drawingMode && !selectionMode) return;
 
+    const pendingPenSample = eyedropperPenContactRef.current;
+    if (pendingPenSample) {
+      window.clearTimeout(pendingPenSample.watchdog);
+      eyedropperPenContactRef.current = null;
+    }
     const nextActive = !eyedropperActiveRef.current;
     eyedropperActiveRef.current = nextActive;
     setEyedropperActive(nextActive);
@@ -4917,9 +4929,12 @@ function BoardWorkspace({
       }
     }
     if (!clipboardRef.current.length) return false;
-    const point = requestedPoint
+    const hasRequestedToolbarPoint = Boolean(
+      requestedPoint
       && Number.isFinite(Number(requestedPoint.x))
-      && Number.isFinite(Number(requestedPoint.y))
+      && Number.isFinite(Number(requestedPoint.y)),
+    );
+    const point = hasRequestedToolbarPoint
       ? requestedPoint
       : (lastPointerSceneRef.current ?? getViewportSceneCenter());
     const sourceCenter = clipboardCenterRef.current ?? new Point(0, 0);
@@ -4987,7 +5002,17 @@ function BoardWorkspace({
       updateSelectionState();
       updateSelectionStyleState();
       mobilePasteAwaitingPointRef.current = false;
-      setSaveStatus(added.length > 1 ? `Вставлено: ${added.length}` : 'Объект вставлен');
+      if (hasRequestedToolbarPoint) {
+        // The internal clipboard remains armed after a toolbar paste. Re-arm only the
+        // point picker so the next click on the board replaces the previous anchor,
+        // while pressing Paste again without another click still uses the last point.
+        toolbarPasteAwaitingPointRef.current = true;
+        setSaveStatus(added.length > 1
+          ? `Вставлено: ${added.length}. Выберите следующую точку или вставьте ещё раз сюда`
+          : 'Объект вставлен. Выберите следующую точку или вставьте ещё раз сюда');
+      } else {
+        setSaveStatus(added.length > 1 ? `Вставлено: ${added.length}` : 'Объект вставлен');
+      }
       return true;
     } catch (error) {
       console.error('Не удалось вставить выделение', error);
@@ -7410,9 +7435,251 @@ function BoardWorkspace({
       setSaveStatus(emptyText ? 'Пустой текст удалён' : 'Текст сохранён');
     });
 
+    function restoreEyedropperSelection(mode, transactionId, preservedSelectionIds) {
+      if (mode !== 'selection') return;
+      const transaction = transactionId
+        ? localSelectionTransactionRef.current
+        : null;
+      if (transaction?.transactionId === transactionId
+        && transaction.proxy
+        && canvas.getObjects().includes(transaction.proxy)) {
+        canvas.setActiveObject(transaction.proxy);
+        updateSelectionState();
+        updateSelectionStyleState();
+        return;
+      }
+      const idSet = new Set((preservedSelectionIds ?? []).map(String));
+      const selectionObjects = canvas.getObjects().filter((object) => (
+        object.boardObjectId
+        && idSet.has(String(object.boardObjectId))
+        && !object.isEraserPath
+      ));
+      if (selectionObjects.length === 1) canvas.setActiveObject(selectionObjects[0]);
+      else if (selectionObjects.length > 1) {
+        canvas.setActiveObject(createOuterOnlyActiveSelection(selectionObjects, canvas));
+      }
+      updateSelectionState();
+      updateSelectionStyleState();
+    }
+
+    function prepareEyedropperSample(scenePoint, viewportPoint) {
+      const mode = eyedropperModeRef.current;
+      const transactionId = eyedropperSelectionTransactionIdRef.current;
+      const preservedSelectionIds = [...eyedropperSelectionIdsRef.current];
+      if (mode === 'drawing' && canvas.getActiveObject()) canvas.discardActiveObject();
+
+      // Do every potentially expensive hit/pixel read once on pointerdown. Pointerup
+      // then only copies already prepared values and restores the input mode.
+      const target = preciseEyedropperTarget(scenePoint, viewportPoint);
+      const sourceIsImage = Boolean(target && isImageObject(target));
+      const pixelColor = sourceIsImage ? sampleImagePixelColor(target, scenePoint) : null;
+      const sampled = !target
+        ? null
+        : (sourceIsImage
+          ? {
+            canColor: Boolean(pixelColor),
+            color: pixelColor,
+            canOpacity: false,
+            opacity: null,
+            canWidth: false,
+            width: null,
+          }
+          : probeObjectStyle(target));
+
+      let committed = false;
+      return {
+        commit({ cancelled = false, watchdog = false } = {}) {
+          if (committed) return false;
+          committed = true;
+
+          if (cancelled) {
+            restoreEyedropperSelection(mode, transactionId, preservedSelectionIds);
+            applyCanvasInputMode();
+            canvas.requestRenderAll();
+            if (watchdog) setSaveStatus('Пипетка: контакт Pencil сброшен — попробуйте ещё раз');
+            return false;
+          }
+
+          if (!target) {
+            restoreEyedropperSelection(mode, transactionId, preservedSelectionIds);
+            applyCanvasInputMode();
+            canvas.requestRenderAll();
+            setSaveStatus('Пипетка: нажмите точно на видимую часть объекта');
+            return false;
+          }
+
+          let success = false;
+          let selectionObjects = [];
+          if (mode === 'drawing' && ['pencil', 'line', 'shape'].includes(activeToolRef.current)) {
+            if (sampled?.canColor && sampled.color) {
+              colorRef.current = sampled.color;
+              setColorState(sampled.color);
+              success = true;
+            }
+            if (!sourceIsImage && sampled?.canOpacity && Number.isFinite(sampled.opacity)) {
+              const nextOpacity = clamp(sampled.opacity, 0.05, 1);
+              opacityRef.current = nextOpacity;
+              setOpacityState(nextOpacity);
+              success = true;
+            }
+            if (!sourceIsImage && sampled?.canWidth && Number.isFinite(sampled.width)) {
+              const nextWidth = clamp(Math.round(sampled.width), 1, 24);
+              widthRef.current = nextWidth;
+              setWidthState(nextWidth);
+              success = true;
+            }
+            if (success && DRAWING_STYLE_TOOL_IDS.has(activeToolRef.current)) {
+              drawingStylesRef.current[activeToolRef.current] = {
+                color: colorRef.current,
+                opacity: opacityRef.current,
+                width: widthRef.current,
+              };
+            }
+          }
+
+          if (mode === 'selection' && sampled) {
+            selectionObjects = transactionId
+              ? applyEyedropperToSelectionTransaction(
+                transactionId,
+                sampled,
+                { colorOnly: sourceIsImage },
+              )
+              : applyEyedropperToSelectionIds(
+                preservedSelectionIds,
+                sampled,
+                { colorOnly: sourceIsImage },
+              );
+            success = selectionObjects.length > 0;
+          }
+
+          restoreEyedropperSelection(mode, transactionId, preservedSelectionIds);
+          if (!success) {
+            applyCanvasInputMode();
+            canvas.requestRenderAll();
+            if (sourceIsImage && !pixelColor) {
+              setSaveStatus('Пипетка: не удалось определить цвет пикселя картинки');
+            } else {
+              setSaveStatus('Пипетка: у объекта нет подходящих параметров');
+            }
+            return false;
+          }
+
+          // Refs and Fabric are switched synchronously before React paints. The next
+          // physical Pencil pointerdown therefore sees a ready drawing brush immediately.
+          eyedropperActiveRef.current = false;
+          eyedropperModeRef.current = null;
+          eyedropperSelectionIdsRef.current = [];
+          eyedropperSelectionTransactionIdRef.current = null;
+          setEyedropperActive(false);
+          applyCanvasInputMode();
+          canvas.requestRenderAll();
+          setSaveStatus(sourceIsImage
+            ? 'Цвет пикселя применён'
+            : (mode === 'selection' ? 'Цвет, толщина и прозрачность применены' : 'Параметры скопированы'));
+          return true;
+        },
+      };
+    }
+
+    function consumeEyedropperPointerEvent(event) {
+      if (event?.cancelable) event.preventDefault();
+      event?.stopPropagation?.();
+      event?.stopImmediatePropagation?.();
+    }
+
+    function releaseEyedropperPointerCapture(pointerId) {
+      if (pointerId == null) return;
+      try {
+        if (touchTarget.hasPointerCapture?.(pointerId)) touchTarget.releasePointerCapture(pointerId);
+      } catch {
+        // WebKit may release capture automatically before pointercancel.
+      }
+    }
+
+    function beginEyedropperPenContact(event) {
+      if (event.pointerType !== 'pen' || !eyedropperActiveRef.current) return false;
+      const existing = eyedropperPenContactRef.current;
+      if (existing) {
+        consumeEyedropperPointerEvent(event);
+        return true;
+      }
+
+      const scenePoint = canvas.getScenePoint(event);
+      const viewportPoint = canvas.getViewportPoint(event);
+      const prepared = prepareEyedropperSample(scenePoint, viewportPoint);
+      clearPendingNativeCreationPointer(event);
+      rejectedPointerIdsRef.current.delete(event.pointerId);
+      penInputRef.current = {
+        pointerId: event.pointerId,
+        active: true,
+        lastSeenAt: Date.now(),
+        lastClientX: Number(event.clientX ?? 0),
+        lastClientY: Number(event.clientY ?? 0),
+        suppressUntil: 0,
+      };
+
+      eyedropperCompatibilityGuardUntilRef.current = performance.now() + 2500;
+      const session = {
+        pointerId: event.pointerId,
+        prepared,
+        watchdog: null,
+      };
+      eyedropperPenContactRef.current = session;
+      try { touchTarget.setPointerCapture?.(event.pointerId); } catch { /* Optional on WebKit. */ }
+
+      // This never participates in normal timing. It only guarantees that a missing
+      // pointerup/pointercancel cannot leave the board blocked forever.
+      session.watchdog = window.setTimeout(() => {
+        if (eyedropperPenContactRef.current !== session) return;
+        eyedropperPenContactRef.current = null;
+        releaseEyedropperPointerCapture(session.pointerId);
+        if (penInputRef.current.pointerId === session.pointerId) {
+          penInputRef.current.active = false;
+          penInputRef.current.pointerId = null;
+          penInputRef.current.suppressUntil = 0;
+        }
+        eyedropperCompatibilityGuardUntilRef.current = performance.now() + 220;
+        prepared.commit({ cancelled: true, watchdog: true });
+      }, 1200);
+
+      consumeEyedropperPointerEvent(event);
+      return true;
+    }
+
+    function finishEyedropperPenContact(event) {
+      const session = eyedropperPenContactRef.current;
+      if (event.pointerType !== 'pen' || !session || session.pointerId !== event.pointerId) return false;
+      consumeEyedropperPointerEvent(event);
+      clearPendingNativeCreationPointer(event);
+      eyedropperPenContactRef.current = null;
+      window.clearTimeout(session.watchdog);
+      releaseEyedropperPointerCapture(session.pointerId);
+      rejectedPointerIdsRef.current.delete(event.pointerId);
+
+      const now = Date.now();
+      if (penInputRef.current.pointerId === event.pointerId) {
+        penInputRef.current.active = false;
+        penInputRef.current.pointerId = null;
+        penInputRef.current.lastSeenAt = now;
+        penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
+        penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
+        penInputRef.current.suppressUntil = 0;
+      }
+
+      eyedropperCompatibilityGuardUntilRef.current = performance.now() + 220;
+      session.prepared.commit({ cancelled: event.type === 'pointercancel' });
+      return true;
+    }
+
     canvas.on('mouse:down', (event) => {
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
+      if (performance.now() < eyedropperCompatibilityGuardUntilRef.current
+        && nativeEvent?.pointerType !== 'pen') {
+        nativeEvent?.preventDefault?.();
+        nativeEvent?.stopPropagation?.();
+        return;
+      }
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
       if (activeToolRef.current === 'pencil') {
         const activeStroke = activePencilRef.current;
@@ -7488,153 +7755,17 @@ function BoardWorkspace({
       if (eyedropperActiveRef.current) {
         nativeEvent.preventDefault?.();
         nativeEvent.stopPropagation?.();
-        const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
-        const viewportPoint = event.viewportPoint ?? canvas.getViewportPoint(nativeEvent);
-        const mode = eyedropperModeRef.current;
-        if (mode === 'drawing' && canvas.getActiveObject()) canvas.discardActiveObject();
-        const transactionId = eyedropperSelectionTransactionIdRef.current;
-        const preservedSelectionIds = [...eyedropperSelectionIdsRef.current];
-
-        const restoreSelection = () => {
-          if (mode !== 'selection') return;
-          const transaction = transactionId
-            ? localSelectionTransactionRef.current
-            : null;
-          if (transaction?.transactionId === transactionId
-            && transaction.proxy
-            && canvas.getObjects().includes(transaction.proxy)) {
-            canvas.setActiveObject(transaction.proxy);
-            updateSelectionState();
-            updateSelectionStyleState();
-            canvas.requestRenderAll();
-            return;
-          }
-          const idSet = new Set(preservedSelectionIds.map(String));
-          const selectionObjects = canvas.getObjects().filter((object) => (
-            object.boardObjectId
-            && idSet.has(String(object.boardObjectId))
-            && !object.isEraserPath
-          ));
-          if (selectionObjects.length === 1) canvas.setActiveObject(selectionObjects[0]);
-          else if (selectionObjects.length > 1) canvas.setActiveObject(createOuterOnlyActiveSelection(selectionObjects, canvas));
-          updateSelectionState();
-          updateSelectionStyleState();
-          canvas.requestRenderAll();
-        };
-
-        const applyEyedropperSample = () => {
-          // Re-check the exact object only when the physical contact is complete.
-          // For Apple Pencil this function runs after pointerup, so applying the
-          // sampled style can no longer leak the same contact into a drawing tool.
-          const target = preciseEyedropperTarget(point, viewportPoint);
-          if (!target) {
-            restoreSelection();
-            setSaveStatus('Пипетка: нажмите точно на видимую часть объекта');
-            return false;
-          }
-
-          const sourceIsImage = isImageObject(target);
-          const pixelColor = sourceIsImage ? sampleImagePixelColor(target, point) : null;
-          const sampled = sourceIsImage
-            ? {
-              canColor: Boolean(pixelColor),
-              color: pixelColor,
-              canOpacity: false,
-              opacity: null,
-              canWidth: false,
-              width: null,
-            }
-            : probeObjectStyle(target);
-          let success = false;
-          let selectionObjects = [];
-
-          if (mode === 'drawing' && ['pencil', 'line', 'shape'].includes(activeToolRef.current)) {
-            if (sampled.canColor && sampled.color) {
-              colorRef.current = sampled.color;
-              setColorState(sampled.color);
-              success = true;
-            }
-            if (!sourceIsImage && sampled.canOpacity && Number.isFinite(sampled.opacity)) {
-              const nextOpacity = clamp(sampled.opacity, 0.05, 1);
-              opacityRef.current = nextOpacity;
-              setOpacityState(nextOpacity);
-              success = true;
-            }
-            if (!sourceIsImage && sampled.canWidth && Number.isFinite(sampled.width)) {
-              const nextWidth = clamp(Math.round(sampled.width), 1, 24);
-              widthRef.current = nextWidth;
-              setWidthState(nextWidth);
-              success = true;
-            }
-            if (success && DRAWING_STYLE_TOOL_IDS.has(activeToolRef.current)) {
-              drawingStylesRef.current[activeToolRef.current] = {
-                color: colorRef.current,
-                opacity: opacityRef.current,
-                width: widthRef.current,
-              };
-            }
-          }
-
-          if (mode === 'selection') {
-            selectionObjects = transactionId
-              ? applyEyedropperToSelectionTransaction(
-                transactionId,
-                sampled,
-                { colorOnly: sourceIsImage },
-              )
-              : applyEyedropperToSelectionIds(
-                preservedSelectionIds,
-                sampled,
-                { colorOnly: sourceIsImage },
-              );
-            success = selectionObjects.length > 0;
-          }
-
-          restoreSelection();
-
-          if (!success) {
-            if (sourceIsImage && !pixelColor) {
-              setSaveStatus('Пипетка: не удалось определить цвет пикселя картинки');
-            } else {
-              setSaveStatus('Пипетка: у объекта нет подходящих параметров');
-            }
-            return false;
-          }
-
-          eyedropperActiveRef.current = false;
-          eyedropperModeRef.current = null;
-          eyedropperSelectionIdsRef.current = [];
-          eyedropperSelectionTransactionIdRef.current = null;
-          setEyedropperActive(false);
-          configureBrushAndMode();
-          restoreSelection();
-          window.requestAnimationFrame(restoreSelection);
-
-          setSaveStatus(sourceIsImage
-            ? 'Цвет пикселя применён'
-            : (mode === 'selection' ? 'Цвет, толщина и прозрачность применены' : 'Параметры скопированы'));
-          return true;
-        };
-
+        nativeEvent.stopImmediatePropagation?.();
+        // Pencil contacts are normally consumed earlier by the native capture route,
+        // before Fabric can open a drawing/mouse session. This fallback only protects
+        // browsers that expose a pen-like Fabric event without the capture event.
         if (nativeEvent?.pointerType === 'pen' && pointerId != null) {
-          // Do not apply the sampled style while Pencil is still physically down.
-          // WebKit can keep stylus and palm contacts in one touch stream; waiting for
-          // pointerup avoids a stuck capture/suppression state and removes the pause
-          // that previously lasted until the whole hand left the screen.
-          clearPendingNativeCreationPointer(nativeEvent);
-          eyedropperPenContactRef.current = {
-            pointerId,
-            applySample: applyEyedropperSample,
-          };
-          canvas.isDrawingMode = false;
-          canvas.selection = false;
-          canvas.skipTargetFind = true;
-          canvas.defaultCursor = 'crosshair';
-          canvas.hoverCursor = 'crosshair';
+          beginEyedropperPenContact(nativeEvent);
           return;
         }
-
-        applyEyedropperSample();
+        const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
+        const viewportPoint = event.viewportPoint ?? canvas.getViewportPoint(nativeEvent);
+        prepareEyedropperSample(point, viewportPoint).commit();
         return;
       }
 
@@ -7937,6 +8068,12 @@ function BoardWorkspace({
     canvas.on('mouse:up', (event) => {
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
+      if (performance.now() < eyedropperCompatibilityGuardUntilRef.current
+        && nativeEvent?.pointerType !== 'pen') {
+        nativeEvent?.preventDefault?.();
+        nativeEvent?.stopPropagation?.();
+        return;
+      }
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
       const textTapCandidate = textTapCandidateRef.current;
       textTapCandidateRef.current = null;
@@ -8545,6 +8682,10 @@ function BoardWorkspace({
         return;
       }
 
+      // Eyedropper owns its complete Pencil stream in capture phase. Fabric sees
+      // neither pointerdown nor pointerup, so no stale pencil/mouse session can survive.
+      if (beginEyedropperPenContact(event)) return;
+
       if (event.pointerType === 'pen') {
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
         // a rejected palm id from an earlier contact.
@@ -8620,9 +8761,7 @@ function BoardWorkspace({
         penInputRef.current.lastSeenAt = Date.now();
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
-        event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation?.();
+        consumeEyedropperPointerEvent(event);
         return;
       }
       if (rejectedPointerIdsRef.current.has(event.pointerId)
@@ -8645,42 +8784,13 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerEnd(event) {
+      if (finishEyedropperPenContact(event)) return;
+
       if (rejectedPointerIdsRef.current.has(event.pointerId)
         && !isStylusFallbackPointerEvent(event)) {
         clearPendingNativeCreationPointer(event);
         rejectPointerEvent(event);
         window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
-        return;
-      }
-
-      const sampledPenContact = eyedropperPenContactRef.current;
-      if (event.pointerType === 'pen'
-        && sampledPenContact?.pointerId === event.pointerId) {
-        clearPendingNativeCreationPointer(event);
-        eyedropperPenContactRef.current = null;
-        const now = Date.now();
-        if (penInputRef.current.pointerId === event.pointerId) {
-          penInputRef.current.active = false;
-          penInputRef.current.pointerId = null;
-          penInputRef.current.lastSeenAt = now;
-          penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
-          penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
-          // Eyedropper is not a drawing stroke, so it must not create the normal
-          // post-stroke palm grace interval. That interval was another source of the
-          // noticeable pause before the next Pencil contact.
-          penInputRef.current.suppressUntil = 0;
-        }
-
-        const applySample = sampledPenContact.applySample;
-        const cancelled = event.type === 'pointercancel';
-        // Let this pointerup continue to Fabric while eyedropper mode is still active
-        // and drawing remains disabled. Only after Fabric has closed the old contact
-        // do we commit the color and restore the selected tool.
-        window.setTimeout(() => {
-          if (!cancelled) applySample?.();
-          applyCanvasInputMode();
-          canvas.requestRenderAll();
-        }, 0);
         return;
       }
 
@@ -9010,7 +9120,14 @@ function BoardWorkspace({
       return false;
     }
 
+    function consumeEyedropperStylusTouch(event) {
+      if (!eyedropperPenContactRef.current || !findStylusTouch(event)) return false;
+      claimStylusTouchEvent(event);
+      return true;
+    }
+
     function handleTouchStart(event) {
+      if (consumeEyedropperStylusTouch(event)) return;
       if (beginStylusTouchFallback(event)) return;
       if (shouldSuppressTouchEvent(event)) return;
       const fingers = unsuppressedFingerTouches(event.touches);
@@ -9029,6 +9146,7 @@ function BoardWorkspace({
     }
 
     function handleTouchMove(event) {
+      if (consumeEyedropperStylusTouch(event)) return;
       if (moveStylusTouchFallback(event)) return;
       if (shouldSuppressTouchEvent(event)) return;
       const fingers = unsuppressedFingerTouches(event.touches);
@@ -9076,6 +9194,7 @@ function BoardWorkspace({
     }
 
     function handleTouchEnd(event) {
+      if (consumeEyedropperStylusTouch(event)) return;
       if (finishStylusTouchFallback(event, false)) return;
       if (shouldSuppressTouchEvent(event, { ending: true })) return;
       const gestureAtEventStart = touchGestureRef.current;
@@ -9102,6 +9221,7 @@ function BoardWorkspace({
     }
 
     function handleTouchCancel(event) {
+      if (consumeEyedropperStylusTouch(event)) return;
       resetMobileGameLibraryGesture();
       if (finishStylusTouchFallback(event, true)) return;
       if (shouldSuppressTouchEvent(event, { ending: true })) return;
@@ -9343,6 +9463,9 @@ function BoardWorkspace({
       pendingPencilQueueRef.current.forEach((pending) => window.clearTimeout(pending.cancelTimer));
       pendingPencilQueueRef.current = [];
       activePencilRef.current = null;
+      window.clearTimeout(eyedropperPenContactRef.current?.watchdog);
+      eyedropperPenContactRef.current = null;
+      eyedropperCompatibilityGuardUntilRef.current = 0;
       stylusTouchFallbackRef.current = {
         active: false,
         touchId: null,
@@ -9445,7 +9568,9 @@ function BoardWorkspace({
       eyedropperModeRef.current = null;
       eyedropperSelectionIdsRef.current = [];
       eyedropperSelectionTransactionIdRef.current = null;
+      window.clearTimeout(eyedropperPenContactRef.current?.watchdog);
       eyedropperPenContactRef.current = null;
+      eyedropperCompatibilityGuardUntilRef.current = 0;
       setEyedropperActive(false);
       activeToolRef.current = 'select';
       setToolState('select');

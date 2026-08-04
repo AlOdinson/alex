@@ -1,9 +1,9 @@
 {
-  "version": "1.25",
-  "packageVersion": "1.25.0",
-  "base": "1.25",
-  "release": "Stable toolbar paste anchor and immediate progressive full-board recovery",
+  "version": "1.26.0",
+  "packageVersion": "1.26.0",
+  "base": "1.25.1",
+  "release": "Atomic instant Apple Pencil eyedropper input session",
   "date": "2026-08-05",
-  "name": "paste-anchor-instant-board-load",
-  "label": "Alex Board 1.25"
+  "name": "atomic-pencil-eyedropper",
+  "label": "Alex Board 1.26"
 }
