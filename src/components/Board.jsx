@@ -8011,9 +8011,13 @@ function BoardWorkspace({
       if (event.pointerType === 'pen'
         && sampledPenContact?.pointerId === event.pointerId) {
         clearPendingNativeCreationPointer(event);
+        // Do not stop propagation here. Fabric already received the eyedropper
+        // pointerdown and must receive this pointerup as well so it can clear its
+        // internal pointer/transform ownership. Blocking the release left Canvas in
+        // an unfinished gesture state on iPad and made the whole board appear frozen.
+        // Drawing is still disabled for this event, so the consumed sampling contact
+        // cannot become a Pencil/line/shape stroke.
         event.preventDefault();
-        event.stopPropagation();
-        event.stopImmediatePropagation?.();
         try { touchTarget.releasePointerCapture(event.pointerId); } catch { /* Ignore. */ }
         eyedropperPenContactRef.current = null;
         const now = Date.now();

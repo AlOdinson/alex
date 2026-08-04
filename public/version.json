@@ -1,9 +1,9 @@
 {
-  "version": "1.17",
-  "packageVersion": "1.17.0",
-  "base": "1.16",
-  "release": "Apple Pencil eyedropper input race fix",
+  "version": "1.18",
+  "packageVersion": "1.18.0",
+  "base": "1.17",
+  "release": "Apple Pencil eyedropper release lifecycle fix",
   "date": "2026-08-04",
-  "name": "pencil-eyedropper-contact-isolation",
-  "label": "Alex Board 1.17"
+  "name": "pencil-eyedropper-fabric-pointerup-release",
+  "label": "Alex Board 1.18"
 }
