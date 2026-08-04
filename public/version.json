@@ -1,9 +1,9 @@
 {
-  "version": "1.18",
-  "packageVersion": "1.18.0",
-  "base": "1.17",
-  "release": "Apple Pencil eyedropper release lifecycle fix",
+  "version": "1.19",
+  "packageVersion": "1.19.0",
+  "base": "1.18",
+  "release": "Apple Pencil eyedropper commit-on-release fix",
   "date": "2026-08-04",
-  "name": "pencil-eyedropper-fabric-pointerup-release",
-  "label": "Alex Board 1.18"
+  "name": "pencil-eyedropper-apply-after-pointerup",
+  "label": "Alex Board 1.19"
 }
