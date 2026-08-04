@@ -1103,6 +1103,10 @@ function BoardWorkspace({
   const eyedropperModeRef = useRef(null);
   const eyedropperSelectionIdsRef = useRef([]);
   const eyedropperSelectionTransactionIdRef = useRef(null);
+  // Apple Pencil must finish the physical contact before a drawing tool is
+  // re-enabled after sampling. Re-enabling Fabric drawing mode inside the
+  // eyedropper pointerdown lets the same Pencil contact leak into a new stroke.
+  const eyedropperPenContactRef = useRef(null);
   const eraserModeRef = useRef('object');
   const eraserWidthRef = useRef(28);
   const fontFamilyRef = useRef('Arial');
@@ -6963,7 +6967,24 @@ function BoardWorkspace({
         eyedropperSelectionIdsRef.current = [];
         eyedropperSelectionTransactionIdRef.current = null;
         setEyedropperActive(false);
-        configureBrushAndMode();
+
+        const deferPencilModeRestore = nativeEvent?.pointerType === 'pen'
+          && pointerId != null;
+        if (deferPencilModeRestore) {
+          // Keep target finding and drawing disabled until Pencil-up. Switching
+          // Fabric back to Pencil/line/shape mode during this pointerdown can make
+          // WebKit reuse the sampling contact as the beginning of a new stroke,
+          // producing the apparent freeze reported on iPad.
+          eyedropperPenContactRef.current = { pointerId };
+          try { touchTarget.setPointerCapture(pointerId); } catch { /* Safari can reject capture. */ }
+          canvas.isDrawingMode = false;
+          canvas.selection = false;
+          canvas.skipTargetFind = true;
+          canvas.defaultCursor = 'default';
+          canvas.hoverCursor = 'default';
+        } else {
+          configureBrushAndMode();
+        }
         restoreSelection();
         window.requestAnimationFrame(restoreSelection);
 
@@ -7947,6 +7968,17 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerMove(event) {
+      const sampledPenContact = eyedropperPenContactRef.current;
+      if (event.pointerType === 'pen'
+        && sampledPenContact?.pointerId === event.pointerId) {
+        penInputRef.current.lastSeenAt = Date.now();
+        penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
+        penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        return;
+      }
       if (rejectedPointerIdsRef.current.has(event.pointerId)
         && !isStylusFallbackPointerEvent(event)) {
         rejectPointerEvent(event);
@@ -7974,6 +8006,33 @@ function BoardWorkspace({
         window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
         return;
       }
+
+      const sampledPenContact = eyedropperPenContactRef.current;
+      if (event.pointerType === 'pen'
+        && sampledPenContact?.pointerId === event.pointerId) {
+        clearPendingNativeCreationPointer(event);
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        try { touchTarget.releasePointerCapture(event.pointerId); } catch { /* Ignore. */ }
+        eyedropperPenContactRef.current = null;
+        const now = Date.now();
+        if (penInputRef.current.pointerId === event.pointerId) {
+          penInputRef.current.active = false;
+          penInputRef.current.pointerId = null;
+          penInputRef.current.lastSeenAt = now;
+          penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
+          penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
+          penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
+        }
+        window.requestAnimationFrame(() => {
+          if (!eyedropperActiveRef.current && !touchGestureRef.current?.active) {
+            applyCanvasInputMode();
+          }
+        });
+        return;
+      }
+
       if (event.type === 'pointercancel') cancelCreationDraft('pointercancel', event);
       else {
         // Capture the final desktop mouse/Pencil coordinate before the capture-phase
@@ -8703,6 +8762,7 @@ function BoardWorkspace({
       eyedropperModeRef.current = null;
       eyedropperSelectionIdsRef.current = [];
       eyedropperSelectionTransactionIdRef.current = null;
+      eyedropperPenContactRef.current = null;
       setEyedropperActive(false);
       activeToolRef.current = 'select';
       setToolState('select');

@@ -469,6 +469,7 @@ export default function Toolbar({
                 disabled={!canEdit}
                 onClick={onToggleEyedropper}
                 className="eyedropper-button"
+                stylusActionPhase="end"
               >
                 ⌾
               </IconButton>
@@ -589,6 +590,7 @@ export default function Toolbar({
                 disabled={!canEdit || selectedCount === 0}
                 onClick={onToggleEyedropper}
                 className="eyedropper-button"
+                stylusActionPhase="end"
               >
                 ⌾
               </IconButton>
