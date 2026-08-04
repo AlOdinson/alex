@@ -2754,7 +2754,6 @@ function BoardWorkspace({
     markObject,
     recordAction,
     schedulePersistence,
-    selectInsertedObjects,
     sendPreviewBatches,
     sendRecordUpserts,
     updateSelectionState,

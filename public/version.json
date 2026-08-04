@@ -1,9 +1,9 @@
 {
-  "version": "1.24",
-  "packageVersion": "1.24.0",
-  "base": "1.23",
-  "release": "Automatic teacher access from remembered owner boards and cross-browser image drag-and-drop fixes",
-  "date": "2026-08-04",
-  "name": "remembered-owner-and-safari-image-drop",
-  "label": "Alex Board 1.24"
+  "version": "1.24.1",
+  "packageVersion": "1.24.1",
+  "base": "1.24",
+  "release": "Blank-screen hotfix: remove use-before-initialization dependency introduced in 1.23",
+  "date": "2026-08-05",
+  "name": "blank-screen-tdz-hotfix",
+  "label": "Alex Board 1.24.1"
 }
