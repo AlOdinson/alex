@@ -1,9 +1,9 @@
 {
-  "version": "1.27.0",
-  "packageVersion": "1.27.0",
-  "base": "1.26.0",
-  "release": "Instant Apple Pencil selection and transform pipeline",
+  "version": "1.27.1",
+  "packageVersion": "1.27.1",
+  "base": "1.27.0",
+  "release": "Safari Apple Pencil marquee completion hotfix",
   "date": "2026-08-05",
-  "name": "instant-pencil-selection-transform",
-  "label": "Alex Board 1.27"
+  "name": "pencil-marquee-release-finalization",
+  "label": "Alex Board 1.27.1"
 }

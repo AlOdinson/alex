@@ -7839,6 +7839,56 @@ function BoardWorkspace({
       return drag.pointerId === nativeEvent.pointerId;
     }
 
+    function finalizeSelectionMarquee(nativeEvent, { cancelled = false } = {}) {
+      const currentSelectionDrag = selectionDragRef.current;
+      const selectionDrag = currentSelectionDrag
+        && selectionDragOwnsEvent(currentSelectionDrag, nativeEvent)
+        ? currentSelectionDrag
+        : null;
+      if (!selectionDrag) return false;
+
+      // The native Pencil pointerup reaches capture phase before Fabric's mouse:up.
+      // Record that final coordinate here so the marquee can finish even when Safari
+      // later exposes only a compatibility mouseup which our deduplication suppresses.
+      if (!cancelled && nativeEvent) {
+        try {
+          const finalPoint = canvas.getScenePoint(nativeEvent);
+          if (Number.isFinite(finalPoint?.x) && Number.isFinite(finalPoint?.y)) {
+            selectionDrag.end = new Point(finalPoint.x, finalPoint.y);
+          }
+        } catch {
+          // Keep the last pointermove coordinate when WebKit cannot map the release event.
+        }
+      }
+
+      selectionDragRef.current = null;
+      hideSelectionMarquee();
+      if (cancelled || activeToolRef.current !== 'select') return true;
+
+      const selectionRect = normalizedSceneRect(selectionDrag.start, selectionDrag.end);
+      if (selectionRect.width < 3 && selectionRect.height < 3) return true;
+
+      window.requestAnimationFrame(() => {
+        if (fabricCanvasRef.current !== canvas || activeToolRef.current !== 'select') return;
+        canvas.discardActiveObject();
+        const now = Date.now();
+        const selected = canvas.getObjects().filter((object) => {
+          if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || !object.selectable) return false;
+          const lock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
+          if (lock && Number(lock.expiresAt ?? 0) > now) return false;
+          return objectFastIntersectsRect(object, selectionRect);
+        });
+        if (selected.length === 1) canvas.setActiveObject(selected[0]);
+        else if (selected.length > 1) canvas.setActiveObject(createOuterOnlyActiveSelection(selected, canvas));
+        else {
+          updateSelectionState();
+          updateSelectionStyleState();
+        }
+        canvas.requestRenderAll();
+      });
+      return true;
+    }
+
     canvas.on('mouse:down', (event) => {
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
@@ -8287,39 +8337,10 @@ function BoardWorkspace({
         }, pending.cancelled ? 80 : 850);
       }
 
-      const currentSelectionDrag = selectionDragRef.current;
-      const selectionDrag = currentSelectionDrag
-        && selectionDragOwnsEvent(currentSelectionDrag, nativeEvent)
-        ? currentSelectionDrag
-        : null;
-      if (selectionDrag) selectionDragRef.current = null;
+      finalizeSelectionMarquee(nativeEvent);
       if (selectionBoxRef.current) {
         canvas.remove(selectionBoxRef.current);
         selectionBoxRef.current = null;
-      }
-      if (selectionDrag) hideSelectionMarquee();
-      if (selectionDrag && activeToolRef.current === 'select') {
-        const selectionRect = normalizedSceneRect(selectionDrag.start, selectionDrag.end);
-        if (selectionRect.width >= 3 || selectionRect.height >= 3) {
-          window.requestAnimationFrame(() => {
-            if (fabricCanvasRef.current !== canvas || activeToolRef.current !== 'select') return;
-            canvas.discardActiveObject();
-            const now = Date.now();
-            const selected = canvas.getObjects().filter((object) => {
-              if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || !object.selectable) return false;
-              const lock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
-              if (lock && Number(lock.expiresAt ?? 0) > now) return false;
-              return objectFastIntersectsRect(object, selectionRect);
-            });
-            if (selected.length === 1) canvas.setActiveObject(selected[0]);
-            else if (selected.length > 1) canvas.setActiveObject(createOuterOnlyActiveSelection(selected, canvas));
-            else {
-              updateSelectionState();
-              updateSelectionStyleState();
-            }
-            canvas.requestRenderAll();
-          });
-        }
       }
 
       if (activeToolRef.current === 'select'
@@ -8886,12 +8907,17 @@ function BoardWorkspace({
     function finishSelectionPenSession(event) {
       const session = selectionPenSessionRef.current;
       if (event.pointerType !== 'pen' || !session.active || session.pointerId !== event.pointerId) return false;
+      const cancelled = event.type === 'pointercancel' || event.type === 'lostpointercapture';
+
+      // Complete a Pencil marquee directly from the native release. In Safari the
+      // subsequent Fabric mouse:up can be a compatibility mouse event and is correctly
+      // suppressed by the guard below; relying on that event left the DOM marquee open.
+      finalizeSelectionMarquee(event, { cancelled });
+
       session.compatibilityGuardUntil = performance.now() + 280;
       session.active = false;
       session.moveFramePending = false;
-      if (event.type === 'pointercancel') {
-        selectionDragRef.current = null;
-        hideSelectionMarquee();
+      if (cancelled) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
         if (localLockIdsRef.current.length) {
           realtimeRef.current?.sendLock(localLockIdsRef.current, false);
