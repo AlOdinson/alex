@@ -862,6 +862,56 @@ function AccessMessage({ title, children }) {
   );
 }
 
+function patchSerializedObjectTransform(serialized, object) {
+  const next = { ...(serialized ?? {}) };
+  if (!object) return next;
+
+  // Members of an ActiveSelection keep local coordinates relative to the temporary
+  // wrapper. Persist their full scene matrix without dismantling the visible selection.
+  if (object.group && isActiveSelectionObject(object.group)
+    && typeof object.calcTransformMatrix === 'function'
+    && typeof util.qrDecompose === 'function') {
+    const decomposed = util.qrDecompose(object.calcTransformMatrix());
+    let scaleX = Number(decomposed?.scaleX ?? 1);
+    let scaleY = Number(decomposed?.scaleY ?? 1);
+    const flipX = scaleX < 0;
+    const flipY = scaleY < 0;
+    scaleX = Math.abs(scaleX);
+    scaleY = Math.abs(scaleY);
+    Object.assign(next, {
+      left: Number(decomposed?.translateX ?? next.left ?? 0),
+      top: Number(decomposed?.translateY ?? next.top ?? 0),
+      originX: 'center',
+      originY: 'center',
+      angle: Number(decomposed?.angle ?? 0),
+      scaleX: Number.isFinite(scaleX) ? scaleX : 1,
+      scaleY: Number.isFinite(scaleY) ? scaleY : 1,
+      skewX: Number(decomposed?.skewX ?? 0),
+      skewY: Number(decomposed?.skewY ?? 0),
+      flipX,
+      flipY,
+    });
+    return next;
+  }
+
+  // A normal object can be updated from its lightweight transform fields. This avoids
+  // serializing a long Pencil path again merely because it moved a few pixels.
+  Object.assign(next, {
+    left: Number(object.left ?? next.left ?? 0),
+    top: Number(object.top ?? next.top ?? 0),
+    originX: object.originX ?? next.originX ?? 'left',
+    originY: object.originY ?? next.originY ?? 'top',
+    angle: Number(object.angle ?? next.angle ?? 0),
+    scaleX: Number(object.scaleX ?? next.scaleX ?? 1),
+    scaleY: Number(object.scaleY ?? next.scaleY ?? 1),
+    skewX: Number(object.skewX ?? next.skewX ?? 0),
+    skewY: Number(object.skewY ?? next.skewY ?? 0),
+    flipX: Boolean(object.flipX),
+    flipY: Boolean(object.flipY),
+  });
+  return next;
+}
+
 function serializeObject(object) {
   const serialized = object.toObject([
     'boardObjectId',
@@ -878,38 +928,7 @@ function serializeObject(object) {
     'selectionTransactionId',
     'selectionSourceIds',
   ]);
-
-  // Members of an ActiveSelection keep local coordinates relative to the temporary
-  // wrapper. Persist their full scene matrix instead, without dismantling the user's
-  // selection. This lets the frame remain visible after a group move while Supabase,
-  // Ably and Undo still receive absolute board coordinates.
-  if (object?.group && isActiveSelectionObject(object.group)
-    && typeof object.calcTransformMatrix === 'function'
-    && typeof util.qrDecompose === 'function') {
-    const matrix = object.calcTransformMatrix();
-    const decomposed = util.qrDecompose(matrix);
-    let scaleX = Number(decomposed?.scaleX ?? 1);
-    let scaleY = Number(decomposed?.scaleY ?? 1);
-    const flipX = scaleX < 0;
-    const flipY = scaleY < 0;
-    scaleX = Math.abs(scaleX);
-    scaleY = Math.abs(scaleY);
-    Object.assign(serialized, {
-      left: Number(decomposed?.translateX ?? serialized.left ?? 0),
-      top: Number(decomposed?.translateY ?? serialized.top ?? 0),
-      originX: 'center',
-      originY: 'center',
-      angle: Number(decomposed?.angle ?? 0),
-      scaleX: Number.isFinite(scaleX) ? scaleX : 1,
-      scaleY: Number.isFinite(scaleY) ? scaleY : 1,
-      skewX: Number(decomposed?.skewX ?? 0),
-      skewY: Number(decomposed?.skewY ?? 0),
-      flipX,
-      flipY,
-    });
-  }
-
-  return serialized;
+  return patchSerializedObjectTransform(serialized, object);
 }
 
 function isActiveSelectionObject(target) {
@@ -927,7 +946,7 @@ function flattenTarget(target) {
   return [target];
 }
 
-function transformFramesForObjects(objects, canvas) {
+function transformFramesForObjects(objects, canvas, zIndexMap = null) {
   return (Array.isArray(objects) ? objects : [])
     .map((object) => {
       if (!object?.boardObjectId || typeof object.calcTransformMatrix !== 'function') return null;
@@ -942,7 +961,7 @@ function transformFramesForObjects(objects, canvas) {
         objectType: object.type ?? null,
         zIndex: Number.isFinite(Number(object.creationDraftZIndex))
           ? Number(object.creationDraftZIndex)
-          : (canvas ? canvas.getObjects().indexOf(object) : -1),
+          : (zIndexMap?.get(object) ?? (canvas ? canvas.getObjects().indexOf(object) : -1)),
       };
     })
     .filter(Boolean);
@@ -1123,57 +1142,62 @@ function livePathData(points) {
   return points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${Number(point.x)} ${Number(point.y)}`).join(' ');
 }
 
-function objectVisuallyIntersectsRect(object, selectionRect) {
+function pointInsideSceneRect(point, rect) {
+  return Boolean(point)
+    && Number(point.x) >= rect.left
+    && Number(point.x) <= rect.right
+    && Number(point.y) >= rect.top
+    && Number(point.y) <= rect.bottom;
+}
+
+function objectFastIntersectsRect(object, selectionRect) {
   if (!object || object.isEraserPath || object.visible === false || Number(object.opacity ?? 1) <= 0.001) return false;
   const bounds = object.getBoundingRect();
-  const intersection = {
-    left: Math.max(bounds.left, selectionRect.left),
-    top: Math.max(bounds.top, selectionRect.top),
-    right: Math.min(bounds.left + bounds.width, selectionRect.right),
-    bottom: Math.min(bounds.top + bounds.height, selectionRect.bottom),
-  };
-  if (intersection.right < intersection.left || intersection.bottom < intersection.top) return false;
+  const boundsRight = bounds.left + bounds.width;
+  const boundsBottom = bounds.top + bounds.height;
+  if (boundsRight < selectionRect.left
+    || boundsBottom < selectionRect.top
+    || bounds.left > selectionRect.right
+    || bounds.top > selectionRect.bottom) return false;
 
   const fullyCovered = selectionRect.left <= bounds.left
     && selectionRect.top <= bounds.top
-    && selectionRect.right >= bounds.left + bounds.width
-    && selectionRect.bottom >= bounds.top + bounds.height;
-  if (fullyCovered && !isImageObject(object)) return true;
+    && selectionRect.right >= boundsRight
+    && selectionRect.bottom >= boundsBottom;
+  if (fullyCovered) return true;
 
+  const topLeft = new Point(selectionRect.left, selectionRect.top);
+  const bottomRight = new Point(selectionRect.right, selectionRect.bottom);
   try {
-    const longestSide = Math.max(1, bounds.width, bounds.height);
-    const multiplier = Math.min(1, 720 / longestSide);
-    const rendered = object.toCanvasElement({
-      multiplier,
-      enableRetinaScaling: false,
-      withoutTransform: false,
-      withoutShadow: false,
-    });
-    const context = rendered.getContext('2d', { willReadFrequently: true });
-    if (!context || rendered.width < 1 || rendered.height < 1) return false;
-
-    const mapX = (value) => ((value - bounds.left) / Math.max(bounds.width, 0.0001)) * rendered.width;
-    const mapY = (value) => ((value - bounds.top) / Math.max(bounds.height, 0.0001)) * rendered.height;
-    const x0 = Math.max(0, Math.floor(mapX(intersection.left)) - 1);
-    const y0 = Math.max(0, Math.floor(mapY(intersection.top)) - 1);
-    const x1 = Math.min(rendered.width, Math.ceil(mapX(intersection.right)) + 1);
-    const y1 = Math.min(rendered.height, Math.ceil(mapY(intersection.bottom)) + 1);
-    const width = Math.max(1, x1 - x0);
-    const height = Math.max(1, y1 - y0);
-    const pixels = context.getImageData(x0, y0, width, height).data;
-    const stride = pixels.length > 900_000 ? 12 : pixels.length > 300_000 ? 8 : 4;
-    for (let index = 3; index < pixels.length; index += stride) {
-      if (pixels[index] > 10) return true;
-    }
-    return false;
-  } catch (error) {
-    // Never fall back to the object's bounding rectangle: that would select hollow
-    // shapes, text and transparent image areas even when the marquee touched only
-    // empty space. A failed exact probe is a miss.
-    console.warn('Точная проверка рамочного выделения недоступна', error);
-    return false;
+    // Fabric performs this from vector geometry. Unlike toCanvasElement/getImageData it
+    // does not allocate a temporary bitmap or synchronously read hundreds of thousands
+    // of pixels on Pencil-up.
+    if (typeof object.intersectsWithRect === 'function'
+      && object.intersectsWithRect(topLeft, bottomRight, true, true)) return true;
+    if (typeof object.isContainedWithinRect === 'function'
+      && object.isContainedWithinRect(topLeft, bottomRight, true, true)) return true;
+  } catch {
+    // Continue with the inexpensive point tests below.
   }
+
+  const rectSamples = [
+    topLeft,
+    new Point(selectionRect.right, selectionRect.top),
+    bottomRight,
+    new Point(selectionRect.left, selectionRect.bottom),
+    new Point((selectionRect.left + selectionRect.right) / 2, (selectionRect.top + selectionRect.bottom) / 2),
+  ];
+  try {
+    if (typeof object.containsPoint === 'function'
+      && rectSamples.some((point) => object.containsPoint(point))) return true;
+  } catch {
+    // Ignore one unsupported geometry probe.
+  }
+
+  const objectCorners = object.aCoords ? Object.values(object.aCoords) : [];
+  return objectCorners.some((point) => pointInsideSceneRect(point, selectionRect));
 }
+
 
 
 export default function Board({ boardId }) {
@@ -1459,6 +1483,7 @@ function BoardWorkspace({
     lastSignature: '',
     timer: null,
     pendingTarget: null,
+    zIndexMap: null,
   });
   const remoteTransformSessionsRef = useRef(new Map());
   const remoteTransformClientOrderRef = useRef(new Map());
@@ -1485,6 +1510,19 @@ function BoardWorkspace({
   const remotePreviewChunksRef = useRef(new Map());
   const selectionDragRef = useRef(null);
   const selectionBoxRef = useRef(null);
+  const selectionMarqueeElementRef = useRef(null);
+  const selectionMoveFrameRef = useRef(null);
+  const selectionTargetFindResetRef = useRef(null);
+  const selectionPenSessionRef = useRef({
+    pointerId: null,
+    active: false,
+    moveFramePending: false,
+    compatibilityGuardUntil: 0,
+  });
+  const transformGestureRef = useRef({ activeId: null, lastCommittedId: null, signature: '', committedAt: 0 });
+  const serializedObjectCacheRef = useRef(new WeakMap());
+  const selectionVisualSignatureRef = useRef('');
+  const selectionVisualActiveRef = useRef(null);
   const pendingGroupTransformCommitRef = useRef(null);
   const localSelectionTransactionRef = useRef(null);
   const remoteSelectionTransactionsRef = useRef(new Map());
@@ -1891,10 +1929,40 @@ function BoardWorkspace({
     const candidates = [...new Set((Array.isArray(objects) ? objects : [])
       .flatMap((object) => flattenTarget(object))
       .filter((object) => object && !isActiveSelectionObject(object)))];
-    return candidates.map((object) => ({
-      object: serializeObject(object),
-      zIndex: canvas.getObjects().indexOf(object),
-    }));
+    const zIndexMap = new Map(canvas.getObjects().map((object, index) => [object, index]));
+    return candidates.map((object) => {
+      const serialized = serializeObject(object);
+      serializedObjectCacheRef.current.set(object, serialized);
+      return {
+        object: serialized,
+        zIndex: zIndexMap.get(object) ?? -1,
+      };
+    });
+  }, []);
+
+  const getTransformRecords = useCallback((objects) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return [];
+    const candidates = [...new Set((Array.isArray(objects) ? objects : [])
+      .flatMap((object) => flattenTarget(object))
+      .filter((object) => object && !isActiveSelectionObject(object)))];
+    const zIndexMap = new Map(canvas.getObjects().map((object, index) => [object, index]));
+    const baseTimestamp = Date.now();
+    return candidates.map((object, index) => {
+      let cached = serializedObjectCacheRef.current.get(object);
+      if (!cached) cached = serializeObject(object);
+      const serialized = patchSerializedObjectTransform(cached, object);
+      serialized.boardObjectId = object.boardObjectId ?? serialized.boardObjectId;
+      serialized.updatedAt = baseTimestamp + index;
+      serialized.updatedBy = clientIdRef.current;
+      object.updatedAt = serialized.updatedAt;
+      object.updatedBy = serialized.updatedBy;
+      serializedObjectCacheRef.current.set(object, serialized);
+      return {
+        object: serialized,
+        zIndex: zIndexMap.get(object) ?? -1,
+      };
+    });
   }, []);
 
   const updateHistoryButtons = useCallback(() => {
@@ -2205,8 +2273,18 @@ function BoardWorkspace({
     const members = isActiveSelectionObject(active) && typeof active.getObjects === 'function'
       ? active.getObjects()
       : [];
+    const signature = members.length > 1
+      ? `group:${members.map((object) => String(object.boardObjectId ?? object.__uid ?? '')).join('|')}`
+      : `single:${String(active?.boardObjectId ?? active?.__uid ?? '')}`;
+    if (selectionVisualActiveRef.current === active
+      && selectionVisualSignatureRef.current === signature) return;
+    selectionVisualActiveRef.current = active;
+    selectionVisualSignatureRef.current = signature;
+
     const memberSet = new Set(members);
+    const hadStoredControls = selectionMemberControlsRef.current.size > 0;
     restoreSelectionMemberControls(memberSet);
+    let renderNeeded = hadStoredControls;
 
     if (members.length > 1) {
       members.forEach((object) => {
@@ -2226,8 +2304,6 @@ function BoardWorkspace({
         object.hasControls = false;
         object.hasBorders = false;
       });
-      // Fabric's ActiveSelection renders controls for every child. Bypass that
-      // implementation and call the base object renderer once for the outer frame.
       const outerRenderer = FabricObject.prototype._renderControls;
       if (typeof outerRenderer === 'function') {
         active._renderControls = function renderOnlyOuterSelection(ctx, styleOverride) {
@@ -2242,9 +2318,11 @@ function BoardWorkspace({
         objectCaching: false,
       });
       active.setCoords();
+      renderNeeded = true;
     }
-    canvas.requestRenderAll();
+    if (renderNeeded) canvas.requestRenderAll();
   }, [restoreSelectionMemberControls]);
+
 
   const applyCanvasInputMode = useCallback(() => {
     const canvas = fabricCanvasRef.current;
@@ -2266,11 +2344,10 @@ function BoardWorkspace({
     canvas.selection = false;
     const drawingEyedropperActive = eyedropperActiveRef.current && eyedropperModeRef.current === 'drawing';
 
-    // Cursor selection must hit the painted object itself, not the empty part of its
-    // bounding rectangle. Keep only a tiny screen-space tolerance so thin strokes
-    // remain usable with touch/Pencil without turning the whole object frame into a
-    // target. Other tools keep their existing custom pointer routes.
-    canvas.perPixelTargetFind = selectionToolActive;
+    // Exact pixel target finding is armed only for the actual select-tool pointerdown
+    // in capture phase. Keeping it enabled for Pencil hover/move makes Fabric perform a
+    // synchronous pixel probe for every high-frequency event and freezes busy boards.
+    canvas.perPixelTargetFind = false;
     canvas.targetFindTolerance = selectionToolActive ? 2 : 8;
     canvas.skipTargetFind = !(selectionToolActive || drawingEyedropperActive);
 
@@ -3471,6 +3548,7 @@ function BoardWorkspace({
         revived.evented = false;
         revived.hasControls = false;
         canvas.add(revived);
+        serializedObjectCacheRef.current.set(revived, record.object);
         applyObjectInteractivityToObjects([revived], { render: false });
         if (Number.isInteger(record.zIndex) && typeof canvas.moveObjectTo === 'function') {
           canvas.moveObjectTo(revived, clamp(record.zIndex, 0, canvas.getObjects().length - 1));
@@ -3678,6 +3756,7 @@ function BoardWorkspace({
             revived.pendingImageSerialized = undefined;
             revived.transientPreview = false;
             canvas.add(revived);
+            serializedObjectCacheRef.current.set(revived, serialized);
             if (zIndex >= 0 && typeof canvas.moveObjectTo === 'function') {
               canvas.moveObjectTo(revived, clamp(zIndex, 0, canvas.getObjects().length - 1));
             }
@@ -4408,7 +4487,7 @@ function BoardWorkspace({
             touched.push(object);
           }
           if (touched.length) {
-            const records = getObjectRecords(touched);
+            const records = getTransformRecords(touched);
             sendRecordUpserts(records);
             applyObjectInteractivityToObjects(touched, { render: false });
           }
@@ -4434,6 +4513,7 @@ function BoardWorkspace({
     applyObjectInteractivityToObjects,
     applyRecordsLocally,
     getObjectRecords,
+    getTransformRecords,
     markObject,
     registeredObjectsById,
     refreshHistoryRecords,
@@ -4706,6 +4786,7 @@ function BoardWorkspace({
             revived.transientLiveDraw = false;
             revived.transientAwaitingCommit = false;
             canvas.add(revived);
+            serializedObjectCacheRef.current.set(revived, op.object);
             const requestedIndex = op.preserveOrder && existingIndex >= 0
               ? existingIndex
               : op.zIndex;
@@ -5176,7 +5257,11 @@ function BoardWorkspace({
 
 
   const getLiveTransformObjects = useCallback((target) => (
-    transformFramesForObjects(flattenTarget(target), fabricCanvasRef.current)
+    transformFramesForObjects(
+      flattenTarget(target),
+      fabricCanvasRef.current,
+      liveTransformSendRef.current.zIndexMap,
+    )
   ), []);
 
   const sendLiveTransformNow = useCallback((target, phase = 'update') => {
@@ -5215,6 +5300,10 @@ function BoardWorkspace({
     state.sequence = 0;
     state.lastSentAt = 0;
     state.lastSignature = '';
+    const canvas = fabricCanvasRef.current;
+    state.zIndexMap = canvas
+      ? new Map(canvas.getObjects().map((object, index) => [object, index]))
+      : null;
 
     // Every member must keep one stable identity before the first frame is sent.
     // Live transform messages never create objects on another device; they only move
@@ -5253,6 +5342,7 @@ function BoardWorkspace({
     state.lastSentAt = 0;
     state.lastSignature = '';
     state.pendingTarget = null;
+    state.zIndexMap = null;
     return true;
   }, [sendLiveTransformNow]);
 
@@ -6174,6 +6264,14 @@ function BoardWorkspace({
       applyingRemoteRef.current = true;
       try {
         await loadCanvasJsonProgressively(canvas, snapshot.canvas);
+        const serializedById = new Map((snapshot.canvas.objects ?? [])
+          .filter((object) => object?.boardObjectId)
+          .map((object) => [String(object.boardObjectId), object]));
+        canvas.getObjects().forEach((object) => {
+          const serialized = object.pendingImageSerialized
+            ?? serializedById.get(String(object.boardObjectId ?? ''));
+          if (serialized) serializedObjectCacheRef.current.set(object, serialized);
+        });
         rebuildObjectRegistry();
         revisionRef.current = Number(confirmedRevision ?? 0);
         applyObjectInteractivity();
@@ -7246,13 +7344,14 @@ function BoardWorkspace({
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
       if (transform.target.transientSelectionProxy) {
         modifiedBeforeRef.current = [];
-        beginLiveTransform(transform.target);
+        transformGestureRef.current.activeId = beginLiveTransform(transform.target);
         lastLockBroadcastRef.current = Date.now();
         return;
       }
-      modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
+      const zIndexMap = new Map(canvas.getObjects().map((object, index) => [object, index]));
+      modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas, zIndexMap);
       sendLocalLock(transform.target, true);
-      beginLiveTransform(transform.target);
+      transformGestureRef.current.activeId = beginLiveTransform(transform.target);
       lastLockBroadcastRef.current = Date.now();
     });
 
@@ -7281,20 +7380,48 @@ function BoardWorkspace({
       const groupSelection = isActiveSelectionObject(target);
       const selectedObjects = flattenTarget(target).filter(Boolean);
       const beforeTransforms = modifiedBeforeRef.current;
-      const afterTransforms = transformFramesForObjects(selectedObjects, canvas);
+      const afterTransforms = transformFramesForObjects(
+        selectedObjects,
+        canvas,
+        liveTransformSendRef.current.zIndexMap,
+      );
       modifiedBeforeRef.current = [];
       endLiveTransform(target);
 
+      const commitSignature = afterTransforms
+        .map((frame) => `${frame.id}:${frame.matrix.join(',')}`)
+        .sort()
+        .join('|');
+      const commitNow = performance.now();
+      const gestureId = transformGestureRef.current.activeId;
+      const duplicateGesture = Boolean(gestureId)
+        && transformGestureRef.current.lastCommittedId === gestureId;
+      const duplicateFallback = !gestureId
+        && commitSignature
+        && transformGestureRef.current.signature === commitSignature
+        && commitNow - Number(transformGestureRef.current.committedAt ?? 0) < 120;
+      if (duplicateGesture || duplicateFallback) {
+        sendLocalLock(selectedObjects, false);
+        return;
+      }
+      transformGestureRef.current.lastCommittedId = gestureId;
+      transformGestureRef.current.signature = commitSignature;
+      transformGestureRef.current.committedAt = commitNow;
+
       const commitObjects = () => {
-        const objects = selectedObjects.map((object) => markObject(object, clientId));
-        const after = getObjectRecords(objects);
+        selectedObjects.forEach((object) => {
+          if (!object.boardObjectId) object.boardObjectId = randomToken(10);
+          registerCanvasObject(object);
+          object.setCoords?.();
+        });
+        const after = getTransformRecords(selectedObjects);
         sendRecordUpserts(after);
-        sendLocalLock(objects, false);
+        sendLocalLock(selectedObjects, false);
         if (beforeTransforms.length && afterTransforms.length) {
           recordAction({ type: 'transform', before: beforeTransforms, after: afterTransforms });
         }
         schedulePersistence();
-        deduplicateRegisteredObjectIds(objects.map((object) => object.boardObjectId));
+        deduplicateRegisteredObjectIds(selectedObjects.map((object) => object.boardObjectId));
         updateSelectionState();
         updateSelectionStyleState();
         canvas.requestRenderAll();
@@ -7671,9 +7798,57 @@ function BoardWorkspace({
       return true;
     }
 
+    function hideSelectionMarquee() {
+      if (selectionMoveFrameRef.current != null) {
+        window.cancelAnimationFrame(selectionMoveFrameRef.current);
+        selectionMoveFrameRef.current = null;
+      }
+      const element = selectionMarqueeElementRef.current;
+      if (!element) return;
+      element.style.display = 'none';
+      element.style.width = '0px';
+      element.style.height = '0px';
+    }
+
+    function paintSelectionMarquee() {
+      selectionMoveFrameRef.current = null;
+      const drag = selectionDragRef.current;
+      const element = selectionMarqueeElementRef.current;
+      if (!drag || !element || !canvas.viewportTransform) return;
+      const rect = normalizedSceneRect(drag.start, drag.end);
+      const first = util.transformPoint(new Point(rect.left, rect.top), canvas.viewportTransform);
+      const second = util.transformPoint(new Point(rect.right, rect.bottom), canvas.viewportTransform);
+      const left = Math.min(first.x, second.x);
+      const top = Math.min(first.y, second.y);
+      const width = Math.abs(second.x - first.x);
+      const height = Math.abs(second.y - first.y);
+      element.style.display = 'block';
+      element.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+      element.style.width = `${width}px`;
+      element.style.height = `${height}px`;
+    }
+
+    function scheduleSelectionMarqueePaint() {
+      if (selectionMoveFrameRef.current != null) return;
+      selectionMoveFrameRef.current = window.requestAnimationFrame(paintSelectionMarquee);
+    }
+
+    function selectionDragOwnsEvent(drag, nativeEvent) {
+      if (!drag) return false;
+      if (drag.pointerId == null || nativeEvent?.pointerId == null) return true;
+      return drag.pointerId === nativeEvent.pointerId;
+    }
+
     canvas.on('mouse:down', (event) => {
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
+      if (activeToolRef.current === 'select'
+        && nativeEvent?.pointerType !== 'pen'
+        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        nativeEvent?.preventDefault?.();
+        nativeEvent?.stopPropagation?.();
+        return;
+      }
       if (performance.now() < eyedropperCompatibilityGuardUntilRef.current
         && nativeEvent?.pointerType !== 'pen') {
         nativeEvent?.preventDefault?.();
@@ -7839,27 +8014,17 @@ function BoardWorkspace({
           canvas.requestRenderAll();
         }
         const point = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
-        selectionDragRef.current = { start: point, end: point };
-        if (selectionBoxRef.current) canvas.remove(selectionBoxRef.current);
-        const selectionBox = new Rect({
-          left: point.x,
-          top: point.y,
-          width: 0,
-          height: 0,
-          originX: 'left',
-          originY: 'top',
-          fill: 'rgba(37, 99, 235, 0.08)',
-          stroke: '#2563eb',
-          strokeWidth: Math.max(1, 1.2 / Math.max(canvas.getZoom(), MIN_ZOOM)),
-          strokeDashArray: [7, 5],
-          selectable: false,
-          evented: false,
-          excludeFromExport: true,
-          objectCaching: false,
-        });
-        selectionBoxRef.current = selectionBox;
-        canvas.add(selectionBox);
-        if (typeof canvas.bringObjectToFront === 'function') canvas.bringObjectToFront(selectionBox);
+        selectionDragRef.current = {
+          start: new Point(point.x, point.y),
+          end: new Point(point.x, point.y),
+          pointerId,
+          pointerType: nativeEvent?.pointerType ?? 'unknown',
+        };
+        if (selectionBoxRef.current) {
+          canvas.remove(selectionBoxRef.current);
+          selectionBoxRef.current = null;
+        }
+        scheduleSelectionMarqueePaint();
       }
 
       if (activeToolRef.current === 'pencil') {
@@ -7977,6 +8142,10 @@ function BoardWorkspace({
 
     canvas.on('mouse:move', (event) => {
       const nativeEvent = event.e;
+      if (activeToolRef.current === 'select'
+        && nativeEvent?.pointerType !== 'pen'
+        && Number(nativeEvent?.buttons ?? 0) > 0
+        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) return;
       if (nativeEvent?.pointerId != null && rejectedPointerIdsRef.current.has(nativeEvent.pointerId)) return;
       const textTapCandidate = textTapCandidateRef.current;
       if (textTapCandidate
@@ -7989,7 +8158,9 @@ function BoardWorkspace({
       }
       const cursorScenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = cursorScenePoint;
-      if (!liveTransformSendRef.current.sessionId && !liveDrawSendRef.current.sessionId) {
+      if (!liveTransformSendRef.current.sessionId
+        && !liveDrawSendRef.current.sessionId
+        && !selectionDragRef.current) {
         sendCursorThrottled(cursorScenePoint);
       }
       if (panningRef.current) {
@@ -8026,21 +8197,11 @@ function BoardWorkspace({
         scheduleCreationPreview();
         return;
       }
-      if (selectionDragRef.current && activeToolRef.current === 'select') {
-        selectionDragRef.current.end = cursorScenePoint;
-        const selectionBox = selectionBoxRef.current;
-        if (selectionBox) {
-          const rect = normalizedSceneRect(selectionDragRef.current.start, cursorScenePoint);
-          selectionBox.set({
-            left: rect.left,
-            top: rect.top,
-            width: rect.width,
-            height: rect.height,
-            strokeWidth: Math.max(1, 1.2 / Math.max(canvas.getZoom(), MIN_ZOOM)),
-          });
-          selectionBox.setCoords();
-          canvas.requestRenderAll();
-        }
+      if (selectionDragRef.current
+        && activeToolRef.current === 'select'
+        && selectionDragOwnsEvent(selectionDragRef.current, nativeEvent)) {
+        selectionDragRef.current.end = new Point(cursorScenePoint.x, cursorScenePoint.y);
+        scheduleSelectionMarqueePaint();
       }
       const activeStroke = activePencilRef.current;
       const pencilPointerMatches = !activeStroke
@@ -8068,6 +8229,13 @@ function BoardWorkspace({
     canvas.on('mouse:up', (event) => {
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
+      if (activeToolRef.current === 'select'
+        && nativeEvent?.pointerType !== 'pen'
+        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        nativeEvent?.preventDefault?.();
+        nativeEvent?.stopPropagation?.();
+        return;
+      }
       if (performance.now() < eyedropperCompatibilityGuardUntilRef.current
         && nativeEvent?.pointerType !== 'pen') {
         nativeEvent?.preventDefault?.();
@@ -8119,30 +8287,38 @@ function BoardWorkspace({
         }, pending.cancelled ? 80 : 850);
       }
 
-      const selectionDrag = selectionDragRef.current;
-      selectionDragRef.current = null;
+      const currentSelectionDrag = selectionDragRef.current;
+      const selectionDrag = currentSelectionDrag
+        && selectionDragOwnsEvent(currentSelectionDrag, nativeEvent)
+        ? currentSelectionDrag
+        : null;
+      if (selectionDrag) selectionDragRef.current = null;
       if (selectionBoxRef.current) {
         canvas.remove(selectionBoxRef.current);
         selectionBoxRef.current = null;
       }
+      if (selectionDrag) hideSelectionMarquee();
       if (selectionDrag && activeToolRef.current === 'select') {
         const selectionRect = normalizedSceneRect(selectionDrag.start, selectionDrag.end);
         if (selectionRect.width >= 3 || selectionRect.height >= 3) {
-          window.setTimeout(() => {
+          window.requestAnimationFrame(() => {
+            if (fabricCanvasRef.current !== canvas || activeToolRef.current !== 'select') return;
             canvas.discardActiveObject();
+            const now = Date.now();
             const selected = canvas.getObjects().filter((object) => {
               if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || !object.selectable) return false;
               const lock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
-              if (lock && Number(lock.expiresAt ?? 0) > Date.now()) return false;
-              return objectVisuallyIntersectsRect(object, selectionRect);
+              if (lock && Number(lock.expiresAt ?? 0) > now) return false;
+              return objectFastIntersectsRect(object, selectionRect);
             });
             if (selected.length === 1) canvas.setActiveObject(selected[0]);
             else if (selected.length > 1) canvas.setActiveObject(createOuterOnlyActiveSelection(selected, canvas));
-            updateSelectionVisuals();
-            updateSelectionState();
-            updateSelectionStyleState();
+            else {
+              updateSelectionState();
+              updateSelectionStyleState();
+            }
             canvas.requestRenderAll();
-          }, 0);
+          });
         }
       }
 
@@ -8673,8 +8849,83 @@ function BoardWorkspace({
       event.stopImmediatePropagation?.();
     }
 
+    function suppressSelectionCompatibilityEvent(event) {
+      if (event?.cancelable) event.preventDefault();
+      event?.stopPropagation?.();
+      event?.stopImmediatePropagation?.();
+    }
+
+    function armExactSelectionTargetFind() {
+      window.clearTimeout(selectionTargetFindResetRef.current);
+      canvas.perPixelTargetFind = true;
+      selectionTargetFindResetRef.current = window.setTimeout(() => {
+        selectionTargetFindResetRef.current = null;
+        if (fabricCanvasRef.current === canvas) canvas.perPixelTargetFind = false;
+      }, 0);
+    }
+
+    function beginSelectionPenSession(event) {
+      if (event.pointerType !== 'pen'
+        || activeToolRef.current !== 'select'
+        || eyedropperActiveRef.current
+        || !canEditRef.current
+        || event.button > 0) return false;
+      const session = selectionPenSessionRef.current;
+      if (session.active && session.pointerId === event.pointerId) {
+        suppressSelectionCompatibilityEvent(event);
+        return true;
+      }
+      session.pointerId = event.pointerId;
+      session.active = true;
+      session.moveFramePending = false;
+      armExactSelectionTargetFind();
+      try { touchTarget.setPointerCapture(event.pointerId); } catch { /* Safari may reject capture. */ }
+      return false;
+    }
+
+    function finishSelectionPenSession(event) {
+      const session = selectionPenSessionRef.current;
+      if (event.pointerType !== 'pen' || !session.active || session.pointerId !== event.pointerId) return false;
+      session.compatibilityGuardUntil = performance.now() + 280;
+      session.active = false;
+      session.moveFramePending = false;
+      if (event.type === 'pointercancel') {
+        selectionDragRef.current = null;
+        hideSelectionMarquee();
+        endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
+        if (localLockIdsRef.current.length) {
+          realtimeRef.current?.sendLock(localLockIdsRef.current, false);
+          localLockIdsRef.current = [];
+        }
+      }
+      window.setTimeout(() => {
+        if (selectionPenSessionRef.current.pointerId === event.pointerId) {
+          selectionPenSessionRef.current.pointerId = null;
+        }
+        try {
+          if (touchTarget.hasPointerCapture?.(event.pointerId)) touchTarget.releasePointerCapture(event.pointerId);
+        } catch {
+          // WebKit can release capture before this task runs.
+        }
+      }, 0);
+      return true;
+    }
+
     function handlePalmPointerDown(event) {
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
+
+      if (activeToolRef.current === 'select'
+        && event.pointerType !== 'pen'
+        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        suppressSelectionCompatibilityEvent(event);
+        return;
+      }
+      if (activeToolRef.current === 'select'
+        && !eyedropperActiveRef.current
+        && canEditRef.current
+        && event.button <= 0) {
+        armExactSelectionTargetFind();
+      }
 
       if (shouldRejectNativePenAfterTouchFallback(event)) {
         if (event.pointerId != null) rejectedPointerIdsRef.current.add(event.pointerId);
@@ -8685,6 +8936,7 @@ function BoardWorkspace({
       // Eyedropper owns its complete Pencil stream in capture phase. Fabric sees
       // neither pointerdown nor pointerup, so no stale pencil/mouse session can survive.
       if (beginEyedropperPenContact(event)) return;
+      if (beginSelectionPenSession(event)) return;
 
       if (event.pointerType === 'pen') {
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
@@ -8726,6 +8978,7 @@ function BoardWorkspace({
         // The lightweight function never scans the objects on the board.
         if (interruptedTouchGesture || justAfterTouchGesture || drawingToolNeedsRepair) {
           applyCanvasInputMode();
+          if (activeToolRef.current === 'select') armExactSelectionTargetFind();
         }
         rememberNativeCreationPointer(event);
         return;
@@ -8764,6 +9017,13 @@ function BoardWorkspace({
         consumeEyedropperPointerEvent(event);
         return;
       }
+      if (activeToolRef.current === 'select'
+        && event.pointerType !== 'pen'
+        && Number(event.buttons ?? 0) > 0
+        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        suppressSelectionCompatibilityEvent(event);
+        return;
+      }
       if (rejectedPointerIdsRef.current.has(event.pointerId)
         && !isStylusFallbackPointerEvent(event)) {
         rejectPointerEvent(event);
@@ -8773,6 +9033,23 @@ function BoardWorkspace({
         penInputRef.current.lastSeenAt = Date.now();
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
+        const selectionSession = selectionPenSessionRef.current;
+        if (activeToolRef.current === 'select') {
+          // Apple Pencil hover can emit a continuous pen pointer stream before contact.
+          // The cursor tool does not need Fabric target finding until pointerdown.
+          if (!selectionSession.active || selectionSession.pointerId !== event.pointerId) {
+            suppressSelectionCompatibilityEvent(event);
+            return;
+          }
+          if (selectionSession.moveFramePending) {
+            suppressSelectionCompatibilityEvent(event);
+            return;
+          }
+          selectionSession.moveFramePending = true;
+          window.requestAnimationFrame(() => {
+            selectionPenSessionRef.current.moveFramePending = false;
+          });
+        }
         updateCreationDraftFromNativeEvent(event);
         return;
       }
@@ -8785,6 +9062,13 @@ function BoardWorkspace({
 
     function handlePalmPointerEnd(event) {
       if (finishEyedropperPenContact(event)) return;
+      if (activeToolRef.current === 'select'
+        && event.pointerType !== 'pen'
+        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        suppressSelectionCompatibilityEvent(event);
+        return;
+      }
+      finishSelectionPenSession(event);
 
       if (rejectedPointerIdsRef.current.has(event.pointerId)
         && !isStylusFallbackPointerEvent(event)) {
@@ -9242,6 +9526,13 @@ function BoardWorkspace({
 
     function handleWindowBlur() {
       cancelCreationDraft('window-blur');
+      selectionDragRef.current = null;
+      hideSelectionMarquee();
+      endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
+      if (localLockIdsRef.current.length) {
+        realtimeRef.current?.sendLock(localLockIdsRef.current, false);
+        localLockIdsRef.current = [];
+      }
       internalClipboardArmedRef.current = false;
       spacePressedRef.current = false;
       const activeText = canvas.getActiveObject();
@@ -9460,6 +9751,9 @@ function BoardWorkspace({
       window.clearTimeout(cursorSendRef.current.timer);
       window.clearTimeout(liveTransformSendRef.current.timer);
       window.clearTimeout(liveDrawSendRef.current.timer);
+      window.clearTimeout(selectionTargetFindResetRef.current);
+      selectionTargetFindResetRef.current = null;
+      hideSelectionMarquee();
       pendingPencilQueueRef.current.forEach((pending) => window.clearTimeout(pending.cancelTimer));
       pendingPencilQueueRef.current = [];
       activePencilRef.current = null;
@@ -9483,6 +9777,19 @@ function BoardWorkspace({
       liveTransformSendRef.current.sessionId = null;
       liveTransformSendRef.current.lastSignature = '';
       liveTransformSendRef.current.pendingTarget = null;
+      liveTransformSendRef.current.zIndexMap = null;
+      selectionPenSessionRef.current = {
+        pointerId: null,
+        active: false,
+        moveFramePending: false,
+        compatibilityGuardUntil: 0,
+      };
+      transformGestureRef.current = {
+        activeId: null,
+        lastCommittedId: null,
+        signature: '',
+        committedAt: 0,
+      };
       liveDrawSendRef.current.sessionId = null;
       liveDrawSendRef.current.lastSentPointIndex = 0;
       liveDrawSendRef.current.points = [];
@@ -9526,6 +9833,9 @@ function BoardWorkspace({
       canvas.off('object:removed', handleRegistryObjectRemoved);
       canvas.off('before:render', drawBoardBackgroundOnCanvas);
       objectRegistryRef.current.clear();
+      serializedObjectCacheRef.current = new WeakMap();
+      selectionVisualSignatureRef.current = '';
+      selectionVisualActiveRef.current = null;
       objectEraserGridRef.current.clear();
       objectEraserGlobalCandidatesRef.current = [];
       objectEraserZIndexRef.current.clear();
@@ -9720,6 +10030,11 @@ function BoardWorkspace({
         aria-label="Онлайн-доска"
       >
         <canvas ref={canvasElementRef} />
+        <div
+          ref={selectionMarqueeElementRef}
+          className="selection-marquee-overlay"
+          aria-hidden="true"
+        />
         <div className="collaboration-overlay" aria-hidden="true">
           {cursorOverlays.map((cursor) => (
             <div

@@ -2434,3 +2434,22 @@ html.game-viewport-locked #root {
     font-size: 7.5px;
   }
 }
+
+/* The marquee lives in a lightweight DOM overlay. Updating it never redraws the
+   Fabric scene, so Apple Pencil can send high-frequency moves without repainting
+   every line, image and text object on the board. */
+.selection-marquee-overlay {
+  position: absolute;
+  z-index: 19;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  display: none;
+  pointer-events: none;
+  box-sizing: border-box;
+  border: 1.2px dashed #2563eb;
+  background: rgba(37, 99, 235, 0.08);
+  transform-origin: 0 0;
+  will-change: transform, width, height;
+}

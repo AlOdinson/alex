@@ -1,9 +1,9 @@
 {
-  "version": "1.26.0",
-  "packageVersion": "1.26.0",
-  "base": "1.25.1",
-  "release": "Atomic instant Apple Pencil eyedropper input session",
+  "version": "1.27.0",
+  "packageVersion": "1.27.0",
+  "base": "1.26.0",
+  "release": "Instant Apple Pencil selection and transform pipeline",
   "date": "2026-08-05",
-  "name": "atomic-pencil-eyedropper",
-  "label": "Alex Board 1.26"
+  "name": "instant-pencil-selection-transform",
+  "label": "Alex Board 1.27"
 }
