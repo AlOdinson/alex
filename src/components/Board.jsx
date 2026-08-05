@@ -529,6 +529,14 @@ function moveSelectionFromHandle(eventData, transform, x, y) {
     left: movedX ? nextLeft : previousLeft,
     top: movedY ? nextTop : previousTop,
   });
+  // Fabric does not reliably refresh ActiveSelection control coordinates while a
+  // custom control actionHandler is running. Keep the whole outer frame, rotation
+  // square and hand handle attached to the moving selection on every Pencil frame.
+  target.setCoords?.();
+  const moveTick = target.canvas?.__alexSelectionMoveTick;
+  if (typeof moveTick === 'function') {
+    moveTick({ target, e: eventData, transform });
+  }
   return true;
 }
 
@@ -1651,6 +1659,7 @@ function BoardWorkspace({
   const penTransformIsolationRef = useRef(null);
   const finishPenTransformIsolationRef = useRef(null);
   const penTransformSpatialApiRef = useRef(null);
+  const penTransformTopRefreshFrameRef = useRef(null);
   const selectionUiRefreshFrameRef = useRef(null);
   const selectionStyleRefreshTimerRef = useRef(null);
   const serializedObjectCacheRef = useRef(new WeakMap());
@@ -6876,6 +6885,10 @@ function BoardWorkspace({
       penTransformIsolationRef.current = null;
       if (session.topFrame != null) window.cancelAnimationFrame(session.topFrame);
       session.topFrame = null;
+      // The lower scene is composited from cropped layers, but the Fabric selection
+      // frame lives on the upper canvas. Recalculate it before the final top render so
+      // every control stays together at the destination instead of being left behind.
+      try { session.target?.setCoords?.(); } catch { /* Ignore a disposed target. */ }
       schedulePenTransformRenderRestore(session);
 
       if (session.upperCanvas) {
@@ -6916,6 +6929,19 @@ function BoardWorkspace({
       } catch {
         // Fabric may already have disposed the top context during unmount.
       }
+      // Fabric can clear its top context once more after object:modified. Keep one
+      // cancellable top-only refresh so the frame remains visible after release without
+      // scheduling a costly lower-canvas render or accumulating work across drags.
+      if (penTransformTopRefreshFrameRef.current != null) {
+        window.cancelAnimationFrame(penTransformTopRefreshFrameRef.current);
+      }
+      penTransformTopRefreshFrameRef.current = window.requestAnimationFrame(() => {
+        penTransformTopRefreshFrameRef.current = null;
+        if (fabricCanvasRef.current !== canvas) return;
+        const active = canvas.getActiveObject();
+        try { active?.setCoords?.(); } catch { /* Ignore a disposed target. */ }
+        try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
+      });
       return true;
     };
     finishPenTransformIsolationRef.current = finishPenTransformIsolation;
@@ -7013,6 +7039,9 @@ function BoardWorkspace({
     const updatePenTransformIsolation = (target) => {
       const session = penTransformIsolationRef.current;
       if (!session || session.canvas !== canvas || session.target !== target) return false;
+      // oCoords are otherwise stale until Fabric finishes the transform. renderTop()
+      // would then leave the outer frame's rotation square and hand at the old position.
+      try { target.setCoords?.(); } catch { /* Ignore a disposed target. */ }
       const sceneX = Number(target.left ?? 0) - session.startLeft;
       const sceneY = Number(target.top ?? 0) - session.startTop;
       const viewport = session.viewport;
@@ -8250,15 +8279,23 @@ function BoardWorkspace({
       beginPenTransformIsolation(transform.target, transform, nativeEvent);
     });
 
-    const broadcastLiveTransform = ({ target }) => {
+    const broadcastLiveTransform = ({ target, e: nativeEvent, transform }) => {
       if (!target || applyingRemoteRef.current || applyingHistoryRef.current) return;
+      // Fabric's custom hand control does not consistently emit object:moving in
+      // Safari. Start/update the same Pencil compositor directly from its action tick.
+      if (!penTransformIsolationRef.current
+        && (nativeEvent?.pointerType === 'pen' || selectionPenSessionRef.current.active)) {
+        beginPenTransformIsolation(target, transform, nativeEvent);
+      }
       updatePenTransformIsolation(target);
       sendLiveTransformThrottled(target);
       if (Date.now() - lastLockBroadcastRef.current < 1200) return;
       lastLockBroadcastRef.current = Date.now();
       sendLocalLock(target, true);
     };
+    canvas.__alexSelectionMoveTick = broadcastLiveTransform;
     canvas.on('object:moving', broadcastLiveTransform);
+    canvas.on('object:drag', broadcastLiveTransform);
     canvas.on('object:scaling', broadcastLiveTransform);
     canvas.on('object:rotating', broadcastLiveTransform);
     canvas.on('object:skewing', broadcastLiveTransform);
@@ -10763,6 +10800,10 @@ function BoardWorkspace({
       finishPenTransformIsolation({ composite: false });
       restorePenTransformRenderMethods();
       restorePenSelectionRenderGuard();
+      if (canvas.__alexSelectionMoveTick === broadcastLiveTransform) {
+        delete canvas.__alexSelectionMoveTick;
+      }
+      canvas.off('object:drag', broadcastLiveTransform);
       finishPenTransformIsolationRef.current = null;
       penTransformSpatialApiRef.current = null;
       transformSpatialIndex.cells.clear();
@@ -10771,6 +10812,10 @@ function BoardWorkspace({
       if (originalCanvasMoveObjectTo) canvas.moveObjectTo = originalCanvasMoveObjectTo;
       window.clearTimeout(selectionStyleRefreshTimerRef.current);
       selectionStyleRefreshTimerRef.current = null;
+      if (penTransformTopRefreshFrameRef.current != null) {
+        window.cancelAnimationFrame(penTransformTopRefreshFrameRef.current);
+        penTransformTopRefreshFrameRef.current = null;
+      }
       if (selectionUiRefreshFrameRef.current != null) {
         window.cancelAnimationFrame(selectionUiRefreshFrameRef.current);
         selectionUiRefreshFrameRef.current = null;

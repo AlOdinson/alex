@@ -1,9 +1,9 @@
 {
-  "version": "1.31.0",
-  "packageVersion": "1.31.0",
-  "base": "1.30.0",
-  "release": "Cropped dirty-region Apple Pencil transform compositor",
+  "version": "1.31.1",
+  "packageVersion": "1.31.1",
+  "base": "1.31.0",
+  "release": "Apple Pencil unified selection frame and hand-handle movement",
   "date": "2026-08-05",
-  "name": "cropped-dirty-region-pencil-transform",
-  "label": "Alex Board 1.31"
+  "name": "pencil-selection-frame-hand-live-move",
+  "label": "Alex Board 1.31.1"
 }
