@@ -1519,6 +1519,8 @@ function BoardWorkspace({
     active: false,
     moveFramePending: false,
     compatibilityGuardUntil: 0,
+    generation: 0,
+    lastEndedAt: 0,
   });
   const transformGestureRef = useRef({
     activeId: null,
@@ -6743,12 +6745,15 @@ function BoardWorkspace({
     }
 
     function pencilTransformInputIsQuiet() {
+      const selectionSession = selectionPenSessionRef.current;
       return !penInputRef.current.active
-        && !selectionPenSessionRef.current.active
+        && !selectionSession.active
         && !selectionDragRef.current
         && !liveTransformSendRef.current.sessionId
         && !pendingGroupTransformCommitRef.current
-        && performance.now() >= Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0) + 180;
+        // One paint gap is enough. Waiting for the old 700 ms duplicate-event guard plus
+        // another 180 ms made every attempted new selection postpone persistence again.
+        && performance.now() >= Number(selectionSession.lastEndedAt ?? 0) + 40;
     }
 
     function runDeferredTransformInIdle() {
@@ -6758,7 +6763,7 @@ function BoardWorkspace({
         flushDeferredTransformPersistence().catch(() => undefined);
       };
       if (typeof window.requestIdleCallback === 'function') {
-        deferredTransformIdleHandle = window.requestIdleCallback(run, { timeout: 1800 });
+        deferredTransformIdleHandle = window.requestIdleCallback(run, { timeout: 700 });
       } else {
         // Safari versions without requestIdleCallback still get two paint opportunities
         // before JSON/IndexedDB work begins.
@@ -6768,7 +6773,7 @@ function BoardWorkspace({
       }
     }
 
-    function scheduleDeferredTransformFlush(delay = 760) {
+    function scheduleDeferredTransformFlush(delay = 180) {
       window.clearTimeout(deferredTransformTimer);
       cancelDeferredTransformIdle();
       deferredTransformTimer = window.setTimeout(() => {
@@ -6778,7 +6783,7 @@ function BoardWorkspace({
           return;
         }
         runDeferredTransformInIdle();
-      }, Math.max(80, Number(delay ?? 760)));
+      }, Math.max(60, Number(delay ?? 180)));
     }
 
     function queueDeferredTransformPersistence(entries) {
@@ -8127,8 +8132,7 @@ function BoardWorkspace({
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
       if (activeToolRef.current === 'select'
-        && (nativeEvent?.pointerType == null || nativeEvent?.pointerType === 'mouse')
-        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        && shouldSuppressSelectionCompatibilityEvent(nativeEvent)) {
         nativeEvent?.preventDefault?.();
         nativeEvent?.stopPropagation?.();
         return;
@@ -8427,9 +8431,8 @@ function BoardWorkspace({
     canvas.on('mouse:move', (event) => {
       const nativeEvent = event.e;
       if (activeToolRef.current === 'select'
-        && (nativeEvent?.pointerType == null || nativeEvent?.pointerType === 'mouse')
         && Number(nativeEvent?.buttons ?? 0) > 0
-        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) return;
+        && shouldSuppressSelectionCompatibilityEvent(nativeEvent)) return;
       if (nativeEvent?.pointerId != null && rejectedPointerIdsRef.current.has(nativeEvent.pointerId)) return;
       const textTapCandidate = textTapCandidateRef.current;
       if (textTapCandidate
@@ -8514,8 +8517,7 @@ function BoardWorkspace({
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
       if (activeToolRef.current === 'select'
-        && (nativeEvent?.pointerType == null || nativeEvent?.pointerType === 'mouse')
-        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        && shouldSuppressSelectionCompatibilityEvent(nativeEvent)) {
         nativeEvent?.preventDefault?.();
         nativeEvent?.stopPropagation?.();
         return;
@@ -9120,6 +9122,16 @@ function BoardWorkspace({
       event?.stopImmediatePropagation?.();
     }
 
+    function shouldSuppressSelectionCompatibilityEvent(event) {
+      const session = selectionPenSessionRef.current;
+      // Capture phase starts a new native Pencil session before Fabric receives its
+      // mouse-like wrapper. While that new contact is active, the wrapper belongs to the
+      // current gesture and must pass. Only the short tail after release is a duplicate.
+      if (session.active) return false;
+      if (performance.now() >= Number(session.compatibilityGuardUntil ?? 0)) return false;
+      return event?.pointerType == null || event?.pointerType === 'mouse';
+    }
+
     function armExactSelectionTargetFind() {
       window.clearTimeout(selectionTargetFindResetRef.current);
       canvas.perPixelTargetFind = true;
@@ -9140,6 +9152,22 @@ function BoardWorkspace({
         suppressSelectionCompatibilityEvent(event);
         return true;
       }
+
+      // A new real Pencil contact must immediately cancel the duplicate-event tail from
+      // the previous contact. Otherwise Fabric can expose the new contact as a mouse-like
+      // event and the old time guard rejects it, restarting the same lock on every retry.
+      session.generation += 1;
+      session.compatibilityGuardUntil = 0;
+      if (session.active && session.pointerId != null && session.pointerId !== event.pointerId) {
+        finalizeSelectionMarquee(null, { cancelled: true });
+        try {
+          if (touchTarget.hasPointerCapture?.(session.pointerId)) {
+            touchTarget.releasePointerCapture(session.pointerId);
+          }
+        } catch {
+          // A stale WebKit capture can be replaced by the new contact below.
+        }
+      }
       session.pointerId = event.pointerId;
       session.active = true;
       session.moveFramePending = false;
@@ -9152,12 +9180,13 @@ function BoardWorkspace({
       if (event.pointerType !== 'pen' || !session.active || session.pointerId !== event.pointerId) return false;
       const cancelled = event.type === 'pointercancel' || event.type === 'lostpointercapture';
 
-      // Complete a Pencil marquee directly from the native release. In Safari the
-      // subsequent Fabric mouse:up can be a compatibility mouse event and is correctly
-      // suppressed by the guard below; relying on that event left the DOM marquee open.
+      // Complete a Pencil marquee directly from the native release. Safari's mirrored
+      // mouse tail is suppressed only for a very short period after this exact contact.
       finalizeSelectionMarquee(event, { cancelled });
 
-      session.compatibilityGuardUntil = performance.now() + 700;
+      const endedAt = performance.now();
+      session.lastEndedAt = endedAt;
+      session.compatibilityGuardUntil = endedAt + 140;
       session.active = false;
       session.moveFramePending = false;
       if (cancelled) {
@@ -9167,16 +9196,15 @@ function BoardWorkspace({
           localLockIdsRef.current = [];
         }
       }
-      window.setTimeout(() => {
-        if (selectionPenSessionRef.current.pointerId === event.pointerId) {
-          selectionPenSessionRef.current.pointerId = null;
-        }
-        try {
-          if (touchTarget.hasPointerCapture?.(event.pointerId)) touchTarget.releasePointerCapture(event.pointerId);
-        } catch {
-          // WebKit can release capture before this task runs.
-        }
-      }, 0);
+
+      // Release and clear synchronously. The former setTimeout(0) could erase a newly
+      // started session when Safari quickly reused the same pointerId.
+      try {
+        if (touchTarget.hasPointerCapture?.(event.pointerId)) touchTarget.releasePointerCapture(event.pointerId);
+      } catch {
+        // WebKit may already have released capture before pointerup reaches this listener.
+      }
+      if (!session.active && session.pointerId === event.pointerId) session.pointerId = null;
       return true;
     }
 
@@ -9184,8 +9212,7 @@ function BoardWorkspace({
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
 
       if (activeToolRef.current === 'select'
-        && (event.pointerType == null || event.pointerType === 'mouse')
-        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        && shouldSuppressSelectionCompatibilityEvent(event)) {
         suppressSelectionCompatibilityEvent(event);
         return;
       }
@@ -9287,9 +9314,8 @@ function BoardWorkspace({
         return;
       }
       if (activeToolRef.current === 'select'
-        && (event.pointerType == null || event.pointerType === 'mouse')
         && Number(event.buttons ?? 0) > 0
-        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        && shouldSuppressSelectionCompatibilityEvent(event)) {
         suppressSelectionCompatibilityEvent(event);
         return;
       }
@@ -9332,8 +9358,7 @@ function BoardWorkspace({
     function handlePalmPointerEnd(event) {
       if (finishEyedropperPenContact(event)) return;
       if (activeToolRef.current === 'select'
-        && (event.pointerType == null || event.pointerType === 'mouse')
-        && performance.now() < Number(selectionPenSessionRef.current.compatibilityGuardUntil ?? 0)) {
+        && shouldSuppressSelectionCompatibilityEvent(event)) {
         suppressSelectionCompatibilityEvent(event);
         return;
       }
@@ -10064,6 +10089,8 @@ function BoardWorkspace({
         active: false,
         moveFramePending: false,
         compatibilityGuardUntil: 0,
+        generation: 0,
+        lastEndedAt: 0,
       };
       transformGestureRef.current = {
         activeId: null,

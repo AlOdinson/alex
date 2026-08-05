@@ -1,9 +1,9 @@
 {
-  "version": "1.28.0",
-  "packageVersion": "1.28.0",
-  "base": "1.27.1",
-  "release": "Instant Apple Pencil transform completion and coalesced persistence",
+  "version": "1.28.1",
+  "packageVersion": "1.28.1",
+  "base": "1.28.0",
+  "release": "Immediate repeat Apple Pencil selection after transforms",
   "date": "2026-08-05",
-  "name": "instant-pencil-transform-finalization",
-  "label": "Alex Board 1.28"
+  "name": "pencil-selection-guard-hotfix",
+  "label": "Alex Board 1.28.1"
 }
