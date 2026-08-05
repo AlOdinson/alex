@@ -1633,6 +1633,11 @@ function BoardWorkspace({
   const remotePreviewApplyQueueRef = useRef(Promise.resolve());
   const remotePreviewChunksRef = useRef(new Map());
   const selectionDragRef = useRef(null);
+  // Owns only the very first Apple Pencil drag of an object that was not already
+  // selected before pointerdown. Fabric cannot reliably promote that first native
+  // Pencil contact into a transform in Safari, so this tiny bootstrap session keeps
+  // the same physical gesture alive and hands all later drags back to Fabric.
+  const directPenObjectDragRef = useRef(null);
   const selectionBoxRef = useRef(null);
   const selectionMarqueeElementRef = useRef(null);
   const selectionMoveFrameRef = useRef(null);
@@ -2581,6 +2586,9 @@ function BoardWorkspace({
       selectionSession.moveFramePending = false;
       selectionSession.compatibilityGuardUntil = 0;
       selectionDragRef.current = null;
+      const directDrag = directPenObjectDragRef.current;
+      directPenObjectDragRef.current = null;
+      if (directDrag?.frame != null) window.cancelAnimationFrame(directDrag.frame);
       if (selectionMoveFrameRef.current != null) {
         window.cancelAnimationFrame(selectionMoveFrameRef.current);
         selectionMoveFrameRef.current = null;
@@ -6960,7 +6968,9 @@ function BoardWorkspace({
         : (nativeEvent?.pointerType ?? 'unknown');
       const action = String(transform?.action ?? '');
       const moveAction = action === 'drag' || action === 'move' || (!transform?.corner && !action);
-      if (pointerType !== 'pen' || !moveAction || canvas.getObjects().length < 90 || !target) return false;
+      const forceIsolation = transform?.forceIsolation === true;
+      if (pointerType !== 'pen' || !moveAction
+        || (!forceIsolation && canvas.getObjects().length < 90) || !target) return false;
 
       restorePenSelectionRenderGuard();
       restorePenTransformRenderMethods();
@@ -9887,85 +9897,228 @@ function BoardWorkspace({
       }, 0);
     }
 
+    function directPenTargetAtEvent(event) {
+      try {
+        const fabricTarget = canvas.findTarget?.(event) ?? null;
+        if (fabricTarget) return fabricTarget;
+
+        const point = canvas.getScenePoint(event);
+        const zoom = Math.max(canvas.getZoom?.() ?? 1, MIN_ZOOM);
+        const sceneTolerance = Math.max(4, 12 / zoom);
+        const nearby = queryTransformSpatialObjects({
+          left: point.x - sceneTolerance,
+          top: point.y - sceneTolerance,
+          right: point.x + sceneTolerance,
+          bottom: point.y + sceneTolerance,
+          width: sceneTolerance * 2,
+          height: sceneTolerance * 2,
+        });
+        return objectAtScenePoint(point, {
+          candidates: [...nearby].reverse(),
+          predicate: (object) => (
+            object?.canvas === canvas
+            && object.selectable !== false
+            && object.evented !== false
+            && !object.isEraserPath
+            && !object.transientPreview
+            && !object.transientSelectionProxy
+          ),
+        });
+      } catch {
+        return null;
+      }
+    }
+
+    function flushDirectPenObjectDrag(session, scenePoint = null) {
+      if (!session || directPenObjectDragRef.current !== session || session.canvas !== canvas) return false;
+      if (scenePoint) session.pendingPoint = scenePoint;
+      const nextPoint = session.pendingPoint;
+      session.pendingPoint = null;
+      session.frame = null;
+      if (!nextPoint) return false;
+
+      const dx = Number(nextPoint.x) - session.startPoint.x;
+      const dy = Number(nextPoint.y) - session.startPoint.y;
+      session.deltaX = dx;
+      session.deltaY = dy;
+      session.moved = session.moved || Math.hypot(dx, dy) >= 0.75;
+      session.target.set({
+        left: session.startLeft + dx,
+        top: session.startTop + dy,
+      });
+      session.target.setCoords?.();
+      lastPointerSceneRef.current = nextPoint;
+
+      if (!updatePenTransformIsolation(session.target)) {
+        // This is only a safety fallback. The direct Pencil route normally forces the
+        // cropped compositor even on a small board, so pointermove never repaints the
+        // complete scene.
+        canvas.requestRenderAll();
+      }
+      sendLiveTransformThrottled(session.target);
+      if (Date.now() - lastLockBroadcastRef.current >= 1200) {
+        lastLockBroadcastRef.current = Date.now();
+        sendLocalLock(session.target, true);
+      }
+      return true;
+    }
+
+    function scheduleDirectPenObjectDrag(event) {
+      const session = directPenObjectDragRef.current;
+      if (!session || event.pointerType !== 'pen' || session.pointerId !== event.pointerId) return false;
+      try {
+        const point = canvas.getScenePoint(event);
+        if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
+          session.pendingPoint = new Point(point.x, point.y);
+        }
+      } catch {
+        // Retain the last valid point when WebKit cannot map an intermediate sample.
+      }
+      if (session.frame == null) {
+        session.frame = window.requestAnimationFrame(() => flushDirectPenObjectDrag(session));
+      }
+      suppressSelectionCompatibilityEvent(event);
+      return true;
+    }
+
+    function startDirectPenObjectDrag(event, target) {
+      if (!target || target.canvas !== canvas || directPenObjectDragRef.current) return false;
+      let startPoint;
+      try {
+        startPoint = canvas.getScenePoint(event);
+      } catch {
+        return false;
+      }
+      if (!Number.isFinite(startPoint?.x) || !Number.isFinite(startPoint?.y)) return false;
+
+      try {
+        canvas.setActiveObject(target);
+        restoreSelectionMemberControl(target);
+        target.set({ hasControls: true, hasBorders: true });
+        target.setCoords?.();
+        updateSelectionVisuals();
+        canvas.cancelRequestedRender?.();
+        canvas.renderTop?.();
+      } catch {
+        return false;
+      }
+
+      let beforeTransforms = [];
+      try {
+        beforeTransforms = transformFramesForObjects([target], canvas);
+      } catch {
+        beforeTransforms = [];
+      }
+      sendLocalLock(target, true);
+      const liveSessionId = beginLiveTransform(target);
+      transformGestureRef.current.activeId = liveSessionId;
+      transformGestureRef.current.pointerType = 'pen';
+      lastLockBroadcastRef.current = Date.now();
+
+      const session = {
+        canvas,
+        pointerId: event.pointerId,
+        target,
+        startPoint: new Point(startPoint.x, startPoint.y),
+        startLeft: Number(target.left ?? 0),
+        startTop: Number(target.top ?? 0),
+        pendingPoint: null,
+        frame: null,
+        deltaX: 0,
+        deltaY: 0,
+        moved: false,
+        beforeTransforms,
+        liveSessionId,
+      };
+      directPenObjectDragRef.current = session;
+
+      // Unlike a preselected object, an object selected by this very pointerdown has no
+      // Fabric transform yet. Force the same lightweight compositor immediately and own
+      // this one physical gesture in capture phase. Every later drag uses Fabric normally.
+      beginPenTransformIsolation(target, {
+        target,
+        action: 'drag',
+        corner: null,
+        forceIsolation: true,
+      }, event);
+      queueSelectionUiRefresh();
+      suppressSelectionCompatibilityEvent(event);
+      return true;
+    }
+
+    function finishDirectPenObjectDrag(event) {
+      const session = directPenObjectDragRef.current;
+      if (!session || event.pointerType !== 'pen' || session.pointerId !== event.pointerId) return false;
+      directPenObjectDragRef.current = null;
+      if (session.frame != null) {
+        window.cancelAnimationFrame(session.frame);
+        session.frame = null;
+      }
+
+      const cancelled = event.type === 'pointercancel' || event.type === 'lostpointercapture';
+      if (!cancelled) {
+        try {
+          const point = canvas.getScenePoint(event);
+          if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
+            session.pendingPoint = new Point(point.x, point.y);
+          }
+        } catch {
+          // Use the final pointermove sample.
+        }
+        // Re-attach temporarily so the shared flush helper can apply the final sample.
+        directPenObjectDragRef.current = session;
+        flushDirectPenObjectDrag(session);
+        directPenObjectDragRef.current = null;
+      } else {
+        session.target.set({ left: session.startLeft, top: session.startTop });
+        session.target.setCoords?.();
+        directPenObjectDragRef.current = session;
+        updatePenTransformIsolation(session.target);
+        directPenObjectDragRef.current = null;
+      }
+
+      finishPenTransformIsolation({ composite: true });
+      endLiveTransform(session.target, session.liveSessionId);
+      sendLocalLock(session.target, false);
+      transformGestureRef.current.activeId = null;
+      transformGestureRef.current.pointerType = null;
+
+      if (!cancelled && session.moved) {
+        try {
+          const afterTransforms = transformFramesForObjects([session.target], canvas);
+          const recordInputs = captureTransformRecordInputs([session.target]);
+          if (session.beforeTransforms.length && afterTransforms.length) {
+            recordAction({
+              type: 'transform',
+              before: session.beforeTransforms,
+              after: afterTransforms,
+            });
+          }
+          queueDeferredTransformPersistence(recordInputs);
+        } catch (error) {
+          console.error('Не удалось завершить прямой перенос Apple Pencil', error);
+        }
+      }
+
+      try {
+        session.target.setCoords?.();
+        canvas.cancelRequestedRender?.();
+        canvas.renderTop?.();
+      } catch {
+        // The board may already be unmounting.
+      }
+      queueSelectionUiRefresh();
+      suppressSelectionCompatibilityEvent(event);
+      return true;
+    }
+
     function beginSelectionPenSession(event) {
       if (event.pointerType !== 'pen'
         || activeToolRef.current !== 'select'
         || eyedropperActiveRef.current
         || !canEditRef.current
         || event.button > 0) return false;
-      // Direct single-object Pencil dragging must enter exactly the same state as a
-      // previously selected object before Fabric sees this pointerdown. Otherwise the
-      // first contact begins as an unselected hit, the border is created only after the
-      // transform has already started, and the cropped live layer can miss its true
-      // origin. The result is no initial frame and a teleport on release.
-      let directTarget = canvas.getActiveObject();
-      if (!directTarget) {
-        try {
-          // Fabric's own hit test is preferred because per-pixel target finding was
-          // armed immediately before this capture handler. The spatial fallback keeps
-          // thin paths usable on Safari builds that do not expose findTarget reliably.
-          directTarget = canvas.findTarget?.(event) ?? null;
-          if (!directTarget) {
-            const point = canvas.getScenePoint(event);
-            const zoom = Math.max(canvas.getZoom?.() ?? 1, MIN_ZOOM);
-            const sceneTolerance = Math.max(4, 12 / zoom);
-            const nearby = queryTransformSpatialObjects({
-              left: point.x - sceneTolerance,
-              top: point.y - sceneTolerance,
-              right: point.x + sceneTolerance,
-              bottom: point.y + sceneTolerance,
-              width: sceneTolerance * 2,
-              height: sceneTolerance * 2,
-            });
-            directTarget = objectAtScenePoint(point, {
-              candidates: [...nearby].reverse(),
-              predicate: (object) => (
-                object?.canvas === canvas
-                && object.selectable !== false
-                && object.evented !== false
-                && !object.isEraserPath
-                && !object.transientPreview
-                && !object.transientSelectionProxy
-              ),
-            });
-          }
-        } catch {
-          directTarget = null;
-        }
 
-        if (directTarget
-          && directTarget.canvas === canvas
-          && directTarget.selectable !== false
-          && directTarget.evented !== false
-          && !directTarget.isEraserPath
-          && !directTarget.transientPreview
-          && !directTarget.transientSelectionProxy) {
-          // Activate synchronously in capture phase. Cancel Fabric's scheduled full
-          // lower-canvas render and paint only the upper controls; the unchanged board
-          // pixels are already present. The same pointerdown can then start a normal
-          // transform with a visible frame from its first pixel.
-          try {
-            canvas.setActiveObject(directTarget);
-            restoreSelectionMemberControl(directTarget);
-            directTarget.set({ hasControls: true, hasBorders: true });
-            directTarget.setCoords?.();
-            canvas.cancelRequestedRender?.();
-            canvas.renderTop?.();
-          } catch {
-            directTarget = null;
-          }
-        } else {
-          directTarget = null;
-        }
-      }
-
-      // Do not suppress the lower Fabric canvas when this contact can begin an
-      // object/group transform. The cropped Pencil compositor takes ownership in
-      // before:transform (or in the custom hand-control tick). Keep the top-only guard
-      // only for a truly empty contact that can create or dismiss a marquee.
-      const mayStartObjectTransform = Boolean(directTarget || canvas.getActiveObject());
-      if (mayStartObjectTransform) restorePenSelectionRenderGuard();
-      else beginPenSelectionRenderGuard();
       const session = selectionPenSessionRef.current;
       if (session.active && session.pointerId === event.pointerId) {
         suppressSelectionCompatibilityEvent(event);
@@ -9991,6 +10144,31 @@ function BoardWorkspace({
       session.active = true;
       session.moveFramePending = false;
       try { touchTarget.setPointerCapture(event.pointerId); } catch { /* Safari may reject capture. */ }
+
+      rejectedPointerIdsRef.current.delete(event.pointerId);
+      penInputRef.current = {
+        pointerId: event.pointerId,
+        active: true,
+        lastSeenAt: Date.now(),
+        lastClientX: Number(event.clientX ?? 0),
+        lastClientY: Number(event.clientY ?? 0),
+        suppressUntil: 0,
+      };
+
+      const activeBeforeContact = canvas.getActiveObject();
+      if (!activeBeforeContact) {
+        const directTarget = directPenTargetAtEvent(event);
+        if (directTarget && startDirectPenObjectDrag(event, directTarget)) {
+          restorePenSelectionRenderGuard();
+          return true;
+        }
+      }
+
+      // Preselected objects and groups already work correctly through Fabric. Only an
+      // empty contact uses the top-only selection guard for marquee creation/dismissal.
+      const mayStartObjectTransform = Boolean(canvas.getActiveObject());
+      if (mayStartObjectTransform) restorePenSelectionRenderGuard();
+      else beginPenSelectionRenderGuard();
       return false;
     }
 
@@ -10139,6 +10317,9 @@ function BoardWorkspace({
         consumeEyedropperPointerEvent(event);
         return;
       }
+      // The first drag of a previously unselected object is owned in native capture
+      // phase. Do not let Fabric's compatibility mouse route also process these samples.
+      if (scheduleDirectPenObjectDrag(event)) return;
       if (activeToolRef.current === 'select'
         && Number(event.buttons ?? 0) > 0
         && shouldSuppressSelectionCompatibilityEvent(event)) {
@@ -10183,6 +10364,22 @@ function BoardWorkspace({
 
     function handlePalmPointerEnd(event) {
       if (finishEyedropperPenContact(event)) return;
+      if (finishDirectPenObjectDrag(event)) {
+        finishSelectionPenSession(event);
+        clearPendingNativeCreationPointer(event);
+        if (penInputRef.current.pointerId === event.pointerId) {
+          const now = Date.now();
+          penInputRef.current.active = false;
+          penInputRef.current.pointerId = null;
+          penInputRef.current.lastSeenAt = now;
+          penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
+          penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
+          penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
+        }
+        lastBoardInteractionAtRef.current = Date.now();
+        if (snapshotCompactionNeededRef.current) schedulePersistence();
+        return;
+      }
       if (activeToolRef.current === 'select'
         && shouldSuppressSelectionCompatibilityEvent(event)) {
         suppressSelectionCompatibilityEvent(event);
@@ -10881,6 +11078,9 @@ function BoardWorkspace({
       deferredTransformTimer = null;
       deferredTransformEntries.clear();
       deferredTransformFlushRef.current = null;
+      const directDrag = directPenObjectDragRef.current;
+      directPenObjectDragRef.current = null;
+      if (directDrag?.frame != null) window.cancelAnimationFrame(directDrag.frame);
       finishPenTransformIsolation({ composite: false });
       restorePenTransformRenderMethods();
       restorePenSelectionRenderGuard();

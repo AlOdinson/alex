@@ -1,9 +1,9 @@
 {
-  "version": "1.31.3",
-  "packageVersion": "1.31.3",
-  "base": "1.31.2",
-  "release": "Direct single-object Apple Pencil live drag parity",
+  "version": "1.31.4",
+  "packageVersion": "1.31.4",
+  "base": "1.31.3",
+  "release": "First-contact direct Apple Pencil selection and live drag",
   "date": "2026-08-05",
-  "name": "direct-single-pencil-live-drag-hotfix",
-  "label": "Alex Board 1.31.3"
+  "name": "first-contact-direct-pencil-selection-live-drag",
+  "label": "Alex Board 1.31.4"
 }
