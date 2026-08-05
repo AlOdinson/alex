@@ -6947,8 +6947,17 @@ function BoardWorkspace({
     finishPenTransformIsolationRef.current = finishPenTransformIsolation;
 
     const beginPenTransformIsolation = (target, transform, nativeEvent) => {
-      const pointerType = nativeEvent?.pointerType
-        ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
+      // Fabric may expose the same physical Apple Pencil contact as a mouse-like
+      // compatibility event. Prefer the still-active native Pencil session over that
+      // wrapper so the lightweight compositor starts in before:transform, before the
+      // object has moved even one pixel. Starting it later from object:moving captures
+      // the already-moved position as the origin and makes direct single-object drags
+      // look like a teleport.
+      const pointerType = (nativeEvent?.pointerType === 'pen'
+        || selectionPenSessionRef.current.active
+        || penInputRef.current.active)
+        ? 'pen'
+        : (nativeEvent?.pointerType ?? 'unknown');
       const action = String(transform?.action ?? '');
       const moveAction = action === 'drag' || action === 'move' || (!transform?.corner && !action);
       if (pointerType !== 'pen' || !moveAction || canvas.getObjects().length < 90 || !target) return false;
@@ -8262,8 +8271,11 @@ function BoardWorkspace({
 
     canvas.on('before:transform', ({ transform, e: nativeEvent }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
-      const pointerType = nativeEvent?.pointerType
-        ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
+      const pointerType = (nativeEvent?.pointerType === 'pen'
+        || selectionPenSessionRef.current.active
+        || penInputRef.current.active)
+        ? 'pen'
+        : (nativeEvent?.pointerType ?? 'unknown');
       transformGestureRef.current.pointerType = pointerType;
       if (transform.target.transientSelectionProxy) {
         modifiedBeforeRef.current = [];
@@ -9881,40 +9893,77 @@ function BoardWorkspace({
         || eyedropperActiveRef.current
         || !canEditRef.current
         || event.button > 0) return false;
-      // Do not suppress the lower Fabric canvas when this contact can begin an
-      // object/group transform. The cropped Pencil compositor takes ownership in
-      // before:transform (or in the custom hand-control tick). Starting the top-only
-      // guard before that point made small-board Pencil drags invisible and caused the
-      // object to appear only at pointerup. Keep the top-only guard only for an empty
-      // canvas contact that can create/dismiss a marquee.
-      let mayStartObjectTransform = Boolean(canvas.getActiveObject());
-      if (!mayStartObjectTransform) {
+      // Direct single-object Pencil dragging must enter exactly the same state as a
+      // previously selected object before Fabric sees this pointerdown. Otherwise the
+      // first contact begins as an unselected hit, the border is created only after the
+      // transform has already started, and the cropped live layer can miss its true
+      // origin. The result is no initial frame and a teleport on release.
+      let directTarget = canvas.getActiveObject();
+      if (!directTarget) {
         try {
-          const point = canvas.getScenePoint(event);
-          const zoom = Math.max(canvas.getZoom?.() ?? 1, MIN_ZOOM);
-          const sceneTolerance = Math.max(3, 10 / zoom);
-          const nearby = queryTransformSpatialObjects({
-            left: point.x - sceneTolerance,
-            top: point.y - sceneTolerance,
-            right: point.x + sceneTolerance,
-            bottom: point.y + sceneTolerance,
-            width: sceneTolerance * 2,
-            height: sceneTolerance * 2,
-          });
-          mayStartObjectTransform = nearby.some((object) => (
-            object?.canvas === canvas
-            && object.selectable !== false
-            && object.evented !== false
-            && !object.isEraserPath
-            && !object.transientPreview
-            && !object.transientSelectionProxy
-          ));
+          // Fabric's own hit test is preferred because per-pixel target finding was
+          // armed immediately before this capture handler. The spatial fallback keeps
+          // thin paths usable on Safari builds that do not expose findTarget reliably.
+          directTarget = canvas.findTarget?.(event) ?? null;
+          if (!directTarget) {
+            const point = canvas.getScenePoint(event);
+            const zoom = Math.max(canvas.getZoom?.() ?? 1, MIN_ZOOM);
+            const sceneTolerance = Math.max(4, 12 / zoom);
+            const nearby = queryTransformSpatialObjects({
+              left: point.x - sceneTolerance,
+              top: point.y - sceneTolerance,
+              right: point.x + sceneTolerance,
+              bottom: point.y + sceneTolerance,
+              width: sceneTolerance * 2,
+              height: sceneTolerance * 2,
+            });
+            directTarget = objectAtScenePoint(point, {
+              candidates: [...nearby].reverse(),
+              predicate: (object) => (
+                object?.canvas === canvas
+                && object.selectable !== false
+                && object.evented !== false
+                && !object.isEraserPath
+                && !object.transientPreview
+                && !object.transientSelectionProxy
+              ),
+            });
+          }
         } catch {
-          // When target probing is unavailable, prefer normal Fabric rendering over a
-          // visually frozen drag. The compositor will still take over if a transform starts.
-          mayStartObjectTransform = true;
+          directTarget = null;
+        }
+
+        if (directTarget
+          && directTarget.canvas === canvas
+          && directTarget.selectable !== false
+          && directTarget.evented !== false
+          && !directTarget.isEraserPath
+          && !directTarget.transientPreview
+          && !directTarget.transientSelectionProxy) {
+          // Activate synchronously in capture phase. Cancel Fabric's scheduled full
+          // lower-canvas render and paint only the upper controls; the unchanged board
+          // pixels are already present. The same pointerdown can then start a normal
+          // transform with a visible frame from its first pixel.
+          try {
+            canvas.setActiveObject(directTarget);
+            restoreSelectionMemberControl(directTarget);
+            directTarget.set({ hasControls: true, hasBorders: true });
+            directTarget.setCoords?.();
+            canvas.cancelRequestedRender?.();
+            canvas.renderTop?.();
+          } catch {
+            directTarget = null;
+          }
+        } else {
+          directTarget = null;
         }
       }
+
+      // Do not suppress the lower Fabric canvas when this contact can begin an
+      // object/group transform. The cropped Pencil compositor takes ownership in
+      // before:transform (or in the custom hand-control tick). Keep the top-only guard
+      // only for a truly empty contact that can create or dismiss a marquee.
+      const mayStartObjectTransform = Boolean(directTarget || canvas.getActiveObject());
       if (mayStartObjectTransform) restorePenSelectionRenderGuard();
       else beginPenSelectionRenderGuard();
       const session = selectionPenSessionRef.current;

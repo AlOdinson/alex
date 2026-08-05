@@ -1,9 +1,9 @@
 {
-  "version": "1.31.2",
-  "packageVersion": "1.31.2",
-  "base": "1.31.1",
-  "release": "Live Apple Pencil transform frames without teleporting",
+  "version": "1.31.3",
+  "packageVersion": "1.31.3",
+  "base": "1.31.2",
+  "release": "Direct single-object Apple Pencil live drag parity",
   "date": "2026-08-05",
-  "name": "pencil-live-transform-animation-hotfix",
-  "label": "Alex Board 1.31.2"
+  "name": "direct-single-pencil-live-drag-hotfix",
+  "label": "Alex Board 1.31.3"
 }
