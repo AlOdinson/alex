@@ -1,9 +1,9 @@
 {
-  "version": "1.28.1",
-  "packageVersion": "1.28.1",
-  "base": "1.28.0",
-  "release": "Immediate repeat Apple Pencil selection after transforms",
+  "version": "1.29.0",
+  "packageVersion": "1.29.0",
+  "base": "1.28.1",
+  "release": "Lightweight durable transform pipeline",
   "date": "2026-08-05",
-  "name": "pencil-selection-guard-hotfix",
-  "label": "Alex Board 1.28.1"
+  "name": "lightweight-transform-pipeline",
+  "label": "Alex Board 1.29"
 }

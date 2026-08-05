@@ -434,7 +434,7 @@ export function connectBoardRealtime({
       .filter((op) => op?.type === 'upsert' && op.object?.boardObjectId)
       .map((op) => [String(op.object.boardObjectId), op]));
 
-    return authoritativeOps.map((op) => {
+    const merged = authoritativeOps.map((op) => {
       if (op?.type !== 'upsert' || !op.object?.boardObjectId) return op;
       const requested = requestedUpserts.get(String(op.object.boardObjectId));
       if (!requested) return op;
@@ -449,6 +449,21 @@ export function connectBoardRealtime({
         preserveOrder: Boolean(op.preserveOrder || requested.preserveOrder),
       };
     });
+
+    // The v7 action journal accepts arbitrary JSON operations, but some deployed RPC
+    // revisions normalize applied_ops around legacy upsert/delete branches. Preserve a
+    // requested lightweight transform in realtime fanout when normalization omitted it.
+    const authoritativeTransformIds = new Set(authoritativeOps
+      .filter((op) => op?.type === 'transform')
+      .flatMap((op) => Array.isArray(op.objects) ? op.objects : [op])
+      .map((entry) => String(entry?.id ?? ''))
+      .filter(Boolean));
+    for (const requested of requestedOps.filter((op) => op?.type === 'transform')) {
+      const objects = (Array.isArray(requested.objects) ? requested.objects : [requested])
+        .filter((entry) => entry?.id && !authoritativeTransformIds.has(String(entry.id)));
+      if (objects.length) merged.push({ ...requested, objects });
+    }
+    return merged;
   };
 
   const broadcastCommittedActions = async (actions, results) => {

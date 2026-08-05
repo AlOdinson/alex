@@ -217,17 +217,26 @@ async function applyLargeBoardAction(boardId, keyHash, action) {
 
 function normalizeActionResult(data, { fallbackOps = [], fallbackBackground = null, legacy = false } = {}) {
   if (!data) throw new Error('Сервер отклонил изменение доски');
+  const rejectedObjectIds = Array.isArray(data.rejected_object_ids)
+    ? data.rejected_object_ids.map(String)
+    : [];
+  const changed = data.changed !== false;
+  const serverAppliedOps = !legacy && Array.isArray(data.applied_ops) ? data.applied_ops : [];
+  // Some deployed RPC revisions accept/store a new JSON operation but omit it from the
+  // normalized applied_ops response. The original client action is the exact durable
+  // intent when nothing was rejected, so keep it in IndexedDB/realtime/recovery.
+  const appliedOps = serverAppliedOps.length || !changed || rejectedObjectIds.length
+    ? serverAppliedOps
+    : (Array.isArray(fallbackOps) ? fallbackOps : []);
   return {
     revision: Number(data.revision ?? 0),
     needsSync: Boolean(data.needs_sync) || legacy,
     updatedAt: data.updated_at ?? null,
     alreadyApplied: Boolean(data.already_applied),
-    changed: data.changed !== false,
-    appliedOps: !legacy && Array.isArray(data.applied_ops) ? data.applied_ops : [],
+    changed,
+    appliedOps,
     appliedBackground: !legacy ? (data.applied_background ?? fallbackBackground ?? null) : null,
-    rejectedObjectIds: Array.isArray(data.rejected_object_ids)
-      ? data.rejected_object_ids.map(String)
-      : [],
+    rejectedObjectIds,
   };
 }
 
@@ -279,23 +288,68 @@ function applyOpsToMutableSnapshot(snapshot, ops, background = null) {
       if (reorderIds.has(String(objects[index]?.boardObjectId ?? ''))) objects.splice(index, 1);
     }
   }
+  // Transform batches may contain hundreds of selected objects. Resolve every stable
+  // id once instead of repeating findIndex over the whole board for each tiny patch.
+  const objectById = new Map(objects
+    .filter((object) => object?.boardObjectId)
+    .map((object) => [String(object.boardObjectId), object]));
 
   for (const op of orderedOps) {
     if (op?.type === 'delete' && op.id) {
-      const index = objects.findIndex((object) => object?.boardObjectId === op.id);
+      const id = String(op.id);
+      const existing = objectById.get(id);
+      const index = existing ? objects.indexOf(existing) : -1;
       if (index >= 0) objects.splice(index, 1);
+      objectById.delete(id);
       continue;
     }
+
+    // A transform operation deliberately contains only the small mutable placement
+    // fields. The immutable path/image/text payload already lives in the snapshot or an
+    // earlier upsert and must never be cloned or transmitted again for a simple move.
+    if (op?.type === 'transform') {
+      const patches = Array.isArray(op.objects)
+        ? op.objects
+        : (op.id ? [{
+          id: op.id,
+          transform: op.transform,
+          updatedAt: op.updatedAt,
+          updatedBy: op.updatedBy,
+          zIndex: op.zIndex,
+        }] : []);
+      for (const patch of patches) {
+        const id = String(patch?.id ?? '');
+        if (!id || !patch?.transform || typeof patch.transform !== 'object') continue;
+        const existing = objectById.get(id);
+        if (!existing) continue;
+        Object.assign(existing, patch.transform, {
+          boardObjectId: id,
+          updatedAt: Number(patch.updatedAt ?? existing.updatedAt ?? Date.now()),
+          updatedBy: patch.updatedBy ?? existing.updatedBy ?? null,
+        });
+        // Moving/scaling/rotating does not normally change layer order. The optional
+        // zIndex is accepted only when a caller explicitly marks this as a reorder.
+        if (op.reorder && Number.isInteger(patch.zIndex)) {
+          const existingIndex = objects.indexOf(existing);
+          if (existingIndex >= 0) objects.splice(existingIndex, 1);
+          const targetIndex = Math.max(0, Math.min(objects.length, patch.zIndex));
+          objects.splice(targetIndex, 0, existing);
+        }
+      }
+      continue;
+    }
+
     if (op?.type !== 'upsert' || !op.object?.boardObjectId) continue;
-    const existingIndex = objects.findIndex(
-      (object) => object?.boardObjectId === op.object.boardObjectId,
-    );
+    const objectId = String(op.object.boardObjectId);
+    const previousObject = objectById.get(objectId);
+    const existingIndex = previousObject ? objects.indexOf(previousObject) : -1;
     if (existingIndex >= 0) objects.splice(existingIndex, 1);
     const requestedIndex = op.preserveOrder && existingIndex >= 0
       ? existingIndex
       : (Number.isInteger(op.zIndex) ? op.zIndex : objects.length);
     const targetIndex = Math.max(0, Math.min(objects.length, requestedIndex));
     objects.splice(targetIndex, 0, op.object);
+    objectById.set(objectId, op.object);
   }
 
   if (['grid', 'dots', 'blank'].includes(background)) snapshot.background = background;

@@ -75,7 +75,7 @@ const INSURANCE_SYNC_PAGE_SIZE = 500;
 const INTEGRITY_CHECK_INTERVAL = 5 * 60_000;
 const LOCAL_LOCK_REFRESH_INTERVAL = 2_500;
 const IMAGE_RETRY_INTERVAL = 5_000;
-const SNAPSHOT_COMPACTION_IDLE_MS = 2_500;
+const SNAPSHOT_COMPACTION_IDLE_MS = 30_000;
 const PENCIL_TOUCH_GRACE_MS = 240;
 const TOUCH_GESTURE_ARM_MS = 80;
 const TOUCH_GESTURE_MOVE_THRESHOLD = 6;
@@ -947,12 +947,13 @@ function flattenTarget(target) {
   return [target];
 }
 
-function transformFramesForObjects(objects, canvas, zIndexMap = null) {
+function transformFramesForObjects(objects, _canvas = null, zIndexMap = null) {
   return (Array.isArray(objects) ? objects : [])
     .map((object) => {
       if (!object?.boardObjectId || typeof object.calcTransformMatrix !== 'function') return null;
       const matrix = compactTransformMatrix(object.calcTransformMatrix());
       if (!matrix) return null;
+      const mappedIndex = zIndexMap?.get(object);
       return {
         id: String(object.boardObjectId),
         matrix,
@@ -960,9 +961,11 @@ function transformFramesForObjects(objects, canvas, zIndexMap = null) {
         creationClientId: object.creationClientId ?? object.updatedBy ?? null,
         objectKind: object.objectKind ?? object.type ?? null,
         objectType: object.type ?? null,
+        // A transform never changes layer order. Avoid canvas.getObjects().indexOf()
+        // in the hot Pencil path; zIndex is only carried when a caller already has it.
         zIndex: Number.isFinite(Number(object.creationDraftZIndex))
           ? Number(object.creationDraftZIndex)
-          : (zIndexMap?.get(object) ?? (canvas ? canvas.getObjects().indexOf(object) : -1)),
+          : (Number.isInteger(mappedIndex) ? mappedIndex : -1),
       };
     })
     .filter(Boolean);
@@ -1036,12 +1039,50 @@ function createImagePlaceholder(point, label = 'Загрузка изображ�
   });
 }
 
+function createLightweightTransformOp(entries, { reorder = false } = {}) {
+  const objects = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => entry?.id && entry?.transform)
+    .map((entry) => ({
+      id: String(entry.id),
+      transform: { ...entry.transform },
+      updatedAt: Number(entry.updatedAt ?? Date.now()),
+      updatedBy: entry.updatedBy ?? null,
+      ...(reorder && Number.isInteger(entry.zIndex) ? { zIndex: entry.zIndex } : {}),
+    }));
+  if (!objects.length) return null;
+  return {
+    type: 'transform',
+    version: 1,
+    objects,
+    ...(reorder ? { reorder: true } : {}),
+  };
+}
+
+function transformOperationEntries(op) {
+  if (op?.type !== 'transform') return [];
+  if (Array.isArray(op.objects)) return op.objects;
+  if (op.id) return [{
+    id: op.id,
+    transform: op.transform,
+    updatedAt: op.updatedAt,
+    updatedBy: op.updatedBy,
+    zIndex: op.zIndex,
+  }];
+  return [];
+}
+
 function affectedOperationIds(ops) {
-  return new Set((Array.isArray(ops) ? ops : []).map((op) => {
-    if (op?.type === 'delete') return String(op.id ?? '');
-    if (op?.type === 'upsert') return String(op.object?.boardObjectId ?? '');
-    return '';
-  }).filter(Boolean));
+  const ids = new Set();
+  for (const op of Array.isArray(ops) ? ops : []) {
+    if (op?.type === 'delete' && op.id) ids.add(String(op.id));
+    if (op?.type === 'upsert' && op.object?.boardObjectId) {
+      ids.add(String(op.object.boardObjectId));
+    }
+    transformOperationEntries(op).forEach((entry) => {
+      if (entry?.id) ids.add(String(entry.id));
+    });
+  }
+  return ids;
 }
 
 function createPendingImagePlaceholder(serialized) {
@@ -1402,6 +1443,8 @@ function BoardWorkspace({
   const snapshotPersistInFlightRef = useRef(false);
   const snapshotPersistQueuedRef = useRef(false);
   const snapshotPersistRunnerRef = useRef(null);
+  const snapshotCompactionNeededRef = useRef(false);
+  const lastBoardInteractionAtRef = useRef(0);
   const initialSnapshotRevision = Number(initialAccess.snapshotRevision ?? 0);
   const lastSnapshotSavedRevisionRef = useRef(initialSnapshotRevision);
   const snapshotCompactBaseRef = useRef(initialAccess.snapshot ?? null);
@@ -1958,8 +2001,10 @@ function BoardWorkspace({
     const candidates = [...new Set((Array.isArray(objects) ? objects : [])
       .flatMap((object) => flattenTarget(object))
       .filter((object) => object && !isActiveSelectionObject(object)))];
-    const zIndexMap = providedZIndexMap
-      ?? new Map(canvas.getObjects().map((object, index) => [object, index]));
+    // Layer order is immutable during a move/scale/rotate. Do not traverse every
+    // board object just to persist a transform; an optional map is used only by callers
+    // that already own one for a real reorder operation.
+    const zIndexMap = providedZIndexMap ?? null;
     const baseTimestamp = Date.now();
     return candidates.map((object, index) => {
       const cached = serializedObjectCacheRef.current.get(object) ?? null;
@@ -1977,26 +2022,6 @@ function BoardWorkspace({
       };
     }).filter((entry) => entry.id);
   }, []);
-
-  const materializeTransformRecords = useCallback((entries) => (
-    (Array.isArray(entries) ? entries : []).map((entry) => {
-      let base = entry.cached ?? serializedObjectCacheRef.current.get(entry.object);
-      if (!base) base = serializeObject(entry.object);
-      const serialized = {
-        ...base,
-        ...entry.transform,
-        boardObjectId: entry.id,
-        updatedAt: entry.updatedAt,
-        updatedBy: entry.updatedBy,
-      };
-      serializedObjectCacheRef.current.set(entry.object, serialized);
-      return { object: serialized, zIndex: entry.zIndex };
-    })
-  ), []);
-
-  const getTransformRecords = useCallback((objects) => (
-    materializeTransformRecords(captureTransformRecordInputs(objects))
-  ), [captureTransformRecordInputs, materializeTransformRecords]);
 
   const updateHistoryButtons = useCallback(() => {
     setCanUndo(undoStackRef.current.length > 0);
@@ -2046,16 +2071,17 @@ function BoardWorkspace({
     updateHistoryButtons();
   }, [updateHistoryButtons]);
 
-  // Durable operations remain the source of truth. After a short idle pause, also
-  // compact the current board into one full snapshot. A fresh browser can then paint
-  // the complete lesson immediately instead of replaying a long operation journal.
+  // Durable operations remain the source of truth. Full snapshot compaction is only
+  // for content mutations and long genuine idle periods. Transform-only actions are
+  // tiny and replay quickly, so they never schedule this main-thread work.
   const schedulePersistence = useCallback((delay = SNAPSHOT_COMPACTION_IDLE_MS) => {
     if (!isSupabaseConfigured || !canEditRef.current) return;
+    snapshotCompactionNeededRef.current = true;
     window.clearTimeout(snapshotPersistTimerRef.current);
     snapshotPersistTimerRef.current = window.setTimeout(() => {
       snapshotPersistTimerRef.current = null;
       snapshotPersistRunnerRef.current?.();
-    }, Math.max(250, Number(delay ?? SNAPSHOT_COMPACTION_IDLE_MS)));
+    }, Math.max(1_000, Number(delay ?? SNAPSHOT_COMPACTION_IDLE_MS)));
   }, []);
 
   const bufferSnapshotAction = useCallback((ops, background, revision) => {
@@ -2071,17 +2097,24 @@ function BoardWorkspace({
       snapshotCompactBaseRevisionRef.current = 0;
       snapshotCompactActionsRef.current = [];
       snapshotCompactTargetRevisionRef.current = incomingRevision;
-      schedulePersistence(1_000);
+      schedulePersistence();
       return;
     }
 
+    const safeOps = Array.isArray(ops) ? ops : [];
+    const safeBackground = BACKGROUNDS.has(background) ? background : null;
     snapshotCompactActionsRef.current.push({
       revision: incomingRevision,
-      ops: Array.isArray(ops) ? ops : [],
-      background: BACKGROUNDS.has(background) ? background : null,
+      ops: safeOps,
+      background: safeBackground,
     });
     snapshotCompactTargetRevisionRef.current = incomingRevision;
-    schedulePersistence();
+
+    // Replaying a transform only patches a few numbers. Keep it in the journal/buffer,
+    // but do not build the whole board snapshot because somebody moved an object.
+    const hasContentMutation = Boolean(safeBackground)
+      || safeOps.some((op) => op?.type !== 'transform');
+    if (hasContentMutation) schedulePersistence();
   }, [schedulePersistence]);
 
   const applyGameLibraryVisibility = useCallback((visible) => {
@@ -2623,6 +2656,19 @@ function BoardWorkspace({
       reorder,
     }));
     return sendDurableOps(ops, { atomic, skipDeferredFlush });
+  }, [sendDurableOps]);
+
+  const sendLightweightTransforms = useCallback((entries, {
+    reorder = false,
+    skipDeferredFlush = false,
+  } = {}) => {
+    const op = createLightweightTransformOp(entries, { reorder });
+    if (!op) return Promise.resolve([]);
+    return sendDurableOps([op], {
+      atomic: true,
+      skipDeferredFlush,
+      serializedSize: serializedCharSize([op]),
+    });
   }, [sendDurableOps]);
 
   const sendPreviewBatches = useCallback(async (records) => {
@@ -3693,6 +3739,16 @@ function BoardWorkspace({
 
   const persistFullSnapshot = useCallback(async () => {
     if (!canEditRef.current || !boardReadyRef.current) return;
+    if (!snapshotCompactionNeededRef.current) return;
+
+    // Never start whole-board JSON work near live input. Transform operations already
+    // replay in a few microseconds, so waiting for a real idle period is always cheaper
+    // than stealing a frame from Apple Pencil.
+    const interactionAge = Date.now() - Number(lastBoardInteractionAtRef.current ?? 0);
+    if (interactionAge < SNAPSHOT_COMPACTION_IDLE_MS) {
+      schedulePersistence(SNAPSHOT_COMPACTION_IDLE_MS - interactionAge);
+      return;
+    }
 
     if (snapshotPersistInFlightRef.current) {
       snapshotPersistQueuedRef.current = true;
@@ -3779,15 +3835,19 @@ function BoardWorkspace({
       });
       await pruneConfirmedActionsThrough(boardId, snapshotRevision);
 
-      if (Number(revisionRef.current ?? 0) > snapshotRevision) schedulePersistence(900);
+      if (Number(revisionRef.current ?? 0) > snapshotRevision) {
+        schedulePersistence();
+      } else {
+        snapshotCompactionNeededRef.current = false;
+      }
     } catch (caught) {
       console.warn('Не удалось сжать доску в быстрый снимок', caught);
-      schedulePersistence(4_000);
+      schedulePersistence();
     } finally {
       snapshotPersistInFlightRef.current = false;
       if (snapshotPersistQueuedRef.current) {
         snapshotPersistQueuedRef.current = false;
-        schedulePersistence(800);
+        schedulePersistence();
       }
     }
   }, [boardId, boardKey, getLocalMutationIds, schedulePersistence]);
@@ -4562,8 +4622,8 @@ function BoardWorkspace({
             touched.push(object);
           }
           if (touched.length) {
-            const records = getTransformRecords(touched);
-            sendRecordUpserts(records);
+            const entries = captureTransformRecordInputs(touched);
+            await sendLightweightTransforms(entries);
             applyObjectInteractivityToObjects(touched, { render: false });
           }
           canvas.requestRenderAll();
@@ -4581,14 +4641,14 @@ function BoardWorkspace({
     } finally {
       applyingRemoteRef.current = false;
       applyingHistoryRef.current = false;
-      schedulePersistence();
+      if (action.type !== 'transform') schedulePersistence();
     }
   }, [
     applyBackground,
     applyObjectInteractivityToObjects,
     applyRecordsLocally,
     getObjectRecords,
-    getTransformRecords,
+    captureTransformRecordInputs,
     markObject,
     registeredObjectsById,
     refreshHistoryRecords,
@@ -4596,6 +4656,7 @@ function BoardWorkspace({
     schedulePersistence,
     sendDeletes,
     sendDurableOps,
+    sendLightweightTransforms,
     sendRecordUpserts,
     updateSelectionState,
     updateSelectionStyleState,
@@ -4690,6 +4751,11 @@ function BoardWorkspace({
     const upsertIds = [...new Set(ops
       .filter((op) => op?.type === 'upsert' && op.object?.boardObjectId)
       .map((op) => String(op.object.boardObjectId)))];
+    const transformIds = [...new Set(ops
+      .flatMap((op) => transformOperationEntries(op))
+      .map((entry) => String(entry?.id ?? ''))
+      .filter(Boolean))];
+    const authoritativeObjectIds = [...new Set([...upsertIds, ...transformIds])];
     const selectionTransactionIds = [...new Set(ops
       .filter((op) => op?.type === 'upsert' && op.object?.selectionTransactionId)
       .map((op) => String(op.object.selectionTransactionId)))];
@@ -4697,9 +4763,9 @@ function BoardWorkspace({
     const matchingTransformSessions = [...remoteTransformSessionsRef.current.values()].filter((session) => (
       receivedAt - Number(session?.receivedAt ?? 0) < 10000
       && Array.isArray(session?.objectIds)
-      && session.objectIds.some((id) => upsertIds.includes(String(id)))
+      && session.objectIds.some((id) => authoritativeObjectIds.includes(String(id)))
     ));
-    if (upsertIds.length) {
+    if (authoritativeObjectIds.length) {
       matchingTransformSessions.forEach((session) => {
         session.ended = true;
         session.receivedAt = receivedAt;
@@ -4807,8 +4873,18 @@ function BoardWorkspace({
           .getActiveObjects()
           .map((object) => object.boardObjectId)
           .filter(Boolean);
+        const selectedIdSet = new Set(selectedIds.map(String));
+        const transformOnly = ops.length > 0
+          && ops.every((op) => op?.type === 'transform')
+          && !hasBackgroundChange;
+        // A member of Fabric ActiveSelection stores coordinates relative to the
+        // selection wrapper. A remote transform contains absolute scene placement, so
+        // briefly dismantle only when this exact selected object is being patched.
+        // Unrelated lightweight transforms leave the local selection completely alone.
+        const transformTouchesSelection = transformOnly
+          && transformIds.some((id) => selectedIdSet.has(String(id)));
         applyingRemoteRef.current = true;
-        canvas.discardActiveObject();
+        if (!transformOnly || transformTouchesSelection) canvas.discardActiveObject();
         const previousRenderOnAddRemove = canvas.renderOnAddRemove;
         canvas.renderOnAddRemove = false;
         try {
@@ -4848,6 +4924,37 @@ function BoardWorkspace({
               removeBoardObjectsById(canvas, op.id);
               continue;
             }
+
+            if (op?.type === 'transform') {
+              for (const patch of transformOperationEntries(op)) {
+                const id = String(patch?.id ?? '');
+                if (!id || !patch?.transform) continue;
+                const registered = registeredObjectsById(id);
+                const candidates = registered
+                  .filter((object) => !object.transientPreview && !object.transientTransformFallback);
+                const object = candidates[0] ?? registered[0] ?? null;
+                if (!object) throw new Error(`Не найден объект для transform: ${id}`);
+                object.set(patch.transform);
+                object.updatedAt = Number(patch.updatedAt ?? Date.now());
+                object.updatedBy = patch.updatedBy ?? sourceClientId ?? object.updatedBy;
+                object.dirty = true;
+                object.setCoords();
+                const cached = serializedObjectCacheRef.current.get(object);
+                if (cached) {
+                  Object.assign(cached, patch.transform, {
+                    boardObjectId: id,
+                    updatedAt: object.updatedAt,
+                    updatedBy: object.updatedBy,
+                  });
+                }
+                if (op.reorder && Number.isInteger(patch.zIndex)
+                  && typeof canvas.moveObjectTo === 'function') {
+                  canvas.moveObjectTo(object, clamp(patch.zIndex, 0, canvas.getObjects().length - 1));
+                }
+              }
+              continue;
+            }
+
             if (skipDeleted || op?.type !== 'upsert' || !op.object?.boardObjectId || !revived) continue;
             if (op.restore) remoteDeletedObjectIdsRef.current.delete(String(op.object.boardObjectId));
             remotePreviewTokensRef.current.delete(String(op.object.boardObjectId));
@@ -4870,10 +4977,12 @@ function BoardWorkspace({
             }
           }
 
-          deduplicateBoardObjects(canvas);
+          if (!transformOnly) deduplicateBoardObjects(canvas);
           if (BACKGROUNDS.has(incomingBackground)) applyBackground(incomingBackground);
-          applyObjectInteractivity();
-          if (activeToolRef.current === 'select' && selectedIds.length) {
+          if (!transformOnly) applyObjectInteractivity();
+          if ((!transformOnly || transformTouchesSelection)
+            && activeToolRef.current === 'select'
+            && selectedIds.length) {
             const selectedObjects = selectedIds
               .map((id) => canvas.getObjects().find((object) => object.boardObjectId === id))
               .filter(Boolean);
@@ -4885,8 +4994,12 @@ function BoardWorkspace({
           }
           revisionRef.current = incomingRevision;
           bufferSnapshotAction(ops, incomingBackground, incomingRevision);
-          updateSelectionState();
-          updateSelectionStyleState();
+          if (transformOnly) {
+            canvas.getActiveObject()?.setCoords?.();
+          } else {
+            updateSelectionState();
+            updateSelectionStyleState();
+          }
           return true;
         } finally {
           applyingRemoteRef.current = false;
@@ -4909,6 +5022,7 @@ function BoardWorkspace({
     applyObjectInteractivity,
     bufferSnapshotAction,
     getLocalMutationIds,
+    registeredObjectsById,
     syncFromServer,
     updateSelectionState,
     updateSelectionStyleState,
@@ -5380,10 +5494,9 @@ function BoardWorkspace({
     state.sequence = 0;
     state.lastSentAt = 0;
     state.lastSignature = '';
-    const canvas = fabricCanvasRef.current;
-    state.zIndexMap = zIndexMap ?? (canvas
-      ? new Map(canvas.getObjects().map((object, index) => [object, index]))
-      : null);
+    // Moving objects does not alter layer order. Keeping this null removes the old
+    // O(all board objects) z-index scan from the beginning of every Pencil transform.
+    state.zIndexMap = zIndexMap ?? null;
 
     // Existing board objects already have rendering policy and coordinates. Re-running
     // markObject for every member used to recurse through complex groups and call
@@ -6554,7 +6667,7 @@ function BoardWorkspace({
           setSyncTone('saving');
         }
         if (count === 0) {
-          schedulePersistence(800);
+          if (snapshotCompactionNeededRef.current) schedulePersistence();
           if (syncRequestedRef.current) {
             const force = syncForceRef.current;
             syncRequestedRef.current = false;
@@ -6724,71 +6837,41 @@ function BoardWorkspace({
       canvas.requestRenderAll();
     }
 
-    // Pencil transforms are captured as tiny coordinate patches at pointer-up. The
-    // expensive full-object JSON is materialized only after the complete Pencil/select
-    // interaction has been idle. Repeated moves of the same object overwrite the older
-    // pending patch, so a fast sequence creates one durable action instead of a queue.
+    // A move/scale/rotate is durable as one tiny transform patch. The path/image/text
+    // payload is never materialized here. While one patch is awaiting Supabase, newer
+    // moves stay coalesced in this Map, so the visible queue remains one in-flight action
+    // plus at most one latest state in memory.
     const deferredTransformEntries = new Map();
     let deferredTransformTimer = null;
-    let deferredTransformIdleHandle = null;
     let deferredTransformFlushPromise = null;
-    let deferredTransformServerPending = 0;
 
-    function cancelDeferredTransformIdle() {
-      if (deferredTransformIdleHandle == null) return;
-      if (typeof window.cancelIdleCallback === 'function') {
-        window.cancelIdleCallback(deferredTransformIdleHandle);
-      } else {
-        window.clearTimeout(deferredTransformIdleHandle);
-      }
-      deferredTransformIdleHandle = null;
-    }
-
-    function pencilTransformInputIsQuiet() {
-      const selectionSession = selectionPenSessionRef.current;
-      return !penInputRef.current.active
-        && !selectionSession.active
-        && !selectionDragRef.current
-        && !liveTransformSendRef.current.sessionId
-        && !pendingGroupTransformCommitRef.current
-        // One paint gap is enough. Waiting for the old 700 ms duplicate-event guard plus
-        // another 180 ms made every attempted new selection postpone persistence again.
-        && performance.now() >= Number(selectionSession.lastEndedAt ?? 0) + 40;
-    }
-
-    function runDeferredTransformInIdle() {
-      cancelDeferredTransformIdle();
-      const run = () => {
-        deferredTransformIdleHandle = null;
-        flushDeferredTransformPersistence().catch(() => undefined);
-      };
-      if (typeof window.requestIdleCallback === 'function') {
-        deferredTransformIdleHandle = window.requestIdleCallback(run, { timeout: 700 });
-      } else {
-        // Safari versions without requestIdleCallback still get two paint opportunities
-        // before JSON/IndexedDB work begins.
-        deferredTransformIdleHandle = window.setTimeout(() => {
-          window.requestAnimationFrame(() => window.requestAnimationFrame(run));
-        }, 32);
-      }
-    }
-
-    function scheduleDeferredTransformFlush(delay = 180) {
+    function scheduleDeferredTransformFlush(delay = 24) {
       window.clearTimeout(deferredTransformTimer);
-      cancelDeferredTransformIdle();
       deferredTransformTimer = window.setTimeout(() => {
         deferredTransformTimer = null;
-        if (!pencilTransformInputIsQuiet()) {
-          scheduleDeferredTransformFlush(220);
-          return;
-        }
-        runDeferredTransformInIdle();
-      }, Math.max(60, Number(delay ?? 180)));
+        flushDeferredTransformPersistence().catch(() => undefined);
+      }, Math.max(0, Number(delay ?? 24)));
+    }
+
+    function cacheLightweightTransformEntry(entry) {
+      if (!entry?.object || !entry?.transform) return;
+      const cached = entry.cached ?? serializedObjectCacheRef.current.get(entry.object);
+      if (!cached) return;
+      // Mutating the already cached JSON placement fields is O(1) and does not clone a
+      // long Pencil path. A later real content edit will therefore serialize the current
+      // position correctly.
+      Object.assign(cached, entry.transform, {
+        boardObjectId: entry.id,
+        updatedAt: entry.updatedAt,
+        updatedBy: entry.updatedBy,
+      });
+      serializedObjectCacheRef.current.set(entry.object, cached);
     }
 
     function queueDeferredTransformPersistence(entries) {
       for (const entry of Array.isArray(entries) ? entries : []) {
-        if (!entry?.id) continue;
+        if (!entry?.id || !entry?.transform) continue;
+        cacheLightweightTransformEntry(entry);
         deferredTransformEntries.set(String(entry.id), entry);
       }
       scheduleDeferredTransformFlush();
@@ -6798,54 +6881,36 @@ function BoardWorkspace({
       force = false,
       objectIds = null,
     } = {}) {
-      if (deferredTransformFlushPromise) return deferredTransformFlushPromise;
-      if (!deferredTransformEntries.size) return null;
-      // Keep at most one normal Pencil-transform write waiting for the server. Further
-      // moves remain coalesced in memory as the latest coordinates and are enqueued only
-      // after that action confirms. A forced flush is reserved for an overlapping
-      // delete/undo/page-hide where operation ordering matters more than queue length.
-      if (!force && deferredTransformServerPending > 0) {
-        scheduleDeferredTransformFlush(260);
-        return null;
-      }
-
       const requestedIds = objectIds instanceof Set
         ? objectIds
         : new Set((Array.isArray(objectIds) ? objectIds : []).map(String));
       if (requestedIds.size) {
         const overlaps = [...requestedIds].some((id) => deferredTransformEntries.has(String(id)));
-        if (!overlaps) return null;
+        if (!overlaps) return deferredTransformFlushPromise;
       }
 
-      if (!force && !pencilTransformInputIsQuiet()) {
-        scheduleDeferredTransformFlush(220);
-        return null;
+      if (deferredTransformFlushPromise) {
+        if (!force || !deferredTransformEntries.size) return deferredTransformFlushPromise;
+        // Ordering-sensitive delete/undo/page-hide may enqueue one final coalesced patch
+        // behind the already in-flight action. Normal rapid moves never take this path.
+        const forcedEntries = [...deferredTransformEntries.values()];
+        deferredTransformEntries.clear();
+        const forcedPromise = sendLightweightTransforms(forcedEntries, {
+          skipDeferredFlush: true,
+        }).catch(() => null);
+        return Promise.allSettled([deferredTransformFlushPromise, forcedPromise]);
       }
+      if (!deferredTransformEntries.size) return null;
 
       window.clearTimeout(deferredTransformTimer);
       deferredTransformTimer = null;
-      cancelDeferredTransformIdle();
       const entries = [...deferredTransformEntries.values()];
       deferredTransformEntries.clear();
-      deferredTransformFlushPromise = Promise.resolve().then(() => {
-        const records = materializeTransformRecords(entries);
-        if (!records.length) return null;
-        // enqueuePendingAction receives one action for the whole gesture. The promise
-        // returned by sendOps represents server confirmation; do not await it here or
-        // make the next local input wait for network latency.
-        deferredTransformServerPending += 1;
-        sendRecordUpserts(records, {
-          atomic: true,
-          skipDeferredFlush: true,
-        }).catch(() => undefined).finally(() => {
-          deferredTransformServerPending = Math.max(0, deferredTransformServerPending - 1);
-          schedulePersistence();
-          if (deferredTransformEntries.size) scheduleDeferredTransformFlush(120);
-        });
-        return null;
-      }).finally(() => {
+      deferredTransformFlushPromise = sendLightweightTransforms(entries, {
+        skipDeferredFlush: true,
+      }).catch(() => null).finally(() => {
         deferredTransformFlushPromise = null;
-        if (deferredTransformEntries.size) scheduleDeferredTransformFlush();
+        if (deferredTransformEntries.size) scheduleDeferredTransformFlush(0);
       });
       return deferredTransformFlushPromise;
     }
@@ -7567,16 +7632,15 @@ function BoardWorkspace({
       const pointerType = nativeEvent?.pointerType
         ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
       transformGestureRef.current.pointerType = pointerType;
-      const zIndexMap = new Map(canvas.getObjects().map((object, index) => [object, index]));
       if (transform.target.transientSelectionProxy) {
         modifiedBeforeRef.current = [];
-        transformGestureRef.current.activeId = beginLiveTransform(transform.target, { zIndexMap });
+        transformGestureRef.current.activeId = beginLiveTransform(transform.target);
         lastLockBroadcastRef.current = Date.now();
         return;
       }
-      modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas, zIndexMap);
+      modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
       sendLocalLock(transform.target, true);
-      transformGestureRef.current.activeId = beginLiveTransform(transform.target, { zIndexMap });
+      transformGestureRef.current.activeId = beginLiveTransform(transform.target);
       lastLockBroadcastRef.current = Date.now();
     });
 
@@ -7615,7 +7679,6 @@ function BoardWorkspace({
       const zIndexMap = liveTransformSendRef.current.zIndexMap;
       const afterTransforms = transformFramesForObjects(selectedObjects, canvas, zIndexMap);
       const recordInputs = captureTransformRecordInputs(selectedObjects, zIndexMap);
-      const pointerType = transformGestureRef.current.pointerType;
       const gestureId = transformGestureRef.current.activeId;
       modifiedBeforeRef.current = [];
       endLiveTransform(target);
@@ -7653,13 +7716,10 @@ function BoardWorkspace({
           recordAction({ type: 'transform', before: beforeTransforms, after: afterTransforms });
         }
 
-        if (pointerType === 'pen') {
-          queueDeferredTransformPersistence(recordInputs);
-        } else {
-          const records = materializeTransformRecords(recordInputs);
-          sendRecordUpserts(records, { atomic: true })
-            .finally(() => schedulePersistence());
-        }
+        // Every input device uses the same lightweight durable transform. Apple
+        // Pencil no longer has a special delayed full-upsert path, and mouse/touch no
+        // longer serialize the whole object either.
+        queueDeferredTransformPersistence(recordInputs);
       };
 
       if (!groupSelection) {
@@ -9209,6 +9269,11 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerDown(event) {
+      lastBoardInteractionAtRef.current = Date.now();
+      // A scheduled whole-board compaction must never begin during the next Pencil
+      // gesture. It will be re-armed only after a long genuine idle period.
+      window.clearTimeout(snapshotPersistTimerRef.current);
+      snapshotPersistTimerRef.current = null;
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
 
       if (activeToolRef.current === 'select'
@@ -9415,6 +9480,8 @@ function BoardWorkspace({
         window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
       }
       forgetHandoffTouchPointer(event);
+      lastBoardInteractionAtRef.current = Date.now();
+      if (snapshotCompactionNeededRef.current) schedulePersistence();
     }
 
 
@@ -10050,7 +10117,6 @@ function BoardWorkspace({
       selectionTargetFindResetRef.current = null;
       window.clearTimeout(deferredTransformTimer);
       deferredTransformTimer = null;
-      cancelDeferredTransformIdle();
       deferredTransformEntries.clear();
       deferredTransformFlushRef.current = null;
       window.clearTimeout(selectionStyleRefreshTimerRef.current);
