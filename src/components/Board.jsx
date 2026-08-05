@@ -2018,7 +2018,7 @@ function BoardWorkspace({
         transform: captureSerializedObjectTransform(object, cached ?? {}),
         updatedAt,
         updatedBy: clientIdRef.current,
-        zIndex: zIndexMap.get(object) ?? -1,
+        zIndex: zIndexMap?.get(object) ?? -1,
       };
     }).filter((entry) => entry.id);
   }, []);
@@ -2474,6 +2474,48 @@ function BoardWorkspace({
     if (!canEditRef.current) return;
     const canvas = fabricCanvasRef.current;
     const switchingTool = nextTool !== activeToolRef.current;
+    if (switchingTool) {
+      // Tool switching is an unconditional escape hatch from a stale Safari Pencil
+      // selection/transform. It must work even when a previous pointerup was interrupted
+      // by an exception or WebKit omitted the expected compatibility event.
+      const selectionSession = selectionPenSessionRef.current;
+      const capturedPointerId = selectionSession.pointerId;
+      try {
+        if (capturedPointerId != null
+          && canvas?.upperCanvasEl?.hasPointerCapture?.(capturedPointerId)) {
+          canvas.upperCanvasEl.releasePointerCapture(capturedPointerId);
+        }
+      } catch {
+        // WebKit may already have released the capture.
+      }
+      selectionSession.generation += 1;
+      selectionSession.pointerId = null;
+      selectionSession.active = false;
+      selectionSession.moveFramePending = false;
+      selectionSession.compatibilityGuardUntil = 0;
+      selectionDragRef.current = null;
+      if (selectionMoveFrameRef.current != null) {
+        window.cancelAnimationFrame(selectionMoveFrameRef.current);
+        selectionMoveFrameRef.current = null;
+      }
+      const marquee = selectionMarqueeElementRef.current;
+      if (marquee) {
+        marquee.style.display = 'none';
+        marquee.style.width = '0px';
+        marquee.style.height = '0px';
+      }
+      pendingGroupTransformCommitRef.current = null;
+      transformGestureRef.current.activeId = null;
+      transformGestureRef.current.pointerType = null;
+      modifiedBeforeRef.current = [];
+      if (liveTransformSendRef.current.sessionId) {
+        endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas?.getActiveObject());
+      }
+      if (localLockIdsRef.current.length) {
+        realtimeRef.current?.sendLock(localLockIdsRef.current, false);
+        localLockIdsRef.current = [];
+      }
+    }
     if (switchingTool && mobileTextEditorRef.current) closeMobileTextEditor();
     if (switchingTool && canvas?.getActiveObject()) {
       canvas.discardActiveObject();
@@ -7677,11 +7719,33 @@ function BoardWorkspace({
       });
       const beforeTransforms = modifiedBeforeRef.current;
       const zIndexMap = liveTransformSendRef.current.zIndexMap;
-      const afterTransforms = transformFramesForObjects(selectedObjects, canvas, zIndexMap);
-      const recordInputs = captureTransformRecordInputs(selectedObjects, zIndexMap);
       const gestureId = transformGestureRef.current.activeId;
-      modifiedBeforeRef.current = [];
-      endLiveTransform(target);
+      let afterTransforms = [];
+      let recordInputs = [];
+      let transformCaptureFailed = false;
+      try {
+        afterTransforms = transformFramesForObjects(selectedObjects, canvas, zIndexMap);
+        recordInputs = captureTransformRecordInputs(selectedObjects, zIndexMap);
+      } catch (error) {
+        // A persistence-patch failure must never leave Fabric's transform session,
+        // collaboration lock or Pencil selection capture alive. Version 1.29 passed a
+        // null z-index map into captureTransformRecordInputs and threw here after every
+        // move, which made the selection impossible to clear until reload.
+        transformCaptureFailed = true;
+        console.error('Не удалось собрать лёгкую transform-операцию', error);
+      } finally {
+        modifiedBeforeRef.current = [];
+        endLiveTransform(target);
+      }
+
+      if (transformCaptureFailed) {
+        transformGestureRef.current.activeId = null;
+        transformGestureRef.current.pointerType = null;
+        pendingGroupTransformCommitRef.current = null;
+        sendLocalLock(selectedObjects, false);
+        canvas.requestRenderAll();
+        return;
+      }
 
       const commitSignature = afterTransforms
         .map((frame) => `${frame.id}:${frame.matrix.join(',')}`)
