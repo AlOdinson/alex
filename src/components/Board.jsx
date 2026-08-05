@@ -9898,32 +9898,113 @@ function BoardWorkspace({
     }
 
     function directPenTargetAtEvent(event) {
+      // Do not use canvas.getScenePoint(event) for the first native Pencil contact.
+      // In iPad Safari that helper can still reflect Fabric's previous mouse wrapper
+      // until Fabric itself receives pointerdown. The teacher then misses the target in
+      // capture phase, while the student still sees realtime preview updates. Convert
+      // client coordinates ourselves so first-contact selection is deterministic.
+      const clientX = Number(event?.clientX);
+      const clientY = Number(event?.clientY);
+      if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+
+      let scenePoint;
+      let viewportPoint;
+      try {
+        const rect = canvas.upperCanvasEl.getBoundingClientRect();
+        viewportPoint = new Point(clientX - rect.left, clientY - rect.top);
+        scenePoint = scenePointFromClient(clientX, clientY);
+      } catch {
+        return null;
+      }
+      if (!Number.isFinite(scenePoint?.x) || !Number.isFinite(scenePoint?.y)) return null;
+
+      const selectableTarget = (object) => (
+        object?.canvas === canvas
+        && object.selectable !== false
+        && object.evented !== false
+        && object.visible !== false
+        && Number(object.opacity ?? 1) > 0.001
+        && !object.isEraserPath
+        && !object.transientPreview
+        && !object.transientSelectionProxy
+      );
+      const zoom = Math.max(canvas.getZoom?.() ?? 1, MIN_ZOOM);
+      const sceneTolerance = Math.max(4, 14 / zoom);
+      const nearby = queryTransformSpatialObjects({
+        left: scenePoint.x - sceneTolerance,
+        top: scenePoint.y - sceneTolerance,
+        right: scenePoint.x + sceneTolerance,
+        bottom: scenePoint.y + sceneTolerance,
+        width: sceneTolerance * 2,
+        height: sceneTolerance * 2,
+      }).filter(selectableTarget).reverse();
+
+      const distanceToSegment = (point, start, end) => {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared <= 0.000001) return Math.hypot(point.x - start.x, point.y - start.y);
+        const ratio = clamp(((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared, 0, 1);
+        return Math.hypot(point.x - (start.x + dx * ratio), point.y - (start.y + dy * ratio));
+      };
+
+      let boundsFallback = null;
+      for (const object of nearby) {
+        let bounds;
+        try {
+          bounds = object.getBoundingRect();
+        } catch {
+          continue;
+        }
+        const insideExpandedBounds = scenePoint.x >= bounds.left - sceneTolerance
+          && scenePoint.x <= bounds.left + bounds.width + sceneTolerance
+          && scenePoint.y >= bounds.top - sceneTolerance
+          && scenePoint.y <= bounds.top + bounds.height + sceneTolerance;
+        if (!insideExpandedBounds) continue;
+        if (!boundsFallback) boundsFallback = object;
+
+        if (object instanceof Line || object.type === 'line') {
+          try {
+            const local = typeof object.calcLinePoints === 'function'
+              ? object.calcLinePoints()
+              : { x1: object.x1, y1: object.y1, x2: object.x2, y2: object.y2 };
+            const matrix = object.calcTransformMatrix();
+            const first = util.transformPoint(new Point(Number(local.x1), Number(local.y1)), matrix);
+            const second = util.transformPoint(new Point(Number(local.x2), Number(local.y2)), matrix);
+            const scale = Math.max(
+              Math.hypot(Number(matrix[0] ?? 1), Number(matrix[1] ?? 0)),
+              Math.hypot(Number(matrix[2] ?? 0), Number(matrix[3] ?? 1)),
+              1,
+            );
+            const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * scale / 2);
+            if (distanceToSegment(scenePoint, first, second) <= strokeRadius + sceneTolerance) return object;
+          } catch {
+            // Continue with pixel/geometric hit testing.
+          }
+        }
+
+        try {
+          if (typeof canvas.isTargetTransparent === 'function'
+            && !canvas.isTargetTransparent(object, viewportPoint.x, viewportPoint.y)) {
+            return object;
+          }
+          if (typeof canvas.isTargetTransparent !== 'function'
+            && typeof object.containsPoint === 'function'
+            && object.containsPoint(scenePoint)) {
+            return object;
+          }
+        } catch {
+          // Thin paths still use the small bounds fallback below.
+        }
+      }
+
+      if (boundsFallback) return boundsFallback;
+
+      // Fabric remains a final compatibility fallback for controls and unusual custom
+      // objects, but it is no longer the source of truth for the first Pencil contact.
       try {
         const fabricTarget = canvas.findTarget?.(event) ?? null;
-        if (fabricTarget) return fabricTarget;
-
-        const point = canvas.getScenePoint(event);
-        const zoom = Math.max(canvas.getZoom?.() ?? 1, MIN_ZOOM);
-        const sceneTolerance = Math.max(4, 12 / zoom);
-        const nearby = queryTransformSpatialObjects({
-          left: point.x - sceneTolerance,
-          top: point.y - sceneTolerance,
-          right: point.x + sceneTolerance,
-          bottom: point.y + sceneTolerance,
-          width: sceneTolerance * 2,
-          height: sceneTolerance * 2,
-        });
-        return objectAtScenePoint(point, {
-          candidates: [...nearby].reverse(),
-          predicate: (object) => (
-            object?.canvas === canvas
-            && object.selectable !== false
-            && object.evented !== false
-            && !object.isEraserPath
-            && !object.transientPreview
-            && !object.transientSelectionProxy
-          ),
-        });
+        return selectableTarget(fabricTarget) ? fabricTarget : null;
       } catch {
         return null;
       }
@@ -10156,12 +10237,22 @@ function BoardWorkspace({
       };
 
       const activeBeforeContact = canvas.getActiveObject();
-      if (!activeBeforeContact) {
-        const directTarget = directPenTargetAtEvent(event);
-        if (directTarget && startDirectPenObjectDrag(event, directTarget)) {
-          restorePenSelectionRenderGuard();
-          return true;
-        }
+      const directTarget = directPenTargetAtEvent(event);
+      const activeMembersBeforeContact = new Set(flattenTarget(activeBeforeContact).filter(Boolean));
+      const targetWasAlreadyActive = Boolean(
+        directTarget
+        && (activeBeforeContact === directTarget || activeMembersBeforeContact.has(directTarget)),
+      );
+
+      // Start our native first-contact route whenever the object under Pencil was not
+      // already the active object/member. The former `if (!activeBeforeContact)` check
+      // failed when Fabric retained a stale/invisible active object, so the first drag
+      // used the top-only selection guard and teleported locally while students saw the
+      // realtime preview normally.
+      if (directTarget && !targetWasAlreadyActive
+        && startDirectPenObjectDrag(event, directTarget)) {
+        restorePenSelectionRenderGuard();
+        return true;
       }
 
       // Preselected objects and groups already work correctly through Fabric. Only an
