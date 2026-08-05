@@ -1,9 +1,9 @@
 {
-  "version": "1.31.1",
-  "packageVersion": "1.31.1",
-  "base": "1.31.0",
-  "release": "Apple Pencil unified selection frame and hand-handle movement",
+  "version": "1.31.2",
+  "packageVersion": "1.31.2",
+  "base": "1.31.1",
+  "release": "Live Apple Pencil transform frames without teleporting",
   "date": "2026-08-05",
-  "name": "pencil-selection-frame-hand-live-move",
-  "label": "Alex Board 1.31.1"
+  "name": "pencil-live-transform-animation-hotfix",
+  "label": "Alex Board 1.31.2"
 }

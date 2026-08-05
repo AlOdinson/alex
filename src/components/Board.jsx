@@ -9881,7 +9881,42 @@ function BoardWorkspace({
         || eyedropperActiveRef.current
         || !canEditRef.current
         || event.button > 0) return false;
-      beginPenSelectionRenderGuard();
+      // Do not suppress the lower Fabric canvas when this contact can begin an
+      // object/group transform. The cropped Pencil compositor takes ownership in
+      // before:transform (or in the custom hand-control tick). Starting the top-only
+      // guard before that point made small-board Pencil drags invisible and caused the
+      // object to appear only at pointerup. Keep the top-only guard only for an empty
+      // canvas contact that can create/dismiss a marquee.
+      let mayStartObjectTransform = Boolean(canvas.getActiveObject());
+      if (!mayStartObjectTransform) {
+        try {
+          const point = canvas.getScenePoint(event);
+          const zoom = Math.max(canvas.getZoom?.() ?? 1, MIN_ZOOM);
+          const sceneTolerance = Math.max(3, 10 / zoom);
+          const nearby = queryTransformSpatialObjects({
+            left: point.x - sceneTolerance,
+            top: point.y - sceneTolerance,
+            right: point.x + sceneTolerance,
+            bottom: point.y + sceneTolerance,
+            width: sceneTolerance * 2,
+            height: sceneTolerance * 2,
+          });
+          mayStartObjectTransform = nearby.some((object) => (
+            object?.canvas === canvas
+            && object.selectable !== false
+            && object.evented !== false
+            && !object.isEraserPath
+            && !object.transientPreview
+            && !object.transientSelectionProxy
+          ));
+        } catch {
+          // When target probing is unavailable, prefer normal Fabric rendering over a
+          // visually frozen drag. The compositor will still take over if a transform starts.
+          mayStartObjectTransform = true;
+        }
+      }
+      if (mayStartObjectTransform) restorePenSelectionRenderGuard();
+      else beginPenSelectionRenderGuard();
       const session = selectionPenSessionRef.current;
       if (session.active && session.pointerId === event.pointerId) {
         suppressSelectionCompatibilityEvent(event);
