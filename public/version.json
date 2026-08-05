@@ -1,9 +1,9 @@
 {
-  "version": "1.30.0",
-  "packageVersion": "1.30.0",
-  "base": "1.29.1",
-  "release": "Static-scene Apple Pencil transform isolation",
+  "version": "1.31.0",
+  "packageVersion": "1.31.0",
+  "base": "1.30.0",
+  "release": "Cropped dirty-region Apple Pencil transform compositor",
   "date": "2026-08-05",
-  "name": "static-scene-pencil-transform-isolation",
-  "label": "Alex Board 1.30"
+  "name": "cropped-dirty-region-pencil-transform",
+  "label": "Alex Board 1.31"
 }

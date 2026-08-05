@@ -76,6 +76,9 @@ const INTEGRITY_CHECK_INTERVAL = 5 * 60_000;
 const LOCAL_LOCK_REFRESH_INTERVAL = 2_500;
 const IMAGE_RETRY_INTERVAL = 5_000;
 const SNAPSHOT_COMPACTION_IDLE_MS = 30_000;
+const PEN_TRANSFORM_PATCH_PADDING = 18;
+const PEN_TRANSFORM_SPATIAL_CELL_SIZE = 256;
+const PEN_TRANSFORM_SPATIAL_GLOBAL_CELL_LIMIT = 96;
 const PENCIL_TOUCH_GRACE_MS = 240;
 const TOUCH_GESTURE_ARM_MS = 80;
 const TOUCH_GESTURE_MOVE_THRESHOLD = 6;
@@ -1240,6 +1243,75 @@ function objectFastIntersectsRect(object, selectionRect) {
   return objectCorners.some((point) => pointInsideSceneRect(point, selectionRect));
 }
 
+function finiteRect(rect) {
+  const left = Number(rect?.left ?? 0);
+  const top = Number(rect?.top ?? 0);
+  const width = Math.max(0, Number(rect?.width ?? 0));
+  const height = Math.max(0, Number(rect?.height ?? 0));
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+  };
+}
+
+function expandedRect(rect, padding = 0) {
+  const safe = finiteRect(rect);
+  const amount = Math.max(0, Number(padding ?? 0));
+  return {
+    left: safe.left - amount,
+    top: safe.top - amount,
+    width: safe.width + amount * 2,
+    height: safe.height + amount * 2,
+    right: safe.right + amount,
+    bottom: safe.bottom + amount,
+  };
+}
+
+function rectsIntersect(first, second) {
+  const a = finiteRect(first);
+  const b = finiteRect(second);
+  return a.right >= b.left
+    && a.bottom >= b.top
+    && a.left <= b.right
+    && a.top <= b.bottom;
+}
+
+function transformRectWithMatrix(rect, matrix) {
+  const source = finiteRect(rect);
+  const [a, b, c, d, e, f] = Array.isArray(matrix)
+    ? matrix.map((value, index) => Number(value ?? (index === 0 || index === 3 ? 1 : 0)))
+    : [1, 0, 0, 1, 0, 0];
+  const points = [
+    [source.left, source.top],
+    [source.right, source.top],
+    [source.right, source.bottom],
+    [source.left, source.bottom],
+  ].map(([x, y]) => ({
+    x: a * x + c * y + e,
+    y: b * x + d * y + f,
+  }));
+  const left = Math.min(...points.map((point) => point.x));
+  const right = Math.max(...points.map((point) => point.x));
+  const top = Math.min(...points.map((point) => point.y));
+  const bottom = Math.max(...points.map((point) => point.y));
+  return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+function viewportRectFromSceneRect(rect, viewport) {
+  return transformRectWithMatrix(rect, viewport);
+}
+
+function sceneRectFromViewportRect(rect, viewport) {
+  try {
+    return transformRectWithMatrix(rect, util.invertTransform(viewport));
+  } catch {
+    return finiteRect(rect);
+  }
+}
 
 
 export default function Board({ boardId }) {
@@ -1573,14 +1645,12 @@ function BoardWorkspace({
     pointerType: null,
   });
   const deferredTransformFlushRef = useRef(null);
-  // On a busy board Fabric normally redraws every visible object for every Pencil
-  // move. During a stylus drag we freeze the static board into the lower canvas and
-  // move only a transparent raster of the selected object(s) above it. This makes the
-  // per-frame cost depend on the selection, not on the total board size.
+  // A Pencil drag uses two small cropped raster layers: one patch that restores the
+  // pixels below the selection's old position, and one layer containing only the moving
+  // selection. The main board canvas is never cleared or rebuilt during the gesture.
   const penTransformIsolationRef = useRef(null);
   const finishPenTransformIsolationRef = useRef(null);
-  const penTransformReconcileTimerRef = useRef(null);
-  const isolatedCanvasRenderModeRef = useRef('normal');
+  const penTransformSpatialApiRef = useRef(null);
   const selectionUiRefreshFrameRef = useRef(null);
   const selectionStyleRefreshTimerRef = useRef(null);
   const serializedObjectCacheRef = useRef(new WeakMap());
@@ -2371,7 +2441,7 @@ function BoardWorkspace({
         active.hasControls = true;
         active.hasBorders = true;
       }
-      if (restored) canvas.requestRenderAll();
+      if (restored) canvas.renderTop?.();
       return;
     }
 
@@ -2406,7 +2476,7 @@ function BoardWorkspace({
       objectCaching: false,
     });
     active.setCoords();
-    canvas.requestRenderAll();
+    canvas.renderTop?.();
   }, [restoreSelectionMemberControl]);
 
 
@@ -4003,6 +4073,7 @@ function BoardWorkspace({
           rebuildObjectRegistry();
           deduplicateBoardObjects(canvas);
           rebuildObjectRegistry();
+          penTransformSpatialApiRef.current?.rebuild?.();
           if (BACKGROUNDS.has(effectiveSnapshot.background)) applyBackground(effectiveSnapshot.background);
           canvas.setViewportTransform(viewport);
           applyObjectInteractivity();
@@ -4990,6 +5061,7 @@ function BoardWorkspace({
                 object.updatedBy = patch.updatedBy ?? sourceClientId ?? object.updatedBy;
                 object.dirty = true;
                 object.setCoords();
+                penTransformSpatialApiRef.current?.updateObjects?.([object]);
                 const cached = serializedObjectCacheRef.current.get(object);
                 if (cached) {
                   Object.assign(cached, patch.transform, {
@@ -6421,9 +6493,6 @@ function BoardWorkspace({
     const drawBoardBackgroundOnCanvas = (event = {}) => {
       const context = event.ctx ?? canvas.contextContainer;
       if (!context) return;
-      // A selected-only isolation render must stay transparent so it can be copied to
-      // a lightweight overlay. The normal lower canvas keeps the board/background.
-      if (isolatedCanvasRenderModeRef.current === 'selected-only') return;
       const width = canvas.getWidth();
       const height = canvas.getHeight();
       const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
@@ -6478,43 +6547,343 @@ function BoardWorkspace({
     canvas.on('before:render', drawBoardBackgroundOnCanvas);
     configureBrushAndMode();
 
-    const clearPenTransformReconcile = () => {
-      window.clearTimeout(penTransformReconcileTimerRef.current);
-      penTransformReconcileTimerRef.current = null;
+    const transformSpatialIndex = {
+      cellSize: PEN_TRANSFORM_SPATIAL_CELL_SIZE,
+      cells: new Map(),
+      globals: new Set(),
+      entries: new Map(),
+      orderDirty: true,
+      ready: false,
     };
 
-    const schedulePenTransformReconcile = () => {
-      clearPenTransformReconcile();
-      const reconcileWhenIdle = () => {
-        penTransformReconcileTimerRef.current = null;
-        if (fabricCanvasRef.current !== canvas || penTransformIsolationRef.current) return;
-        const interactionAge = Date.now() - Number(lastBoardInteractionAtRef.current ?? 0);
-        if (penInputRef.current.active || selectionPenSessionRef.current.active || interactionAge < 1100) {
-          penTransformReconcileTimerRef.current = window.setTimeout(reconcileWhenIdle, 700);
-          return;
-        }
-        // The lower canvas already contains the correct composited pixels. This delayed
-        // render only reconciles Fabric's backing scene after the user has really stopped,
-        // so an O(board size) render never lands between consecutive Pencil drags.
-        canvas.requestRenderAll();
+    const spatialCellKey = (x, y) => `${x}:${y}`;
+
+    const removeTransformSpatialEntry = (object) => {
+      const entry = transformSpatialIndex.entries.get(object);
+      if (!entry) return;
+      for (const key of entry.cells) {
+        const bucket = transformSpatialIndex.cells.get(key);
+        if (!bucket) continue;
+        bucket.delete(object);
+        if (!bucket.size) transformSpatialIndex.cells.delete(key);
+      }
+      transformSpatialIndex.globals.delete(object);
+      transformSpatialIndex.entries.delete(object);
+    };
+
+    const indexTransformSpatialObject = (object, order = null) => {
+      if (!object || object.canvas !== canvas || object.isEraserPath) return;
+      const previousOrder = transformSpatialIndex.entries.get(object)?.order;
+      const resolvedOrder = Number.isFinite(Number(order))
+        ? Number(order)
+        : (Number.isFinite(Number(previousOrder)) ? Number(previousOrder) : -1);
+      removeTransformSpatialEntry(object);
+      let bounds;
+      try {
+        bounds = finiteRect(object.getBoundingRect());
+      } catch {
+        return;
+      }
+      const cellSize = transformSpatialIndex.cellSize;
+      const minX = Math.floor(bounds.left / cellSize);
+      const maxX = Math.floor(bounds.right / cellSize);
+      const minY = Math.floor(bounds.top / cellSize);
+      const maxY = Math.floor(bounds.bottom / cellSize);
+      const cellCount = Math.max(1, (maxX - minX + 1) * (maxY - minY + 1));
+      const entry = {
+        bounds,
+        cells: [],
+        order: resolvedOrder,
       };
-      penTransformReconcileTimerRef.current = window.setTimeout(reconcileWhenIdle, 1600);
+      transformSpatialIndex.entries.set(object, entry);
+      if (cellCount > PEN_TRANSFORM_SPATIAL_GLOBAL_CELL_LIMIT) {
+        transformSpatialIndex.globals.add(object);
+        return;
+      }
+      for (let y = minY; y <= maxY; y += 1) {
+        for (let x = minX; x <= maxX; x += 1) {
+          const key = spatialCellKey(x, y);
+          const bucket = transformSpatialIndex.cells.get(key) ?? new Set();
+          bucket.add(object);
+          transformSpatialIndex.cells.set(key, bucket);
+          entry.cells.push(key);
+        }
+      }
     };
 
-    const finishPenTransformIsolation = ({
-      composite = true,
-      scheduleReconcile = true,
-    } = {}) => {
+    const refreshTransformSpatialOrder = () => {
+      canvas.getObjects().forEach((object, index) => {
+        const entry = transformSpatialIndex.entries.get(object);
+        if (entry) entry.order = index;
+        else indexTransformSpatialObject(object, index);
+      });
+      transformSpatialIndex.orderDirty = false;
+      transformSpatialIndex.ready = true;
+    };
+
+    const rebuildTransformSpatialIndex = () => {
+      transformSpatialIndex.cells.clear();
+      transformSpatialIndex.globals.clear();
+      transformSpatialIndex.entries.clear();
+      canvas.getObjects().forEach((object, index) => indexTransformSpatialObject(object, index));
+      transformSpatialIndex.orderDirty = false;
+      transformSpatialIndex.ready = true;
+    };
+
+    const updateTransformSpatialObjects = (objects, { orderDirty = false } = {}) => {
+      for (const object of Array.isArray(objects) ? objects : [objects]) {
+        if (object) indexTransformSpatialObject(object);
+      }
+      if (orderDirty) transformSpatialIndex.orderDirty = true;
+    };
+
+    const queryTransformSpatialObjects = (sceneRect, excludedObjects = new Set()) => {
+      if (!transformSpatialIndex.ready) rebuildTransformSpatialIndex();
+      if (transformSpatialIndex.orderDirty) refreshTransformSpatialOrder();
+      const rect = finiteRect(sceneRect);
+      const cellSize = transformSpatialIndex.cellSize;
+      const minX = Math.floor(rect.left / cellSize);
+      const maxX = Math.floor(rect.right / cellSize);
+      const minY = Math.floor(rect.top / cellSize);
+      const maxY = Math.floor(rect.bottom / cellSize);
+      const candidates = new Set(transformSpatialIndex.globals);
+      for (let y = minY; y <= maxY; y += 1) {
+        for (let x = minX; x <= maxX; x += 1) {
+          const bucket = transformSpatialIndex.cells.get(spatialCellKey(x, y));
+          bucket?.forEach((object) => candidates.add(object));
+        }
+      }
+      return [...candidates]
+        .filter((object) => {
+          if (!object || excludedObjects.has(object) || object.visible === false
+            || Number(object.opacity ?? 1) <= 0.001 || object.canvas !== canvas) return false;
+          const entry = transformSpatialIndex.entries.get(object);
+          return entry && rectsIntersect(entry.bounds, rect);
+        })
+        .sort((first, second) => (
+          Number(transformSpatialIndex.entries.get(first)?.order ?? 0)
+          - Number(transformSpatialIndex.entries.get(second)?.order ?? 0)
+        ));
+    };
+
+    const originalCanvasMoveObjectTo = typeof canvas.moveObjectTo === 'function'
+      ? canvas.moveObjectTo.bind(canvas)
+      : null;
+    if (originalCanvasMoveObjectTo) {
+      canvas.moveObjectTo = (object, index) => {
+        const result = originalCanvasMoveObjectTo(object, index);
+        transformSpatialIndex.orderDirty = true;
+        return result;
+      };
+    }
+
+    penTransformSpatialApiRef.current = {
+      rebuild: rebuildTransformSpatialIndex,
+      updateObjects: updateTransformSpatialObjects,
+      addObject(object) {
+        indexTransformSpatialObject(object, Math.max(0, canvas.getObjects().length - 1));
+        transformSpatialIndex.ready = true;
+      },
+      removeObject(object) {
+        removeTransformSpatialEntry(object);
+      },
+      markOrderDirty() {
+        transformSpatialIndex.orderDirty = true;
+      },
+    };
+
+    let pendingPenRenderRestoreTimer = null;
+    let pendingPenRenderRestoreSession = null;
+    let penSelectionRenderGuard = null;
+
+    const restorePenSelectionRenderGuard = () => {
+      const guard = penSelectionRenderGuard;
+      if (!guard) return;
+      window.clearTimeout(guard.restoreTimer);
+      guard.restoreTimer = null;
+      if (guard.frame != null) window.cancelAnimationFrame(guard.frame);
+      guard.frame = null;
+      if (canvas.requestRenderAll === guard.topOnlyRender) canvas.requestRenderAll = guard.originalRequestRenderAll;
+      if (canvas.renderAll === guard.topOnlyRender) canvas.renderAll = guard.originalRenderAll;
+      penSelectionRenderGuard = null;
+    };
+
+    const beginPenSelectionRenderGuard = () => {
+      restorePenSelectionRenderGuard();
+      const guard = {
+        originalRequestRenderAll: canvas.requestRenderAll,
+        originalRenderAll: canvas.renderAll,
+        topOnlyRender: null,
+        frame: null,
+        restoreTimer: null,
+      };
+      guard.topOnlyRender = () => {
+        if (guard.frame != null) return canvas;
+        guard.frame = window.requestAnimationFrame(() => {
+          guard.frame = null;
+          if (fabricCanvasRef.current !== canvas) return;
+          try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
+        });
+        return canvas;
+      };
+      canvas.requestRenderAll = guard.topOnlyRender;
+      canvas.renderAll = guard.topOnlyRender;
+      penSelectionRenderGuard = guard;
+    };
+
+    const finishPenSelectionRenderGuard = () => {
+      const guard = penSelectionRenderGuard;
+      if (!guard) return;
+      window.clearTimeout(guard.restoreTimer);
+      guard.restoreTimer = window.setTimeout(() => restorePenSelectionRenderGuard(), 0);
+    };
+
+    const restorePenTransformRenderMethods = (session = pendingPenRenderRestoreSession) => {
+      if (!session) return;
+      window.clearTimeout(pendingPenRenderRestoreTimer);
+      pendingPenRenderRestoreTimer = null;
+      if (canvas.requestRenderAll === session.suppressedRequestRenderAll) {
+        canvas.requestRenderAll = session.originalRequestRenderAll;
+      }
+      if (canvas.renderAll === session.suppressedRenderAll) {
+        canvas.renderAll = session.originalRenderAll;
+      }
+      if (pendingPenRenderRestoreSession === session) pendingPenRenderRestoreSession = null;
+    };
+
+    const schedulePenTransformRenderRestore = (session) => {
+      restorePenTransformRenderMethods();
+      pendingPenRenderRestoreSession = session;
+      // Fabric can request one final lower-canvas render after object:modified listeners
+      // return. Keep that same-task request suppressed, then restore normal rendering
+      // before the browser can deliver the next physical input event.
+      pendingPenRenderRestoreTimer = window.setTimeout(() => {
+        restorePenTransformRenderMethods(session);
+      }, 0);
+    };
+
+    const createCroppedRasterLayer = (rect, className, zIndex) => {
+      const safeRect = finiteRect(rect);
+      const ratio = Math.max(1, Number(canvas.getRetinaScaling?.() ?? 1));
+      const element = document.createElement('canvas');
+      element.className = className;
+      element.width = Math.max(1, Math.ceil(safeRect.width * ratio));
+      element.height = Math.max(1, Math.ceil(safeRect.height * ratio));
+      Object.assign(element.style, {
+        position: 'absolute',
+        left: `${safeRect.left}px`,
+        top: `${safeRect.top}px`,
+        width: `${safeRect.width}px`,
+        height: `${safeRect.height}px`,
+        pointerEvents: 'none',
+        zIndex: String(zIndex),
+        transform: 'translate3d(0px, 0px, 0)',
+        transformOrigin: '0 0',
+        willChange: 'transform',
+      });
+      return { element, rect: safeRect, ratio };
+    };
+
+    const drawBackgroundIntoCroppedLayer = (layer) => {
+      const context = layer.element.getContext('2d');
+      if (!context) return;
+      const rect = layer.rect;
+      const ratio = layer.ratio;
+      context.save();
+      context.setTransform(ratio, 0, 0, ratio, -rect.left * ratio, -rect.top * ratio);
+      context.fillStyle = '#ffffff';
+      context.fillRect(rect.left, rect.top, rect.width, rect.height);
+      const boardBackground = backgroundRef.current;
+      if (boardBackground === 'blank') {
+        context.restore();
+        return;
+      }
+      const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
+      const zoomLevel = Math.max(canvas.getZoom(), MIN_ZOOM);
+      let sceneSpacing = 32;
+      while (sceneSpacing * zoomLevel < 7) sceneSpacing *= 2;
+      const screenSpacing = sceneSpacing * zoomLevel;
+      const originX = ((Number(viewport[4] ?? 0) % screenSpacing) + screenSpacing) % screenSpacing;
+      const originY = ((Number(viewport[5] ?? 0) % screenSpacing) + screenSpacing) % screenSpacing;
+      const firstX = originX + Math.floor((rect.left - originX) / screenSpacing) * screenSpacing;
+      const firstY = originY + Math.floor((rect.top - originY) / screenSpacing) * screenSpacing;
+      if (boardBackground === 'grid') {
+        context.beginPath();
+        context.strokeStyle = 'rgba(203, 213, 225, 0.72)';
+        context.lineWidth = 1;
+        for (let x = firstX; x <= rect.right + screenSpacing; x += screenSpacing) {
+          context.moveTo(x, rect.top);
+          context.lineTo(x, rect.bottom);
+        }
+        for (let y = firstY; y <= rect.bottom + screenSpacing; y += screenSpacing) {
+          context.moveTo(rect.left, y);
+          context.lineTo(rect.right, y);
+        }
+        context.stroke();
+      } else if (boardBackground === 'dots') {
+        context.fillStyle = 'rgba(148, 163, 184, 0.86)';
+        const radius = clamp(0.85 + zoomLevel * 0.18, 0.9, 1.45);
+        for (let x = firstX; x <= rect.right + screenSpacing; x += screenSpacing) {
+          for (let y = firstY; y <= rect.bottom + screenSpacing; y += screenSpacing) {
+            context.beginPath();
+            context.arc(x, y, radius, 0, Math.PI * 2);
+            context.fill();
+          }
+        }
+      }
+      context.restore();
+    };
+
+    const renderObjectsIntoCroppedLayer = (layer, objects) => {
+      const context = layer.element.getContext('2d');
+      if (!context) return;
+      const rect = layer.rect;
+      const ratio = layer.ratio;
+      const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
+      context.save();
+      context.setTransform(ratio, 0, 0, ratio, -rect.left * ratio, -rect.top * ratio);
+      context.transform(
+        Number(viewport[0] ?? 1),
+        Number(viewport[1] ?? 0),
+        Number(viewport[2] ?? 0),
+        Number(viewport[3] ?? 1),
+        Number(viewport[4] ?? 0),
+        Number(viewport[5] ?? 0),
+      );
+      for (const object of objects) {
+        if (!object || object.visible === false || Number(object.opacity ?? 1) <= 0.001) continue;
+        try {
+          object.render(context);
+        } catch (error) {
+          console.warn('Не удалось отрисовать локальный слой переноса', error);
+        }
+      }
+      context.restore();
+    };
+
+    const disposeCroppedRasterLayer = (layer) => {
+      if (!layer?.element) return;
+      layer.element.remove();
+      // Release the backing store immediately. Repeated full-retina canvases otherwise
+      // stay as GPU textures until Safari's GC and create the old cumulative slowdown.
+      layer.element.width = 1;
+      layer.element.height = 1;
+    };
+
+    const finishPenTransformIsolation = ({ composite = true } = {}) => {
       const session = penTransformIsolationRef.current;
       if (!session || session.canvas !== canvas) return false;
       penTransformIsolationRef.current = null;
-      isolatedCanvasRenderModeRef.current = 'normal';
+      if (session.topFrame != null) window.cancelAnimationFrame(session.topFrame);
+      session.topFrame = null;
+      schedulePenTransformRenderRestore(session);
 
-      canvas._objects = session.originalObjects;
-      canvas.requestRenderAll = session.originalRequestRenderAll;
-      canvas.renderAll = session.originalRenderAll;
+      if (session.upperCanvas) {
+        session.upperCanvas.style.zIndex = session.originalUpperZIndex;
+        session.upperCanvas.style.willChange = session.originalUpperWillChange;
+      }
 
-      if (composite && session.overlay?.isConnected && canvas.lowerCanvasEl) {
+      if (composite && canvas.lowerCanvasEl) {
         const context = canvas.lowerCanvasEl.getContext('2d');
         if (context) {
           const ratioX = canvas.lowerCanvasEl.width / Math.max(1, canvas.getWidth());
@@ -6522,26 +6891,31 @@ function BoardWorkspace({
           context.save();
           context.setTransform(1, 0, 0, 1, 0, 0);
           context.drawImage(
-            session.overlay,
-            Math.round(Number(session.deltaX ?? 0) * ratioX),
-            Math.round(Number(session.deltaY ?? 0) * ratioY),
+            session.patch.element,
+            Math.round(session.patch.rect.left * ratioX),
+            Math.round(session.patch.rect.top * ratioY),
+            Math.round(session.patch.rect.width * ratioX),
+            Math.round(session.patch.rect.height * ratioY),
+          );
+          context.drawImage(
+            session.overlay.element,
+            Math.round((session.overlay.rect.left + Number(session.deltaX ?? 0)) * ratioX),
+            Math.round((session.overlay.rect.top + Number(session.deltaY ?? 0)) * ratioY),
+            Math.round(session.overlay.rect.width * ratioX),
+            Math.round(session.overlay.rect.height * ratioY),
           );
           context.restore();
         }
       }
 
-      if (session.upperCanvas) {
-        session.upperCanvas.style.opacity = session.originalUpperOpacity;
-      }
-      session.overlay?.remove?.();
+      disposeCroppedRasterLayer(session.patch);
+      disposeCroppedRasterLayer(session.overlay);
+      updateTransformSpatialObjects(session.selectedObjects);
       try {
-        // Only redraw the interactive/top layer. The expensive lower scene remains the
-        // already-correct composite until a genuine idle period.
         canvas.renderTop?.();
       } catch {
-        // Older Fabric builds may not expose renderTop publicly.
+        // Fabric may already have disposed the top context during unmount.
       }
-      if (scheduleReconcile) schedulePenTransformReconcile();
       return true;
     };
     finishPenTransformIsolationRef.current = finishPenTransformIsolation;
@@ -6551,83 +6925,88 @@ function BoardWorkspace({
         ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
       const action = String(transform?.action ?? '');
       const moveAction = action === 'drag' || action === 'move' || (!transform?.corner && !action);
-      const allObjects = canvas.getObjects();
-      if (pointerType !== 'pen' || !moveAction || allObjects.length < 90 || !target) return false;
+      if (pointerType !== 'pen' || !moveAction || canvas.getObjects().length < 90 || !target) return false;
 
-      finishPenTransformIsolation({ composite: true, scheduleReconcile: false });
-      clearPenTransformReconcile();
+      restorePenSelectionRenderGuard();
+      restorePenTransformRenderMethods();
+      finishPenTransformIsolation({ composite: true });
+      restorePenTransformRenderMethods();
       canvas.cancelRequestedRender?.();
 
-      const selectedObjects = flattenTarget(target).filter((object) => allObjects.includes(object));
+      const selectedObjects = flattenTarget(target)
+        .filter((object) => object?.canvas === canvas && !object.isEraserPath);
       if (!selectedObjects.length) return false;
       const selectedSet = new Set(selectedObjects);
-      const originalObjects = canvas._objects;
-      const originalRequestRenderAll = canvas.requestRenderAll;
-      const originalRenderAll = canvas.renderAll;
-      const upperCanvas = canvas.upperCanvasEl;
-      const originalUpperOpacity = upperCanvas?.style.opacity ?? '';
-      const wrapper = canvas.wrapperEl ?? host;
-      const overlay = document.createElement('canvas');
-      overlay.className = 'pen-transform-isolation-overlay';
-      overlay.width = canvas.lowerCanvasEl.width;
-      overlay.height = canvas.lowerCanvasEl.height;
-      Object.assign(overlay.style, {
-        position: 'absolute',
-        inset: '0',
-        width: `${canvas.getWidth()}px`,
-        height: `${canvas.getHeight()}px`,
-        pointerEvents: 'none',
-        zIndex: '2',
-        transform: 'translate3d(0px, 0px, 0)',
-        transformOrigin: '0 0',
-        willChange: 'transform',
-      });
+      if (!transformSpatialIndex.ready) rebuildTransformSpatialIndex();
+      selectedObjects.forEach((object) => indexTransformSpatialObject(object));
 
+      let targetSceneBounds;
       try {
-        // Render only the selected members to a transparent full-size overlay. This is
-        // O(selection size), not O(board size).
-        isolatedCanvasRenderModeRef.current = 'selected-only';
-        canvas._objects = selectedObjects;
-        originalRenderAll.call(canvas);
-        overlay.getContext('2d')?.drawImage(canvas.lowerCanvasEl, 0, 0);
-
-        // Render the static board once without the moving members. It remains frozen for
-        // the whole drag, so Fabric never redraws thousands of unrelated objects per move.
-        isolatedCanvasRenderModeRef.current = 'normal';
-        canvas._objects = originalObjects.filter((object) => !selectedSet.has(object));
-        originalRenderAll.call(canvas);
-      } catch (error) {
-        console.warn('Не удалось включить изолированный перенос Pencil', error);
-        canvas._objects = originalObjects;
-        isolatedCanvasRenderModeRef.current = 'normal';
-        overlay.remove();
-        originalRequestRenderAll.call(canvas);
+        targetSceneBounds = finiteRect(target.getBoundingRect());
+      } catch {
         return false;
       }
+      const viewport = [...(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0])];
+      const screenRect = expandedRect(
+        viewportRectFromSceneRect(targetSceneBounds, viewport),
+        PEN_TRANSFORM_PATCH_PADDING,
+      );
+      if (screenRect.width < 1 || screenRect.height < 1) return false;
 
-      canvas._objects = originalObjects;
-      wrapper.appendChild(overlay);
-      if (upperCanvas) upperCanvas.style.opacity = '0';
+      const patch = createCroppedRasterLayer(screenRect, 'pen-transform-origin-patch', 2);
+      const overlay = createCroppedRasterLayer(screenRect, 'pen-transform-moving-overlay', 3);
+      drawBackgroundIntoCroppedLayer(patch);
+      const patchSceneRect = sceneRectFromViewportRect(screenRect, viewport);
+      const underlyingObjects = queryTransformSpatialObjects(patchSceneRect, selectedSet);
+      renderObjectsIntoCroppedLayer(patch, underlyingObjects);
+      renderObjectsIntoCroppedLayer(overlay, [target]);
 
-      // Fabric may continue calculating the target matrix and emitting moving events,
-      // but every lower-canvas render is suppressed until pointerup.
-      canvas.requestRenderAll = () => canvas;
-      canvas.renderAll = () => canvas;
-      penTransformIsolationRef.current = {
+      const wrapper = canvas.wrapperEl ?? host;
+      const upperCanvas = canvas.upperCanvasEl;
+      const originalUpperZIndex = upperCanvas?.style.zIndex ?? '';
+      const originalUpperWillChange = upperCanvas?.style.willChange ?? '';
+      wrapper.appendChild(patch.element);
+      wrapper.appendChild(overlay.element);
+      if (upperCanvas) {
+        upperCanvas.style.zIndex = '4';
+        upperCanvas.style.willChange = 'transform';
+      }
+
+      const originalRequestRenderAll = canvas.requestRenderAll;
+      const originalRenderAll = canvas.renderAll;
+      const session = {
         canvas,
         target,
+        selectedObjects,
+        patch,
         overlay,
         upperCanvas,
-        originalUpperOpacity,
-        originalObjects,
+        originalUpperZIndex,
+        originalUpperWillChange,
         originalRequestRenderAll,
         originalRenderAll,
         startLeft: Number(target.left ?? 0),
         startTop: Number(target.top ?? 0),
-        viewport: [...(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0])],
+        viewport,
         deltaX: 0,
         deltaY: 0,
+        topFrame: null,
       };
+      const scheduleTopRender = () => {
+        if (session.topFrame != null) return canvas;
+        session.topFrame = window.requestAnimationFrame(() => {
+          session.topFrame = null;
+          if (fabricCanvasRef.current !== canvas) return;
+          try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
+        });
+        return canvas;
+      };
+      session.suppressedRequestRenderAll = scheduleTopRender;
+      session.suppressedRenderAll = scheduleTopRender;
+      canvas.requestRenderAll = session.suppressedRequestRenderAll;
+      canvas.renderAll = session.suppressedRenderAll;
+      penTransformIsolationRef.current = session;
+      scheduleTopRender();
       return true;
     };
 
@@ -6641,12 +7020,14 @@ function BoardWorkspace({
       const deltaY = Number(viewport[1] ?? 0) * sceneX + Number(viewport[3] ?? 1) * sceneY;
       session.deltaX = deltaX;
       session.deltaY = deltaY;
-      session.overlay.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+      session.overlay.element.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+      canvas.requestRenderAll();
       return true;
     };
 
     const resize = () => {
-      finishPenTransformIsolation({ composite: true, scheduleReconcile: false });
+      finishPenTransformIsolation({ composite: true });
+      restorePenTransformRenderMethods();
       canvas.setDimensions({ width: host.clientWidth, height: host.clientHeight });
       updateBackgroundTransform();
       canvas.requestRenderAll();
@@ -6696,6 +7077,7 @@ function BoardWorkspace({
           if (serialized) serializedObjectCacheRef.current.set(object, serialized);
         });
         rebuildObjectRegistry();
+        penTransformSpatialApiRef.current?.rebuild?.();
         revisionRef.current = Number(confirmedRevision ?? 0);
         applyObjectInteractivity();
         configureBrushAndMode();
@@ -8019,8 +8401,14 @@ function BoardWorkspace({
       queueSelectionUiRefresh();
     };
 
-    const handleRegistryObjectAdded = ({ target }) => registerCanvasObject(target);
-    const handleRegistryObjectRemoved = ({ target }) => unregisterCanvasObject(target);
+    const handleRegistryObjectAdded = ({ target }) => {
+      registerCanvasObject(target);
+      penTransformSpatialApiRef.current?.addObject?.(target);
+    };
+    const handleRegistryObjectRemoved = ({ target }) => {
+      unregisterCanvasObject(target);
+      penTransformSpatialApiRef.current?.removeObject?.(target);
+    };
     canvas.on('object:added', handleRegistryObjectAdded);
     canvas.on('object:removed', handleRegistryObjectRemoved);
 
@@ -9456,7 +9844,7 @@ function BoardWorkspace({
         || eyedropperActiveRef.current
         || !canEditRef.current
         || event.button > 0) return false;
-      clearPenTransformReconcile();
+      beginPenSelectionRenderGuard();
       const session = selectionPenSessionRef.current;
       if (session.active && session.pointerId === event.pointerId) {
         suppressSelectionCompatibilityEvent(event);
@@ -9516,6 +9904,7 @@ function BoardWorkspace({
         // WebKit may already have released capture before pointerup reaches this listener.
       }
       if (!session.active && session.pointerId === event.pointerId) session.pointerId = null;
+      finishPenSelectionRenderGuard();
       return true;
     }
 
@@ -10371,9 +10760,15 @@ function BoardWorkspace({
       deferredTransformTimer = null;
       deferredTransformEntries.clear();
       deferredTransformFlushRef.current = null;
-      clearPenTransformReconcile();
-      finishPenTransformIsolation({ composite: false, scheduleReconcile: false });
+      finishPenTransformIsolation({ composite: false });
+      restorePenTransformRenderMethods();
+      restorePenSelectionRenderGuard();
       finishPenTransformIsolationRef.current = null;
+      penTransformSpatialApiRef.current = null;
+      transformSpatialIndex.cells.clear();
+      transformSpatialIndex.globals.clear();
+      transformSpatialIndex.entries.clear();
+      if (originalCanvasMoveObjectTo) canvas.moveObjectTo = originalCanvasMoveObjectTo;
       window.clearTimeout(selectionStyleRefreshTimerRef.current);
       selectionStyleRefreshTimerRef.current = null;
       if (selectionUiRefreshFrameRef.current != null) {
