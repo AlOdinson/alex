@@ -1573,6 +1573,14 @@ function BoardWorkspace({
     pointerType: null,
   });
   const deferredTransformFlushRef = useRef(null);
+  // On a busy board Fabric normally redraws every visible object for every Pencil
+  // move. During a stylus drag we freeze the static board into the lower canvas and
+  // move only a transparent raster of the selected object(s) above it. This makes the
+  // per-frame cost depend on the selection, not on the total board size.
+  const penTransformIsolationRef = useRef(null);
+  const finishPenTransformIsolationRef = useRef(null);
+  const penTransformReconcileTimerRef = useRef(null);
+  const isolatedCanvasRenderModeRef = useRef('normal');
   const selectionUiRefreshFrameRef = useRef(null);
   const selectionStyleRefreshTimerRef = useRef(null);
   const serializedObjectCacheRef = useRef(new WeakMap());
@@ -2505,6 +2513,7 @@ function BoardWorkspace({
         marquee.style.height = '0px';
       }
       pendingGroupTransformCommitRef.current = null;
+      finishPenTransformIsolationRef.current?.({ composite: true, scheduleReconcile: true });
       transformGestureRef.current.activeId = null;
       transformGestureRef.current.pointerType = null;
       modifiedBeforeRef.current = [];
@@ -6412,6 +6421,9 @@ function BoardWorkspace({
     const drawBoardBackgroundOnCanvas = (event = {}) => {
       const context = event.ctx ?? canvas.contextContainer;
       if (!context) return;
+      // A selected-only isolation render must stay transparent so it can be copied to
+      // a lightweight overlay. The normal lower canvas keeps the board/background.
+      if (isolatedCanvasRenderModeRef.current === 'selected-only') return;
       const width = canvas.getWidth();
       const height = canvas.getHeight();
       const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
@@ -6466,7 +6478,175 @@ function BoardWorkspace({
     canvas.on('before:render', drawBoardBackgroundOnCanvas);
     configureBrushAndMode();
 
+    const clearPenTransformReconcile = () => {
+      window.clearTimeout(penTransformReconcileTimerRef.current);
+      penTransformReconcileTimerRef.current = null;
+    };
+
+    const schedulePenTransformReconcile = () => {
+      clearPenTransformReconcile();
+      const reconcileWhenIdle = () => {
+        penTransformReconcileTimerRef.current = null;
+        if (fabricCanvasRef.current !== canvas || penTransformIsolationRef.current) return;
+        const interactionAge = Date.now() - Number(lastBoardInteractionAtRef.current ?? 0);
+        if (penInputRef.current.active || selectionPenSessionRef.current.active || interactionAge < 1100) {
+          penTransformReconcileTimerRef.current = window.setTimeout(reconcileWhenIdle, 700);
+          return;
+        }
+        // The lower canvas already contains the correct composited pixels. This delayed
+        // render only reconciles Fabric's backing scene after the user has really stopped,
+        // so an O(board size) render never lands between consecutive Pencil drags.
+        canvas.requestRenderAll();
+      };
+      penTransformReconcileTimerRef.current = window.setTimeout(reconcileWhenIdle, 1600);
+    };
+
+    const finishPenTransformIsolation = ({
+      composite = true,
+      scheduleReconcile = true,
+    } = {}) => {
+      const session = penTransformIsolationRef.current;
+      if (!session || session.canvas !== canvas) return false;
+      penTransformIsolationRef.current = null;
+      isolatedCanvasRenderModeRef.current = 'normal';
+
+      canvas._objects = session.originalObjects;
+      canvas.requestRenderAll = session.originalRequestRenderAll;
+      canvas.renderAll = session.originalRenderAll;
+
+      if (composite && session.overlay?.isConnected && canvas.lowerCanvasEl) {
+        const context = canvas.lowerCanvasEl.getContext('2d');
+        if (context) {
+          const ratioX = canvas.lowerCanvasEl.width / Math.max(1, canvas.getWidth());
+          const ratioY = canvas.lowerCanvasEl.height / Math.max(1, canvas.getHeight());
+          context.save();
+          context.setTransform(1, 0, 0, 1, 0, 0);
+          context.drawImage(
+            session.overlay,
+            Math.round(Number(session.deltaX ?? 0) * ratioX),
+            Math.round(Number(session.deltaY ?? 0) * ratioY),
+          );
+          context.restore();
+        }
+      }
+
+      if (session.upperCanvas) {
+        session.upperCanvas.style.opacity = session.originalUpperOpacity;
+      }
+      session.overlay?.remove?.();
+      try {
+        // Only redraw the interactive/top layer. The expensive lower scene remains the
+        // already-correct composite until a genuine idle period.
+        canvas.renderTop?.();
+      } catch {
+        // Older Fabric builds may not expose renderTop publicly.
+      }
+      if (scheduleReconcile) schedulePenTransformReconcile();
+      return true;
+    };
+    finishPenTransformIsolationRef.current = finishPenTransformIsolation;
+
+    const beginPenTransformIsolation = (target, transform, nativeEvent) => {
+      const pointerType = nativeEvent?.pointerType
+        ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
+      const action = String(transform?.action ?? '');
+      const moveAction = action === 'drag' || action === 'move' || (!transform?.corner && !action);
+      const allObjects = canvas.getObjects();
+      if (pointerType !== 'pen' || !moveAction || allObjects.length < 90 || !target) return false;
+
+      finishPenTransformIsolation({ composite: true, scheduleReconcile: false });
+      clearPenTransformReconcile();
+      canvas.cancelRequestedRender?.();
+
+      const selectedObjects = flattenTarget(target).filter((object) => allObjects.includes(object));
+      if (!selectedObjects.length) return false;
+      const selectedSet = new Set(selectedObjects);
+      const originalObjects = canvas._objects;
+      const originalRequestRenderAll = canvas.requestRenderAll;
+      const originalRenderAll = canvas.renderAll;
+      const upperCanvas = canvas.upperCanvasEl;
+      const originalUpperOpacity = upperCanvas?.style.opacity ?? '';
+      const wrapper = canvas.wrapperEl ?? host;
+      const overlay = document.createElement('canvas');
+      overlay.className = 'pen-transform-isolation-overlay';
+      overlay.width = canvas.lowerCanvasEl.width;
+      overlay.height = canvas.lowerCanvasEl.height;
+      Object.assign(overlay.style, {
+        position: 'absolute',
+        inset: '0',
+        width: `${canvas.getWidth()}px`,
+        height: `${canvas.getHeight()}px`,
+        pointerEvents: 'none',
+        zIndex: '2',
+        transform: 'translate3d(0px, 0px, 0)',
+        transformOrigin: '0 0',
+        willChange: 'transform',
+      });
+
+      try {
+        // Render only the selected members to a transparent full-size overlay. This is
+        // O(selection size), not O(board size).
+        isolatedCanvasRenderModeRef.current = 'selected-only';
+        canvas._objects = selectedObjects;
+        originalRenderAll.call(canvas);
+        overlay.getContext('2d')?.drawImage(canvas.lowerCanvasEl, 0, 0);
+
+        // Render the static board once without the moving members. It remains frozen for
+        // the whole drag, so Fabric never redraws thousands of unrelated objects per move.
+        isolatedCanvasRenderModeRef.current = 'normal';
+        canvas._objects = originalObjects.filter((object) => !selectedSet.has(object));
+        originalRenderAll.call(canvas);
+      } catch (error) {
+        console.warn('Не удалось включить изолированный перенос Pencil', error);
+        canvas._objects = originalObjects;
+        isolatedCanvasRenderModeRef.current = 'normal';
+        overlay.remove();
+        originalRequestRenderAll.call(canvas);
+        return false;
+      }
+
+      canvas._objects = originalObjects;
+      wrapper.appendChild(overlay);
+      if (upperCanvas) upperCanvas.style.opacity = '0';
+
+      // Fabric may continue calculating the target matrix and emitting moving events,
+      // but every lower-canvas render is suppressed until pointerup.
+      canvas.requestRenderAll = () => canvas;
+      canvas.renderAll = () => canvas;
+      penTransformIsolationRef.current = {
+        canvas,
+        target,
+        overlay,
+        upperCanvas,
+        originalUpperOpacity,
+        originalObjects,
+        originalRequestRenderAll,
+        originalRenderAll,
+        startLeft: Number(target.left ?? 0),
+        startTop: Number(target.top ?? 0),
+        viewport: [...(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0])],
+        deltaX: 0,
+        deltaY: 0,
+      };
+      return true;
+    };
+
+    const updatePenTransformIsolation = (target) => {
+      const session = penTransformIsolationRef.current;
+      if (!session || session.canvas !== canvas || session.target !== target) return false;
+      const sceneX = Number(target.left ?? 0) - session.startLeft;
+      const sceneY = Number(target.top ?? 0) - session.startTop;
+      const viewport = session.viewport;
+      const deltaX = Number(viewport[0] ?? 1) * sceneX + Number(viewport[2] ?? 0) * sceneY;
+      const deltaY = Number(viewport[1] ?? 0) * sceneX + Number(viewport[3] ?? 1) * sceneY;
+      session.deltaX = deltaX;
+      session.deltaY = deltaY;
+      session.overlay.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+      return true;
+    };
+
     const resize = () => {
+      finishPenTransformIsolation({ composite: true, scheduleReconcile: false });
       canvas.setDimensions({ width: host.clientWidth, height: host.clientHeight });
       updateBackgroundTransform();
       canvas.requestRenderAll();
@@ -7678,16 +7858,19 @@ function BoardWorkspace({
         modifiedBeforeRef.current = [];
         transformGestureRef.current.activeId = beginLiveTransform(transform.target);
         lastLockBroadcastRef.current = Date.now();
+        beginPenTransformIsolation(transform.target, transform, nativeEvent);
         return;
       }
       modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
       sendLocalLock(transform.target, true);
       transformGestureRef.current.activeId = beginLiveTransform(transform.target);
       lastLockBroadcastRef.current = Date.now();
+      beginPenTransformIsolation(transform.target, transform, nativeEvent);
     });
 
     const broadcastLiveTransform = ({ target }) => {
       if (!target || applyingRemoteRef.current || applyingHistoryRef.current) return;
+      updatePenTransformIsolation(target);
       sendLiveTransformThrottled(target);
       if (Date.now() - lastLockBroadcastRef.current < 1200) return;
       lastLockBroadcastRef.current = Date.now();
@@ -7700,6 +7883,7 @@ function BoardWorkspace({
 
     canvas.on('object:modified', ({ target }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !target) return;
+      finishPenTransformIsolation({ composite: true, scheduleReconcile: true });
       if (target.transientSelectionProxy) {
         endLiveTransform(target);
         target.previewReceivedAt = Date.now();
@@ -8662,6 +8846,7 @@ function BoardWorkspace({
         const pendingSessionId = liveTransformSendRef.current.sessionId;
         window.requestAnimationFrame(() => {
           if (liveTransformSendRef.current.sessionId !== pendingSessionId) return;
+          finishPenTransformIsolation({ composite: true, scheduleReconcile: true });
           endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject(), pendingSessionId);
           transformGestureRef.current.activeId = null;
           transformGestureRef.current.pointerType = null;
@@ -9271,6 +9456,7 @@ function BoardWorkspace({
         || eyedropperActiveRef.current
         || !canEditRef.current
         || event.button > 0) return false;
+      clearPenTransformReconcile();
       const session = selectionPenSessionRef.current;
       if (session.active && session.pointerId === event.pointerId) {
         suppressSelectionCompatibilityEvent(event);
@@ -9303,6 +9489,7 @@ function BoardWorkspace({
       const session = selectionPenSessionRef.current;
       if (event.pointerType !== 'pen' || !session.active || session.pointerId !== event.pointerId) return false;
       const cancelled = event.type === 'pointercancel' || event.type === 'lostpointercapture';
+      if (cancelled) finishPenTransformIsolation({ composite: true, scheduleReconcile: true });
 
       // Complete a Pencil marquee directly from the native release. Safari's mirrored
       // mouse tail is suppressed only for a very short period after this exact contact.
@@ -9953,6 +10140,7 @@ function BoardWorkspace({
       cancelCreationDraft('window-blur');
       selectionDragRef.current = null;
       hideSelectionMarquee();
+      finishPenTransformIsolation({ composite: true, scheduleReconcile: false });
       endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
       flushDeferredTransformPersistence({ force: true }).catch(() => undefined);
       if (localLockIdsRef.current.length) {
@@ -10183,6 +10371,9 @@ function BoardWorkspace({
       deferredTransformTimer = null;
       deferredTransformEntries.clear();
       deferredTransformFlushRef.current = null;
+      clearPenTransformReconcile();
+      finishPenTransformIsolation({ composite: false, scheduleReconcile: false });
+      finishPenTransformIsolationRef.current = null;
       window.clearTimeout(selectionStyleRefreshTimerRef.current);
       selectionStyleRefreshTimerRef.current = null;
       if (selectionUiRefreshFrameRef.current != null) {
