@@ -645,6 +645,14 @@ function applySharpRenderingPolicy(object, visited = new Set()) {
   children.forEach((child) => applySharpRenderingPolicy(child, visited));
   if (object.clipPath) applySharpRenderingPolicy(object.clipPath, visited);
 
+  // Stroke thickness is a style property, not geometry. Scaling a line/path/shape must
+  // change its length/width/height without multiplying the visual line thickness.
+  // Apply this to old objects as they are registered too, not only to newly-created
+  // shapes, so existing boards immediately get constant-width strokes after reload.
+  if (object.stroke != null && Number(object.strokeWidth ?? 0) > 0) {
+    object.strokeUniform = true;
+  }
+
   if (!isImageObject(object)) {
     object.objectCaching = false;
     object.noScaleCache = false;
@@ -6101,6 +6109,7 @@ function BoardWorkspace({
     const common = {
       stroke: typeof style.stroke === 'string' ? style.stroke : '#111827',
       strokeWidth: clamp(Number(style.width ?? 3), 1, 80),
+      strokeUniform: true,
       opacity: clamp(Number(style.opacity ?? 1), 0.05, 1),
       fill: null,
       strokeLineCap: 'round',
@@ -8053,7 +8062,8 @@ function BoardWorkspace({
               Math.hypot(Number(matrix[2] ?? 0), Number(matrix[3] ?? 1)),
               1,
             );
-            const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * scale / 2);
+            const strokeScale = object.strokeUniform ? 1 : scale;
+            const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * strokeScale / 2);
             if (distanceToSegment(scenePoint, first, second) <= strokeRadius + sceneTolerance) return object;
           } catch {
             // Continue with the pixel-level test below.
@@ -9150,6 +9160,7 @@ function BoardWorkspace({
         const line = new Line([point.x, point.y, point.x, point.y], {
           stroke: hexToRgba(colorRef.current, opacityRef.current),
           strokeWidth: widthRef.current,
+          strokeUniform: true,
           fill: hexToRgba(colorRef.current, opacityRef.current),
           strokeLineCap: 'round',
           selectable: false,
@@ -9948,7 +9959,15 @@ function BoardWorkspace({
         return Math.hypot(point.x - (start.x + dx * ratio), point.y - (start.y + dy * ratio));
       };
 
-      let boundsFallback = null;
+      // Hit the painted object, never the empty interior of its bounding frame.
+      // A small screen-space tolerance makes thin paths and tiny objects easy to grab
+      // with Apple Pencil without turning the whole rectangular selection box into a hit.
+      const pixelProbeOffsets = [
+        [0, 0],
+        [4, 0], [-4, 0], [0, 4], [0, -4],
+        [7, 0], [-7, 0], [0, 7], [0, -7],
+        [4, 4], [4, -4], [-4, 4], [-4, -4],
+      ];
       for (const object of nearby) {
         let bounds;
         try {
@@ -9961,7 +9980,6 @@ function BoardWorkspace({
           && scenePoint.y >= bounds.top - sceneTolerance
           && scenePoint.y <= bounds.top + bounds.height + sceneTolerance;
         if (!insideExpandedBounds) continue;
-        if (!boundsFallback) boundsFallback = object;
 
         if (object instanceof Line || object.type === 'line') {
           try {
@@ -9976,7 +9994,8 @@ function BoardWorkspace({
               Math.hypot(Number(matrix[2] ?? 0), Number(matrix[3] ?? 1)),
               1,
             );
-            const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * scale / 2);
+            const strokeScale = object.strokeUniform ? 1 : scale;
+            const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * strokeScale / 2);
             if (distanceToSegment(scenePoint, first, second) <= strokeRadius + sceneTolerance) return object;
           } catch {
             // Continue with pixel/geometric hit testing.
@@ -9984,30 +10003,26 @@ function BoardWorkspace({
         }
 
         try {
-          if (typeof canvas.isTargetTransparent === 'function'
-            && !canvas.isTargetTransparent(object, viewportPoint.x, viewportPoint.y)) {
-            return object;
-          }
-          if (typeof canvas.isTargetTransparent !== 'function'
-            && typeof object.containsPoint === 'function'
-            && object.containsPoint(scenePoint)) {
+          if (typeof canvas.isTargetTransparent === 'function') {
+            const painted = pixelProbeOffsets.some(([offsetX, offsetY]) => (
+              !canvas.isTargetTransparent(
+                object,
+                viewportPoint.x + offsetX,
+                viewportPoint.y + offsetY,
+              )
+            ));
+            if (painted) return object;
+          } else if (typeof object.containsPoint === 'function' && object.containsPoint(scenePoint)) {
+            // Compatibility fallback for custom Fabric objects in environments without
+            // pixel probing. Normal Fabric 7 objects use the painted-pixel path above.
             return object;
           }
         } catch {
-          // Thin paths still use the small bounds fallback below.
+          // Continue to the next nearby object; never fall back to its empty frame.
         }
       }
 
-      if (boundsFallback) return boundsFallback;
-
-      // Fabric remains a final compatibility fallback for controls and unusual custom
-      // objects, but it is no longer the source of truth for the first Pencil contact.
-      try {
-        const fabricTarget = canvas.findTarget?.(event) ?? null;
-        return selectableTarget(fabricTarget) ? fabricTarget : null;
-      } catch {
-        return null;
-      }
+      return null;
     }
 
     function flushDirectPenObjectDrag(session, scenePoint = null) {
@@ -10048,9 +10063,13 @@ function BoardWorkspace({
       const session = directPenObjectDragRef.current;
       if (!session || event.pointerType !== 'pen' || session.pointerId !== event.pointerId) return false;
       try {
-        const point = canvas.getScenePoint(event);
-        if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
-          session.pendingPoint = new Point(point.x, point.y);
+        const clientX = Number(event?.clientX);
+        const clientY = Number(event?.clientY);
+        if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+          const point = scenePointFromClient(clientX, clientY);
+          if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
+            session.pendingPoint = new Point(point.x, point.y);
+          }
         }
       } catch {
         // Retain the last valid point when WebKit cannot map an intermediate sample.
@@ -10066,7 +10085,10 @@ function BoardWorkspace({
       if (!target || target.canvas !== canvas || directPenObjectDragRef.current) return false;
       let startPoint;
       try {
-        startPoint = canvas.getScenePoint(event);
+        const clientX = Number(event?.clientX);
+        const clientY = Number(event?.clientY);
+        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
+        startPoint = scenePointFromClient(clientX, clientY);
       } catch {
         return false;
       }
@@ -10139,9 +10161,13 @@ function BoardWorkspace({
       const cancelled = event.type === 'pointercancel' || event.type === 'lostpointercapture';
       if (!cancelled) {
         try {
-          const point = canvas.getScenePoint(event);
-          if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
-            session.pendingPoint = new Point(point.x, point.y);
+          const clientX = Number(event?.clientX);
+          const clientY = Number(event?.clientY);
+          if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+            const point = scenePointFromClient(clientX, clientY);
+            if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
+              session.pendingPoint = new Point(point.x, point.y);
+            }
           }
         } catch {
           // Use the final pointermove sample.
