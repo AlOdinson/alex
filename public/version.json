@@ -1,9 +1,9 @@
 {
-  "version": "1.31.7",
-  "packageVersion": "1.31.7",
-  "base": "1.31.6",
-  "release": "Unified Fabric Pencil drag + atomic moving selection frame + no first-contact scale conflict",
-  "date": "2026-08-07",
-  "name": "unified-pencil-fabric-drag-atomic-selection-frame",
-  "label": "Alex Board 1.31.7"
+  "version": "1.31.2",
+  "packageVersion": "1.31.2",
+  "base": "1.31.1",
+  "release": "Live Apple Pencil transform frames without teleporting",
+  "date": "2026-08-05",
+  "name": "pencil-live-transform-animation-hotfix",
+  "label": "Alex Board 1.31.2"
 }
