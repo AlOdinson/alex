@@ -1668,6 +1668,7 @@ function BoardWorkspace({
   const finishPenTransformIsolationRef = useRef(null);
   const penTransformSpatialApiRef = useRef(null);
   const penTransformTopRefreshFrameRef = useRef(null);
+  const penTransformPendingControlsOverlayRef = useRef(null);
   const selectionUiRefreshFrameRef = useRef(null);
   const selectionStyleRefreshTimerRef = useRef(null);
   const serializedObjectCacheRef = useRef(new WeakMap());
@@ -6983,25 +6984,50 @@ function BoardWorkspace({
 
       disposeCroppedRasterLayer(session.patch);
       disposeCroppedRasterLayer(session.overlay);
-      disposeCroppedRasterLayer(session.controlsOverlay);
       updateTransformSpatialObjects(session.selectedObjects);
-      try {
-        canvas.renderTop?.();
-      } catch {
-        // Fabric may already have disposed the top context during unmount.
-      }
-      // Fabric can clear its top context once more after object:modified. Keep one
-      // cancellable top-only refresh so the frame remains visible after release without
-      // scheduling a costly lower-canvas render or accumulating work across drags.
+
+      // Keep the already-captured controls overlay alive until Fabric has completely
+      // finished the current pointerup/object:modified task. Previously it was disposed
+      // immediately while renderTop was still intentionally suppressed, leaving the
+      // large-board selection active but visually blank whenever the Pencil stopped.
       if (penTransformTopRefreshFrameRef.current != null) {
         window.cancelAnimationFrame(penTransformTopRefreshFrameRef.current);
+        penTransformTopRefreshFrameRef.current = null;
       }
+      if (penTransformPendingControlsOverlayRef.current
+        && penTransformPendingControlsOverlayRef.current !== session.controlsOverlay) {
+        disposeCroppedRasterLayer(penTransformPendingControlsOverlayRef.current);
+      }
+      penTransformPendingControlsOverlayRef.current = session.controlsOverlay;
+
       penTransformTopRefreshFrameRef.current = window.requestAnimationFrame(() => {
         penTransformTopRefreshFrameRef.current = null;
-        if (fabricCanvasRef.current !== canvas) return;
-        const active = canvas.getActiveObject();
-        try { active?.setCoords?.(); } catch { /* Ignore a disposed target. */ }
-        try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
+        // Normal render methods are restored before the next physical input event, but
+        // restore them here as well so this final controls paint is deterministic even
+        // if WebKit delays the zero-timeout used by the render guard.
+        restorePenTransformRenderMethods(session);
+
+        if (fabricCanvasRef.current === canvas) {
+          const active = canvas.getActiveObject();
+          const contextTop = canvas.contextTop;
+          try { active?.setCoords?.(); } catch { /* Ignore a disposed target. */ }
+          if (active && contextTop && typeof active._renderControls === 'function') {
+            try {
+              canvas.clearContext?.(contextTop);
+              active._renderControls(contextTop);
+              canvas.contextTopDirty = true;
+            } catch {
+              try { session.originalRenderTop?.call(canvas); } catch { /* Ignore a disposed top layer. */ }
+            }
+          } else {
+            try { session.originalRenderTop?.call(canvas); } catch { /* Ignore a disposed top layer. */ }
+          }
+        }
+
+        if (penTransformPendingControlsOverlayRef.current === session.controlsOverlay) {
+          penTransformPendingControlsOverlayRef.current = null;
+        }
+        disposeCroppedRasterLayer(session.controlsOverlay);
       });
       return true;
     };
@@ -7018,6 +7044,17 @@ function BoardWorkspace({
       restorePenTransformRenderMethods();
       finishPenTransformIsolation({ composite: true });
       restorePenTransformRenderMethods();
+      // A new physical drag must never inherit the one-frame handoff layer from the
+      // previous drag. If the user starts again before that frame is painted, release
+      // the old overlay now; the new selection capture below becomes authoritative.
+      if (penTransformTopRefreshFrameRef.current != null) {
+        window.cancelAnimationFrame(penTransformTopRefreshFrameRef.current);
+        penTransformTopRefreshFrameRef.current = null;
+      }
+      if (penTransformPendingControlsOverlayRef.current) {
+        disposeCroppedRasterLayer(penTransformPendingControlsOverlayRef.current);
+        penTransformPendingControlsOverlayRef.current = null;
+      }
       canvas.cancelRequestedRender?.();
 
       const selectedObjects = flattenTarget(target)
@@ -11054,6 +11091,10 @@ function BoardWorkspace({
       if (penTransformTopRefreshFrameRef.current != null) {
         window.cancelAnimationFrame(penTransformTopRefreshFrameRef.current);
         penTransformTopRefreshFrameRef.current = null;
+      }
+      if (penTransformPendingControlsOverlayRef.current) {
+        disposeCroppedRasterLayer(penTransformPendingControlsOverlayRef.current);
+        penTransformPendingControlsOverlayRef.current = null;
       }
       if (selectionUiRefreshFrameRef.current != null) {
         window.cancelAnimationFrame(selectionUiRefreshFrameRef.current);

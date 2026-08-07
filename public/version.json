@@ -1,9 +1,9 @@
 {
-  "version": "1.31.10",
-  "packageVersion": "1.31.10",
-  "base": "1.31.9 / 1.31.2 + strokeUniform",
-  "release": "Large-board Pencil frame compositor fix",
+  "version": "1.31.11",
+  "packageVersion": "1.31.11",
+  "base": "1.31.10 / 1.31.9 / 1.31.2 + strokeUniform",
+  "release": "Large-board Pencil frame handoff fix",
   "date": "2026-08-08",
-  "name": "large-board-pencil-frame-compositor-fix",
-  "label": "Alex Board 1.31.10"
+  "name": "large-board-pencil-frame-handoff-fix",
+  "label": "Alex Board 1.31.11"
 }
