@@ -6712,6 +6712,7 @@ function BoardWorkspace({
     let pendingPenRenderRestoreTimer = null;
     let pendingPenRenderRestoreSession = null;
     let penSelectionRenderGuard = null;
+    let selectionTargetFindRestoreState = null;
 
     const restorePenSelectionRenderGuard = () => {
       const guard = penSelectionRenderGuard;
@@ -8273,6 +8274,13 @@ function BoardWorkspace({
       const pointerType = nativeEvent?.pointerType
         ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
       transformGestureRef.current.pointerType = pointerType;
+      if (pointerType === 'pen' && manuallyPaintedPencilSelectionTarget) {
+        // 1.31.8 paints the very first Pencil frame synchronously so it is visible
+        // before the drag starts. That direct paint is not owned by Fabric's normal
+        // top-layer lifecycle, so erase it exactly when the real transform begins;
+        // otherwise it remains as a stationary duplicate at the original position.
+        clearManualPencilSelectionFrame();
+      }
       if (transform.target.transientSelectionProxy) {
         modifiedBeforeRef.current = [];
         transformGestureRef.current.activeId = beginLiveTransform(transform.target);
@@ -8310,7 +8318,7 @@ function BoardWorkspace({
 
     canvas.on('object:modified', ({ target }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !target) return;
-      finishPenTransformIsolation({ composite: true, scheduleReconcile: true });
+      const spatialIndexAlreadyUpdated = finishPenTransformIsolation({ composite: true, scheduleReconcile: true });
       if (target.transientSelectionProxy) {
         endLiveTransform(target);
         target.previewReceivedAt = Date.now();
@@ -8328,6 +8336,13 @@ function BoardWorkspace({
         if (!object.boardObjectId) object.boardObjectId = randomToken(10);
         registerCanvasObject(object);
       });
+      // Keep the lightweight spatial index correct after every transform, including
+      // small boards where the cropped Pencil compositor is intentionally not used.
+      // Without this update, the second Pencil drag looked up the object's old bounds,
+      // treated the new contact as empty space and enabled the top-only render guard,
+      // which made the object move invisibly until pointerup (the "teleport" bug).
+      // Large-board isolated drags already updated these same entries while compositing.
+      if (!spatialIndexAlreadyUpdated) updateTransformSpatialObjects(selectedObjects);
       const beforeTransforms = modifiedBeforeRef.current;
       const zIndexMap = liveTransformSendRef.current.zIndexMap;
       const gestureId = transformGestureRef.current.activeId;
@@ -8437,9 +8452,21 @@ function BoardWorkspace({
         if (fabricCanvasRef.current === canvas) refreshSelectionUi();
       });
     };
+    let manuallyPaintedPencilSelectionTarget = null;
+    const clearManualPencilSelectionFrame = () => {
+      if (!manuallyPaintedPencilSelectionTarget) return;
+      manuallyPaintedPencilSelectionTarget = null;
+      const contextTop = canvas.contextTop;
+      if (!contextTop) return;
+      try {
+        canvas.clearContext?.(contextTop);
+        canvas.contextTopDirty = false;
+      } catch { /* Ignore a disposed top layer. */ }
+    };
     const startTransactionalSelection = () => {
       // Selection UI is cosmetic. Run it after Fabric has completed the current pointer
       // event so clearing a large ActiveSelection cannot block the Pencil contact itself.
+      manuallyPaintedPencilSelectionTarget = null;
       queueSelectionUiRefresh();
     };
     const startFreshPencilSingleSelection = () => {
@@ -8461,6 +8488,10 @@ function BoardWorkspace({
           try {
             canvas.clearContext?.(contextTop);
             active._renderControls(contextTop);
+            manuallyPaintedPencilSelectionTarget = active;
+            // This frame was painted outside Fabric's normal render cycle. Mark the
+            // upper context dirty so the next regular render can always clear it.
+            canvas.contextTopDirty = true;
           } catch {
             try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
           }
@@ -8471,6 +8502,7 @@ function BoardWorkspace({
       queueSelectionUiRefresh();
     };
     const finishTransactionalSelection = () => {
+      manuallyPaintedPencilSelectionTarget = null;
       queueSelectionUiRefresh();
     };
 
@@ -9903,14 +9935,88 @@ function BoardWorkspace({
       return event?.pointerType == null || event?.pointerType === 'mouse';
     }
 
-    function armExactSelectionTargetFind() {
+    function restoreSelectionTargetFind() {
+      window.clearTimeout(selectionTargetFindResetRef.current);
+      selectionTargetFindResetRef.current = null;
+      const state = selectionTargetFindRestoreState;
+      selectionTargetFindRestoreState = null;
+      if (!state) return;
+      for (const entry of state.paddedObjects ?? []) {
+        if (!entry?.object) continue;
+        entry.object.padding = entry.padding;
+      }
+      if (fabricCanvasRef.current !== canvas) return;
+      canvas.perPixelTargetFind = state.perPixelTargetFind;
+      if (typeof canvas.setTargetFindTolerance === 'function') {
+        canvas.setTargetFindTolerance(Number(state.targetFindTolerance ?? 0));
+      } else {
+        canvas.targetFindTolerance = state.targetFindTolerance;
+      }
+    }
+
+    function armExactSelectionTargetFind({ pen = false, event = null } = {}) {
+      // Preserve Fabric's normal finger/mouse behaviour. For Pencil only, combine:
+      //   1) per-pixel hit testing, so transparent space inside a bounding frame is NOT a hit;
+      //   2) a small 9px screen-space proximity halo around nearby real objects.
+      // The temporary padding exists only until Fabric caches the pointer target and is
+      // restored in mouse:down:before, before selection/transform logic mutates anything.
+      if (!selectionTargetFindRestoreState) {
+        selectionTargetFindRestoreState = {
+          perPixelTargetFind: canvas.perPixelTargetFind,
+          targetFindTolerance: canvas.targetFindTolerance,
+          paddedObjects: [],
+        };
+      }
+      const state = selectionTargetFindRestoreState;
       window.clearTimeout(selectionTargetFindResetRef.current);
       canvas.perPixelTargetFind = true;
-      selectionTargetFindResetRef.current = window.setTimeout(() => {
-        selectionTargetFindResetRef.current = null;
-        if (fabricCanvasRef.current === canvas) canvas.perPixelTargetFind = false;
-      }, 0);
+      if (pen) {
+        const tolerance = Math.max(Number(canvas.targetFindTolerance ?? 0), 9);
+        // Fabric 7 sizes a dedicated pixel-probe canvas in setTargetFindTolerance().
+        // Assigning a larger value directly leaves that backing canvas too small.
+        if (typeof canvas.setTargetFindTolerance === 'function') canvas.setTargetFindTolerance(tolerance);
+        else canvas.targetFindTolerance = tolerance;
+
+        if (event && !(state.paddedObjects?.length)) {
+          try {
+            const point = canvas.getScenePoint(event);
+            const zoom = Math.max(canvas.getZoom?.() ?? 1, MIN_ZOOM);
+            const sceneTolerance = tolerance / zoom;
+            const nearby = queryTransformSpatialObjects({
+              left: point.x - sceneTolerance,
+              top: point.y - sceneTolerance,
+              right: point.x + sceneTolerance,
+              bottom: point.y + sceneTolerance,
+              width: sceneTolerance * 2,
+              height: sceneTolerance * 2,
+            }).filter((object) => (
+              object?.canvas === canvas
+              && object.selectable !== false
+              && object.evented !== false
+              && !object.isEraserPath
+              && !object.transientPreview
+              && !object.transientSelectionProxy
+            ));
+            state.paddedObjects = nearby.map((object) => ({ object, padding: object.padding }));
+            for (const { object } of state.paddedObjects) {
+              object.padding = Math.max(Number(object.padding ?? 0), tolerance);
+            }
+          } catch {
+            // Per-pixel target finding still prevents frame-only hits if proximity setup fails.
+          }
+        }
+      }
+      // Fallback cleanup for a browser event that never reaches Fabric's down:before.
+      selectionTargetFindResetRef.current = window.setTimeout(restoreSelectionTargetFind, 0);
     }
+
+    const restoreSelectionTargetFindBeforeFabricLogic = () => {
+      // Canvas._cacheTransformEventData() has already cached the precise target before
+      // this event fires. Restore temporary padding/tolerance now so the actual
+      // selection and control geometry stay exactly as they were before the Pencil tap.
+      restoreSelectionTargetFind();
+    };
+    canvas.on('mouse:down:before', restoreSelectionTargetFindBeforeFabricLogic);
 
     function beginSelectionPenSession(event) {
       if (event.pointerType !== 'pen'
@@ -10034,7 +10140,7 @@ function BoardWorkspace({
         && !eyedropperActiveRef.current
         && canEditRef.current
         && event.button <= 0) {
-        armExactSelectionTargetFind();
+        armExactSelectionTargetFind({ pen: event.pointerType === 'pen', event });
       }
 
       if (shouldRejectNativePenAfterTouchFallback(event)) {
@@ -10088,7 +10194,7 @@ function BoardWorkspace({
         // The lightweight function never scans the objects on the board.
         if (interruptedTouchGesture || justAfterTouchGesture || drawingToolNeedsRepair) {
           applyCanvasInputMode();
-          if (activeToolRef.current === 'select') armExactSelectionTargetFind();
+          if (activeToolRef.current === 'select') armExactSelectionTargetFind({ pen: true, event });
         }
         rememberNativeCreationPointer(event);
         return;
@@ -10863,8 +10969,8 @@ function BoardWorkspace({
       window.clearTimeout(cursorSendRef.current.timer);
       window.clearTimeout(liveTransformSendRef.current.timer);
       window.clearTimeout(liveDrawSendRef.current.timer);
-      window.clearTimeout(selectionTargetFindResetRef.current);
-      selectionTargetFindResetRef.current = null;
+      canvas.off('mouse:down:before', restoreSelectionTargetFindBeforeFabricLogic);
+      restoreSelectionTargetFind();
       window.clearTimeout(deferredTransformTimer);
       deferredTransformTimer = null;
       deferredTransformEntries.clear();

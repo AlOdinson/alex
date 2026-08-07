@@ -1,9 +1,9 @@
 {
-  "version": "1.31.8",
-  "packageVersion": "1.31.8",
-  "base": "1.31.2 + strokeUniform",
-  "release": "Immediate first Apple Pencil single-selection frame",
+  "version": "1.31.9",
+  "packageVersion": "1.31.9",
+  "base": "1.31.8 / 1.31.2 + strokeUniform",
+  "release": "Precise Pencil hit + repeat-drag state fix",
   "date": "2026-08-08",
-  "name": "first-pencil-selection-frame-timing-fix",
-  "label": "Alex Board 1.31.8"
+  "name": "pencil-hit-frame-repeat-drag-fix",
+  "label": "Alex Board 1.31.9"
 }
