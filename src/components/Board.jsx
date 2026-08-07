@@ -1641,11 +1641,11 @@ function BoardWorkspace({
   const remotePreviewApplyQueueRef = useRef(Promise.resolve());
   const remotePreviewChunksRef = useRef(new Map());
   const selectionDragRef = useRef(null);
-  // Owns only the very first Apple Pencil drag of an object that was not already
-  // selected before pointerdown. Fabric cannot reliably promote that first native
-  // Pencil contact into a transform in Safari, so this tiny bootstrap session keeps
-  // the same physical gesture alive and hands all later drags back to Fabric.
-  const directPenObjectDragRef = useRef(null);
+  // The first Pencil contact may activate a tiny object underneath the pointer. Keep
+  // Fabric controls temporarily disabled for that same pointerdown so it cannot turn
+  // the new frame's corner into an accidental scale gesture. Geometry is restored in
+  // before:transform after Fabric has already chosen the drag action.
+  const firstPenSelectionBootstrapRef = useRef(null);
   const selectionBoxRef = useRef(null);
   const selectionMarqueeElementRef = useRef(null);
   const selectionMoveFrameRef = useRef(null);
@@ -2594,9 +2594,13 @@ function BoardWorkspace({
       selectionSession.moveFramePending = false;
       selectionSession.compatibilityGuardUntil = 0;
       selectionDragRef.current = null;
-      const directDrag = directPenObjectDragRef.current;
-      directPenObjectDragRef.current = null;
-      if (directDrag?.frame != null) window.cancelAnimationFrame(directDrag.frame);
+      const bootstrap = firstPenSelectionBootstrapRef.current;
+      firstPenSelectionBootstrapRef.current = null;
+      if (bootstrap?.target) {
+        bootstrap.target.hasControls = true;
+        bootstrap.target.hasBorders = true;
+        try { bootstrap.target.setCoords?.(); } catch { /* Ignore disposed target. */ }
+      }
       if (selectionMoveFrameRef.current != null) {
         window.cancelAnimationFrame(selectionMoveFrameRef.current);
         selectionMoveFrameRef.current = null;
@@ -6810,6 +6814,138 @@ function BoardWorkspace({
       return { element, rect: safeRect, ratio };
     };
 
+    const selectionControlGeometry = (target) => {
+      if (!target || target.canvas !== canvas) return null;
+      let sceneCorners;
+      try {
+        sceneCorners = target.getCoords?.();
+      } catch {
+        return null;
+      }
+      if (!Array.isArray(sceneCorners) || sceneCorners.length < 4) return null;
+      const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
+      const screenCorners = sceneCorners.slice(0, 4).map((point) => (
+        util.transformPoint(new Point(Number(point.x), Number(point.y)), viewport)
+      ));
+      if (screenCorners.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return null;
+      const [tl, tr, br, bl] = screenCorners;
+      const midpoint = (a, b) => new Point((a.x + b.x) / 2, (a.y + b.y) / 2);
+      const center = new Point(
+        (tl.x + tr.x + br.x + bl.x) / 4,
+        (tl.y + tr.y + br.y + bl.y) / 4,
+      );
+      const mt = midpoint(tl, tr);
+      const mr = midpoint(tr, br);
+      const mb = midpoint(br, bl);
+      const ml = midpoint(bl, tl);
+      const outwardPoint = (edgePoint, offset) => {
+        let dx = edgePoint.x - center.x;
+        let dy = edgePoint.y - center.y;
+        const length = Math.hypot(dx, dy) || 1;
+        dx /= length;
+        dy /= length;
+        return new Point(edgePoint.x + dx * offset, edgePoint.y + dy * offset);
+      };
+      return {
+        corners: { tl, tr, br, bl },
+        mids: { mt, mr, mb, ml },
+        rotation: outwardPoint(mt, 40),
+        moveHandle: outwardPoint(mb, SELECTION_MOVE_HANDLE_OFFSET),
+      };
+    };
+
+    const drawSelectionControlsGeometry = (context, target, { forceControls = false } = {}) => {
+      if (!context || !target || target.canvas !== canvas) return false;
+      const geometry = selectionControlGeometry(target);
+      if (!geometry) return false;
+      const { corners, mids, rotation, moveHandle } = geometry;
+      const borderColor = String(target.borderColor || '#2563eb');
+      const cornerStroke = String(target.cornerStrokeColor || '#111827');
+      const cornerFill = String(target.cornerColor || '#ffffff');
+      const cornerSize = clamp(Number(target.cornerSize ?? 12), 8, 16);
+      const half = cornerSize / 2;
+
+      context.save();
+      context.lineWidth = Math.max(1, Number(target.borderScaleFactor ?? 1));
+      context.strokeStyle = borderColor;
+      context.fillStyle = cornerFill;
+      context.setLineDash(Array.isArray(target.borderDashArray) ? target.borderDashArray : []);
+      context.beginPath();
+      context.moveTo(corners.tl.x, corners.tl.y);
+      context.lineTo(corners.tr.x, corners.tr.y);
+      context.lineTo(corners.br.x, corners.br.y);
+      context.lineTo(corners.bl.x, corners.bl.y);
+      context.closePath();
+      context.stroke();
+      context.setLineDash([]);
+
+      const drawSquare = (point) => {
+        context.fillStyle = cornerFill;
+        context.strokeStyle = cornerStroke;
+        context.lineWidth = 1.25;
+        context.beginPath();
+        context.rect(point.x - half, point.y - half, cornerSize, cornerSize);
+        context.fill();
+        context.stroke();
+      };
+
+      if (forceControls || target.hasControls !== false) {
+        [corners.tl, corners.tr, corners.br, corners.bl, mids.mt, mids.mr, mids.mb, mids.ml]
+          .forEach(drawSquare);
+        context.strokeStyle = borderColor;
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(mids.mt.x, mids.mt.y);
+        context.lineTo(rotation.x, rotation.y);
+        context.stroke();
+        drawSquare(rotation);
+
+        if (isActiveSelectionObject(target)
+          && typeof target.getObjects === 'function'
+          && target.getObjects().filter(Boolean).length > 1) {
+          context.strokeStyle = borderColor;
+          context.lineWidth = 1;
+          context.beginPath();
+          context.moveTo(mids.mb.x, mids.mb.y);
+          context.lineTo(moveHandle.x, moveHandle.y);
+          context.stroke();
+          renderSelectionMoveHandle(context, moveHandle.x, moveHandle.y);
+        }
+      }
+      context.restore();
+      return true;
+    };
+
+    const renderSelectionControlsOnly = (target = canvas.getActiveObject(), options = {}) => {
+      const upper = canvas.upperCanvasEl;
+      const context = canvas.contextTop ?? upper?.getContext?.('2d');
+      if (!upper || !context) return false;
+      context.save();
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, upper.width, upper.height);
+      context.restore();
+      if (!target || target.canvas !== canvas) return true;
+      try { target.setCoords?.(); } catch { /* Ignore a disposed selection. */ }
+      const ratioX = upper.width / Math.max(1, canvas.getWidth());
+      const ratioY = upper.height / Math.max(1, canvas.getHeight());
+      context.save();
+      context.setTransform(ratioX, 0, 0, ratioY, 0, 0);
+      drawSelectionControlsGeometry(context, target, options);
+      context.restore();
+      return true;
+    };
+
+    const drawSelectionControlsIntoCroppedLayer = (layer, target, options = {}) => {
+      const context = layer?.element?.getContext?.('2d');
+      if (!context || !target) return false;
+      const { rect, ratio } = layer;
+      context.save();
+      context.setTransform(ratio, 0, 0, ratio, -rect.left * ratio, -rect.top * ratio);
+      const result = drawSelectionControlsGeometry(context, target, options);
+      context.restore();
+      return result;
+    };
+
     const drawBackgroundIntoCroppedLayer = (layer) => {
       const context = layer.element.getContext('2d');
       if (!context) return;
@@ -6911,6 +7047,7 @@ function BoardWorkspace({
       if (session.upperCanvas) {
         session.upperCanvas.style.zIndex = session.originalUpperZIndex;
         session.upperCanvas.style.willChange = session.originalUpperWillChange;
+        session.upperCanvas.style.opacity = session.originalUpperOpacity;
       }
 
       if (composite && canvas.lowerCanvasEl) {
@@ -6940,24 +7077,19 @@ function BoardWorkspace({
 
       disposeCroppedRasterLayer(session.patch);
       disposeCroppedRasterLayer(session.overlay);
+      disposeCroppedRasterLayer(session.controlsOverlay);
       updateTransformSpatialObjects(session.selectedObjects);
-      try {
-        canvas.renderTop?.();
-      } catch {
-        // Fabric may already have disposed the top context during unmount.
-      }
-      // Fabric can clear its top context once more after object:modified. Keep one
-      // cancellable top-only refresh so the frame remains visible after release without
-      // scheduling a costly lower-canvas render or accumulating work across drags.
+      // Controls are redrawn directly on the upper canvas. This is O(1) in total board
+      // size and avoids Fabric's full lower-canvas render while still leaving a complete,
+      // immediately interactive frame at the destination.
+      renderSelectionControlsOnly(canvas.getActiveObject() ?? session.target);
       if (penTransformTopRefreshFrameRef.current != null) {
         window.cancelAnimationFrame(penTransformTopRefreshFrameRef.current);
       }
       penTransformTopRefreshFrameRef.current = window.requestAnimationFrame(() => {
         penTransformTopRefreshFrameRef.current = null;
         if (fabricCanvasRef.current !== canvas) return;
-        const active = canvas.getActiveObject();
-        try { active?.setCoords?.(); } catch { /* Ignore a disposed target. */ }
-        try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
+        renderSelectionControlsOnly(canvas.getActiveObject());
       });
       return true;
     };
@@ -7009,21 +7141,35 @@ function BoardWorkspace({
 
       const patch = createCroppedRasterLayer(screenRect, 'pen-transform-origin-patch', 2);
       const overlay = createCroppedRasterLayer(screenRect, 'pen-transform-moving-overlay', 3);
+      // The controls need extra room for the rotation square and the group hand. Keep
+      // them in one raster layer so the entire frame moves as a single rigid visual.
+      const controlsRect = expandedRect(
+        viewportRectFromSceneRect(targetSceneBounds, viewport),
+        SELECTION_MOVE_HANDLE_OFFSET + 34,
+      );
+      const controlsOverlay = createCroppedRasterLayer(controlsRect, 'pen-transform-controls-overlay', 5);
       drawBackgroundIntoCroppedLayer(patch);
       const patchSceneRect = sceneRectFromViewportRect(screenRect, viewport);
       const underlyingObjects = queryTransformSpatialObjects(patchSceneRect, selectedSet);
       renderObjectsIntoCroppedLayer(patch, underlyingObjects);
       renderObjectsIntoCroppedLayer(overlay, [target]);
+      try { target.setCoords?.(); } catch { /* Ignore a disposed target. */ }
+      drawSelectionControlsIntoCroppedLayer(controlsOverlay, target);
 
       const wrapper = canvas.wrapperEl ?? host;
       const upperCanvas = canvas.upperCanvasEl;
       const originalUpperZIndex = upperCanvas?.style.zIndex ?? '';
       const originalUpperWillChange = upperCanvas?.style.willChange ?? '';
+      const originalUpperOpacity = upperCanvas?.style.opacity ?? '';
       wrapper.appendChild(patch.element);
       wrapper.appendChild(overlay.element);
+      wrapper.appendChild(controlsOverlay.element);
       if (upperCanvas) {
+        // Keep Fabric's real input surface in place but make its stale controls invisible.
+        // opacity does not disable pointer hit testing/capture, unlike visibility/display.
         upperCanvas.style.zIndex = '4';
         upperCanvas.style.willChange = 'transform';
+        upperCanvas.style.opacity = '0';
       }
 
       const originalRequestRenderAll = canvas.requestRenderAll;
@@ -7034,9 +7180,11 @@ function BoardWorkspace({
         selectedObjects,
         patch,
         overlay,
+        controlsOverlay,
         upperCanvas,
         originalUpperZIndex,
         originalUpperWillChange,
+        originalUpperOpacity,
         originalRequestRenderAll,
         originalRenderAll,
         startLeft: Number(target.left ?? 0),
@@ -7046,21 +7194,12 @@ function BoardWorkspace({
         deltaY: 0,
         topFrame: null,
       };
-      const scheduleTopRender = () => {
-        if (session.topFrame != null) return canvas;
-        session.topFrame = window.requestAnimationFrame(() => {
-          session.topFrame = null;
-          if (fabricCanvasRef.current !== canvas) return;
-          try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
-        });
-        return canvas;
-      };
-      session.suppressedRequestRenderAll = scheduleTopRender;
-      session.suppressedRenderAll = scheduleTopRender;
+      const suppressFullSceneRender = () => canvas;
+      session.suppressedRequestRenderAll = suppressFullSceneRender;
+      session.suppressedRenderAll = suppressFullSceneRender;
       canvas.requestRenderAll = session.suppressedRequestRenderAll;
       canvas.renderAll = session.suppressedRenderAll;
       penTransformIsolationRef.current = session;
-      scheduleTopRender();
       return true;
     };
 
@@ -7078,7 +7217,9 @@ function BoardWorkspace({
       session.deltaX = deltaX;
       session.deltaY = deltaY;
       session.overlay.element.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
-      canvas.requestRenderAll();
+      if (session.controlsOverlay?.element) {
+        session.controlsOverlay.element.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+      }
       return true;
     };
 
@@ -8291,6 +8432,20 @@ function BoardWorkspace({
 
     canvas.on('before:transform', ({ transform, e: nativeEvent }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
+      const bootstrap = firstPenSelectionBootstrapRef.current;
+      if (bootstrap?.target === transform.target
+        && (bootstrap.pointerId == null
+          || nativeEvent?.pointerId == null
+          || bootstrap.pointerId === nativeEvent.pointerId
+          || selectionPenSessionRef.current.active)) {
+        // Fabric has already selected the transform action with controls disabled, so
+        // restoring them here cannot change this gesture into scale/rotate. The frame
+        // can now travel with the object for the rest of the drag.
+        transform.target.hasControls = true;
+        transform.target.hasBorders = true;
+        transform.target.setCoords?.();
+        firstPenSelectionBootstrapRef.current = null;
+      }
       const pointerType = (nativeEvent?.pointerType === 'pen'
         || selectionPenSessionRef.current.active
         || penInputRef.current.active)
@@ -8447,6 +8602,20 @@ function BoardWorkspace({
       // Fabric's own ActiveSelection dismantling. Only the active wrapper/object needs UI.
       applyObjectInteractivityToObjects([active].filter(Boolean), { render: false });
       updateSelectionVisuals();
+      const bootstrap = firstPenSelectionBootstrapRef.current;
+      if (bootstrap?.target && active === bootstrap.target) {
+        // selection:created schedules this UI refresh on the next frame. Preserve the
+        // first-contact drag guard until Fabric has classified the transform; otherwise
+        // a tiny object's freshly visible corner control can steal the same Pencil drag.
+        active.hasControls = false;
+        active.hasBorders = true;
+        renderSelectionControlsOnly(active, { forceControls: true });
+      } else if (!active) {
+        // A Pencil transform can leave a manually drawn O(1) controls frame on contextTop.
+        // Clearing selection must remove it immediately without asking Fabric to repaint
+        // the entire lower scene.
+        renderSelectionControlsOnly(null);
+      }
       updateSelectionState();
       window.clearTimeout(selectionStyleRefreshTimerRef.current);
       selectionStyleRefreshTimerRef.current = window.setTimeout(() => {
@@ -10025,200 +10194,6 @@ function BoardWorkspace({
       return null;
     }
 
-    function flushDirectPenObjectDrag(session, scenePoint = null) {
-      if (!session || directPenObjectDragRef.current !== session || session.canvas !== canvas) return false;
-      if (scenePoint) session.pendingPoint = scenePoint;
-      const nextPoint = session.pendingPoint;
-      session.pendingPoint = null;
-      session.frame = null;
-      if (!nextPoint) return false;
-
-      const dx = Number(nextPoint.x) - session.startPoint.x;
-      const dy = Number(nextPoint.y) - session.startPoint.y;
-      session.deltaX = dx;
-      session.deltaY = dy;
-      session.moved = session.moved || Math.hypot(dx, dy) >= 0.75;
-      session.target.set({
-        left: session.startLeft + dx,
-        top: session.startTop + dy,
-      });
-      session.target.setCoords?.();
-      lastPointerSceneRef.current = nextPoint;
-
-      if (!updatePenTransformIsolation(session.target)) {
-        // This is only a safety fallback. The direct Pencil route normally forces the
-        // cropped compositor even on a small board, so pointermove never repaints the
-        // complete scene.
-        canvas.requestRenderAll();
-      }
-      sendLiveTransformThrottled(session.target);
-      if (Date.now() - lastLockBroadcastRef.current >= 1200) {
-        lastLockBroadcastRef.current = Date.now();
-        sendLocalLock(session.target, true);
-      }
-      return true;
-    }
-
-    function scheduleDirectPenObjectDrag(event) {
-      const session = directPenObjectDragRef.current;
-      if (!session || event.pointerType !== 'pen' || session.pointerId !== event.pointerId) return false;
-      try {
-        const clientX = Number(event?.clientX);
-        const clientY = Number(event?.clientY);
-        if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
-          const point = scenePointFromClient(clientX, clientY);
-          if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
-            session.pendingPoint = new Point(point.x, point.y);
-          }
-        }
-      } catch {
-        // Retain the last valid point when WebKit cannot map an intermediate sample.
-      }
-      if (session.frame == null) {
-        session.frame = window.requestAnimationFrame(() => flushDirectPenObjectDrag(session));
-      }
-      suppressSelectionCompatibilityEvent(event);
-      return true;
-    }
-
-    function startDirectPenObjectDrag(event, target) {
-      if (!target || target.canvas !== canvas || directPenObjectDragRef.current) return false;
-      let startPoint;
-      try {
-        const clientX = Number(event?.clientX);
-        const clientY = Number(event?.clientY);
-        if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return false;
-        startPoint = scenePointFromClient(clientX, clientY);
-      } catch {
-        return false;
-      }
-      if (!Number.isFinite(startPoint?.x) || !Number.isFinite(startPoint?.y)) return false;
-
-      try {
-        canvas.setActiveObject(target);
-        restoreSelectionMemberControl(target);
-        target.set({ hasControls: true, hasBorders: true });
-        target.setCoords?.();
-        updateSelectionVisuals();
-        canvas.cancelRequestedRender?.();
-        canvas.renderTop?.();
-      } catch {
-        return false;
-      }
-
-      let beforeTransforms = [];
-      try {
-        beforeTransforms = transformFramesForObjects([target], canvas);
-      } catch {
-        beforeTransforms = [];
-      }
-      sendLocalLock(target, true);
-      const liveSessionId = beginLiveTransform(target);
-      transformGestureRef.current.activeId = liveSessionId;
-      transformGestureRef.current.pointerType = 'pen';
-      lastLockBroadcastRef.current = Date.now();
-
-      const session = {
-        canvas,
-        pointerId: event.pointerId,
-        target,
-        startPoint: new Point(startPoint.x, startPoint.y),
-        startLeft: Number(target.left ?? 0),
-        startTop: Number(target.top ?? 0),
-        pendingPoint: null,
-        frame: null,
-        deltaX: 0,
-        deltaY: 0,
-        moved: false,
-        beforeTransforms,
-        liveSessionId,
-      };
-      directPenObjectDragRef.current = session;
-
-      // Unlike a preselected object, an object selected by this very pointerdown has no
-      // Fabric transform yet. Force the same lightweight compositor immediately and own
-      // this one physical gesture in capture phase. Every later drag uses Fabric normally.
-      beginPenTransformIsolation(target, {
-        target,
-        action: 'drag',
-        corner: null,
-        forceIsolation: true,
-      }, event);
-      queueSelectionUiRefresh();
-      suppressSelectionCompatibilityEvent(event);
-      return true;
-    }
-
-    function finishDirectPenObjectDrag(event) {
-      const session = directPenObjectDragRef.current;
-      if (!session || event.pointerType !== 'pen' || session.pointerId !== event.pointerId) return false;
-      directPenObjectDragRef.current = null;
-      if (session.frame != null) {
-        window.cancelAnimationFrame(session.frame);
-        session.frame = null;
-      }
-
-      const cancelled = event.type === 'pointercancel' || event.type === 'lostpointercapture';
-      if (!cancelled) {
-        try {
-          const clientX = Number(event?.clientX);
-          const clientY = Number(event?.clientY);
-          if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
-            const point = scenePointFromClient(clientX, clientY);
-            if (Number.isFinite(point?.x) && Number.isFinite(point?.y)) {
-              session.pendingPoint = new Point(point.x, point.y);
-            }
-          }
-        } catch {
-          // Use the final pointermove sample.
-        }
-        // Re-attach temporarily so the shared flush helper can apply the final sample.
-        directPenObjectDragRef.current = session;
-        flushDirectPenObjectDrag(session);
-        directPenObjectDragRef.current = null;
-      } else {
-        session.target.set({ left: session.startLeft, top: session.startTop });
-        session.target.setCoords?.();
-        directPenObjectDragRef.current = session;
-        updatePenTransformIsolation(session.target);
-        directPenObjectDragRef.current = null;
-      }
-
-      finishPenTransformIsolation({ composite: true });
-      endLiveTransform(session.target, session.liveSessionId);
-      sendLocalLock(session.target, false);
-      transformGestureRef.current.activeId = null;
-      transformGestureRef.current.pointerType = null;
-
-      if (!cancelled && session.moved) {
-        try {
-          const afterTransforms = transformFramesForObjects([session.target], canvas);
-          const recordInputs = captureTransformRecordInputs([session.target]);
-          if (session.beforeTransforms.length && afterTransforms.length) {
-            recordAction({
-              type: 'transform',
-              before: session.beforeTransforms,
-              after: afterTransforms,
-            });
-          }
-          queueDeferredTransformPersistence(recordInputs);
-        } catch (error) {
-          console.error('Не удалось завершить прямой перенос Apple Pencil', error);
-        }
-      }
-
-      try {
-        session.target.setCoords?.();
-        canvas.cancelRequestedRender?.();
-        canvas.renderTop?.();
-      } catch {
-        // The board may already be unmounting.
-      }
-      queueSelectionUiRefresh();
-      suppressSelectionCompatibilityEvent(event);
-      return true;
-    }
-
     function beginSelectionPenSession(event) {
       if (event.pointerType !== 'pen'
         || activeToolRef.current !== 'select'
@@ -10270,19 +10245,42 @@ function BoardWorkspace({
         && (activeBeforeContact === directTarget || activeMembersBeforeContact.has(directTarget)),
       );
 
-      // Start our native first-contact route whenever the object under Pencil was not
-      // already the active object/member. The former `if (!activeBeforeContact)` check
-      // failed when Fabric retained a stale/invisible active object, so the first drag
-      // used the top-only selection guard and teleported locally while students saw the
-      // realtime preview normally.
-      if (directTarget && !targetWasAlreadyActive
-        && startDirectPenObjectDrag(event, directTarget)) {
+      // A first Pencil contact only bootstraps selection. Do NOT run a second custom
+      // drag engine here. The same physical pointerdown is intentionally allowed to
+      // continue into Fabric, exactly like the already-working finger path. Fabric then
+      // owns geometry, controls, transform origin and pointerup from beginning to end.
+      // The cropped compositor remains a rendering optimization started by before:transform.
+      if (directTarget && !targetWasAlreadyActive) {
+        try {
+          canvas.setActiveObject(directTarget);
+          restoreSelectionMemberControl(directTarget);
+          // Show the complete frame immediately, but keep Fabric's control hit zones
+          // disabled until this exact pointerdown has been classified as a body drag.
+          // Without this guard a tiny object can be selected under the Pencil and the
+          // very same contact then lands on the newly-created corner control, shrinking
+          // the object on release.
+          directTarget.set({ hasControls: false, hasBorders: true });
+          directTarget.setCoords?.();
+          firstPenSelectionBootstrapRef.current = {
+            pointerId: event.pointerId,
+            target: directTarget,
+          };
+          updateSelectionVisuals();
+          // updateSelectionVisuals restores normal control flags for a single active
+          // object, so disable them once more for Fabric hit-testing and draw our visual
+          // frame independently on the upper layer.
+          directTarget.hasControls = false;
+          renderSelectionControlsOnly(directTarget, { forceControls: true });
+          queueSelectionUiRefresh();
+        } catch (error) {
+          console.warn('Не удалось сразу выделить объект Apple Pencil', error);
+        }
         restorePenSelectionRenderGuard();
-        return true;
       }
 
-      // Preselected objects and groups already work correctly through Fabric. Only an
-      // empty contact uses the top-only selection guard for marquee creation/dismissal.
+      // Preselected objects, groups and the freshly bootstrapped single object all use
+      // Fabric's one transform path. Only a genuinely empty contact gets the lightweight
+      // marquee render guard.
       const mayStartObjectTransform = Boolean(canvas.getActiveObject());
       if (mayStartObjectTransform) restorePenSelectionRenderGuard();
       else beginPenSelectionRenderGuard();
@@ -10294,6 +10292,16 @@ function BoardWorkspace({
       if (event.pointerType !== 'pen' || !session.active || session.pointerId !== event.pointerId) return false;
       const cancelled = event.type === 'pointercancel' || event.type === 'lostpointercapture';
       if (cancelled) finishPenTransformIsolation({ composite: true, scheduleReconcile: true });
+
+      const bootstrap = firstPenSelectionBootstrapRef.current;
+      if (bootstrap
+        && (bootstrap.pointerId == null || bootstrap.pointerId === event.pointerId)) {
+        bootstrap.target.hasControls = true;
+        bootstrap.target.hasBorders = true;
+        bootstrap.target.setCoords?.();
+        firstPenSelectionBootstrapRef.current = null;
+        renderSelectionControlsOnly(canvas.getActiveObject() ?? bootstrap.target);
+      }
 
       // Complete a Pencil marquee directly from the native release. Safari's mirrored
       // mouse tail is suppressed only for a very short period after this exact contact.
@@ -10434,9 +10442,6 @@ function BoardWorkspace({
         consumeEyedropperPointerEvent(event);
         return;
       }
-      // The first drag of a previously unselected object is owned in native capture
-      // phase. Do not let Fabric's compatibility mouse route also process these samples.
-      if (scheduleDirectPenObjectDrag(event)) return;
       if (activeToolRef.current === 'select'
         && Number(event.buttons ?? 0) > 0
         && shouldSuppressSelectionCompatibilityEvent(event)) {
@@ -10481,22 +10486,6 @@ function BoardWorkspace({
 
     function handlePalmPointerEnd(event) {
       if (finishEyedropperPenContact(event)) return;
-      if (finishDirectPenObjectDrag(event)) {
-        finishSelectionPenSession(event);
-        clearPendingNativeCreationPointer(event);
-        if (penInputRef.current.pointerId === event.pointerId) {
-          const now = Date.now();
-          penInputRef.current.active = false;
-          penInputRef.current.pointerId = null;
-          penInputRef.current.lastSeenAt = now;
-          penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
-          penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
-          penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
-        }
-        lastBoardInteractionAtRef.current = Date.now();
-        if (snapshotCompactionNeededRef.current) schedulePersistence();
-        return;
-      }
       if (activeToolRef.current === 'select'
         && shouldSuppressSelectionCompatibilityEvent(event)) {
         suppressSelectionCompatibilityEvent(event);
@@ -11195,9 +11184,6 @@ function BoardWorkspace({
       deferredTransformTimer = null;
       deferredTransformEntries.clear();
       deferredTransformFlushRef.current = null;
-      const directDrag = directPenObjectDragRef.current;
-      directPenObjectDragRef.current = null;
-      if (directDrag?.frame != null) window.cancelAnimationFrame(directDrag.frame);
       finishPenTransformIsolation({ composite: false });
       restorePenTransformRenderMethods();
       restorePenSelectionRenderGuard();

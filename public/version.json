@@ -1,9 +1,9 @@
 {
-  "version": "1.31.6",
-  "packageVersion": "1.31.6",
-  "base": "1.31.5",
-  "release": "Single Pencil first-contact selection + painted-object hit testing + uniform strokes",
+  "version": "1.31.7",
+  "packageVersion": "1.31.7",
+  "base": "1.31.6",
+  "release": "Unified Fabric Pencil drag + atomic moving selection frame + no first-contact scale conflict",
   "date": "2026-08-07",
-  "name": "single-pencil-first-contact-painted-hit-uniform-stroke",
-  "label": "Alex Board 1.31.6"
+  "name": "unified-pencil-fabric-drag-atomic-selection-frame",
+  "label": "Alex Board 1.31.7"
 }
