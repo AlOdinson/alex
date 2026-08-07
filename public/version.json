@@ -1,9 +1,9 @@
 {
-  "version": "1.31.9",
-  "packageVersion": "1.31.9",
-  "base": "1.31.8 / 1.31.2 + strokeUniform",
-  "release": "Precise Pencil hit + repeat-drag state fix",
+  "version": "1.31.10",
+  "packageVersion": "1.31.10",
+  "base": "1.31.9 / 1.31.2 + strokeUniform",
+  "release": "Large-board Pencil frame compositor fix",
   "date": "2026-08-08",
-  "name": "pencil-hit-frame-repeat-drag-fix",
-  "label": "Alex Board 1.31.9"
+  "name": "large-board-pencil-frame-compositor-fix",
+  "label": "Alex Board 1.31.10"
 }

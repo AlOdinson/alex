@@ -77,6 +77,7 @@ const LOCAL_LOCK_REFRESH_INTERVAL = 2_500;
 const IMAGE_RETRY_INTERVAL = 5_000;
 const SNAPSHOT_COMPACTION_IDLE_MS = 30_000;
 const PEN_TRANSFORM_PATCH_PADDING = 18;
+const PEN_TRANSFORM_CONTROLS_PADDING = 92;
 const PEN_TRANSFORM_SPATIAL_CELL_SIZE = 256;
 const PEN_TRANSFORM_SPATIAL_GLOBAL_CELL_LIMIT = 96;
 const PENCIL_TOUCH_GRACE_MS = 240;
@@ -6766,6 +6767,9 @@ function BoardWorkspace({
       if (canvas.renderAll === session.suppressedRenderAll) {
         canvas.renderAll = session.originalRenderAll;
       }
+      if (canvas.renderTop === session.suppressedRenderTop) {
+        canvas.renderTop = session.originalRenderTop;
+      }
       if (pendingPenRenderRestoreSession === session) pendingPenRenderRestoreSession = null;
     };
 
@@ -6879,6 +6883,53 @@ function BoardWorkspace({
       context.restore();
     };
 
+    const captureSelectionControlsIntoCroppedLayer = (layer, target) => {
+      const upperCanvas = canvas.upperCanvasEl;
+      const contextTop = canvas.contextTop;
+      if (!layer?.element || !upperCanvas || !contextTop || !target) return false;
+
+      // Repaint only the active selection controls into Fabric's transparent top canvas.
+      // This is O(1) with respect to board size and guarantees that a fresh single
+      // selection, an ActiveSelection border, the rotation square and our hand control
+      // are captured as one visual unit before the large-board compositor takes over.
+      try {
+        canvas.clearContext?.(contextTop);
+        target.setCoords?.();
+        if (typeof target._renderControls === 'function') target._renderControls(contextTop);
+        canvas.contextTopDirty = true;
+      } catch {
+        return false;
+      }
+
+      const context = layer.element.getContext('2d');
+      if (!context) return false;
+      const rect = layer.rect;
+      const sourceRatioX = upperCanvas.width / Math.max(1, canvas.getWidth());
+      const sourceRatioY = upperCanvas.height / Math.max(1, canvas.getHeight());
+      const desiredSx = rect.left * sourceRatioX;
+      const desiredSy = rect.top * sourceRatioY;
+      const desiredEx = rect.right * sourceRatioX;
+      const desiredEy = rect.bottom * sourceRatioY;
+      const sx = Math.max(0, Math.floor(desiredSx));
+      const sy = Math.max(0, Math.floor(desiredSy));
+      const ex = Math.min(upperCanvas.width, Math.ceil(desiredEx));
+      const ey = Math.min(upperCanvas.height, Math.ceil(desiredEy));
+      const sw = ex - sx;
+      const sh = ey - sy;
+      if (sw <= 0 || sh <= 0) return false;
+
+      const dx = Math.max(0, Math.round((sx / sourceRatioX - rect.left) * layer.ratio));
+      const dy = Math.max(0, Math.round((sy / sourceRatioY - rect.top) * layer.ratio));
+      const dw = Math.max(1, Math.round((sw / sourceRatioX) * layer.ratio));
+      const dh = Math.max(1, Math.round((sh / sourceRatioY) * layer.ratio));
+      context.save();
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, layer.element.width, layer.element.height);
+      context.drawImage(upperCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
+      context.restore();
+      return true;
+    };
+
     const disposeCroppedRasterLayer = (layer) => {
       if (!layer?.element) return;
       layer.element.remove();
@@ -6932,6 +6983,7 @@ function BoardWorkspace({
 
       disposeCroppedRasterLayer(session.patch);
       disposeCroppedRasterLayer(session.overlay);
+      disposeCroppedRasterLayer(session.controlsOverlay);
       updateTransformSpatialObjects(session.selectedObjects);
       try {
         canvas.renderTop?.();
@@ -6982,19 +7034,20 @@ function BoardWorkspace({
         return false;
       }
       const viewport = [...(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0])];
-      const screenRect = expandedRect(
-        viewportRectFromSceneRect(targetSceneBounds, viewport),
-        PEN_TRANSFORM_PATCH_PADDING,
-      );
+      const targetScreenRect = viewportRectFromSceneRect(targetSceneBounds, viewport);
+      const screenRect = expandedRect(targetScreenRect, PEN_TRANSFORM_PATCH_PADDING);
+      const controlsRect = expandedRect(targetScreenRect, PEN_TRANSFORM_CONTROLS_PADDING);
       if (screenRect.width < 1 || screenRect.height < 1) return false;
 
       const patch = createCroppedRasterLayer(screenRect, 'pen-transform-origin-patch', 2);
       const overlay = createCroppedRasterLayer(screenRect, 'pen-transform-moving-overlay', 3);
+      const controlsOverlay = createCroppedRasterLayer(controlsRect, 'pen-transform-controls-overlay', 4);
       drawBackgroundIntoCroppedLayer(patch);
       const patchSceneRect = sceneRectFromViewportRect(screenRect, viewport);
       const underlyingObjects = queryTransformSpatialObjects(patchSceneRect, selectedSet);
       renderObjectsIntoCroppedLayer(patch, underlyingObjects);
       renderObjectsIntoCroppedLayer(overlay, [target]);
+      captureSelectionControlsIntoCroppedLayer(controlsOverlay, target);
 
       const wrapper = canvas.wrapperEl ?? host;
       const upperCanvas = canvas.upperCanvasEl;
@@ -7002,24 +7055,36 @@ function BoardWorkspace({
       const originalUpperWillChange = upperCanvas?.style.willChange ?? '';
       wrapper.appendChild(patch.element);
       wrapper.appendChild(overlay.element);
+      wrapper.appendChild(controlsOverlay.element);
+
+      // The moving frame now lives in controlsOverlay. Clear the real Fabric top layer
+      // for the duration of the large-board drag so no stationary second frame, hand or
+      // rotation square can remain at the origin.
+      try {
+        canvas.clearContext?.(canvas.contextTop);
+        canvas.contextTopDirty = false;
+      } catch { /* Ignore a disposed top layer. */ }
       if (upperCanvas) {
-        upperCanvas.style.zIndex = '4';
-        upperCanvas.style.willChange = 'transform';
+        upperCanvas.style.zIndex = '5';
+        upperCanvas.style.willChange = 'auto';
       }
 
       const originalRequestRenderAll = canvas.requestRenderAll;
       const originalRenderAll = canvas.renderAll;
+      const originalRenderTop = canvas.renderTop;
       const session = {
         canvas,
         target,
         selectedObjects,
         patch,
         overlay,
+        controlsOverlay,
         upperCanvas,
         originalUpperZIndex,
         originalUpperWillChange,
         originalRequestRenderAll,
         originalRenderAll,
+        originalRenderTop,
         startLeft: Number(target.left ?? 0),
         startTop: Number(target.top ?? 0),
         viewport,
@@ -7027,21 +7092,14 @@ function BoardWorkspace({
         deltaY: 0,
         topFrame: null,
       };
-      const scheduleTopRender = () => {
-        if (session.topFrame != null) return canvas;
-        session.topFrame = window.requestAnimationFrame(() => {
-          session.topFrame = null;
-          if (fabricCanvasRef.current !== canvas) return;
-          try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
-        });
-        return canvas;
-      };
-      session.suppressedRequestRenderAll = scheduleTopRender;
-      session.suppressedRenderAll = scheduleTopRender;
+      const suppressFabricRenderDuringIsolatedMove = () => canvas;
+      session.suppressedRequestRenderAll = suppressFabricRenderDuringIsolatedMove;
+      session.suppressedRenderAll = suppressFabricRenderDuringIsolatedMove;
+      session.suppressedRenderTop = suppressFabricRenderDuringIsolatedMove;
       canvas.requestRenderAll = session.suppressedRequestRenderAll;
       canvas.renderAll = session.suppressedRenderAll;
+      canvas.renderTop = session.suppressedRenderTop;
       penTransformIsolationRef.current = session;
-      scheduleTopRender();
       return true;
     };
 
@@ -7059,7 +7117,9 @@ function BoardWorkspace({
       session.deltaX = deltaX;
       session.deltaY = deltaY;
       session.overlay.element.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
-      canvas.requestRenderAll();
+      if (session.controlsOverlay?.element) {
+        session.controlsOverlay.element.style.transform = `translate3d(${deltaX}px, ${deltaY}px, 0)`;
+      }
       return true;
     };
 
@@ -8274,25 +8334,26 @@ function BoardWorkspace({
       const pointerType = nativeEvent?.pointerType
         ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
       transformGestureRef.current.pointerType = pointerType;
-      if (pointerType === 'pen' && manuallyPaintedPencilSelectionTarget) {
-        // 1.31.8 paints the very first Pencil frame synchronously so it is visible
-        // before the drag starts. That direct paint is not owned by Fabric's normal
-        // top-layer lifecycle, so erase it exactly when the real transform begins;
-        // otherwise it remains as a stationary duplicate at the original position.
-        clearManualPencilSelectionFrame();
-      }
       if (transform.target.transientSelectionProxy) {
         modifiedBeforeRef.current = [];
         transformGestureRef.current.activeId = beginLiveTransform(transform.target);
         lastLockBroadcastRef.current = Date.now();
-        beginPenTransformIsolation(transform.target, transform, nativeEvent);
+        const isolated = beginPenTransformIsolation(transform.target, transform, nativeEvent);
+        if (pointerType === 'pen' && manuallyPaintedPencilSelectionTarget) {
+          if (isolated) manuallyPaintedPencilSelectionTarget = null;
+          else clearManualPencilSelectionFrame();
+        }
         return;
       }
       modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
       sendLocalLock(transform.target, true);
       transformGestureRef.current.activeId = beginLiveTransform(transform.target);
       lastLockBroadcastRef.current = Date.now();
-      beginPenTransformIsolation(transform.target, transform, nativeEvent);
+      const isolated = beginPenTransformIsolation(transform.target, transform, nativeEvent);
+      if (pointerType === 'pen' && manuallyPaintedPencilSelectionTarget) {
+        if (isolated) manuallyPaintedPencilSelectionTarget = null;
+        else clearManualPencilSelectionFrame();
+      }
     });
 
     const broadcastLiveTransform = ({ target, e: nativeEvent, transform }) => {
