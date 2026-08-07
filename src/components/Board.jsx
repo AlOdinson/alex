@@ -8442,6 +8442,34 @@ function BoardWorkspace({
       // event so clearing a large ActiveSelection cannot block the Pencil contact itself.
       queueSelectionUiRefresh();
     };
+    const startFreshPencilSingleSelection = () => {
+      // A fresh single-object Pencil selection is created during the same native
+      // pointerdown that can immediately become a drag. On busy boards the Pencil
+      // transform compositor cancels Fabric's pending full render in before:transform,
+      // so the first selection frame could be postponed until pointerup. Draw only the
+      // controls on the top canvas synchronously before that cancellation can happen.
+      // Touch, mouse, selection:updated and group paths stay exactly on 1.31.2.
+      const active = canvas.getActiveObject();
+      if (selectionPenSessionRef.current.active
+        && active
+        && !isActiveSelectionObject(active)) {
+        active.hasControls = canEditRef.current;
+        active.hasBorders = canEditRef.current;
+        try { active.setCoords?.(); } catch { /* Ignore a disposed target. */ }
+        const contextTop = canvas.contextTop;
+        if (contextTop && typeof active._renderControls === 'function') {
+          try {
+            canvas.clearContext?.(contextTop);
+            active._renderControls(contextTop);
+          } catch {
+            try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
+          }
+        } else {
+          try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
+        }
+      }
+      queueSelectionUiRefresh();
+    };
     const finishTransactionalSelection = () => {
       queueSelectionUiRefresh();
     };
@@ -8457,7 +8485,7 @@ function BoardWorkspace({
     canvas.on('object:added', handleRegistryObjectAdded);
     canvas.on('object:removed', handleRegistryObjectRemoved);
 
-    canvas.on('selection:created', startTransactionalSelection);
+    canvas.on('selection:created', startFreshPencilSingleSelection);
     canvas.on('selection:updated', startTransactionalSelection);
     canvas.on('selection:cleared', finishTransactionalSelection);
 

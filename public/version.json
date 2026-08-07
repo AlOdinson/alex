@@ -1,9 +1,9 @@
 {
-  "version": "1.31.2",
-  "packageVersion": "1.31.2",
-  "base": "1.31.1",
-  "release": "Live Apple Pencil transform frames without teleporting",
-  "date": "2026-08-05",
-  "name": "pencil-live-transform-animation-hotfix",
-  "label": "Alex Board 1.31.2"
+  "version": "1.31.8",
+  "packageVersion": "1.31.8",
+  "base": "1.31.2 + strokeUniform",
+  "release": "Immediate first Apple Pencil single-selection frame",
+  "date": "2026-08-08",
+  "name": "first-pencil-selection-frame-timing-fix",
+  "label": "Alex Board 1.31.8"
 }
