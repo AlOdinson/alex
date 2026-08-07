@@ -6807,6 +6807,52 @@ function BoardWorkspace({
       return { element, rect: safeRect, ratio };
     };
 
+    const hardClearPenTransformTop = () => {
+      const contextTop = canvas.contextTop;
+      const upperCanvas = canvas.upperCanvasEl;
+      if (!contextTop || !upperCanvas) return;
+      // Fabric's helper normally clears contextTop correctly, but the large-board
+      // compositor deliberately interrupts the normal render lifecycle. Safari can
+      // therefore leave pixels from offset controls (rotation / hand) in the backing
+      // store even after the border itself has been refreshed. Clear the physical
+      // backing canvas with an identity transform so no old control pixel survives.
+      contextTop.save();
+      try {
+        contextTop.setTransform(1, 0, 0, 1, 0, 0);
+        contextTop.clearRect(0, 0, upperCanvas.width, upperCanvas.height);
+      } finally {
+        contextTop.restore();
+      }
+      canvas.contextTopDirty = false;
+    };
+
+    const refreshPenTransformControlCoords = (target) => {
+      if (!target) return;
+      if (isActiveSelectionObject(target)) installSelectionMoveHandle(target);
+      try { target.setCoords?.(); } catch { /* Ignore a disposed target. */ }
+      // Fabric 7 can keep oCoords for controls with offsetX/offsetY one transform behind
+      // on ActiveSelection. The border then lands at the new position while the rotation
+      // square / custom hand are painted at the previous center. Recalculate oCoords
+      // explicitly only for this large-board visual path.
+      if (typeof target.calcOCoords === 'function') {
+        try { target.oCoords = target.calcOCoords(); } catch { /* Keep Fabric's coords. */ }
+      }
+    };
+
+    const disposeOrphanPenTransformLayers = (wrapper, keepElements = new Set()) => {
+      if (!wrapper?.querySelectorAll) return;
+      wrapper.querySelectorAll(
+        'canvas.pen-transform-origin-patch, canvas.pen-transform-moving-overlay, canvas.pen-transform-controls-overlay',
+      ).forEach((element) => {
+        if (keepElements.has(element)) return;
+        element.remove();
+        // Release the backing store as well; this also guarantees a detached stale
+        // controls overlay cannot remain as a Safari composited texture.
+        element.width = 1;
+        element.height = 1;
+      });
+    };
+
     const drawBackgroundIntoCroppedLayer = (layer) => {
       const context = layer.element.getContext('2d');
       if (!context) return;
@@ -6894,8 +6940,8 @@ function BoardWorkspace({
       // selection, an ActiveSelection border, the rotation square and our hand control
       // are captured as one visual unit before the large-board compositor takes over.
       try {
-        canvas.clearContext?.(contextTop);
-        target.setCoords?.();
+        hardClearPenTransformTop();
+        refreshPenTransformControlCoords(target);
         if (typeof target._renderControls === 'function') target._renderControls(contextTop);
         canvas.contextTopDirty = true;
       } catch {
@@ -6949,7 +6995,7 @@ function BoardWorkspace({
       // The lower scene is composited from cropped layers, but the Fabric selection
       // frame lives on the upper canvas. Recalculate it before the final top render so
       // every control stays together at the destination instead of being left behind.
-      try { session.target?.setCoords?.(); } catch { /* Ignore a disposed target. */ }
+      refreshPenTransformControlCoords(session.target);
       schedulePenTransformRenderRestore(session);
 
       if (session.upperCanvas) {
@@ -7010,16 +7056,18 @@ function BoardWorkspace({
         if (fabricCanvasRef.current === canvas) {
           const active = canvas.getActiveObject();
           const contextTop = canvas.contextTop;
-          try { active?.setCoords?.(); } catch { /* Ignore a disposed target. */ }
           if (active && contextTop && typeof active._renderControls === 'function') {
             try {
-              canvas.clearContext?.(contextTop);
+              hardClearPenTransformTop();
+              refreshPenTransformControlCoords(active);
               active._renderControls(contextTop);
               canvas.contextTopDirty = true;
             } catch {
+              hardClearPenTransformTop();
               try { session.originalRenderTop?.call(canvas); } catch { /* Ignore a disposed top layer. */ }
             }
           } else {
+            hardClearPenTransformTop();
             try { session.originalRenderTop?.call(canvas); } catch { /* Ignore a disposed top layer. */ }
           }
         }
@@ -7028,6 +7076,7 @@ function BoardWorkspace({
           penTransformPendingControlsOverlayRef.current = null;
         }
         disposeCroppedRasterLayer(session.controlsOverlay);
+        disposeOrphanPenTransformLayers(canvas.wrapperEl ?? host);
       });
       return true;
     };
@@ -7087,6 +7136,10 @@ function BoardWorkspace({
       captureSelectionControlsIntoCroppedLayer(controlsOverlay, target);
 
       const wrapper = canvas.wrapperEl ?? host;
+      // There must be exactly one set of temporary compositor canvases per physical
+      // Pencil drag. Remove any detached/orphan layer that escaped a previous Safari
+      // frame before the new authoritative layers are attached.
+      disposeOrphanPenTransformLayers(wrapper);
       const upperCanvas = canvas.upperCanvasEl;
       const originalUpperZIndex = upperCanvas?.style.zIndex ?? '';
       const originalUpperWillChange = upperCanvas?.style.willChange ?? '';
@@ -7098,8 +7151,7 @@ function BoardWorkspace({
       // for the duration of the large-board drag so no stationary second frame, hand or
       // rotation square can remain at the origin.
       try {
-        canvas.clearContext?.(canvas.contextTop);
-        canvas.contextTopDirty = false;
+        hardClearPenTransformTop();
       } catch { /* Ignore a disposed top layer. */ }
       if (upperCanvas) {
         upperCanvas.style.zIndex = '5';
@@ -7145,7 +7197,7 @@ function BoardWorkspace({
       if (!session || session.canvas !== canvas || session.target !== target) return false;
       // oCoords are otherwise stale until Fabric finishes the transform. renderTop()
       // would then leave the outer frame's rotation square and hand at the old position.
-      try { target.setCoords?.(); } catch { /* Ignore a disposed target. */ }
+      refreshPenTransformControlCoords(target);
       const sceneX = Number(target.left ?? 0) - session.startLeft;
       const sceneY = Number(target.top ?? 0) - session.startTop;
       const viewport = session.viewport;
