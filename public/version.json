@@ -1,9 +1,9 @@
 {
-  "version": "1.31.12",
-  "packageVersion": "1.31.12",
-  "base": "1.31.11 / 1.31.10 / 1.31.9 / 1.31.2 + strokeUniform",
-  "release": "Large-board stale selection-control cleanup",
+  "version": "1.31.13",
+  "packageVersion": "1.31.13",
+  "base": "1.31.12",
+  "release": "Geometry-accurate marquee selection and reliable object eraser",
   "date": "2026-08-08",
-  "name": "large-board-pencil-stale-controls-cleanup",
-  "label": "Alex Board 1.31.12"
+  "name": "geometry-selection-object-eraser",
+  "label": "Alex Board 1.31.13"
 }

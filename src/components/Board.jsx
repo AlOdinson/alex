@@ -1211,52 +1211,84 @@ function pointInsideSceneRect(point, rect) {
     && Number(point.y) <= rect.bottom;
 }
 
+let geometryProbeCanvas = null;
+
+function getGeometryProbeCanvas() {
+  if (geometryProbeCanvas || typeof document === 'undefined') return geometryProbeCanvas;
+  geometryProbeCanvas = document.createElement('canvas');
+  return geometryProbeCanvas;
+}
+
+function renderedObjectIntersectsSceneRect(object, sceneRect, { pixelsPerSceneUnit = 1 } = {}) {
+  if (!object || object.visible === false || Number(object.opacity ?? 1) <= 0.001) return false;
+  const probe = getGeometryProbeCanvas();
+  if (!probe) return false;
+
+  const bounds = finiteRect(object.getBoundingRect());
+  const left = Math.max(bounds.left, Number(sceneRect.left));
+  const top = Math.max(bounds.top, Number(sceneRect.top));
+  const right = Math.min(bounds.right, Number(sceneRect.right));
+  const bottom = Math.min(bounds.bottom, Number(sceneRect.bottom));
+  if (!(right >= left && bottom >= top)) return false;
+
+  // Probe only the actual overlap between the object and marquee. Keeping the probe
+  // cropped avoids allocating a bitmap the size of a long Pencil path or the board.
+  const scale = clamp(Number(pixelsPerSceneUnit) || 1, 0.5, 2.5);
+  const tilePixels = 192;
+  const tileSceneSize = tilePixels / scale;
+  const context = probe.getContext('2d', { willReadFrequently: true });
+  if (!context) return false;
+
+  for (let tileTop = top; tileTop <= bottom; tileTop += tileSceneSize) {
+    const tileBottom = Math.min(bottom, tileTop + tileSceneSize);
+    for (let tileLeft = left; tileLeft <= right; tileLeft += tileSceneSize) {
+      const tileRight = Math.min(right, tileLeft + tileSceneSize);
+      const width = Math.max(1, Math.ceil((tileRight - tileLeft) * scale) + 2);
+      const height = Math.max(1, Math.ceil((tileBottom - tileTop) * scale) + 2);
+      if (probe.width !== width) probe.width = width;
+      if (probe.height !== height) probe.height = height;
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.clearRect(0, 0, width, height);
+      context.setTransform(scale, 0, 0, scale, -tileLeft * scale + 1, -tileTop * scale + 1);
+      try {
+        object.render(context);
+      } catch {
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        continue;
+      }
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      let data;
+      try {
+        data = context.getImageData(0, 0, width, height).data;
+      } catch {
+        continue;
+      }
+      for (let index = 3; index < data.length; index += 4) {
+        if (data[index] > 1) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function objectFastIntersectsRect(object, selectionRect) {
   if (!object || object.isEraserPath || object.visible === false || Number(object.opacity ?? 1) <= 0.001) return false;
-  const bounds = object.getBoundingRect();
-  const boundsRight = bounds.left + bounds.width;
-  const boundsBottom = bounds.top + bounds.height;
-  if (boundsRight < selectionRect.left
-    || boundsBottom < selectionRect.top
+  const bounds = finiteRect(object.getBoundingRect());
+  if (bounds.right < selectionRect.left
+    || bounds.bottom < selectionRect.top
     || bounds.left > selectionRect.right
     || bounds.top > selectionRect.bottom) return false;
 
+  // If the marquee contains the complete object bounds, its real geometry is certainly
+  // inside as well. Partial overlaps must be decided from rendered geometry, never from
+  // Fabric's bounding polygon/aCoords (which is what caused overlapping frames to select).
   const fullyCovered = selectionRect.left <= bounds.left
     && selectionRect.top <= bounds.top
-    && selectionRect.right >= boundsRight
-    && selectionRect.bottom >= boundsBottom;
+    && selectionRect.right >= bounds.right
+    && selectionRect.bottom >= bounds.bottom;
   if (fullyCovered) return true;
 
-  const topLeft = new Point(selectionRect.left, selectionRect.top);
-  const bottomRight = new Point(selectionRect.right, selectionRect.bottom);
-  try {
-    // Fabric performs this from vector geometry. Unlike toCanvasElement/getImageData it
-    // does not allocate a temporary bitmap or synchronously read hundreds of thousands
-    // of pixels on Pencil-up.
-    if (typeof object.intersectsWithRect === 'function'
-      && object.intersectsWithRect(topLeft, bottomRight, true, true)) return true;
-    if (typeof object.isContainedWithinRect === 'function'
-      && object.isContainedWithinRect(topLeft, bottomRight, true, true)) return true;
-  } catch {
-    // Continue with the inexpensive point tests below.
-  }
-
-  const rectSamples = [
-    topLeft,
-    new Point(selectionRect.right, selectionRect.top),
-    bottomRight,
-    new Point(selectionRect.left, selectionRect.bottom),
-    new Point((selectionRect.left + selectionRect.right) / 2, (selectionRect.top + selectionRect.bottom) / 2),
-  ];
-  try {
-    if (typeof object.containsPoint === 'function'
-      && rectSamples.some((point) => object.containsPoint(point))) return true;
-  } catch {
-    // Ignore one unsupported geometry probe.
-  }
-
-  const objectCorners = object.aCoords ? Object.values(object.aCoords) : [];
-  return objectCorners.some((point) => pointInsideSceneRect(point, selectionRect));
+  return renderedObjectIntersectsSceneRect(object, selectionRect);
 }
 
 function finiteRect(rect) {
@@ -8158,7 +8190,10 @@ function BoardWorkspace({
     function preciseObjectEraserTarget(scenePoint, viewportPoint, entries) {
       if (!scenePoint || !viewportPoint) return null;
       const zoomLevel = Math.max(canvas.getZoom(), MIN_ZOOM);
-      const sceneTolerance = Math.max(0.35, 1.15 / zoomLevel);
+      // Object erasing is intentionally a little forgiving. The tolerance is expressed
+      // in SCREEN pixels so a tiny/thin object is equally easy to hit at every zoom.
+      const hitTolerancePx = 9;
+      const sceneTolerance = hitTolerancePx / zoomLevel;
       const distanceToSegment = (point, start, end) => {
         const dx = end.x - start.x;
         const dy = end.y - start.y;
@@ -8173,12 +8208,13 @@ function BoardWorkspace({
         if (!object || object.canvas !== canvas || object.isEraserPath
           || object.transientPreview || object.transientSelectionProxy
           || objectEraserRecordsRef.current.has(object.boardObjectId)) continue;
-        const bounds = entry?.bounds ?? object.getBoundingRect();
+        const bounds = finiteRect(entry?.bounds ?? object.getBoundingRect());
         if (scenePoint.x < bounds.left - sceneTolerance
-          || scenePoint.x > bounds.left + bounds.width + sceneTolerance
+          || scenePoint.x > bounds.right + sceneTolerance
           || scenePoint.y < bounds.top - sceneTolerance
-          || scenePoint.y > bounds.top + bounds.height + sceneTolerance) continue;
+          || scenePoint.y > bounds.bottom + sceneTolerance) continue;
 
+        // Straight lines are common and can be tested exactly without a bitmap probe.
         if (object instanceof Line || object.type === 'line') {
           try {
             const local = typeof object.calcLinePoints === 'function'
@@ -8187,26 +8223,31 @@ function BoardWorkspace({
             const matrix = object.calcTransformMatrix();
             const first = util.transformPoint(new Point(Number(local.x1), Number(local.y1)), matrix);
             const second = util.transformPoint(new Point(Number(local.x2), Number(local.y2)), matrix);
-            const scale = Math.max(
+            const objectScale = Math.max(
               Math.hypot(Number(matrix[0] ?? 1), Number(matrix[1] ?? 0)),
               Math.hypot(Number(matrix[2] ?? 0), Number(matrix[3] ?? 1)),
               1,
             );
-            const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * scale / 2);
+            const effectiveScale = object.strokeUniform ? 1 : objectScale;
+            const strokeRadius = Math.max(0.5, Number(object.strokeWidth ?? 1) * effectiveScale / 2);
             if (distanceToSegment(scenePoint, first, second) <= strokeRadius + sceneTolerance) return object;
+            continue;
           } catch {
-            // Continue with the pixel-level test below.
+            // Continue with the rendered-geometry probe below.
           }
         }
 
-        try {
-          if (typeof canvas.isTargetTransparent === 'function') {
-            if (!canvas.isTargetTransparent(object, viewportPoint.x, viewportPoint.y)) return object;
-            continue;
-          }
-          if (typeof object.containsPoint === 'function' && object.containsPoint(scenePoint)) return object;
-        } catch {
-          // A failed transparency probe is treated as a miss, never as a frame hit.
+        // For paths, shapes, text, images and groups, probe only a small square around
+        // the contact. This ignores empty bounding-box space but still accepts a tap a
+        // few pixels beside very thin geometry. It also makes a zero-movement tap erase.
+        const probeRect = {
+          left: scenePoint.x - sceneTolerance,
+          top: scenePoint.y - sceneTolerance,
+          right: scenePoint.x + sceneTolerance,
+          bottom: scenePoint.y + sceneTolerance,
+        };
+        if (renderedObjectIntersectsSceneRect(object, probeRect, { pixelsPerSceneUnit: zoomLevel })) {
+          return object;
         }
       }
       return null;
