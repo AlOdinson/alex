@@ -9,6 +9,33 @@ const TOOLS = [
   { id: 'text', label: 'Текст', icon: 'T' },
 ];
 
+
+const STROKE_WIDTH_STEPS = [
+  ...Array.from({ length: 24 }, (_, index) => index + 1),
+  50,
+  100,
+];
+
+function widthToSliderStep(width) {
+  const numeric = Number(width);
+  if (!Number.isFinite(numeric)) return 3;
+  let bestIndex = 0;
+  let bestDistance = Infinity;
+  STROKE_WIDTH_STEPS.forEach((candidate, index) => {
+    const distance = Math.abs(candidate - numeric);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestIndex + 1;
+}
+
+function sliderStepToWidth(step) {
+  const index = Math.max(0, Math.min(STROKE_WIDTH_STEPS.length - 1, Math.round(Number(step)) - 1));
+  return STROKE_WIDTH_STEPS[index];
+}
+
 const FONTS = [
   ['Arial', 'Arial'],
   ['Helvetica', 'Helvetica'],
@@ -494,11 +521,11 @@ export default function Toolbar({
                 <input
                   type="range"
                   min="1"
-                  max="24"
+                  max={STROKE_WIDTH_STEPS.length}
                   step="1"
-                  value={width}
+                  value={widthToSliderStep(width)}
                   disabled={!canEdit}
-                  onChange={(event) => setWidth(Number(event.target.value))}
+                  onChange={(event) => setWidth(sliderStepToWidth(event.target.value))}
                 />
                 <strong>{width}px</strong>
               </label>
@@ -617,11 +644,11 @@ export default function Toolbar({
                 <input
                   type="range"
                   min="1"
-                  max="24"
+                  max={STROKE_WIDTH_STEPS.length}
                   step="1"
-                  value={selectedSupports.width ?? 1}
+                  value={widthToSliderStep(selectedSupports.width ?? 1)}
                   disabled={!canEdit}
-                  onChange={(event) => onSelectionWidthChange?.(Number(event.target.value))}
+                  onChange={(event) => onSelectionWidthChange?.(sliderStepToWidth(event.target.value))}
                 />
                 <strong>{selectedSupports.width ?? 1}px</strong>
               </label>

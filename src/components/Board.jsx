@@ -816,7 +816,7 @@ function applySampledStyleToObject(object, sampled, { colorOnly = false } = {}) 
 
     if (!colorOnly && sampled.canWidth && Number.isFinite(sampled.width)
       && Number.isFinite(Number(target.strokeWidth)) && !image) {
-      target.set('strokeWidth', clamp(Math.round(sampled.width), 1, 24));
+      target.set('strokeWidth', clamp(Math.round(sampled.width), 1, 100));
       changed = true;
     }
 
@@ -2589,7 +2589,7 @@ function BoardWorkspace({
     const style = drawingStylesRef.current[toolId] ?? DEFAULT_DRAWING_STYLES[toolId];
     const nextColor = style?.color ?? '#111827';
     const nextOpacity = clamp(Number(style?.opacity ?? 1), 0.05, 1);
-    const nextWidth = clamp(Math.round(Number(style?.width ?? 3)), 1, 24);
+    const nextWidth = clamp(Math.round(Number(style?.width ?? 3)), 1, 100);
     colorRef.current = nextColor;
     opacityRef.current = nextOpacity;
     widthRef.current = nextWidth;
@@ -2698,7 +2698,7 @@ function BoardWorkspace({
   }, [configureBrushAndMode]);
 
   const setWidth = useCallback((nextWidth) => {
-    const normalized = clamp(Math.round(Number(nextWidth)), 1, 24);
+    const normalized = clamp(Math.round(Number(nextWidth)), 1, 100);
     widthRef.current = normalized;
     if (DRAWING_STYLE_TOOL_IDS.has(activeToolRef.current)) {
       drawingStylesRef.current[activeToolRef.current] = {
@@ -6133,7 +6133,7 @@ function BoardWorkspace({
     const style = message?.style ?? previous?.style ?? {};
     const common = {
       stroke: typeof style.stroke === 'string' ? style.stroke : '#111827',
-      strokeWidth: clamp(Number(style.width ?? 3), 1, 80),
+      strokeWidth: clamp(Number(style.width ?? 3), 1, 100),
       strokeUniform: true,
       opacity: clamp(Number(style.opacity ?? 1), 0.05, 1),
       fill: null,
@@ -8881,7 +8881,7 @@ function BoardWorkspace({
               success = true;
             }
             if (!sourceIsImage && sampled?.canWidth && Number.isFinite(sampled.width)) {
-              const nextWidth = clamp(Math.round(sampled.width), 1, 24);
+              const nextWidth = clamp(Math.round(sampled.width), 1, 100);
               widthRef.current = nextWidth;
               setWidthState(nextWidth);
               success = true;

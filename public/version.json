@@ -1,9 +1,9 @@
 {
-  "version": "1.31.13",
-  "packageVersion": "1.31.13",
-  "base": "1.31.12",
-  "release": "Geometry-accurate marquee selection and reliable object eraser",
+  "version": "1.31.14",
+  "packageVersion": "1.31.14",
+  "base": "1.31.13",
+  "release": "Extended stroke widths 50px and 100px",
   "date": "2026-08-08",
-  "name": "geometry-selection-object-eraser",
-  "label": "Alex Board 1.31.13"
+  "name": "extended-stroke-widths",
+  "label": "Alex Board 1.31.14"
 }
