@@ -46,6 +46,11 @@ import { randomToken } from '../lib/ids.js';
 import { getOwnedBoard, rememberOwnedBoard } from '../lib/boardLibrary.js';
 import { createShape } from '../lib/shapes.js';
 import {
+  isRealtimeMutationCausallyStale,
+  normalizeRealtimeBaseRevision,
+  shouldRejectRealtimeObjectFrame,
+} from '../lib/convergence.js';
+import {
   copySerializedBoardImages,
   isAcceptedImageFile,
   loadImageElement,
@@ -72,6 +77,9 @@ const DESKTOP_WHEEL_ZOOM_SPEED = 6.25;
 const VIEW_BROADCAST_INTERVAL = 80;
 const INSURANCE_SYNC_INTERVAL = 30_000;
 const INSURANCE_SYNC_PAGE_SIZE = 500;
+const TARGETED_RECONCILE_DELAY = 180;
+const TARGETED_RECONCILE_RETRY_DELAY = 240;
+const TARGETED_RECONCILE_MAX_WAIT_ATTEMPTS = 32;
 const LOCAL_LOCK_REFRESH_INTERVAL = 2_500;
 const IMAGE_RETRY_INTERVAL = 5_000;
 const SNAPSHOT_COMPACTION_IDLE_MS = 30_000;
@@ -1741,9 +1749,21 @@ function BoardWorkspace({
     timer: null,
     pendingTarget: null,
     zIndexMap: null,
+    baseRevision: 0,
   });
   const remoteTransformSessionsRef = useRef(new Map());
   const remoteTransformClientOrderRef = useRef(new Map());
+  // Durable Supabase operations are the final authority for each stable object id.
+  // Keeping only the latest operation gives late realtime previews a cheap O(1) fence
+  // and lets us repair just the objects touched by an event, never the whole board.
+  const authoritativeObjectStatesRef = useRef(new Map());
+  const authoritativeBackgroundStateRef = useRef({
+    revision: initialSnapshotRevision,
+    background: backgroundRef.current,
+  });
+  const authoritativeSelectionTransactionsRef = useRef(new Map());
+  const targetedReconcileStateRef = useRef({ pending: new Map(), timer: null, running: false });
+  const targetedReconcileRunnerRef = useRef(null);
   const liveDrawSendRef = useRef({
     sessionId: null,
     sessionOrder: 0,
@@ -2135,6 +2155,104 @@ function BoardWorkspace({
     if (BACKGROUNDS.has(incomingBackground) && backgroundRef.current !== incomingBackground) return false;
     return true;
   }, [registeredObjectsById]);
+
+  const rememberAuthoritativeOps = useCallback((ops, revision) => {
+    const numericRevision = Number(revision ?? revisionRef.current ?? 0);
+    const recordedAt = Date.now();
+    const remember = (objectId, op, updatedAt = 0) => {
+      const id = String(objectId ?? '');
+      if (!id) return;
+      const previous = authoritativeObjectStatesRef.current.get(id);
+      if (previous && Number(previous.revision ?? 0) > numericRevision) return;
+      authoritativeObjectStatesRef.current.set(id, {
+        revision: numericRevision,
+        updatedAt: Number(updatedAt ?? 0),
+        recordedAt,
+        kind: op?.type ?? 'unknown',
+        op,
+      });
+    };
+
+    for (const op of Array.isArray(ops) ? ops : []) {
+      if (op?.type === 'delete' && op.id) {
+        remember(op.id, { ...op }, Number(op.updatedAt ?? recordedAt));
+        continue;
+      }
+      if (op?.type === 'upsert' && op.object?.boardObjectId) {
+        remember(
+          op.object.boardObjectId,
+          { ...op, object: op.object },
+          Number(op.object.updatedAt ?? 0),
+        );
+        if (op.object.selectionTransactionId) {
+          authoritativeSelectionTransactionsRef.current.set(
+            String(op.object.selectionTransactionId),
+            { revision: numericRevision, recordedAt },
+          );
+        }
+        continue;
+      }
+      if (op?.type === 'transform') {
+        transformOperationEntries(op).forEach((entry) => {
+          if (!entry?.id || !entry?.transform) return;
+          const objectId = String(entry.id);
+          const previous = authoritativeObjectStatesRef.current.get(objectId);
+          const previousUpsert = previous?.op?.type === 'upsert' ? previous.op : null;
+          const authoritativeOp = previousUpsert
+            ? {
+              ...previousUpsert,
+              type: 'upsert',
+              object: {
+                ...previousUpsert.object,
+                ...entry.transform,
+                boardObjectId: objectId,
+                updatedAt: Number(entry.updatedAt ?? previousUpsert.object?.updatedAt ?? 0),
+                updatedBy: entry.updatedBy ?? previousUpsert.object?.updatedBy ?? null,
+              },
+              preserveOrder: !op.reorder,
+              ...(Number.isInteger(entry.zIndex) ? { zIndex: entry.zIndex } : {}),
+              ...(op.reorder ? { reorder: true } : {}),
+            }
+            : {
+              type: 'transform',
+              version: 1,
+              objects: [{ ...entry, transform: { ...entry.transform } }],
+              ...(op.reorder ? { reorder: true } : {}),
+            };
+          remember(objectId, authoritativeOp, Number(entry.updatedAt ?? 0));
+        });
+      }
+    }
+  }, []);
+
+  const seedAuthoritativeSnapshot = useCallback((snapshot, revision) => {
+    const objects = Array.isArray(snapshot?.canvas?.objects) ? snapshot.canvas.objects : [];
+    const numericRevision = Number(revision ?? 0);
+    const recordedAt = Date.now();
+    authoritativeObjectStatesRef.current.clear();
+    if (BACKGROUNDS.has(snapshot?.background)) {
+      authoritativeBackgroundStateRef.current = {
+        revision: numericRevision,
+        background: snapshot.background,
+      };
+    }
+    objects.forEach((object, zIndex) => {
+      const objectId = String(object?.boardObjectId ?? '');
+      if (!objectId) return;
+      authoritativeObjectStatesRef.current.set(objectId, {
+        revision: numericRevision,
+        updatedAt: Number(object.updatedAt ?? 0),
+        recordedAt,
+        kind: 'upsert',
+        op: {
+          type: 'upsert',
+          object,
+          zIndex,
+          preserveOrder: true,
+        },
+      });
+    });
+  }, []);
 
   const clearTextPlaceholderForEditing = useCallback((target, canvas = fabricCanvasRef.current) => {
     if (!target || !target.textPlaceholder || String(target.text ?? '') !== 'text') return false;
@@ -3228,6 +3346,7 @@ function BoardWorkspace({
         contentChanged: false,
         committing: false,
         startedAt: Date.now(),
+        baseRevision: Number(revisionRef.current ?? 0),
       };
       localSelectionTransactionRef.current = transaction;
       canvas.setActiveObject(proxy);
@@ -3247,6 +3366,7 @@ function BoardWorkspace({
         sourceIds,
         sourceZIndexes: sourceRecords.map((record) => Number(record.zIndex ?? 0)),
         minimumZ,
+        baseRevision: transaction.baseRevision,
       });
       localLockIdsRef.current = [...sourceIds, proxyId];
       realtimeRef.current?.sendLock?.(sourceIds, true);
@@ -3301,6 +3421,7 @@ function BoardWorkspace({
           transactionId: transaction.transactionId,
           proxyId: transaction.proxyId,
           sourceIds: transaction.sourceIds,
+          baseRevision: transaction.baseRevision,
         });
         applyingRemoteRef.current = true;
         canvas.remove(proxy);
@@ -3384,6 +3505,7 @@ function BoardWorkspace({
         sourceIds: transaction.sourceIds,
         finalIds,
         finalCount: finalRecords.length,
+        baseRevision: transaction.baseRevision,
       });
       const ops = finalRecords.map((record) => ({
         type: 'upsert',
@@ -3414,6 +3536,7 @@ function BoardWorkspace({
         transactionId: transaction.transactionId,
         proxyId: transaction.proxyId,
         sourceIds: transaction.sourceIds,
+        baseRevision: transaction.baseRevision,
       });
       applyingRemoteRef.current = true;
       if (transaction.proxy) canvas.remove(transaction.proxy);
@@ -3827,6 +3950,7 @@ function BoardWorkspace({
         proxyId: transaction?.proxyId ?? '',
         sourceIds: objectIds,
         objectIds,
+        baseRevision: transaction?.baseRevision ?? Number(revisionRef.current ?? 0),
         ...realtimeOperation,
       });
     };
@@ -4019,6 +4143,7 @@ function BoardWorkspace({
       transactionId,
       proxyId: transaction.proxyId,
       sourceIds: transaction.sourceIds,
+      baseRevision: transaction.baseRevision,
       sampled: {
         canColor: Boolean(sampled.canColor),
         color: sampled.color ?? null,
@@ -4487,6 +4612,7 @@ function BoardWorkspace({
       console.warn('Operation sync fallback to snapshot:', reason);
       const recovery = await getBoardRecovery(boardId, boardKey);
       if (!recovery?.snapshot) return false;
+      seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? 0));
       await applyAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? 0));
       return true;
     };
@@ -4611,6 +4737,7 @@ function BoardWorkspace({
     boardId,
     boardKey,
     getLocalMutationIds,
+    seedAuthoritativeSnapshot,
   ]);
 
   const replayPendingActionsLocally = useCallback(async (actions) => {
@@ -4702,6 +4829,7 @@ function BoardWorkspace({
       }
       deduplicateRegisteredObjectIds(affectedIds);
       if (BACKGROUNDS.has(pendingBackground)) applyBackground(pendingBackground);
+      if (touched.length) penTransformSpatialApiRef.current?.updateObjects?.(touched);
       applyObjectInteractivityToObjects(touched, { render: false });
       if (touchesSelection && activeToolRef.current === 'select' && selectedIds.length) {
         const selectedObjects = selectedIds
@@ -4729,7 +4857,143 @@ function BoardWorkspace({
     removeRegisteredObjectsById,
   ]);
 
-  const recoverRejectedServerAction = useCallback(async () => {
+  const reconcileAuthoritativeIds = useCallback(async (
+    objectIds,
+    { includePendingMutations = true } = {},
+  ) => {
+    const ids = [...new Set((Array.isArray(objectIds) ? objectIds : [...(objectIds ?? [])])
+      .filter(Boolean)
+      .map(String))];
+    if (!ids.length || !fabricCanvasRef.current) return true;
+    const localMutationIds = getLocalMutationIds({ includePending: includePendingMutations });
+    const safeIds = ids.filter((id) => !localMutationIds.has(id));
+    if (!safeIds.length) return false;
+    const ops = safeIds
+      .map((id) => authoritativeObjectStatesRef.current.get(id)?.op)
+      .filter(Boolean);
+    if (!ops.length) return false;
+    if (verifyAuthoritativeOps(ops)) return true;
+    await replayPendingActionsLocally([{ ops }]);
+    if (!verifyAuthoritativeOps(ops)) {
+      throw new Error(`Адресное восстановление не прошло для ${safeIds.join(', ')}`);
+    }
+    return safeIds.length === ids.length;
+  }, [getLocalMutationIds, replayPendingActionsLocally, verifyAuthoritativeOps]);
+
+  const runTargetedReconciliation = useCallback(async () => {
+    const state = targetedReconcileStateRef.current;
+    state.timer = null;
+    if (state.running || !state.pending.size) return;
+    state.running = true;
+    const batch = [...state.pending.entries()];
+    state.pending.clear();
+    const retry = [];
+    let shouldRequestJournal = false;
+
+    try {
+      const localMutationIds = getLocalMutationIds();
+      const readyIds = [];
+      for (const [objectId, request] of batch) {
+        const fence = authoritativeObjectStatesRef.current.get(objectId);
+        const minimumUpdatedAt = Number(request.minimumUpdatedAt ?? 0);
+        const minimumRevision = Number(request.minimumRevision ?? 0);
+        const attempts = Number(request.attempts ?? 0);
+        const blocked = localMutationIds.has(objectId);
+        const fenceCaughtUp = Boolean(fence)
+          && (minimumRevision <= 0 || Number(fence.revision ?? 0) >= minimumRevision)
+          && (fence.kind === 'delete'
+            || minimumUpdatedAt <= 0
+            || Number(fence.updatedAt ?? 0) >= minimumUpdatedAt);
+
+        if (blocked || (!fenceCaughtUp && attempts < TARGETED_RECONCILE_MAX_WAIT_ATTEMPTS)) {
+          retry.push([objectId, { minimumUpdatedAt, minimumRevision, attempts: attempts + 1 }]);
+          if (!blocked && (attempts === 3 || attempts === 12)) shouldRequestJournal = true;
+          continue;
+        }
+        if (fence) readyIds.push(objectId);
+        else if (attempts === 3 || attempts === 12) shouldRequestJournal = true;
+      }
+
+      if (readyIds.length) await reconcileAuthoritativeIds(readyIds);
+      if (shouldRequestJournal) syncFromServer(false);
+    } catch (error) {
+      console.warn('Не удалось адресно довести объекты до серверного состояния', error);
+      batch.forEach(([objectId, request]) => {
+        if (Number(request.attempts ?? 0) >= TARGETED_RECONCILE_MAX_WAIT_ATTEMPTS + 8) return;
+        retry.push([objectId, {
+          minimumUpdatedAt: Number(request.minimumUpdatedAt ?? 0),
+          minimumRevision: Number(request.minimumRevision ?? 0),
+          attempts: Number(request.attempts ?? 0) + 1,
+        }]);
+      });
+      syncFromServer(false);
+    } finally {
+      retry.forEach(([objectId, request]) => {
+        const existing = state.pending.get(objectId);
+        state.pending.set(objectId, {
+          minimumUpdatedAt: Math.max(
+            Number(existing?.minimumUpdatedAt ?? 0),
+            Number(request.minimumUpdatedAt ?? 0),
+          ),
+          minimumRevision: Math.max(
+            Number(existing?.minimumRevision ?? 0),
+            Number(request.minimumRevision ?? 0),
+          ),
+          attempts: Math.max(Number(existing?.attempts ?? 0), Number(request.attempts ?? 0)),
+        });
+      });
+      state.running = false;
+      if (state.pending.size && state.timer == null) {
+        const hasLongWait = [...state.pending.values()]
+          .some((request) => Number(request.attempts ?? 0) > 8);
+        state.timer = window.setTimeout(
+          () => targetedReconcileRunnerRef.current?.(),
+          hasLongWait ? 1_000 : TARGETED_RECONCILE_RETRY_DELAY,
+        );
+      }
+    }
+  }, [getLocalMutationIds, reconcileAuthoritativeIds, syncFromServer]);
+
+  targetedReconcileRunnerRef.current = runTargetedReconciliation;
+
+  const scheduleTargetedReconciliation = useCallback((
+    objectIds,
+    {
+      minimumUpdatedAtById = null,
+      minimumRevisionById = null,
+      delay = TARGETED_RECONCILE_DELAY,
+    } = {},
+  ) => {
+    const state = targetedReconcileStateRef.current;
+    const ids = [...new Set((Array.isArray(objectIds) ? objectIds : [...(objectIds ?? [])])
+      .filter(Boolean)
+      .map(String))];
+    ids.forEach((objectId) => {
+      const existing = state.pending.get(objectId);
+      const requestedVersion = Number(
+        minimumUpdatedAtById instanceof Map
+          ? minimumUpdatedAtById.get(objectId)
+          : minimumUpdatedAtById?.[objectId],
+      ) || 0;
+      const requestedRevision = Number(
+        minimumRevisionById instanceof Map
+          ? minimumRevisionById.get(objectId)
+          : minimumRevisionById?.[objectId],
+      ) || 0;
+      state.pending.set(objectId, {
+        minimumUpdatedAt: Math.max(Number(existing?.minimumUpdatedAt ?? 0), requestedVersion),
+        minimumRevision: Math.max(Number(existing?.minimumRevision ?? 0), requestedRevision),
+        attempts: Number(existing?.attempts ?? 0),
+      });
+    });
+    if (!state.pending.size || state.timer != null || state.running) return;
+    state.timer = window.setTimeout(
+      () => targetedReconcileRunnerRef.current?.(),
+      Math.max(0, Number(delay ?? TARGETED_RECONCILE_DELAY)),
+    );
+  }, []);
+
+  const recoverRejectedServerAction = useCallback(async (rejectedObjectIds = []) => {
     const realtime = realtimeRef.current;
     realtime?.pauseWrites?.();
     setSaveStatus('Сервер отклонил конфликтующее действие — сверяю изменённые объекты…');
@@ -4790,6 +5054,17 @@ function BoardWorkspace({
           }
         }
 
+        const rejectedIds = [...new Set((Array.isArray(rejectedObjectIds) ? rejectedObjectIds : [])
+          .filter(Boolean)
+          .map(String))];
+        if (rejectedIds.length) {
+          const missingFence = rejectedIds.some((id) => !authoritativeObjectStatesRef.current.has(id));
+          if (missingFence) throw new Error('Нет адресной серверной версии конфликтующего объекта');
+          const reconciled = await reconcileAuthoritativeIds(rejectedIds, {
+            includePendingMutations: false,
+          });
+          if (!reconciled) throw new Error('Конфликтующие объекты ещё используются локально');
+        }
         await replayPendingActionsLocally(pendingActions);
       } catch (journalError) {
         // This is an emergency-only compatibility path for an absent/corrupt operation
@@ -4798,6 +5073,7 @@ function BoardWorkspace({
         console.warn('Targeted conflict recovery fell back to a snapshot', journalError);
         const recovery = await getBoardRecovery(boardId, boardKey);
         if (!recovery?.snapshot) throw new Error('Серверный снимок недоступен');
+        seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? 0));
         let rebasedSnapshot = recovery.snapshot;
         for (const pendingAction of Array.isArray(pendingActions) ? pendingActions : []) {
           rebasedSnapshot = applyOpsToSnapshot(
@@ -4828,7 +5104,9 @@ function BoardWorkspace({
     boardId,
     boardKey,
     getLocalMutationIds,
+    reconcileAuthoritativeIds,
     replayPendingActionsLocally,
+    seedAuthoritativeSnapshot,
   ]);
 
   const handleRemoteSelectionTransaction = useCallback((message) => {
@@ -4843,6 +5121,10 @@ function BoardWorkspace({
           : [];
         const validPhases = ['start', 'style', 'operation', 'commit', 'cancel'];
         if (!canvas || !validPhases.includes(phase) || (phase !== 'operation' && !transactionId)) return;
+        // A selection transaction is only a visual preview. Once Supabase confirmed its
+        // final objects, no delayed start/style/operation packet may recreate the proxy.
+        if (transactionId && authoritativeSelectionTransactionsRef.current.has(transactionId)) return;
+        const baseRevision = normalizeRealtimeBaseRevision(message?.baseRevision);
 
         if (phase === 'operation') {
           const operationId = String(message?.operationId ?? '');
@@ -4859,6 +5141,19 @@ function BoardWorkspace({
         const existingState = transactionId
           ? remoteSelectionTransactionsRef.current.get(transactionId)
           : null;
+        const causalObjectIds = [...new Set([
+          ...sourceIds,
+          ...(Array.isArray(message?.objectIds) ? message.objectIds : []),
+          ...(Array.isArray(existingState?.sourceIds) ? existingState.sourceIds : []),
+        ].filter(Boolean).map(String))];
+        const localMutationIds = getLocalMutationIds();
+        if (causalObjectIds.some((objectId) => localMutationIds.has(objectId))) return;
+        if (baseRevision != null && causalObjectIds.some((objectId) => (
+          isRealtimeMutationCausallyStale(
+            authoritativeObjectStatesRef.current.get(objectId),
+            baseRevision,
+          )
+        ))) return;
         if (existingState?.phase === 'authoritative') return;
         if (['commit', 'awaiting-authoritative', 'commit-ready'].includes(existingState?.phase) && phase === 'start') return;
         applyingRemoteRef.current = true;
@@ -4867,6 +5162,14 @@ function BoardWorkspace({
         try {
           if (phase === 'start') {
             const proxyId = String(message?.proxyId ?? `selection-proxy:${transactionId}`);
+            const originalSourceObjects = sourceIds
+              .map((id) => registeredObjectsById(id).find((object) => (
+                !object.transientPreview && !object.transientSelectionProxy
+              )))
+              .filter(Boolean);
+            const sourceRecords = originalSourceObjects.length === sourceIds.length
+              ? getObjectRecords(originalSourceObjects)
+              : [];
             const activeIds = canvas.getActiveObjects()
               .map((object) => object.boardObjectId)
               .filter(Boolean)
@@ -4884,7 +5187,9 @@ function BoardWorkspace({
               [proxy] = await util.enlivenObjects([serialized]);
             } else {
               const sourceObjects = sourceIds
-                .map((id) => canvas.getObjects().find((object) => String(object.boardObjectId ?? '') === id))
+                .map((id) => originalSourceObjects.find((object) => (
+                  String(object.boardObjectId ?? '') === id
+                )))
                 .filter(Boolean);
               if (sourceObjects.length !== sourceIds.length || sourceObjects.length < 2) {
                 window.setTimeout(() => syncFromServer(true), 100);
@@ -4939,6 +5244,7 @@ function BoardWorkspace({
                 : [],
               proxyId,
               proxy,
+              sourceRecords,
               receivedAt: Date.now(),
               clientId: message?.clientId ?? '',
             });
@@ -5152,6 +5458,8 @@ function BoardWorkspace({
     });
   }, [
     applyObjectInteractivityToObjects,
+    getObjectRecords,
+    getLocalMutationIds,
     registeredObjectsById,
     removeRegisteredSelectionTransactionObjects,
     syncFromServer,
@@ -5472,6 +5780,45 @@ function BoardWorkspace({
           }
         }
 
+        // Two people can grab the same selection before either lock reaches the other
+        // iPad. If one server action wins, dismantle every competing transient proxy and
+        // restore its original members inside the same paused render before applying the
+        // winner. This prevents a transform from failing because its stable ids are
+        // temporarily hidden as children of somebody else's Group.
+        const supersededSelectionRestores = [];
+        for (const [transactionId, transaction] of remoteSelectionTransactionsRef.current) {
+          if (!transaction || transaction.phase === 'authoritative') continue;
+          if (selectionTransactionIds.includes(String(transactionId))) continue;
+          const sourceIds = Array.isArray(transaction.sourceIds)
+            ? transaction.sourceIds.filter(Boolean).map(String)
+            : [];
+          if (!sourceIds.some((objectId) => affectedIds.has(objectId))) continue;
+          const allSourcesDeleted = sourceIds.length > 0
+            && sourceIds.every((objectId) => deletedIds.has(objectId));
+          const records = allSourcesDeleted || !Array.isArray(transaction.sourceRecords)
+            ? []
+            : transaction.sourceRecords;
+          let restored = [];
+          if (records.length) {
+            const serialized = records.map((record) => record.object).filter(Boolean);
+            for (const object of serialized) {
+              // eslint-disable-next-line no-await-in-loop
+              await preloadSerializedImages(object);
+            }
+            // eslint-disable-next-line no-await-in-loop
+            restored = await util.enlivenObjects(serialized);
+            if (restored.length !== records.length) {
+              throw new Error(`Не удалось восстановить конкурирующую группу ${transactionId}`);
+            }
+          }
+          supersededSelectionRestores.push({
+            transactionId: String(transactionId),
+            transaction,
+            records,
+            restored,
+          });
+        }
+
         const incompleteSelectionBatch = selectionTransactionIds.length > 0
           && preparedOps.some(({ op, revived, skipDeleted }) => (
             op?.type === 'upsert'
@@ -5521,6 +5868,32 @@ function BoardWorkspace({
         canvas.renderOnAddRemove = false;
         try {
           const reconciledObjects = [];
+          supersededSelectionRestores.forEach((restore) => {
+            removeRegisteredSelectionTransactionObjects(restore.transactionId);
+            restore.restored.forEach((object, index) => {
+              const record = restore.records[index];
+              object.transientPreview = false;
+              object.transientLiveDraw = false;
+              object.transientSelectionProxy = false;
+              object.selectionTransactionId = undefined;
+              object.selectionSourceIds = undefined;
+              object.setCoords?.();
+              canvas.add(object);
+              serializedObjectCacheRef.current.set(object, record.object);
+              if (Number.isInteger(record.zIndex) && typeof canvas.moveObjectTo === 'function') {
+                canvas.moveObjectTo(object, clamp(record.zIndex, 0, canvas.getObjects().length - 1));
+              }
+              reconciledObjects.push(object);
+            });
+            remoteSelectionTransactionsRef.current.set(restore.transactionId, {
+              phase: 'authoritative',
+              receivedAt: Date.now(),
+            });
+            authoritativeSelectionTransactionsRef.current.set(restore.transactionId, {
+              revision: incomingRevision,
+              recordedAt: Date.now(),
+            });
+          });
           creationSessionsToReplace.forEach(({ clientId, sessionId }) => {
             removeRegisteredObjectsByCreationSession(clientId, sessionId);
             remoteDrawSessionsRef.current.delete(`${clientId}:${sessionId}`);
@@ -5637,6 +6010,20 @@ function BoardWorkspace({
           if (!verifyAuthoritativeOps(verifiableOps, incomingBackground)) {
             throw new Error(`Адресная проверка операции ${incomingRevision} не пройдена`);
           }
+          rememberAuthoritativeOps(verifiableOps, incomingRevision);
+          if (BACKGROUNDS.has(incomingBackground)) {
+            authoritativeBackgroundStateRef.current = {
+              revision: incomingRevision,
+              background: incomingBackground,
+            };
+          }
+          [...new Set([...selectionTransactionIds, ...deleteMatchedTransactionIds])]
+            .forEach((transactionId) => {
+              authoritativeSelectionTransactionsRef.current.set(String(transactionId), {
+                revision: incomingRevision,
+                recordedAt: Date.now(),
+              });
+            });
           revisionRef.current = incomingRevision;
           bufferSnapshotAction(ops, incomingBackground, incomingRevision);
           if (transformOnly) {
@@ -5669,6 +6056,7 @@ function BoardWorkspace({
     deduplicateRegisteredObjectIds,
     getLocalMutationIds,
     registeredObjectsById,
+    rememberAuthoritativeOps,
     removeRegisteredObjectsByCreationSession,
     removeRegisteredSelectionTransactionObjects,
     syncFromServer,
@@ -5685,8 +6073,14 @@ function BoardWorkspace({
   }, [applyRemoteOps]);
 
 
-  const handleRemoteBackgroundLive = useCallback((background) => {
+  const handleRemoteBackgroundLive = useCallback((background, message = null) => {
     if (!BACKGROUNDS.has(background)) return;
+    if (pendingLocalBackgroundMutationCountRef.current > 0) return;
+    const baseRevision = normalizeRealtimeBaseRevision(message?.baseRevision);
+    if (isRealtimeMutationCausallyStale(
+      authoritativeBackgroundStateRef.current,
+      baseRevision,
+    )) return;
     applyBackground(background, { broadcast: false, persist: false });
   }, [applyBackground]);
 
@@ -5972,6 +6366,7 @@ function BoardWorkspace({
         proxyId: transaction.proxyId,
         sourceIds: transaction.sourceIds,
         finalRecords: [],
+        baseRevision: transaction.baseRevision,
       });
       sendDeletes(transaction.sourceIds);
       recordAction({ type: 'delete', records: transaction.sourceRecords });
@@ -6131,6 +6526,7 @@ function BoardWorkspace({
       sequence: state.sequence,
       phase,
       mode: 'objects',
+      baseRevision: Number(state.baseRevision ?? revisionRef.current ?? 0),
       objects,
       cursor: pointer && Number.isFinite(Number(pointer.x)) && Number.isFinite(Number(pointer.y))
         ? [Number(Number(pointer.x).toFixed(2)), Number(Number(pointer.y).toFixed(2))]
@@ -6148,6 +6544,7 @@ function BoardWorkspace({
     state.sequence = 0;
     state.lastSentAt = 0;
     state.lastSignature = '';
+    state.baseRevision = Number(revisionRef.current ?? 0);
     // Moving objects does not alter layer order. Keeping this null removes the old
     // O(all board objects) z-index scan from the beginning of every Pencil transform.
     state.zIndexMap = zIndexMap ?? null;
@@ -6198,6 +6595,7 @@ function BoardWorkspace({
     state.lastSignature = '';
     state.pendingTarget = null;
     state.zIndexMap = null;
+    state.baseRevision = Number(revisionRef.current ?? 0);
     return true;
   }, [sendLiveTransformNow]);
 
@@ -6207,6 +6605,7 @@ function BoardWorkspace({
     const sessionId = String(message?.sessionId ?? '');
     const sessionOrder = Number(message?.sessionOrder ?? 0);
     const sequence = Number(message?.sequence ?? 0);
+    const baseRevision = normalizeRealtimeBaseRevision(message?.baseRevision);
     const phase = ['start', 'update', 'end'].includes(message?.phase) ? message.phase : 'update';
     const rawFrames = Array.isArray(message?.objects) ? message.objects : [];
     const remotePointer = Array.isArray(message?.cursor) ? message.cursor : null;
@@ -6246,6 +6645,10 @@ function BoardWorkspace({
     const previous = remoteTransformSessionsRef.current.get(sessionKey);
     if (previous?.ended || sequence <= Number(previous?.sequence ?? -1)) return;
     const affectedIds = frames.map((frame) => frame.id);
+    const frameUpdatedAtById = new Map(frames.map((frame) => [
+      String(frame.id),
+      Number(frame.updatedAt ?? 0),
+    ]));
     if (affectedIds.some((id) => localLockIdsRef.current.includes(id))) return;
 
     deduplicateRegisteredObjectIds(affectedIds);
@@ -6325,6 +6728,8 @@ function BoardWorkspace({
         ended: false,
         receivedAt: now,
         objectIds: affectedIds,
+        updatedAtById: frameUpdatedAtById,
+        baseRevision,
         missing: true,
       });
       if (!previous?.missing || now - Number(previous?.receivedAt ?? 0) > 350) {
@@ -6341,6 +6746,8 @@ function BoardWorkspace({
       ended: phase === 'end',
       receivedAt: Date.now(),
       objectIds: affectedIds,
+      updatedAtById: frameUpdatedAtById,
+      baseRevision,
       missing: false,
     });
 
@@ -6354,12 +6761,17 @@ function BoardWorkspace({
       resolved.forEach(({ frame, object }) => {
         const incomingUpdatedAt = Number(frame.updatedAt ?? 0);
         const authoritativeUpdatedAt = Number(object.updatedAt ?? 0);
+        const authoritativeFence = authoritativeObjectStatesRef.current.get(frame.id);
         // Realtime and durable operations use separate transports. Under an iPad
         // network stall an old update/start frame can therefore arrive after the
-        // server-confirmed transform. The old code applied it unconditionally while
-        // retaining the newer updatedAt, leaving this one client at wrong coordinates
-        // until the group was moved again. Equal timestamps are allowed: the final
-        // live `end` frame and its durable transform intentionally share one position.
+        // server-confirmed transform. The final live `end` frame and its durable
+        // transform intentionally share one timestamp, therefore comparing only with
+        // object.updatedAt is insufficient: equality is accepted before confirmation
+        // but must be rejected after the per-object authoritative fence is installed.
+        if (shouldRejectRealtimeObjectFrame(authoritativeFence, {
+          baseRevision,
+          updatedAt: incomingUpdatedAt,
+        })) return;
         if (incomingUpdatedAt > 0 && authoritativeUpdatedAt > incomingUpdatedAt) return;
         util.applyTransformToObject(object, frame.matrix.map(Number));
         object.previewReceivedAt = Date.now();
@@ -6405,6 +6817,23 @@ function BoardWorkspace({
         lockIds.flatMap((objectId) => registeredObjectsById(objectId)),
       );
     }
+    if (phase === 'end') {
+      const durableIds = resolved
+        .filter(({ object, frame }) => (
+          !object?.transientSelectionProxy
+          && Number(frame.updatedAt ?? 0) > 0
+        ))
+        .map(({ frame }) => String(frame.id));
+      if (durableIds.length) {
+        const minimumRevisionById = baseRevision == null
+          ? null
+          : new Map(durableIds.map((objectId) => [objectId, baseRevision + 1]));
+        scheduleTargetedReconciliation(durableIds, {
+          minimumUpdatedAtById: frameUpdatedAtById,
+          minimumRevisionById,
+        });
+      }
+    }
   }, [
     applyObjectInteractivityToObjects,
     deduplicateRegisteredObjectIds,
@@ -6412,6 +6841,7 @@ function BoardWorkspace({
     registeredObjectsByCreationSession,
     registeredObjectsById,
     registerCanvasObject,
+    scheduleTargetedReconciliation,
     syncFromServer,
   ]);
 
@@ -6873,12 +7303,18 @@ function BoardWorkspace({
       .then(async () => {
         const canvas = fabricCanvasRef.current;
         if (!canvas || getLocalMutationIds().has(objectId)) return;
+        const incomingUpdatedAt = Number(record?.object?.updatedAt ?? 0);
+        const authoritativeFence = authoritativeObjectStatesRef.current.get(objectId);
+        const baseRevision = normalizeRealtimeBaseRevision(message?.baseRevision);
+        if (shouldRejectRealtimeObjectFrame(authoritativeFence, {
+          baseRevision,
+          updatedAt: incomingUpdatedAt,
+        })) return;
         await preloadSerializedImages(record.object);
         const [revived] = await util.enlivenObjects([record.object]);
         if (!revived || getLocalMutationIds().has(objectId)) return;
 
         const existing = registeredObjectsById(objectId);
-        const incomingUpdatedAt = Number(record?.object?.updatedAt ?? 0);
         const newestExistingUpdate = Math.max(
           0,
           ...existing.map((object) => Number(object?.updatedAt ?? 0)),
@@ -6921,7 +7357,14 @@ function BoardWorkspace({
 
   const handleRemoteDeletePreview = useCallback((message) => {
     const canvas = fabricCanvasRef.current;
-    const ids = [...new Set((Array.isArray(message?.ids) ? message.ids : []).filter(Boolean).map(String))];
+    const baseRevision = normalizeRealtimeBaseRevision(message?.baseRevision);
+    const localMutationIds = getLocalMutationIds();
+    const ids = [...new Set((Array.isArray(message?.ids) ? message.ids : []).filter(Boolean).map(String))]
+      .filter((objectId) => {
+        if (localMutationIds.has(objectId)) return false;
+        const fence = authoritativeObjectStatesRef.current.get(objectId);
+        return !shouldRejectRealtimeObjectFrame(fence, { baseRevision });
+      });
     if (!canvas || !ids.length) return;
     const timestamp = Date.now();
     const idSet = new Set(ids);
@@ -6969,9 +7412,20 @@ function BoardWorkspace({
       updateSelectionStyleState();
       if (!composedDelete) canvas.requestRenderAll();
     }
+    if (ids.length && message?.expectDurable !== false) {
+      const minimumRevisionById = baseRevision == null
+        ? null
+        : new Map(ids.map((objectId) => [objectId, baseRevision + 1]));
+      scheduleTargetedReconciliation(ids, {
+        minimumRevisionById,
+        delay: 320,
+      });
+    }
   }, [
+    getLocalMutationIds,
     registeredObjectsById,
     removeRegisteredObjectsByCreationSession,
+    scheduleTargetedReconciliation,
     updateSelectionState,
     updateSelectionStyleState,
   ]);
@@ -8025,6 +8479,7 @@ function BoardWorkspace({
       snapshotCompactBaseRevisionRef.current = localState.confirmedRevision;
       snapshotCompactActionsRef.current = [];
       snapshotCompactTargetRevisionRef.current = localState.confirmedRevision;
+      seedAuthoritativeSnapshot(localState.confirmedSnapshot, localState.confirmedRevision);
       await paintInitialSnapshot(localState.snapshot, localState.confirmedRevision);
       if (disposed) return;
 
@@ -8059,6 +8514,7 @@ function BoardWorkspace({
       // Reapply edits that are still waiting to reach Supabase, so a recovery response
       // can never make the user's newest local work disappear.
       const pendingActions = await getPendingActions(boardId);
+      seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? accessCurrentRevision));
       const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);
 
       if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
@@ -8120,7 +8576,7 @@ function BoardWorkspace({
           // The complete logical action was rejected atomically. Pause later writes,
           // restore the durable snapshot, then reapply still-pending local actions.
           realtimeRef.current?.pauseWrites?.();
-          recoverRejectedServerAction();
+          recoverRejectedServerAction(rejected);
           return;
         }
         const sequentialCommit = result?.changed === false
@@ -8130,11 +8586,20 @@ function BoardWorkspace({
           // The local Canvas already contains this action. Advance only across the one
           // server revision that was just confirmed; never Math.max over missed actions.
           revisionRef.current = committedRevision;
+          const committedOps = Array.isArray(result?.appliedOps) && result.appliedOps.length
+            ? result.appliedOps
+            : (action?.ops ?? []);
+          rememberAuthoritativeOps(committedOps, committedRevision);
+          const committedBackground = result?.appliedBackground ?? action?.background ?? null;
+          if (BACKGROUNDS.has(committedBackground)) {
+            authoritativeBackgroundStateRef.current = {
+              revision: committedRevision,
+              background: committedBackground,
+            };
+          }
           bufferSnapshotAction(
-            Array.isArray(result?.appliedOps) && result.appliedOps.length
-              ? result.appliedOps
-              : (action?.ops ?? []),
-            result?.appliedBackground ?? action?.background ?? null,
+            committedOps,
+            committedBackground,
             committedRevision,
           );
 
@@ -8268,6 +8733,19 @@ function BoardWorkspace({
       setRemoteCursors((current) => current.filter((cursor) => now - Number(cursor.receivedAt ?? 0) < 12000));
       for (const [sessionKey, session] of remoteTransformSessionsRef.current) {
         if (now - Number(session.receivedAt ?? 0) > 15000) {
+          const versionedIds = (session.objectIds ?? []).filter((objectId) => (
+            Number(session.updatedAtById?.get?.(String(objectId)) ?? 0) > 0
+          ));
+          if (versionedIds.length) {
+            const minimumRevisionById = session.baseRevision != null
+              && Number.isFinite(Number(session.baseRevision))
+              ? new Map(versionedIds.map((objectId) => [objectId, Number(session.baseRevision) + 1]))
+              : null;
+            scheduleTargetedReconciliation(versionedIds, {
+              minimumUpdatedAtById: session.updatedAtById,
+              minimumRevisionById,
+            });
+          }
           remoteTransformSessionsRef.current.delete(sessionKey);
         }
       }
@@ -8280,6 +8758,16 @@ function BoardWorkspace({
       for (const [objectId, tombstone] of remoteDeletedObjectIdsRef.current) {
         if (now - Number(tombstone?.timestamp ?? 0) > 120000) {
           remoteDeletedObjectIdsRef.current.delete(objectId);
+        }
+      }
+      for (const [transactionId, marker] of authoritativeSelectionTransactionsRef.current) {
+        if (now - Number(marker?.recordedAt ?? 0) > 300000) {
+          authoritativeSelectionTransactionsRef.current.delete(transactionId);
+        }
+      }
+      for (const [objectId, state] of authoritativeObjectStatesRef.current) {
+        if (state?.kind === 'delete' && now - Number(state.recordedAt ?? 0) > 120000) {
+          authoritativeObjectStatesRef.current.delete(objectId);
         }
       }
       for (const [batchKey, batch] of remotePreviewChunksRef.current) {
@@ -8611,7 +9099,10 @@ function BoardWorkspace({
 
         const bounds = shapeDraft.object.getBoundingRect();
         if (bounds.width < 4 || bounds.height < 4) {
-          realtimeRef.current?.sendDeletePreview?.([shapeDraft.object.boardObjectId]).catch?.(() => undefined);
+          realtimeRef.current?.sendDeletePreview?.(
+            [shapeDraft.object.boardObjectId],
+            { expectDurable: false },
+          ).catch?.(() => undefined);
           setSaveStatus('Фигура слишком маленькая');
           return true;
         }
@@ -8702,7 +9193,10 @@ function BoardWorkspace({
           applyingRemoteRef.current = false;
           removedFromMainCanvas = true;
         }
-        realtimeRef.current?.sendDeletePreview?.([shapeDraft.object.boardObjectId]).catch?.(() => undefined);
+        realtimeRef.current?.sendDeletePreview?.(
+          [shapeDraft.object.boardObjectId],
+          { expectDurable: false },
+        ).catch?.(() => undefined);
         cancelled = true;
       }
 
@@ -11947,6 +12441,12 @@ function BoardWorkspace({
       liveDrawSendRef.current.acceptingPoints = false;
       remoteTransformSessionsRef.current.clear();
       remoteTransformClientOrderRef.current.clear();
+      authoritativeObjectStatesRef.current.clear();
+      authoritativeSelectionTransactionsRef.current.clear();
+      authoritativeBackgroundStateRef.current = { revision: 0, background: 'grid' };
+      window.clearTimeout(targetedReconcileStateRef.current.timer);
+      targetedReconcileStateRef.current = { pending: new Map(), timer: null, running: false };
+      targetedReconcileRunnerRef.current = null;
       remoteDrawSessionsRef.current.clear();
       remoteDeletedObjectIdsRef.current.clear();
       remotePreviewTokensRef.current.clear();
@@ -11958,6 +12458,7 @@ function BoardWorkspace({
           transactionId: localSelectionTransaction.transactionId,
           proxyId: localSelectionTransaction.proxyId,
           sourceIds: localSelectionTransaction.sourceIds,
+          baseRevision: localSelectionTransaction.baseRevision,
         });
       }
       localSelectionTransactionRef.current = null;

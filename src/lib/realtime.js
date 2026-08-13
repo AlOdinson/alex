@@ -375,7 +375,7 @@ export function connectBoardRealtime({
         Boolean(payload.needsSync),
       );
     }
-    if (event === 'background-live') onBackgroundLive?.(payload.background);
+    if (event === 'background-live') onBackgroundLive?.(payload.background, payload);
     if (event === 'sync') onSyncRequired?.(Number(payload.revision ?? 0));
     if (event === 'cursor') onCursor?.({ ...payload, receivedAt: Date.now() });
     if (event === 'lock') {
@@ -933,6 +933,7 @@ export function connectBoardRealtime({
       publishRealtime('background-live', {
         clientId,
         background,
+        baseRevision: Number(getKnownRevision?.() ?? 0),
         timestamp: Date.now(),
       }).catch?.(() => undefined);
       return enqueueAction([], background);
@@ -978,6 +979,7 @@ export function connectBoardRealtime({
         clientId,
         name,
         color,
+        baseRevision: Number(getKnownRevision?.() ?? 0),
         ...transform,
         timestamp: Date.now(),
       });
@@ -1026,18 +1028,21 @@ export function connectBoardRealtime({
         clientId,
         name,
         color,
+        baseRevision: Number(getKnownRevision?.() ?? 0),
         record,
         timestamp: Date.now(),
       });
     },
-    sendDeletePreview(ids) {
+    sendDeletePreview(ids, { expectDurable = true } = {}) {
       const safeIds = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean).map(String))];
       if (!safeIds.length) return Promise.resolve('ignored');
       return publishRealtime('delete-preview', {
         clientId,
         name,
         color,
+        baseRevision: Number(getKnownRevision?.() ?? 0),
         ids: safeIds,
+        expectDurable: Boolean(expectDurable),
         mutationId: randomToken(16),
         timestamp: Date.now(),
       });
@@ -1060,6 +1065,7 @@ export function connectBoardRealtime({
         clientId,
         name,
         color,
+        baseRevision: Number(getKnownRevision?.() ?? 0),
         ...transaction,
         timestamp: Date.now(),
       };

@@ -1,9 +1,9 @@
 {
-  "version": "1.31.17",
-  "packageVersion": "1.31.17",
-  "base": "1.31.16",
-  "release": "Event-driven targeted reconciliation",
+  "version": "1.31.18",
+  "packageVersion": "1.31.18",
+  "base": "1.31.17",
+  "release": "Per-object convergence fence",
   "date": "2026-08-13",
-  "name": "event-driven-targeted-reconciliation",
-  "label": "Alex Board 1.31.17"
+  "name": "per-object-convergence-fence",
+  "label": "Alex Board 1.31.18"
 }
