@@ -110,9 +110,10 @@ function IconButton({ title, children, active = false, disabled = false, onClick
       suppressClickUntilRef.current = performance.now() + 900;
       pendingStylusTouchIdRef.current = null;
       button.blur();
-      window.requestAnimationFrame(() => {
-        actionRef.current?.({ inputType: 'stylus-touch-end', nativeEvent: event });
-      });
+      // Execute after the physical contact ends, but in this same event task. Waiting for
+      // requestAnimationFrame made Pencil commands depend on Safari producing another
+      // frame; under canvas pressure repeated taps then prolonged the apparent freeze.
+      actionRef.current?.({ inputType: 'stylus-touch-end', nativeEvent: event });
     }
 
     function handleStylusTouchCancel(event) {
@@ -197,7 +198,7 @@ function NavigationActionButton({ title, children, active = false, onClick }) {
       suppressClickUntilRef.current = performance.now() + 900;
       pendingStylusTouchIdRef.current = null;
       button.blur();
-      window.requestAnimationFrame(() => actionRef.current?.());
+      actionRef.current?.();
     }
 
     function handleStylusTouchCancel() {

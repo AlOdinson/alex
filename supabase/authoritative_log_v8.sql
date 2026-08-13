@@ -18,9 +18,6 @@ create table if not exists public.board_actions_v8 (
   check (background is null or background in ('grid', 'dots', 'blank'))
 );
 
-create index if not exists board_actions_v8_action_id_idx
-  on public.board_actions_v8 (board_id, action_id);
-
 create table if not exists public.board_action_heads_v8 (
   board_id text primary key references public.boards(id) on delete cascade,
   revision bigint not null default 0,
@@ -40,7 +37,10 @@ create table if not exists public.board_import_chunks_v8 (
 );
 
 -- Reuse the previous durable journal when it has the conventional v5-v7 schema.
--- This keeps existing boards recoverable when their snapshot trails the current revision.
+-- Legacy servers could record no-op retries at an already-used revision. They carry no
+-- state, so importing them into a strict one-row-per-revision log would be both ambiguous
+-- and unsafe. Only state-changing rows are copied; the preflight audit must confirm that
+-- these meaningful rows are unique and continuous for every board.
 do $bootstrap$
 declare
   v_table text;
@@ -69,6 +69,8 @@ begin
         background::text,
         coalesce(created_at, now())
       from public.%I
+      where jsonb_array_length(coalesce(ops::jsonb, '[]'::jsonb)) > 0
+         or background is not null
       on conflict do nothing
     $copy$, v_table);
   end loop;
@@ -667,6 +669,17 @@ begin
 end
 $$;
 
+revoke all on function public.get_board_protocol_v8(text, text) from public;
+revoke all on function public.get_board_revision_v8(text, text) from public;
+revoke all on function public.get_board_access_v8(text, text) from public;
+revoke all on function public.get_board_changes_v8(text, text, bigint, integer) from public;
+revoke all on function public.get_board_recovery_v8(text, text) from public;
+revoke all on function public.apply_board_action_v8(text, text, text, text, jsonb, text, bigint) from public;
+revoke all on function public.apply_board_actions_batch_v8(text, text, jsonb, bigint) from public;
+revoke all on function public.upload_board_import_chunk_v8(text, text, text, integer, text, text, jsonb) from public;
+revoke all on function public.commit_board_import_v8(text, text, text, integer, text, text, text, bigint) from public;
+revoke all on function public.save_board_snapshot_v8(text, text, jsonb, bigint) from public;
+
 grant execute on function public.get_board_protocol_v8(text, text) to anon, authenticated;
 grant execute on function public.get_board_revision_v8(text, text) to anon, authenticated;
 grant execute on function public.get_board_access_v8(text, text) to anon, authenticated;
@@ -678,8 +691,8 @@ grant execute on function public.upload_board_import_chunk_v8(text, text, text, 
 grant execute on function public.commit_board_import_v8(text, text, text, integer, text, text, text, bigint) to anon, authenticated;
 grant execute on function public.save_board_snapshot_v8(text, text, jsonb, bigint) to anon, authenticated;
 
--- Old mutation RPCs are intentionally disabled. Old clients fail visibly instead of
--- writing a second, incompatible history beside v8.
+-- Old synchronization RPCs are intentionally disabled. Old clients fail visibly instead
+-- of writing a second history, running a full-board checker, or rebuilding a stale snapshot.
 do $revoke_old_writers$
 declare
   v_function regprocedure;
@@ -698,7 +711,20 @@ begin
         'upload_board_import_chunk_v6',
         'commit_board_import_v6',
         'commit_board_import_v7',
-        'save_board_snapshot'
+        'save_board_snapshot',
+        'build_board_snapshot_v7',
+        'refresh_board_snapshot_v7',
+        'get_board_access',
+        'get_board_access_v4',
+        'get_board_access_v5',
+        'get_board_access_v7',
+        'get_board_changes_v4',
+        'get_board_changes_v5',
+        'get_board_recovery_v4',
+        'get_board_recovery_v7',
+        'get_board_revision',
+        'get_board_sync_state_v4',
+        'get_board_sync_state_v7'
       )
   loop
     execute format('revoke execute on function %s from public, anon, authenticated', v_function);
