@@ -1,6 +1,7 @@
 import { deriveShareKey, randomToken, sha256 } from './ids.js';
 import { isSupabaseConfigured, supabase } from './supabase.js';
 import { copySerializedBoardImages } from './imageStorage.js';
+import { applySerializedObjectPatch } from './operationProtocol.js';
 import {
   clearBoardCache,
   confirmPendingActions,
@@ -100,75 +101,15 @@ async function applyStandardActionRpc(boardId, keyHash, action) {
     p_background: action.background ?? null,
     p_client_revision: Number(action.knownRevision ?? 0),
   };
-  let usedModern = true;
-  let { data, error } = await supabase.rpc('apply_board_action_v7', args);
-  if (error && isMissingFunctionError(error)) {
-    ({ data, error } = await supabase.rpc('apply_board_action_v5', args));
-  }
-  if (error && isMissingFunctionError(error)) {
-    usedModern = false;
-    ({ data, error } = await supabase.rpc('apply_board_action_v4', args));
-  }
-  return { data, error, usedModern };
-}
-
-async function applyLargeBoardActionFallback(boardId, keyHash, action) {
-  const chunks = splitOperationChunks(action.ops);
-  let revision = Number(action.knownRevision ?? 0);
-  let needsSync = chunks.length > 1;
-  let changed = false;
-  let alreadyApplied = true;
-  let updatedAt = null;
-  const rejectedObjectIds = [];
-
-  for (let index = 0; index < chunks.length; index += 1) {
-    const chunk = chunks[index];
-    const chunkBackground = index === chunks.length - 1 ? action.background : null;
-    // Deterministic child ids make a retry safe even if some chunks were already
-    // committed before a network interruption.
-    // eslint-disable-next-line no-await-in-loop
-    const { data, error, usedModern } = await applyStandardActionRpc(boardId, keyHash, {
-      actionId: `${action.actionId}:chunk:${index}`,
-      clientId: action.clientId,
-      ops: chunk,
-      background: chunkBackground,
-      knownRevision: revision,
-    });
-    if (error) throw error;
-    const result = normalizeActionResult(data, {
-      fallbackOps: chunk,
-      fallbackBackground: chunkBackground,
-      legacy: !usedModern,
-    });
-    revision = Math.max(revision, Number(result.revision ?? revision));
-    needsSync = needsSync || Boolean(result.needsSync) || !usedModern;
-    changed = changed || Boolean(result.changed);
-    alreadyApplied = alreadyApplied && Boolean(result.alreadyApplied);
-    updatedAt = result.updatedAt ?? updatedAt;
-    rejectedObjectIds.push(...(result.rejectedObjectIds ?? []));
-    if (result.rejectedObjectIds?.length) break;
-  }
-
-  return {
-    revision,
-    needs_sync: needsSync,
-    updated_at: updatedAt,
-    already_applied: alreadyApplied,
-    changed,
-    // The parent pending action still represents one logical paste. Keep its complete
-    // operation set in the local confirmed cache even though the compatibility server
-    // accepted it as several deterministic child actions.
-    applied_ops: rejectedObjectIds.length ? [] : action.ops,
-    applied_background: rejectedObjectIds.length ? null : (action.background ?? null),
-    rejected_object_ids: [...new Set(rejectedObjectIds.map(String))],
-  };
+  const { data, error } = await supabase.rpc('apply_board_action_v8', args);
+  return { data, error };
 }
 
 async function applyLargeBoardAction(boardId, keyHash, action) {
   const chunks = splitOperationChunks(action.ops);
   const importId = `bulk:${action.actionId}`;
   const uploadChunk = async (chunk, index) => {
-    const { data, error } = await supabase.rpc('upload_board_import_chunk_v6', {
+    const { data, error } = await supabase.rpc('upload_board_import_chunk_v8', {
       p_id: boardId,
       p_key_hash: keyHash,
       p_import_id: importId,
@@ -190,7 +131,7 @@ async function applyLargeBoardAction(boardId, keyHash, action) {
     ({ chunk, index }) => uploadChunk(chunk, index),
   );
 
-  let { data, error } = await supabase.rpc('commit_board_import_v7', {
+  const { data, error } = await supabase.rpc('commit_board_import_v8', {
     p_id: boardId,
     p_key_hash: keyHash,
     p_import_id: importId,
@@ -200,43 +141,28 @@ async function applyLargeBoardAction(boardId, keyHash, action) {
     p_background: action.background,
     p_client_revision: Number(action.knownRevision ?? 0),
   });
-  if (error && isMissingFunctionError(error)) {
-    ({ data, error } = await supabase.rpc('commit_board_import_v6', {
-      p_id: boardId,
-      p_key_hash: keyHash,
-      p_import_id: importId,
-      p_chunk_count: chunks.length,
-      p_action_id: action.actionId,
-      p_client_id: action.clientId,
-      p_background: action.background,
-      p_client_revision: Number(action.knownRevision ?? 0),
-    }));
-  }
   if (error) throw error;
   return data;
 }
 
-function normalizeActionResult(data, { fallbackOps = [], fallbackBackground = null, legacy = false } = {}) {
+function normalizeActionResult(data) {
   if (!data) throw new Error('Сервер отклонил изменение доски');
   const rejectedObjectIds = Array.isArray(data.rejected_object_ids)
     ? data.rejected_object_ids.map(String)
     : [];
   const changed = data.changed !== false;
-  const serverAppliedOps = !legacy && Array.isArray(data.applied_ops) ? data.applied_ops : [];
-  // Some deployed RPC revisions accept/store a new JSON operation but omit it from the
-  // normalized applied_ops response. The original client action is the exact durable
-  // intent when nothing was rejected, so keep it in IndexedDB/realtime/recovery.
-  const appliedOps = serverAppliedOps.length || !changed || rejectedObjectIds.length
-    ? serverAppliedOps
-    : (Array.isArray(fallbackOps) ? fallbackOps : []);
+  const appliedOps = Array.isArray(data.applied_ops) ? data.applied_ops : [];
+  if (changed && !rejectedObjectIds.length && !appliedOps.length && data.applied_background == null) {
+    throw new Error('Supabase v8 не вернул точный набор применённых операций');
+  }
   return {
     revision: Number(data.revision ?? 0),
-    needsSync: Boolean(data.needs_sync) || legacy,
+    needsSync: Boolean(data.needs_sync),
     updatedAt: data.updated_at ?? null,
     alreadyApplied: Boolean(data.already_applied),
     changed,
     appliedOps,
-    appliedBackground: !legacy ? (data.applied_background ?? fallbackBackground ?? null) : null,
+    appliedBackground: data.applied_background ?? null,
     rejectedObjectIds,
   };
 }
@@ -273,9 +199,10 @@ function applyOpsToMutableSnapshot(snapshot, ops, background = null) {
   const sourceOps = (Array.isArray(ops) ? ops : []).filter((op) => (
     op?.type !== 'upsert' || !isSerializedActiveSelection(op.object)
   ));
-  const isExplicitReorder = (op) => op?.type === 'upsert'
-    && Boolean(op.reorder || op.restore)
-    && op.object?.boardObjectId;
+  const isExplicitReorder = (op) => (
+    (op?.type === 'upsert' && op.object?.boardObjectId && Boolean(op.reorder || op.restore))
+    || (op?.type === 'patch' && op.id && Boolean(op.reorder))
+  );
   const orderedOps = [
     ...sourceOps.filter((op) => !isExplicitReorder(op)),
     ...sourceOps.filter(isExplicitReorder).sort((a, b) => (
@@ -283,7 +210,10 @@ function applyOpsToMutableSnapshot(snapshot, ops, background = null) {
     )),
   ];
   const reorderIds = new Set(orderedOps.filter(isExplicitReorder)
-    .map((op) => String(op.object.boardObjectId)));
+    .map((op) => String(op.object?.boardObjectId ?? op.id)));
+  const reorderSources = new Map(objects
+    .filter((object) => reorderIds.has(String(object?.boardObjectId ?? '')))
+    .map((object) => [String(object.boardObjectId), object]));
   if (reorderIds.size) {
     for (let index = objects.length - 1; index >= 0; index -= 1) {
       if (reorderIds.has(String(objects[index]?.boardObjectId ?? ''))) objects.splice(index, 1);
@@ -291,7 +221,7 @@ function applyOpsToMutableSnapshot(snapshot, ops, background = null) {
   }
   // Transform batches may contain hundreds of selected objects. Resolve every stable
   // id once instead of repeating findIndex over the whole board for each tiny patch.
-  const objectById = new Map(objects
+  const objectById = new Map([...objects, ...reorderSources.values()]
     .filter((object) => object?.boardObjectId)
     .map((object) => [String(object.boardObjectId), object]));
 
@@ -302,6 +232,24 @@ function applyOpsToMutableSnapshot(snapshot, ops, background = null) {
       const index = existing ? objects.indexOf(existing) : -1;
       if (index >= 0) objects.splice(index, 1);
       objectById.delete(id);
+      continue;
+    }
+
+    if (op?.type === 'patch' && op.id) {
+      const id = String(op.id);
+      const existing = objectById.get(id);
+      const patched = applySerializedObjectPatch(existing, op);
+      if (!existing || !patched) continue;
+      const existingIndex = objects.indexOf(existing);
+      if (existingIndex >= 0) objects[existingIndex] = patched;
+      objectById.set(id, patched);
+      if (op.reorder && Number.isInteger(op.zIndex)) {
+        if (existingIndex >= 0) objects.splice(existingIndex, 1);
+        const targetIndex = Math.max(0, Math.min(objects.length, op.zIndex));
+        objects.splice(targetIndex, 0, patched);
+      } else if (existingIndex < 0) {
+        objects.push(patched);
+      }
       continue;
     }
 
@@ -386,6 +334,15 @@ function localPermission(board, keyHash) {
   return null;
 }
 
+function incompatibleProtocolError(cause = null) {
+  const error = new Error(
+    'Сервер доски не поддерживает строгую синхронизацию v8. Сначала выполните supabase/authoritative_log_v8.sql.',
+  );
+  error.cause = cause;
+  error.code = 'BOARD_PROTOCOL_V8_REQUIRED';
+  return error;
+}
+
 export async function createBoard(title = 'Новая доска', studentName = '') {
   const boardId = randomToken(12);
   const ownerKey = randomToken(28);
@@ -439,31 +396,14 @@ export async function getBoardAccess(boardId, key) {
   const keyHash = await sha256(key);
 
   if (isSupabaseConfigured) {
-    let data;
-    let error;
-    ({ data, error } = await supabase.rpc('get_board_access_v7', {
+    const { data, error } = await supabase.rpc('get_board_access_v8', {
       p_id: boardId,
       p_key_hash: keyHash,
-    }));
-    if (error && isMissingFunctionError(error)) {
-      ({ data, error } = await supabase.rpc('get_board_access_v5', {
-        p_id: boardId,
-        p_key_hash: keyHash,
-      }));
+    });
+    if (error) {
+      if (isMissingFunctionError(error)) throw incompatibleProtocolError(error);
+      throw error;
     }
-    if (error && isMissingFunctionError(error)) {
-      ({ data, error } = await supabase.rpc('get_board_access_v4', {
-        p_id: boardId,
-        p_key_hash: keyHash,
-      }));
-    }
-    if (error && isMissingFunctionError(error)) {
-      ({ data, error } = await supabase.rpc('get_board_access', {
-        p_id: boardId,
-        p_key_hash: keyHash,
-      }));
-    }
-    if (error) throw error;
     const row = Array.isArray(data) ? data[0] : data;
     if (!row) return null;
     return {
@@ -479,6 +419,8 @@ export async function getBoardAccess(boardId, key) {
       updatedAt: row.updated_at,
       createdAt: row.created_at ?? null,
       lastLessonAt: row.last_lesson_at ?? row.updated_at ?? null,
+      protocolVersion: Number(row.protocol_version ?? 8),
+      logFloorRevision: Number(row.log_floor_revision ?? row.revision ?? 0),
     };
   }
 
@@ -514,55 +456,11 @@ export async function getBoardAccess(boardId, key) {
   };
 }
 
-export async function getBoardSyncState(boardId, key) {
-  const keyHash = await sha256(key);
-  if (isSupabaseConfigured) {
-    let { data, error } = await supabase.rpc('get_board_sync_state_v7', {
-      p_id: boardId,
-      p_key_hash: keyHash,
-    });
-    if (error && isMissingFunctionError(error)) {
-      ({ data, error } = await supabase.rpc('get_board_sync_state_v4', {
-        p_id: boardId,
-        p_key_hash: keyHash,
-      }));
-    }
-    if (error) {
-      if (isMissingFunctionError(error)) {
-        const fallback = await getBoardRevision(boardId, key);
-        return fallback ? { ...fallback, objectCount: null, stateHash: null } : null;
-      }
-      throw error;
-    }
-    const row = Array.isArray(data) ? data[0] : data;
-    if (!row) return null;
-    return {
-      revision: Number(row.revision ?? 0),
-      objectCount: Number(row.object_count ?? 0),
-      stateHash: row.state_hash ?? null,
-      updatedAt: row.updated_at ?? null,
-      permission: row.permission ?? null,
-      guestMode: row.guest_mode ?? null,
-    };
-  }
-
-  const access = await getBoardAccess(boardId, key);
-  if (!access) return null;
-  return {
-    revision: Number(access.revision ?? 0),
-    objectCount: access.snapshot?.canvas?.objects?.length ?? 0,
-    stateHash: null,
-    updatedAt: access.updatedAt,
-    permission: access.permission,
-    guestMode: access.guestMode,
-  };
-}
-
 export async function getBoardRevision(boardId, key) {
   const keyHash = await sha256(key);
 
   if (isSupabaseConfigured) {
-    const { data, error } = await supabase.rpc('get_board_revision', {
+    const { data, error } = await supabase.rpc('get_board_revision_v8', {
       p_id: boardId,
       p_key_hash: keyHash,
     });
@@ -597,9 +495,9 @@ export async function getBoardChanges(boardId, key, sinceRevision, limit = 500) 
     p_since_revision: Number(sinceRevision ?? 0),
     p_limit: Math.max(1, Math.min(1000, Number(limit ?? 500))),
   };
-  const { data, error } = await supabase.rpc('get_board_changes_v5', args);
+  const { data, error } = await supabase.rpc('get_board_changes_v8', args);
   if (error) {
-    if (isMissingFunctionError(error)) return null;
+    if (isMissingFunctionError(error)) throw incompatibleProtocolError(error);
     throw error;
   }
   return (Array.isArray(data) ? data : []).map((row) => ({
@@ -615,18 +513,12 @@ export async function getBoardChanges(boardId, key, sinceRevision, limit = 500) 
 export async function getBoardRecovery(boardId, key) {
   if (!isSupabaseConfigured) return null;
   const keyHash = await sha256(key);
-  let { data, error } = await supabase.rpc('get_board_recovery_v7', {
+  const { data, error } = await supabase.rpc('get_board_recovery_v8', {
     p_id: boardId,
     p_key_hash: keyHash,
   });
-  if (error && isMissingFunctionError(error)) {
-    ({ data, error } = await supabase.rpc('get_board_recovery_v4', {
-      p_id: boardId,
-      p_key_hash: keyHash,
-    }));
-  }
   if (error) {
-    if (isMissingFunctionError(error)) return null;
+    if (isMissingFunctionError(error)) throw incompatibleProtocolError(error);
     throw error;
   }
   const result = Array.isArray(data) ? data[0] : data;
@@ -761,18 +653,9 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
     const sourceAccess = await getBoardRecovery(boardId, ownerKey);
     if (!sourceAccess?.snapshot) throw new Error('Не удалось получить актуальный урок для копирования');
 
-    // Copy image assets before creating the board, then update only top-level objects
-    // whose nested image URLs changed. The copied lesson no longer depends on files in
-    // the source board's Storage folder.
+    // Copy image assets before creating the board. The exact recovered v8 state is then
+    // installed as the new board's authoritative snapshot in one operation.
     const copiedSnapshot = await copySerializedBoardImages(sourceAccess.snapshot, newBoardId);
-    const sourceObjects = sourceAccess.snapshot?.canvas?.objects ?? [];
-    const copiedObjects = copiedSnapshot?.canvas?.objects ?? [];
-    const assetOps = copiedObjects.flatMap((object, index) => (
-      serializedSize(object) !== serializedSize(sourceObjects[index])
-        || JSON.stringify(object) !== JSON.stringify(sourceObjects[index])
-        ? [{ type: 'upsert', object, zIndex: index }]
-        : []
-    ));
 
     const duplicateArgs = {
       p_source_id: boardId,
@@ -783,32 +666,25 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
       p_new_share_key_hash: newShareHash,
       p_new_realtime_key: newRealtimeKey,
     };
-    let { data, error } = await supabase.rpc('duplicate_board_v7', duplicateArgs);
-    if (error && isMissingFunctionError(error)) {
-      ({ data, error } = await supabase.rpc('duplicate_board_v4', duplicateArgs));
-    }
+    const { data, error } = await supabase.rpc('duplicate_board_v7', duplicateArgs);
     if (error) throw error;
     if (!data) throw new Error('Не удалось скопировать доску');
 
-    if (assetOps.length) {
-      try {
-        const result = await applyBoardAction(newBoardId, newOwnerKey, {
-          actionId: `copy-assets:${randomToken(20)}`,
-          clientId: 'board-copy',
-          ops: assetOps,
-          background: null,
-          knownRevision: 0,
-        });
-        if (Array.isArray(result?.rejectedObjectIds) && result.rejectedObjectIds.length) {
-          throw new Error('Сервер отклонил независимые копии изображений');
-        }
-      } catch (assetError) {
-        await supabase.rpc('delete_board_v4', {
-          p_id: newBoardId,
-          p_owner_key_hash: newOwnerHash,
-        }).catch?.(() => undefined);
-        throw assetError;
-      }
+    try {
+      const duplicateAccess = await getBoardAccess(newBoardId, newOwnerKey);
+      if (!duplicateAccess) throw new Error('Не удалось открыть созданную копию');
+      await saveBoardSnapshot(
+        newBoardId,
+        newOwnerKey,
+        copiedSnapshot,
+        Number(duplicateAccess.revision ?? 0),
+      );
+    } catch (snapshotError) {
+      await supabase.rpc('delete_board_v4', {
+        p_id: newBoardId,
+        p_owner_key_hash: newOwnerHash,
+      }).catch?.(() => undefined);
+      throw snapshotError;
     }
   } else {
     const source = getLocalBoard(boardId);
@@ -877,7 +753,7 @@ export async function applyBoardActionBatch(boardId, key, actions, knownRevision
 
   if (isSupabaseConfigured) {
     const keyHash = await sha256(key);
-    const { data, error } = await supabase.rpc('apply_board_actions_batch_v7', {
+    const { data, error } = await supabase.rpc('apply_board_actions_batch_v8', {
       p_id: boardId,
       p_key_hash: keyHash,
       p_actions: safeActions.map((action) => ({
@@ -889,26 +765,12 @@ export async function applyBoardActionBatch(boardId, key, actions, knownRevision
       p_client_revision: Number(knownRevision ?? 0),
     });
     if (error) {
-      if (isMissingFunctionError(error)) {
-        const results = [];
-        let revision = Number(knownRevision ?? 0);
-        for (const action of safeActions) {
-          // Compatibility with a server that has not received the 0.9.7 SQL yet.
-          // eslint-disable-next-line no-await-in-loop
-          const result = await applyBoardAction(boardId, key, { ...action, knownRevision: revision });
-          results.push({ actionId: action.actionId, ...result });
-          revision = Math.max(revision, Number(result?.revision ?? revision));
-        }
-        return results;
-      }
+      if (isMissingFunctionError(error)) throw incompatibleProtocolError(error);
       throw error;
     }
     return (Array.isArray(data) ? data : []).map((item, index) => ({
       actionId: item?.action_id ?? safeActions[index]?.actionId,
-      ...normalizeActionResult(item, {
-        fallbackOps: safeActions[index]?.ops ?? [],
-        fallbackBackground: safeActions[index]?.background ?? null,
-      }),
+      ...normalizeActionResult(item),
     }));
   }
 
@@ -941,38 +803,20 @@ export async function applyBoardAction(
     const safeOps = Array.isArray(ops) ? ops : [];
     let data;
     let error;
-    let usedModern = true;
 
     const safeOpsSerializedSize = Number.isFinite(Number(providedSerializedSize))
       ? Number(providedSerializedSize)
       : serializedSize(safeOps);
     if (safeOpsSerializedSize > BULK_ACTION_THRESHOLD) {
-      try {
-        data = await applyLargeBoardAction(boardId, keyHash, {
-          actionId,
-          clientId,
-          ops: safeOps,
-          background,
-          knownRevision,
-        });
-      } catch (bulkError) {
-        if (isMissingFunctionError(bulkError)) {
-          // Older backends may not have staged-import RPCs. Do not leave the action
-          // permanently at the head of IndexedDB: commit deterministic smaller child
-          // actions through the normal RPC path instead.
-          data = await applyLargeBoardActionFallback(boardId, keyHash, {
-            actionId,
-            clientId,
-            ops: safeOps,
-            background,
-            knownRevision,
-          });
-        } else {
-          throw bulkError;
-        }
-      }
+      data = await applyLargeBoardAction(boardId, keyHash, {
+        actionId,
+        clientId,
+        ops: safeOps,
+        background,
+        knownRevision,
+      });
     } else {
-      ({ data, error, usedModern } = await applyStandardActionRpc(boardId, keyHash, {
+      ({ data, error } = await applyStandardActionRpc(boardId, keyHash, {
         actionId,
         clientId,
         ops: safeOps,
@@ -980,18 +824,12 @@ export async function applyBoardAction(
         knownRevision,
       }));
       if (error) {
-        if (isMissingFunctionError(error)) {
-          return applyBoardOps(boardId, key, safeOps, { background, knownRevision });
-        }
+        if (isMissingFunctionError(error)) throw incompatibleProtocolError(error);
         throw error;
       }
     }
 
-    return normalizeActionResult(data, {
-      fallbackOps: safeOps,
-      fallbackBackground: background,
-      legacy: !usedModern,
-    });
+    return normalizeActionResult(data);
   }
 
   const board = getLocalBoard(boardId);
@@ -1032,53 +870,11 @@ export async function applyBoardAction(
   };
 }
 
-/** Compatibility wrapper for older server deployments. */
-export async function applyBoardOps(
-  boardId,
-  key,
-  ops,
-  { background = null, knownRevision = 0 } = {},
-) {
-  const keyHash = await sha256(key);
-
-  if (isSupabaseConfigured) {
-    const { data, error } = await supabase.rpc('apply_board_ops', {
-      p_id: boardId,
-      p_key_hash: keyHash,
-      p_ops: Array.isArray(ops) ? ops : [],
-      p_background: background,
-      p_client_revision: Number(knownRevision ?? 0),
-    });
-    if (error) throw error;
-    if (!data) throw new Error('Сервер отклонил изменение доски');
-    return {
-      revision: Number(data.revision ?? 0),
-      // Legacy apply_board_ops cannot report the exact effective operation set.
-      // Force the client to reconcile from the durable source instead of broadcasting
-      // a request that the server may have partially rejected.
-      needsSync: true,
-      updatedAt: data.updated_at ?? null,
-      changed: true,
-      appliedOps: [],
-      appliedBackground: null,
-      rejectedObjectIds: [],
-    };
-  }
-
-  return applyBoardAction(boardId, key, {
-    actionId: randomToken(18),
-    clientId: 'local',
-    ops,
-    background,
-    knownRevision,
-  });
-}
-
 export async function saveBoardSnapshot(boardId, key, snapshot, revision) {
   const keyHash = await sha256(key);
 
   if (isSupabaseConfigured) {
-    const { data, error } = await supabase.rpc('save_board_snapshot', {
+    const { data, error } = await supabase.rpc('save_board_snapshot_v8', {
       p_id: boardId,
       p_key_hash: keyHash,
       p_snapshot: snapshot,

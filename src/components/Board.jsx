@@ -51,6 +51,10 @@ import {
   shouldRejectRealtimeObjectFrame,
 } from '../lib/convergence.js';
 import {
+  applySerializedObjectPatch,
+  createRecordPatchOps,
+} from '../lib/operationProtocol.js';
+import {
   copySerializedBoardImages,
   isAcceptedImageFile,
   loadImageElement,
@@ -1099,6 +1103,7 @@ function affectedOperationIds(ops) {
   const ids = new Set();
   for (const op of Array.isArray(ops) ? ops : []) {
     if (op?.type === 'delete' && op.id) ids.add(String(op.id));
+    if (op?.type === 'patch' && op.id) ids.add(String(op.id));
     if (op?.type === 'upsert' && op.object?.boardObjectId) {
       ids.add(String(op.object.boardObjectId));
     }
@@ -1113,11 +1118,10 @@ function finalVerificationOps(actions, results) {
   const latestById = new Map();
   (Array.isArray(actions) ? actions : []).forEach((action, actionIndex) => {
     const result = Array.isArray(results) ? results[actionIndex] : null;
-    const ops = Array.isArray(result?.appliedOps) && result.appliedOps.length
-      ? result.appliedOps
-      : (Array.isArray(action?.ops) ? action.ops : []);
+    const ops = Array.isArray(result?.appliedOps) ? result.appliedOps : [];
     ops.forEach((op) => {
       if (op?.type === 'delete' && op.id) latestById.set(String(op.id), op);
+      if (op?.type === 'patch' && op.id) latestById.set(String(op.id), op);
       if (op?.type === 'upsert' && op.object?.boardObjectId) {
         latestById.set(String(op.object.boardObjectId), op);
       }
@@ -2134,6 +2138,39 @@ function BoardWorkspace({
           && Number(serializedActual.updatedAt ?? actual.updatedAt ?? 0) !== Number(expected.updatedAt)) return false;
         if (!authoritativePlacementMatches(actual, expected)) return false;
         if (!authoritativeContentSubsetMatches(serializedActual, expected)) return false;
+        if (Number.isInteger(op.zIndex)) {
+          const durableOrder = fabricCanvasRef.current?.getObjects?.().filter((object) => (
+            !object.transientPreview
+            && !object.transientTransformFallback
+            && !object.transientSelectionProxy
+          )) ?? [];
+          if (durableOrder.indexOf(actual) !== Number(op.zIndex)) return false;
+        }
+      }
+
+      if (op?.type === 'patch' && op.id) {
+        const durable = registeredObjectsById(op.id).filter((object) => (
+          !object.transientPreview
+          && !object.transientTransformFallback
+          && !object.transientSelectionProxy
+        ));
+        if (durable.length !== 1) return false;
+        const actual = durable[0];
+        const serializedActual = actual.pendingImageSerialized ?? serializeObject(actual);
+        if (!authoritativeContentSubsetMatches(serializedActual, op.patch ?? {})) return false;
+        for (const key of Array.isArray(op.unset) ? op.unset : []) {
+          if (Object.prototype.hasOwnProperty.call(serializedActual, key)) return false;
+        }
+        if (op.updatedAt != null
+          && Number(serializedActual.updatedAt ?? actual.updatedAt ?? 0) !== Number(op.updatedAt)) return false;
+        if (op.reorder && Number.isInteger(op.zIndex)) {
+          const durableOrder = fabricCanvasRef.current?.getObjects?.().filter((object) => (
+            !object.transientPreview
+            && !object.transientTransformFallback
+            && !object.transientSelectionProxy
+          )) ?? [];
+          if (durableOrder.indexOf(actual) !== Number(op.zIndex)) return false;
+        }
       }
 
       if (op?.type === 'transform') {
@@ -2187,6 +2224,28 @@ function BoardWorkspace({
         if (op.object.selectionTransactionId) {
           authoritativeSelectionTransactionsRef.current.set(
             String(op.object.selectionTransactionId),
+            { revision: numericRevision, recordedAt },
+          );
+        }
+        continue;
+      }
+      if (op?.type === 'patch' && op.id) {
+        const objectId = String(op.id);
+        const previous = authoritativeObjectStatesRef.current.get(objectId);
+        const previousUpsert = previous?.op?.type === 'upsert' ? previous.op : null;
+        const authoritativeOp = previousUpsert
+          ? {
+            ...previousUpsert,
+            object: applySerializedObjectPatch(previousUpsert.object, op),
+            preserveOrder: !op.reorder,
+            ...(Number.isInteger(op.zIndex) ? { zIndex: op.zIndex } : {}),
+            ...(op.reorder ? { reorder: true } : {}),
+          }
+          : { ...op, patch: { ...(op.patch ?? {}) } };
+        remember(objectId, authoritativeOp, Number(op.updatedAt ?? 0));
+        if (op.patch?.selectionTransactionId) {
+          authoritativeSelectionTransactionsRef.current.set(
+            String(op.patch.selectionTransactionId),
             { revision: numericRevision, recordedAt },
           );
         }
@@ -3201,6 +3260,16 @@ function BoardWorkspace({
     return sendDurableOps(ops, { atomic, skipDeferredFlush });
   }, [sendDurableOps]);
 
+  const sendRecordPatches = useCallback((beforeRecords, afterRecords, {
+    reorder = false,
+    atomic = true,
+    skipDeferredFlush = false,
+  } = {}) => {
+    const ops = createRecordPatchOps(beforeRecords, afterRecords, { reorder });
+    if (!ops.length) return Promise.resolve([]);
+    return sendDurableOps(ops, { atomic, skipDeferredFlush });
+  }, [sendDurableOps]);
+
   const sendLightweightTransforms = useCallback((entries, {
     reorder = false,
     skipDeferredFlush = false,
@@ -3507,12 +3576,11 @@ function BoardWorkspace({
         finalCount: finalRecords.length,
         baseRevision: transaction.baseRevision,
       });
-      const ops = finalRecords.map((record) => ({
-        type: 'upsert',
-        object: record.object,
-        zIndex: record.zIndex,
-      }));
-      const commitResult = await sendDurableOps(ops, { atomic: true });
+      const commitResult = await sendRecordPatches(
+        transaction.sourceRecords,
+        finalRecords,
+        { atomic: true },
+      );
       if (!commitResult && navigator.onLine !== false) {
         console.warn('Групповое изменение сохранено локально и ожидает подтверждения сервера');
       }
@@ -3565,6 +3633,7 @@ function BoardWorkspace({
     recordAction,
     schedulePersistence,
     sendDurableOps,
+    sendRecordPatches,
     updateSelectionState,
     updateSelectionStyleState,
   ]);
@@ -3843,10 +3912,9 @@ function BoardWorkspace({
       canvas.requestRenderAll();
       const placeholderRecord = getObjectRecords([placeholder]);
       realtimeRef.current?.sendPreview?.(placeholderRecord);
-      // Publish a lightweight placeholder first. Other devices see that the
-      // image is being prepared instead of an unexplained empty area.
-      // eslint-disable-next-line no-await-in-loop
-      await sendRecordUpserts(placeholderRecord);
+      // The upload placeholder is transient. Persisting it created two authoritative
+      // revisions for one image and allowed the final image upsert to overwrite a newer
+      // server transform. Only the completed Storage object enters the v8 journal.
 
       setSaveStatus(`Загружаю изображение ${index + 1} из ${imageFiles.length}…`);
       setSyncTone('saving');
@@ -3899,8 +3967,10 @@ function BoardWorkspace({
         applyingRemoteRef.current = true;
         if (canvas.getObjects().includes(placeholder)) canvas.remove(placeholder);
         applyingRemoteRef.current = false;
-        // eslint-disable-next-line no-await-in-loop
-        await sendDeletes([placeholder.boardObjectId]);
+        realtimeRef.current?.sendDeletePreview?.(
+          [placeholder.boardObjectId],
+          { expectDurable: false },
+        ).catch?.(() => undefined);
         failedMessages.push(caught instanceof Error ? caught.message : `Не удалось добавить ${file.name}`);
       }
     }
@@ -3990,7 +4060,7 @@ function BoardWorkspace({
     // the server commit or for the selection to be cleared.
     publishOperation(objects);
     const reorder = realtimeOperation?.operation === 'layer';
-    sendRecordUpserts(after, { reorder });
+    sendRecordPatches(before, after, { reorder });
     recordAction({ type: 'modify', before, after, reorder });
     schedulePersistence();
     if (restoreActiveSelection && activeToolRef.current === 'select') {
@@ -3999,7 +4069,7 @@ function BoardWorkspace({
     canvas.requestRenderAll();
     updateSelectionState();
     updateSelectionStyleState();
-  }, [getObjectRecords, markObject, recordAction, schedulePersistence, sendRecordUpserts, updateSelectionState, updateSelectionStyleState]);
+  }, [getObjectRecords, markObject, recordAction, schedulePersistence, sendRecordPatches, updateSelectionState, updateSelectionStyleState]);
 
   const applySelectionColor = useCallback((nextColor) => {
     mutateSelection((objects) => {
@@ -4103,7 +4173,7 @@ function BoardWorkspace({
       .filter(Boolean);
     changedObjects.forEach((object) => markObject(object, clientIdRef.current));
     const after = getObjectRecords(changedObjects);
-    sendRecordUpserts(after);
+    sendRecordPatches(before, after);
     recordAction({ type: 'modify', before, after });
     schedulePersistence();
     if (restoreActiveSelection && activeToolRef.current === 'select') {
@@ -4111,7 +4181,7 @@ function BoardWorkspace({
     }
     canvas.requestRenderAll();
     return objects;
-  }, [getObjectRecords, markObject, recordAction, registeredObjectsById, schedulePersistence, sendRecordUpserts]);
+  }, [getObjectRecords, markObject, recordAction, registeredObjectsById, schedulePersistence, sendRecordPatches]);
 
   const applyEyedropperToSelectionTransaction = useCallback((transactionId, sampled, { colorOnly = false } = {}) => {
     const canvas = fabricCanvasRef.current;
@@ -4600,20 +4670,14 @@ function BoardWorkspace({
     const startingRevision = Number(revisionRef.current ?? 0);
     setSyncTone('recovering');
 
-    const recoverFromSnapshot = async (reason) => {
-      if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
-        // Do not spin synchronously while the user is holding or editing an object.
-        // A delayed retry preserves the local gesture and keeps later revisions ordered.
-        syncRequestedRef.current = false;
-        syncForceRef.current = false;
-        window.setTimeout(() => syncFromServer(true), 600);
-        return false;
-      }
-      console.warn('Operation sync fallback to snapshot:', reason);
-      const recovery = await getBoardRecovery(boardId, boardKey);
-      if (!recovery?.snapshot) return false;
-      seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? 0));
-      await applyAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? 0));
+    const rejectJournalGap = async (reason) => {
+      // v8 never repairs an active board by replacing every object. Keep the current
+      // canvas intact and retry the authoritative log; a missing revision is a server
+      // protocol error, not permission to run an expensive whole-board comparison.
+      console.warn('Authoritative v8 journal gap:', reason);
+      setSaveStatus('Ожидаю пропущенную серверную ревизию…');
+      setSyncTone('recovering');
+      window.setTimeout(() => syncFromServer(true), 600);
       return true;
     };
 
@@ -4647,17 +4711,12 @@ function BoardWorkspace({
           INSURANCE_SYNC_PAGE_SIZE,
         );
         if (changes === null) {
-          // The 0.9.5 SQL was not installed. Older servers can only recover by snapshot.
-          // eslint-disable-next-line no-await-in-loop
-          if (!await recoverFromSnapshot('operation journal RPC is unavailable')) return;
-          currentRevision = Number(revisionRef.current ?? 0);
-          break;
+          await rejectJournalGap('operation journal RPC is unavailable');
+          return;
         }
         if (!changes.length) {
-          // eslint-disable-next-line no-await-in-loop
-          if (!await recoverFromSnapshot('journal has a revision gap')) return;
-          currentRevision = Number(revisionRef.current ?? 0);
-          break;
+          await rejectJournalGap('journal has a revision gap');
+          return;
         }
 
         let progressed = false;
@@ -4665,11 +4724,8 @@ function BoardWorkspace({
           const actionRevision = Number(action?.revision ?? 0);
           if (actionRevision <= currentRevision) continue;
           if (actionRevision !== currentRevision + 1) {
-            // eslint-disable-next-line no-await-in-loop
-            if (!await recoverFromSnapshot(`expected revision ${currentRevision + 1}, received ${actionRevision}`)) return;
-            currentRevision = Number(revisionRef.current ?? 0);
-            progressed = true;
-            break;
+            await rejectJournalGap(`expected revision ${currentRevision + 1}, received ${actionRevision}`);
+            return;
           }
 
           const applyOperation = applyRemoteOpsRef.current;
@@ -4693,10 +4749,8 @@ function BoardWorkspace({
         }
 
         if (!progressed) {
-          // eslint-disable-next-line no-await-in-loop
-          if (!await recoverFromSnapshot('journal page made no progress')) return;
-          currentRevision = Number(revisionRef.current ?? 0);
-          break;
+          await rejectJournalGap('journal page made no progress');
+          return;
         }
 
         // A concurrent participant can append revisions while this page is applying.
@@ -4757,13 +4811,32 @@ function BoardWorkspace({
       .map(String);
     const affectedIds = affectedOperationIds(ops);
     const touchesSelection = selectedIds.some((id) => affectedIds.has(id));
-    const prepared = ops.map((op) => ({ op, revived: null }));
+    const prepared = ops.map((op) => ({ op, revived: null, serialized: null }));
     const reviveEntries = prepared
-      .map((entry, index) => ({ ...entry, index }))
-      .filter(({ op }) => op?.type === 'upsert' && op.object?.boardObjectId);
+      .map((entry, index) => {
+        const { op } = entry;
+        if (op?.type === 'upsert' && op.object?.boardObjectId) {
+          return { ...entry, index, serialized: op.object };
+        }
+        if (op?.type !== 'patch' || !op.id) return null;
+        const current = registeredObjectsById(op.id).find((object) => (
+          !object.transientPreview
+          && !object.transientTransformFallback
+          && !object.transientSelectionProxy
+        ));
+        const source = current?.pendingImageSerialized
+          ?? serializedObjectCacheRef.current.get(current)
+          ?? (current ? serializeObject(current) : null);
+        const serialized = applySerializedObjectPatch(source, op);
+        return serialized ? { ...entry, index, serialized } : null;
+      })
+      .filter(Boolean);
 
     if (reviveEntries.length) {
-      const serialized = reviveEntries.map((entry) => entry.op.object);
+      reviveEntries.forEach((entry) => {
+        prepared[entry.index].serialized = entry.serialized;
+      });
+      const serialized = reviveEntries.map((entry) => entry.serialized);
       try {
         await preloadSerializedImages(serialized);
         const revived = await util.enlivenObjects(serialized);
@@ -4774,14 +4847,14 @@ function BoardWorkspace({
         for (const entry of reviveEntries) {
           try {
             // eslint-disable-next-line no-await-in-loop
-            await preloadSerializedImages(entry.op.object);
+            await preloadSerializedImages(entry.serialized);
             // eslint-disable-next-line no-await-in-loop
-            const [revived] = await util.enlivenObjects([entry.op.object]);
+            const [revived] = await util.enlivenObjects([entry.serialized]);
             prepared[entry.index].revived = revived ?? null;
           } catch {
-            const serializedType = String(entry.op.object?.type ?? '').toLowerCase();
-            if (serializedType !== 'image' && entry.op.object?.objectKind !== 'image') throw new Error('Не удалось восстановить локальный объект');
-            prepared[entry.index].revived = createPendingImagePlaceholder(entry.op.object);
+            const serializedType = String(entry.serialized?.type ?? '').toLowerCase();
+            if (serializedType !== 'image' && entry.serialized?.objectKind !== 'image') throw new Error('Не удалось восстановить локальный объект');
+            prepared[entry.index].revived = createPendingImagePlaceholder(entry.serialized);
           }
         }
       }
@@ -4793,7 +4866,14 @@ function BoardWorkspace({
     try {
       if (touchesSelection) canvas.discardActiveObject();
       const touched = [];
-      for (const { op, revived } of prepared) {
+      const atomicReorderIds = new Set(prepared
+        .filter(({ op }) => (
+          (op?.type === 'upsert' && Boolean(op.reorder || op.restore) && op.object?.boardObjectId)
+          || (op?.type === 'patch' && op.reorder && op.id)
+        ))
+        .map(({ op }) => String(op.object?.boardObjectId ?? op.id)));
+      atomicReorderIds.forEach((objectId) => removeRegisteredObjectsById(objectId));
+      for (const { op, revived, serialized } of prepared) {
         if (op?.type === 'delete' && op.id) {
           removeRegisteredObjectsById(op.id);
           continue;
@@ -4815,16 +4895,23 @@ function BoardWorkspace({
           }
           continue;
         }
-        if (op?.type !== 'upsert' || !op.object?.boardObjectId || !revived) continue;
-        removeRegisteredObjectsById(op.object.boardObjectId);
+        const replacementId = op?.type === 'patch' ? op.id : op?.object?.boardObjectId;
+        if (!['upsert', 'patch'].includes(op?.type) || !replacementId || !revived) continue;
+        const previous = registeredObjectsById(replacementId)[0] ?? null;
+        const previousIndex = previous ? canvas.getObjects().indexOf(previous) : -1;
+        removeRegisteredObjectsById(replacementId);
         revived.transientPreview = false;
         revived.transientLiveDraw = false;
         revived.transientAwaitingCommit = false;
         canvas.add(revived);
-        serializedObjectCacheRef.current.set(revived, op.object);
+        serializedObjectCacheRef.current.set(revived, serialized ?? op.object ?? serializeObject(revived));
         touched.push(revived);
-        if (Number.isInteger(op.zIndex) && typeof canvas.moveObjectTo === 'function') {
-          canvas.moveObjectTo(revived, clamp(op.zIndex, 0, canvas.getObjects().length - 1));
+        const requestedIndex = op.type === 'upsert'
+          ? (op.preserveOrder && previousIndex >= 0 ? previousIndex : op.zIndex)
+          : (op.reorder && Number.isInteger(op.zIndex) ? op.zIndex : previousIndex);
+        if (Number.isInteger(requestedIndex) && requestedIndex >= 0
+          && typeof canvas.moveObjectTo === 'function') {
+          canvas.moveObjectTo(revived, clamp(requestedIndex, 0, canvas.getObjects().length - 1));
         }
       }
       deduplicateRegisteredObjectIds(affectedIds);
@@ -5511,9 +5598,13 @@ function BoardWorkspace({
       }
 
       if (action.type === 'modify') {
+        const sourceRecords = direction === 'undo' ? action.after : action.before;
         const records = refreshHistoryRecords(direction === 'undo' ? action.before : action.after);
-        await applyRecordsLocally(records);
-        await sendRecordUpserts(records, { reorder: Boolean(action.reorder) });
+        const ops = createRecordPatchOps(sourceRecords, records, {
+          reorder: Boolean(action.reorder),
+        });
+        await replayPendingActionsLocally([{ ops }]);
+        await sendDurableOps(ops, { atomic: true });
       }
 
       if (action.type === 'replace') {
@@ -5591,6 +5682,7 @@ function BoardWorkspace({
     schedulePersistence,
     sendDeletes,
     sendDurableOps,
+    sendRecordPatches,
     sendLightweightTransforms,
     sendRecordUpserts,
     updateSelectionState,
@@ -5653,8 +5745,15 @@ function BoardWorkspace({
     const hasBackgroundChange = BACKGROUNDS.has(incomingBackground);
     const earlyTransactionIds = Array.isArray(ops)
       ? [...new Set(ops
-        .filter((op) => op?.type === 'upsert' && op.object?.selectionTransactionId)
-        .map((op) => String(op.object.selectionTransactionId)))]
+        .flatMap((op) => {
+          if (op?.type === 'upsert' && op.object?.selectionTransactionId) {
+            return [String(op.object.selectionTransactionId)];
+          }
+          if (op?.type === 'patch' && op.patch?.selectionTransactionId) {
+            return [String(op.patch.selectionTransactionId)];
+          }
+          return [];
+        }))]
       : [];
     const deletedIds = new Set(Array.isArray(ops)
       ? ops.filter((op) => op?.type === 'delete' && op.id).map((op) => String(op.id))
@@ -5686,14 +5785,24 @@ function BoardWorkspace({
     const upsertIds = [...new Set(ops
       .filter((op) => op?.type === 'upsert' && op.object?.boardObjectId)
       .map((op) => String(op.object.boardObjectId)))];
+    const patchIds = [...new Set(ops
+      .filter((op) => op?.type === 'patch' && op.id)
+      .map((op) => String(op.id)))];
     const transformIds = [...new Set(ops
       .flatMap((op) => transformOperationEntries(op))
       .map((entry) => String(entry?.id ?? ''))
       .filter(Boolean))];
-    const authoritativeObjectIds = [...new Set([...upsertIds, ...transformIds])];
+    const authoritativeObjectIds = [...new Set([...upsertIds, ...patchIds, ...transformIds])];
     const selectionTransactionIds = [...new Set(ops
-      .filter((op) => op?.type === 'upsert' && op.object?.selectionTransactionId)
-      .map((op) => String(op.object.selectionTransactionId)))];
+      .flatMap((op) => {
+        if (op?.type === 'upsert' && op.object?.selectionTransactionId) {
+          return [String(op.object.selectionTransactionId)];
+        }
+        if (op?.type === 'patch' && op.patch?.selectionTransactionId) {
+          return [String(op.patch.selectionTransactionId)];
+        }
+        return [];
+      }))];
     const receivedAt = Date.now();
     const matchingTransformSessions = [...remoteTransformSessionsRef.current.values()].filter((session) => (
       receivedAt - Number(session?.receivedAt ?? 0) < 10000
@@ -5737,21 +5846,38 @@ function BoardWorkspace({
         // Revive the whole authoritative batch in one pass. Sequential enlivening made
         // a 40-object paste spend a long time in the apply queue even though rendering was
         // paused. Tombstones also stop an older queued upsert from reviving a deleted line.
-        const preparedOps = ops.map((op) => ({ op, revived: null, skipDeleted: false }));
+        const preparedOps = ops.map((op) => ({
+          op,
+          revived: null,
+          serialized: null,
+          skipDeleted: false,
+        }));
         const reviveEntries = [];
         preparedOps.forEach((entry, index) => {
           const op = entry.op;
-          const id = String(op?.object?.boardObjectId ?? '');
-          if (op?.type !== 'upsert' || !id) return;
+          const id = String(op?.type === 'patch' ? op.id : op?.object?.boardObjectId ?? '');
+          if (!['upsert', 'patch'].includes(op?.type) || !id) return;
           const tombstone = remoteDeletedObjectIdsRef.current.get(id);
-          const updatedAt = Number(op.object?.updatedAt ?? 0);
-          const deletedAt = Number(tombstone?.timestamp ?? 0);
-          if (tombstone && !op.restore && (!updatedAt || updatedAt <= deletedAt)) {
+          if (tombstone && !op.restore) {
             entry.skipDeleted = true;
             return;
           }
           if (tombstone) remoteDeletedObjectIdsRef.current.delete(id);
-          reviveEntries.push({ index, serialized: op.object });
+          let serialized = op.object ?? null;
+          if (op.type === 'patch') {
+            const current = registeredObjectsById(id).find((object) => (
+              !object.transientPreview
+              && !object.transientTransformFallback
+              && !object.transientSelectionProxy
+            ));
+            const source = current?.pendingImageSerialized
+              ?? serializedObjectCacheRef.current.get(current)
+              ?? (current ? serializeObject(current) : null);
+            serialized = applySerializedObjectPatch(source, op);
+            if (!serialized) throw new Error(`Не найден объект для patch: ${id}`);
+          }
+          entry.serialized = serialized;
+          reviveEntries.push({ index, serialized });
         });
         if (reviveEntries.length) {
           const serializedBatch = reviveEntries.map((entry) => entry.serialized);
@@ -5821,8 +5947,8 @@ function BoardWorkspace({
 
         const incompleteSelectionBatch = selectionTransactionIds.length > 0
           && preparedOps.some(({ op, revived, skipDeleted }) => (
-            op?.type === 'upsert'
-            && op.object?.selectionTransactionId
+            ['upsert', 'patch'].includes(op?.type)
+            && (op.object?.selectionTransactionId || op.patch?.selectionTransactionId)
             && !skipDeleted
             && !revived
           ));
@@ -5908,14 +6034,14 @@ function BoardWorkspace({
           const atomicReorderIds = new Set(preparedOps
             .filter(({ op, skipDeleted }) => (
               !skipDeleted
-              && op?.type === 'upsert'
+              && ['upsert', 'patch'].includes(op?.type)
               && Boolean(op.reorder || op.restore)
-              && op.object?.boardObjectId
+              && (op.object?.boardObjectId || op.id)
             ))
-            .map(({ op }) => String(op.object.boardObjectId)));
+            .map(({ op }) => String(op.object?.boardObjectId ?? op.id)));
           atomicReorderIds.forEach((objectId) => removeBoardObjectsById(canvas, objectId));
 
-          for (const { op, revived, skipDeleted } of preparedOps) {
+          for (const { op, revived, serialized, skipDeleted } of preparedOps) {
             if (op?.type === 'delete') {
               const id = String(op.id ?? '');
               if (id) {
@@ -5963,21 +6089,23 @@ function BoardWorkspace({
               continue;
             }
 
-            if (skipDeleted || op?.type !== 'upsert' || !op.object?.boardObjectId || !revived) continue;
-            if (op.restore) remoteDeletedObjectIdsRef.current.delete(String(op.object.boardObjectId));
-            remotePreviewTokensRef.current.delete(String(op.object.boardObjectId));
-            const existingObject = op.preserveOrder && !atomicReorderIds.has(String(op.object.boardObjectId))
-              ? registeredObjectsById(op.object.boardObjectId)[0]
+            const replacementId = String(op?.type === 'patch' ? op.id : op?.object?.boardObjectId ?? '');
+            if (skipDeleted || !['upsert', 'patch'].includes(op?.type) || !replacementId || !revived) continue;
+            if (op.restore) remoteDeletedObjectIdsRef.current.delete(replacementId);
+            remotePreviewTokensRef.current.delete(replacementId);
+            const preserveExistingOrder = op.type === 'patch' ? !op.reorder : op.preserveOrder;
+            const existingObject = preserveExistingOrder && !atomicReorderIds.has(replacementId)
+              ? registeredObjectsById(replacementId)[0]
               : null;
             const existingIndex = existingObject ? canvas.getObjects().indexOf(existingObject) : -1;
-            removeBoardObjectsById(canvas, op.object.boardObjectId);
+            removeBoardObjectsById(canvas, replacementId);
             revived.transientPreview = false;
             revived.transientLiveDraw = false;
             revived.transientAwaitingCommit = false;
             canvas.add(revived);
             reconciledObjects.push(revived);
-            serializedObjectCacheRef.current.set(revived, op.object);
-            const requestedIndex = op.preserveOrder && existingIndex >= 0
+            serializedObjectCacheRef.current.set(revived, serialized ?? op.object);
+            const requestedIndex = preserveExistingOrder && existingIndex >= 0
               ? existingIndex
               : op.zIndex;
             if (Number.isInteger(requestedIndex) && typeof canvas.moveObjectTo === 'function') {
@@ -8586,11 +8714,9 @@ function BoardWorkspace({
           // The local Canvas already contains this action. Advance only across the one
           // server revision that was just confirmed; never Math.max over missed actions.
           revisionRef.current = committedRevision;
-          const committedOps = Array.isArray(result?.appliedOps) && result.appliedOps.length
-            ? result.appliedOps
-            : (action?.ops ?? []);
+          const committedOps = Array.isArray(result?.appliedOps) ? result.appliedOps : [];
           rememberAuthoritativeOps(committedOps, committedRevision);
-          const committedBackground = result?.appliedBackground ?? action?.background ?? null;
+          const committedBackground = result?.appliedBackground ?? null;
           if (BACKGROUNDS.has(committedBackground)) {
             authoritativeBackgroundStateRef.current = {
               revision: committedRevision,
@@ -8611,7 +8737,7 @@ function BoardWorkspace({
             const verificationOps = finalVerificationOps(batchActions, batchResults);
             const verificationBackground = [...batchActions]
               .map((batchAction, index) => (
-                batchResults[index]?.appliedBackground ?? batchAction?.background ?? null
+                batchResults[index]?.appliedBackground ?? null
               ))
               .reverse()
               .find((value) => BACKGROUNDS.has(value)) ?? null;
@@ -9971,7 +10097,7 @@ function BoardWorkspace({
       } else {
         markObject(target, clientId);
         const after = getObjectRecords([target]);
-        sendRecordUpserts(after);
+        sendRecordPatches(before, after);
         const latestAction = undoStackRef.current.at(-1);
         const latestAddedId = String(latestAction?.records?.[0]?.object?.boardObjectId ?? '');
         if (newTextDraft && latestAction?.type === 'add'

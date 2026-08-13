@@ -139,6 +139,7 @@ export function connectBoardRealtime({
   let ablyClient = null;
   let ablyChannel = null;
   let supabaseChannel = null;
+  let boardHeadChannel = null;
   let localChannel = null;
   let localHeartbeat = null;
   let ablyPresenceRefresh = Promise.resolve();
@@ -425,47 +426,6 @@ export function connectBoardRealtime({
     return 'unavailable';
   };
 
-  const mergeAppliedOpsWithClientIntent = (actionOps, appliedOps) => {
-    const requestedOps = Array.isArray(actionOps) ? actionOps : [];
-    const authoritativeOps = Array.isArray(appliedOps) ? appliedOps : [];
-    if (!authoritativeOps.length) return requestedOps;
-
-    const requestedUpserts = new Map(requestedOps
-      .filter((op) => op?.type === 'upsert' && op.object?.boardObjectId)
-      .map((op) => [String(op.object.boardObjectId), op]));
-
-    const merged = authoritativeOps.map((op) => {
-      if (op?.type !== 'upsert' || !op.object?.boardObjectId) return op;
-      const requested = requestedUpserts.get(String(op.object.boardObjectId));
-      if (!requested) return op;
-      return {
-        ...op,
-        // These flags describe how receiving clients must apply an authoritative
-        // upsert. Some server RPC versions normalize applied_ops and omit them.
-        // Losing `restore` leaves a delete tombstone active on every other client,
-        // so an Undo appears only on the device that performed it.
-        restore: Boolean(op.restore || requested.restore),
-        reorder: Boolean(op.reorder || requested.reorder),
-        preserveOrder: Boolean(op.preserveOrder || requested.preserveOrder),
-      };
-    });
-
-    // The v7 action journal accepts arbitrary JSON operations, but some deployed RPC
-    // revisions normalize applied_ops around legacy upsert/delete branches. Preserve a
-    // requested lightweight transform in realtime fanout when normalization omitted it.
-    const authoritativeTransformIds = new Set(authoritativeOps
-      .filter((op) => op?.type === 'transform')
-      .flatMap((op) => Array.isArray(op.objects) ? op.objects : [op])
-      .map((entry) => String(entry?.id ?? ''))
-      .filter(Boolean));
-    for (const requested of requestedOps.filter((op) => op?.type === 'transform')) {
-      const objects = (Array.isArray(requested.objects) ? requested.objects : [requested])
-        .filter((entry) => entry?.id && !authoritativeTransformIds.has(String(entry.id)));
-      if (objects.length) merged.push({ ...requested, objects });
-    }
-    return merged;
-  };
-
   const broadcastCommittedActions = async (actions, results) => {
     const items = actions.map((action, index) => {
       const result = results[index] ?? {};
@@ -473,13 +433,13 @@ export function connectBoardRealtime({
         && result.rejectedObjectIds.length > 0;
       const ops = rejected
         ? []
-        : mergeAppliedOpsWithClientIntent(action.ops, result.appliedOps);
+        : (Array.isArray(result.appliedOps) ? result.appliedOps : []);
       return {
         actionId: action.actionId,
         revision: result.revision,
         needsSync: Boolean(result.needsSync) || rejected,
         ops,
-        background: result.appliedBackground ?? action.background ?? null,
+        background: result.appliedBackground ?? null,
       };
     });
     let includeOps = true;
@@ -901,7 +861,31 @@ export function connectBoardRealtime({
     }, 5000);
   };
 
+  const startAuthoritativeHeadSubscription = () => {
+    if (!isSupabaseConfigured || disconnected || boardHeadChannel) return;
+    boardHeadChannel = supabase
+      .channel(`board-head-v8:${boardId}:${clientId}`)
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'board_action_heads_v8',
+        filter: `board_id=eq.${boardId}`,
+      }, (change) => {
+        const revision = Number(change?.new?.revision ?? change?.old?.revision ?? 0);
+        if (revision > Number(getKnownRevision?.() ?? 0)) onSyncRequired?.(revision);
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') onSyncRequired?.(Number(getKnownRevision?.() ?? 0));
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          onStatus?.('RECOVERING');
+        }
+      });
+  };
+
   if (isSupabaseConfigured) {
+    // Durable revision notifications come from the database and do not depend on the
+    // author staying online long enough to publish an Ably confirmation.
+    startAuthoritativeHeadSubscription();
     startAblyTransport().catch(async (error) => {
       if (disconnected) return;
       console.warn('Ably unavailable; switching to Supabase Realtime fallback', error);
@@ -1158,6 +1142,11 @@ export function connectBoardRealtime({
           // Ignore cleanup errors.
         }
         await supabase.removeChannel(supabaseChannel);
+      }
+
+      if (boardHeadChannel) {
+        await supabase.removeChannel(boardHeadChannel);
+        boardHeadChannel = null;
       }
 
       if (localChannel) {

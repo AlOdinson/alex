@@ -151,8 +151,8 @@ export async function confirmPendingActions(entries) {
       safeEntries.forEach(({ action, result }) => {
         pending.delete(action.actionId);
         const revision = Number(result?.revision ?? action?.knownRevision ?? 0);
-        const appliedOps = Array.isArray(result?.appliedOps) ? result.appliedOps : (action.ops ?? []);
-        const appliedBackground = result?.appliedBackground ?? action.background ?? null;
+        const appliedOps = Array.isArray(result?.appliedOps) ? result.appliedOps : [];
+        const appliedBackground = result?.appliedBackground ?? null;
         const changed = result?.changed !== false
           && (appliedOps.length > 0 || appliedBackground !== null);
         if (!changed) return;
