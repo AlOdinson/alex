@@ -25,7 +25,7 @@ import {
   getBoardAccess,
   getBoardChanges,
   getBoardRecovery,
-  getBoardSyncState,
+  getBoardRevision,
   isSupabaseConfigured,
   saveBoardSnapshot,
   setGameLibraryVisibility,
@@ -42,7 +42,7 @@ import {
 } from '../lib/idb.js';
 import { connectBoardRealtime } from '../lib/realtime.js';
 import { forceExitGameParticipants } from '../lib/gameRealtime.js';
-import { randomToken, sha256 } from '../lib/ids.js';
+import { randomToken } from '../lib/ids.js';
 import { getOwnedBoard, rememberOwnedBoard } from '../lib/boardLibrary.js';
 import { createShape } from '../lib/shapes.js';
 import {
@@ -72,7 +72,6 @@ const DESKTOP_WHEEL_ZOOM_SPEED = 6.25;
 const VIEW_BROADCAST_INTERVAL = 80;
 const INSURANCE_SYNC_INTERVAL = 30_000;
 const INSURANCE_SYNC_PAGE_SIZE = 500;
-const INTEGRITY_CHECK_INTERVAL = 5 * 60_000;
 const LOCAL_LOCK_REFRESH_INTERVAL = 2_500;
 const IMAGE_RETRY_INTERVAL = 5_000;
 const SNAPSHOT_COMPACTION_IDLE_MS = 30_000;
@@ -301,6 +300,11 @@ function boardObjectsByCreationSession(canvas, clientId, sessionId) {
     object.creationSessionId === sessionId
     && (!clientId || !object.creationClientId || object.creationClientId === clientId)
   ));
+}
+
+function creationSessionRegistryKey(clientId, sessionId) {
+  if (!sessionId) return '';
+  return `${String(clientId ?? '')}:${String(sessionId)}`;
 }
 
 function removeBoardObjectsByCreationSession(canvas, clientId, sessionId, keep = null) {
@@ -976,6 +980,11 @@ function transformFramesForObjects(objects, _canvas = null, zIndexMap = null) {
       return {
         id: String(object.boardObjectId),
         matrix,
+        // A realtime transform can be delayed independently from the durable action
+        // that confirms the same gesture. Carry the object's mutation timestamp so a
+        // receiving client never lets an older live frame overwrite newer server state.
+        updatedAt: Number(object.updatedAt ?? 0),
+        updatedBy: object.updatedBy ?? object.creationClientId ?? null,
         creationSessionId: object.creationSessionId ?? null,
         creationClientId: object.creationClientId ?? object.updatedBy ?? null,
         objectKind: object.objectKind ?? object.type ?? null,
@@ -997,18 +1006,6 @@ function selectionUiObjects(canvas) {
     return active.getObjects().filter((object) => !object.isEraserPath);
   }
   return canvas.getActiveObjects().filter((object) => !object.isEraserPath);
-}
-
-function canvasCanonicalString(canvas, background = 'grid') {
-  const objects = canvas?.getObjects?.().filter((object) => (
-    !object?.transientPreview && !object?.transientTransformFallback && !object?.transientSelectionProxy
-  )) ?? [];
-  return `${background}|${objects.map((object, index) => [
-    index,
-    object?.boardObjectId ?? '',
-    object?.updatedAt ?? '',
-    object?.type ?? '',
-  ].join(':')).join('|')}`;
 }
 
 function safeFilename(value, fallback = 'alex-board') {
@@ -1102,6 +1099,100 @@ function affectedOperationIds(ops) {
     });
   }
   return ids;
+}
+
+function finalVerificationOps(actions, results) {
+  const latestById = new Map();
+  (Array.isArray(actions) ? actions : []).forEach((action, actionIndex) => {
+    const result = Array.isArray(results) ? results[actionIndex] : null;
+    const ops = Array.isArray(result?.appliedOps) && result.appliedOps.length
+      ? result.appliedOps
+      : (Array.isArray(action?.ops) ? action.ops : []);
+    ops.forEach((op) => {
+      if (op?.type === 'delete' && op.id) latestById.set(String(op.id), op);
+      if (op?.type === 'upsert' && op.object?.boardObjectId) {
+        latestById.set(String(op.object.boardObjectId), op);
+      }
+      transformOperationEntries(op).forEach((entry) => {
+        if (!entry?.id) return;
+        latestById.set(String(entry.id), {
+          type: 'transform',
+          version: 1,
+          objects: [entry],
+          ...(op.reorder ? { reorder: true } : {}),
+        });
+      });
+    });
+  });
+  return [...latestById.values()];
+}
+
+const AUTHORITATIVE_TRANSFORM_EPSILON = 0.002;
+const AUTHORITATIVE_CONTENT_IGNORED_KEYS = new Set([
+  'left',
+  'top',
+  'originX',
+  'originY',
+  'angle',
+  'scaleX',
+  'scaleY',
+  'skewX',
+  'skewY',
+  'flipX',
+  'flipY',
+  'boardObjectId',
+  'updatedAt',
+  'updatedBy',
+  'selectable',
+  'evented',
+  'hasControls',
+  'hasBorders',
+  'hoverCursor',
+  'objectCaching',
+  'strokeUniform',
+  'pendingImage',
+  'pendingImageSerialized',
+]);
+
+function authoritativePlacementMatches(object, expected = {}) {
+  if (!object) return false;
+  const sourceObject = object.pendingImageSerialized ?? object;
+  const actual = captureSerializedObjectTransform(sourceObject, expected);
+  const numericKeys = ['left', 'top', 'angle', 'scaleX', 'scaleY', 'skewX', 'skewY'];
+  for (const key of numericKeys) {
+    if (expected[key] == null) continue;
+    const actualValue = Number(actual[key]);
+    const expectedValue = Number(expected[key]);
+    if (!Number.isFinite(actualValue) || !Number.isFinite(expectedValue)
+      || Math.abs(actualValue - expectedValue) > AUTHORITATIVE_TRANSFORM_EPSILON) return false;
+  }
+  for (const key of ['originX', 'originY']) {
+    if (expected[key] != null && String(actual[key]) !== String(expected[key])) return false;
+  }
+  for (const key of ['flipX', 'flipY']) {
+    if (expected[key] != null && Boolean(actual[key]) !== Boolean(expected[key])) return false;
+  }
+  return true;
+}
+
+function authoritativeContentSubsetMatches(actual, expected, key = '') {
+  if (AUTHORITATIVE_CONTENT_IGNORED_KEYS.has(key) || key.startsWith('transient')) return true;
+  if (typeof expected === 'number') {
+    return Number.isFinite(Number(actual))
+      && Math.abs(Number(actual) - expected) <= AUTHORITATIVE_TRANSFORM_EPSILON;
+  }
+  if (expected == null || typeof expected !== 'object') return actual === expected;
+  if (Array.isArray(expected)) {
+    return Array.isArray(actual)
+      && actual.length === expected.length
+      && expected.every((value, index) => (
+        authoritativeContentSubsetMatches(actual[index], value, '')
+      ));
+  }
+  if (!actual || typeof actual !== 'object') return false;
+  return Object.entries(expected).every(([childKey, value]) => (
+    authoritativeContentSubsetMatches(actual[childKey], value, childKey)
+  ));
 }
 
 function createPendingImagePlaceholder(serialized) {
@@ -1573,12 +1664,14 @@ function BoardWorkspace({
   const snapshotCompactTargetRevisionRef = useRef(initialSnapshotRevision);
   const revisionRef = useRef(Number(initialAccess.snapshotRevision ?? initialAccess.revision ?? 0));
   const pendingServerWritesRef = useRef(0);
+  const pendingLocalObjectMutationCountsRef = useRef(new Map());
+  const pendingLocalBackgroundMutationCountRef = useRef(0);
+  const rebasingPendingActionsRef = useRef(false);
   const syncRequestedRef = useRef(false);
   const syncForceRef = useRef(false);
   const syncInFlightRef = useRef(false);
   const authoritativeApplyQueueRef = useRef(Promise.resolve());
   const applyRemoteOpsRef = useRef(null);
-  const lastIntegrityCheckRef = useRef(0);
   const pendingImageRetryInFlightRef = useRef(false);
   const remoteTransformApplyQueueRef = useRef(Promise.resolve());
   const selectionMemberControlsRef = useRef(new Map());
@@ -1617,10 +1710,10 @@ function BoardWorkspace({
   const mobileTextEditorRef = useRef(null);
   const objectEraserPointerRef = useRef(null);
   const objectRegistryRef = useRef(new Map());
-  const objectEraserGridRef = useRef(new Map());
-  const objectEraserGlobalCandidatesRef = useRef([]);
-  const objectEraserZIndexRef = useRef(new Map());
+  const creationSessionRegistryRef = useRef(new Map());
+  const selectionTransactionRegistryRef = useRef(new Map());
   const objectEraserRenderFrameRef = useRef(null);
+  const localDeletionCompositorRef = useRef(null);
   const backgroundRef = useRef(
     BACKGROUNDS.has(initialAccess.snapshot?.background)
       ? initialAccess.snapshot.background
@@ -1870,6 +1963,22 @@ function BoardWorkspace({
 
   const registerCanvasObject = useCallback((object) => {
     applySharpRenderingPolicy(object);
+    const selectionTransactionId = String(object?.selectionTransactionId ?? '');
+    if (selectionTransactionId) {
+      const transactionBucket = selectionTransactionRegistryRef.current.get(selectionTransactionId)
+        ?? new Set();
+      transactionBucket.add(object);
+      selectionTransactionRegistryRef.current.set(selectionTransactionId, transactionBucket);
+    }
+    const sessionKey = creationSessionRegistryKey(
+      object?.creationClientId ?? object?.updatedBy ?? '',
+      object?.creationSessionId,
+    );
+    if (sessionKey) {
+      const sessionBucket = creationSessionRegistryRef.current.get(sessionKey) ?? new Set();
+      sessionBucket.add(object);
+      creationSessionRegistryRef.current.set(sessionKey, sessionBucket);
+    }
     const id = object?.boardObjectId;
     if (!id) return;
     const key = String(id);
@@ -1879,6 +1988,23 @@ function BoardWorkspace({
   }, []);
 
   const unregisterCanvasObject = useCallback((object) => {
+    const selectionTransactionId = String(object?.selectionTransactionId ?? '');
+    if (selectionTransactionId) {
+      const transactionBucket = selectionTransactionRegistryRef.current.get(selectionTransactionId);
+      transactionBucket?.delete(object);
+      if (transactionBucket && !transactionBucket.size) {
+        selectionTransactionRegistryRef.current.delete(selectionTransactionId);
+      }
+    }
+    const sessionKey = creationSessionRegistryKey(
+      object?.creationClientId ?? object?.updatedBy ?? '',
+      object?.creationSessionId,
+    );
+    if (sessionKey) {
+      const sessionBucket = creationSessionRegistryRef.current.get(sessionKey);
+      sessionBucket?.delete(object);
+      if (sessionBucket && !sessionBucket.size) creationSessionRegistryRef.current.delete(sessionKey);
+    }
     const id = object?.boardObjectId;
     if (!id) return;
     const key = String(id);
@@ -1891,6 +2017,8 @@ function BoardWorkspace({
   const rebuildObjectRegistry = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     objectRegistryRef.current = new Map();
+    creationSessionRegistryRef.current = new Map();
+    selectionTransactionRegistryRef.current = new Map();
     canvas?.getObjects().forEach(registerCanvasObject);
   }, [registerCanvasObject]);
 
@@ -1906,6 +2034,107 @@ function BoardWorkspace({
     }
     return objects;
   }, [registerCanvasObject]);
+
+  const registeredObjectsByCreationSession = useCallback((clientId, sessionId) => {
+    if (!sessionId) return [];
+    const canvas = fabricCanvasRef.current;
+    const key = creationSessionRegistryKey(clientId, sessionId);
+    let objects = [...(creationSessionRegistryRef.current.get(key) ?? [])]
+      .filter((object) => object?.canvas === canvas);
+    if (!objects.length && canvas) {
+      objects = boardObjectsByCreationSession(canvas, clientId, sessionId);
+      objects.forEach(registerCanvasObject);
+    }
+    return objects;
+  }, [registerCanvasObject]);
+
+  const removeRegisteredObjectsByCreationSession = useCallback((
+    clientId,
+    sessionId,
+    keep = null,
+    { transientOnly = false } = {},
+  ) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas || !sessionId) return [];
+    const removed = registeredObjectsByCreationSession(clientId, sessionId)
+      .filter((object) => object !== keep && (!transientOnly || object.transientPreview));
+    removed.forEach((object) => canvas.remove(object));
+    return removed;
+  }, [registeredObjectsByCreationSession]);
+
+  const registeredObjectsBySelectionTransaction = useCallback((transactionId) => {
+    if (!transactionId) return [];
+    const canvas = fabricCanvasRef.current;
+    const key = String(transactionId);
+    let objects = [...(selectionTransactionRegistryRef.current.get(key) ?? [])]
+      .filter((object) => object?.canvas === canvas);
+    if (!objects.length && canvas) {
+      objects = canvas.getObjects().filter((object) => (
+        String(object.selectionTransactionId ?? '') === key
+      ));
+      objects.forEach(registerCanvasObject);
+    }
+    return objects;
+  }, [registerCanvasObject]);
+
+  const removeRegisteredSelectionTransactionObjects = useCallback((transactionId) => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas || !transactionId) return [];
+    const removed = registeredObjectsBySelectionTransaction(transactionId);
+    removed.forEach((object) => canvas.remove(object));
+    return removed;
+  }, [registeredObjectsBySelectionTransaction]);
+
+  const verifyAuthoritativeOps = useCallback((ops, incomingBackground = null) => {
+    for (const op of Array.isArray(ops) ? ops : []) {
+      if (op?.type === 'delete' && op.id) {
+        const durable = registeredObjectsById(op.id).filter((object) => (
+          !object.transientPreview
+          && !object.transientTransformFallback
+          && !object.transientSelectionProxy
+        ));
+        if (durable.length !== 0) return false;
+      }
+
+      if (op?.type === 'upsert' && op.object?.boardObjectId) {
+        const expected = op.object;
+        const durable = registeredObjectsById(expected.boardObjectId).filter((object) => (
+          !object.transientPreview
+          && !object.transientTransformFallback
+          && !object.transientSelectionProxy
+        ));
+        if (durable.length !== 1) return false;
+        const actual = durable[0];
+        const serializedActual = actual.pendingImageSerialized ?? serializeObject(actual);
+        if (String(serializedActual.boardObjectId ?? actual.boardObjectId ?? '')
+          !== String(expected.boardObjectId)) return false;
+        if (expected.type && String(serializedActual.type ?? '').toLowerCase()
+          !== String(expected.type).toLowerCase()) return false;
+        if (expected.updatedAt != null
+          && Number(serializedActual.updatedAt ?? actual.updatedAt ?? 0) !== Number(expected.updatedAt)) return false;
+        if (!authoritativePlacementMatches(actual, expected)) return false;
+        if (!authoritativeContentSubsetMatches(serializedActual, expected)) return false;
+      }
+
+      if (op?.type === 'transform') {
+        for (const patch of transformOperationEntries(op)) {
+          if (!patch?.id || !patch?.transform) continue;
+          const durable = registeredObjectsById(patch.id).filter((object) => (
+            !object.transientPreview
+            && !object.transientTransformFallback
+            && !object.transientSelectionProxy
+          ));
+          if (durable.length !== 1) return false;
+          const actual = durable[0];
+          if (!authoritativePlacementMatches(actual, patch.transform)) return false;
+          if (patch.updatedAt != null
+            && Number(actual.updatedAt ?? 0) !== Number(patch.updatedAt)) return false;
+        }
+      }
+    }
+    if (BACKGROUNDS.has(incomingBackground) && backgroundRef.current !== incomingBackground) return false;
+    return true;
+  }, [registeredObjectsById]);
 
   const clearTextPlaceholderForEditing = useCallback((target, canvas = fabricCanvasRef.current) => {
     if (!target || !target.textPlaceholder || String(target.text ?? '') !== 'text') return false;
@@ -2093,7 +2322,7 @@ function BoardWorkspace({
         - Number(left.updatedAt ?? left.previewReceivedAt ?? 0);
     })[0];
 
-    for (const objectId of new Set((objectIds ?? []).filter(Boolean).map(String))) {
+    for (const objectId of new Set([...(objectIds ?? [])].filter(Boolean).map(String))) {
       const objects = registeredObjectsById(objectId);
       if (objects.length < 2) continue;
       const keep = chooseKeep(objects);
@@ -2136,7 +2365,14 @@ function BoardWorkspace({
     const baseTimestamp = Date.now();
     return candidates.map((object, index) => {
       const cached = serializedObjectCacheRef.current.get(object) ?? null;
-      const updatedAt = baseTimestamp + index;
+      // Keep each object's placement version strictly increasing even when two fast
+      // Pencil gestures finish inside the same millisecond or the device clock moves
+      // backwards. The receiver uses this value to reject delayed realtime frames.
+      const updatedAt = Math.max(
+        baseTimestamp + index,
+        Number(object.updatedAt ?? 0) + 1,
+        Number(cached?.updatedAt ?? 0) + 1,
+      );
       object.updatedAt = updatedAt;
       object.updatedBy = clientIdRef.current;
       return {
@@ -2794,7 +3030,25 @@ function BoardWorkspace({
         const serializedSize = chunks.length === 1 && Number.isFinite(Number(providedSerializedSize))
           ? Number(providedSerializedSize)
           : serializedCharSize(chunk);
-        return realtime.sendOps(chunk, { serializedSize, atomic: atomic && index === 0 });
+        const objectIds = affectedOperationIds(chunk);
+        objectIds.forEach((objectId) => {
+          const key = String(objectId);
+          pendingLocalObjectMutationCountsRef.current.set(
+            key,
+            Number(pendingLocalObjectMutationCountsRef.current.get(key) ?? 0) + 1,
+          );
+        });
+        return Promise.resolve(realtime.sendOps(chunk, {
+          serializedSize,
+          atomic: atomic && index === 0,
+        })).finally(() => {
+          objectIds.forEach((objectId) => {
+            const key = String(objectId);
+            const nextCount = Number(pendingLocalObjectMutationCountsRef.current.get(key) ?? 0) - 1;
+            if (nextCount > 0) pendingLocalObjectMutationCountsRef.current.set(key, nextCount);
+            else pendingLocalObjectMutationCountsRef.current.delete(key);
+          });
+        });
       });
       return Promise.all(tasks);
     };
@@ -2815,7 +3069,7 @@ function BoardWorkspace({
   const sendRecordUpserts = useCallback((records, {
     restore = false,
     reorder = false,
-    atomic = false,
+    atomic = true,
     skipDeferredFlush = false,
   } = {}) => {
     if (!records.length) return Promise.resolve([]);
@@ -2879,12 +3133,15 @@ function BoardWorkspace({
     sendRecordUpserts(getObjectRecords(objects));
   }, [getObjectRecords, sendRecordUpserts]);
 
-  const sendDeletes = useCallback((ids, { announce = true } = {}) => {
+  const sendDeletes = useCallback((ids, { announce = true, atomic = true } = {}) => {
     const safeIds = [...new Set((Array.isArray(ids) ? ids : []).filter(Boolean).map(String))];
     const realtime = realtimeRef.current;
     if (!safeIds.length || !realtime) return Promise.resolve([]);
     if (announce) realtime.sendDeletePreview?.(safeIds).catch?.(() => undefined);
-    return sendDurableOps(safeIds.map((id) => ({ type: 'delete', id })));
+    return sendDurableOps(
+      safeIds.map((id) => ({ type: 'delete', id })),
+      { atomic },
+    );
   }, [sendDurableOps]);
 
 
@@ -3133,7 +3390,7 @@ function BoardWorkspace({
         object: record.object,
         zIndex: record.zIndex,
       }));
-      const commitResult = await sendDurableOps(ops);
+      const commitResult = await sendDurableOps(ops, { atomic: true });
       if (!commitResult && navigator.onLine !== false) {
         console.warn('Групповое изменение сохранено локально и ожидает подтверждения сервера');
       }
@@ -3857,18 +4114,23 @@ function BoardWorkspace({
   const removeIdsLocally = useCallback((ids) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    canvas.discardActiveObject();
-    const previousRenderOnAddRemove = canvas.renderOnAddRemove;
-    canvas.renderOnAddRemove = false;
-    try {
-      for (const id of ids) removeRegisteredObjectsById(id);
-    } finally {
-      canvas.renderOnAddRemove = previousRenderOnAddRemove;
+    const objects = [...new Set((Array.isArray(ids) ? ids : [])
+      .flatMap((id) => registeredObjectsById(id)))];
+    const composedDelete = localDeletionCompositorRef.current?.removeObjects?.(objects);
+    if (!composedDelete) {
+      canvas.discardActiveObject();
+      const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+      canvas.renderOnAddRemove = false;
+      try {
+        for (const id of ids) removeRegisteredObjectsById(id);
+      } finally {
+        canvas.renderOnAddRemove = previousRenderOnAddRemove;
+      }
+      canvas.requestRenderAll();
     }
-    canvas.requestRenderAll();
     updateSelectionState();
     updateSelectionStyleState();
-  }, [removeRegisteredObjectsById, updateSelectionState, updateSelectionStyleState]);
+  }, [registeredObjectsById, removeRegisteredObjectsById, updateSelectionState, updateSelectionStyleState]);
 
   const applyBackground = useCallback((nextBackground, { broadcast = false, persist = false } = {}) => {
     if (!BACKGROUNDS.has(nextBackground)) return;
@@ -3876,7 +4138,20 @@ function BoardWorkspace({
     setBackgroundState(nextBackground);
     updateBackgroundTransform();
     fabricCanvasRef.current?.requestRenderAll?.();
-    if (broadcast) realtimeRef.current?.sendSettings({ background: nextBackground });
+    if (broadcast) {
+      const commit = realtimeRef.current?.sendSettings({ background: nextBackground });
+      if (commit?.then) {
+        pendingLocalBackgroundMutationCountRef.current += 1;
+        Promise.resolve(commit)
+          .catch(() => undefined)
+          .finally(() => {
+            pendingLocalBackgroundMutationCountRef.current = Math.max(
+              0,
+              pendingLocalBackgroundMutationCountRef.current - 1,
+            );
+          });
+      }
+    }
     if (persist) schedulePersistence();
   }, [schedulePersistence, updateBackgroundTransform]);
 
@@ -3887,8 +4162,13 @@ function BoardWorkspace({
     recordAction({ type: 'background', before, after: nextBackground });
   }, [applyBackground, isOwner, recordAction]);
 
-  const getLocalMutationIds = useCallback(() => {
-    const ids = new Set((localLockIdsRef.current ?? []).filter(Boolean).map(String));
+  const getLocalMutationIds = useCallback(({ includePending = true } = {}) => {
+    const ids = new Set([
+      ...(localLockIdsRef.current ?? []).filter(Boolean).map(String),
+      ...(includePending && !rebasingPendingActionsRef.current
+        ? pendingLocalObjectMutationCountsRef.current.keys()
+        : []),
+    ]);
     const activePencilId = activePencilRef.current?.objectId;
     const liveDrawId = liveDrawSendRef.current?.objectId;
     if (activePencilId) ids.add(String(activePencilId));
@@ -4208,22 +4488,24 @@ function BoardWorkspace({
       const recovery = await getBoardRecovery(boardId, boardKey);
       if (!recovery?.snapshot) return false;
       await applyAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? 0));
-      lastIntegrityCheckRef.current = Date.now();
       return true;
     };
 
     try {
-      let serverState = await getBoardSyncState(boardId, boardKey);
+      // This heartbeat reads only the authoritative revision. Object verification is
+      // driven by committed actions below; there is deliberately no periodic full-board
+      // count/hash scan, even while idle.
+      let serverState = await getBoardRevision(boardId, boardKey);
       if (!serverState) return;
       let serverRevision = Number(serverState.revision ?? 0);
       let currentRevision = Number(revisionRef.current ?? 0);
 
       if (serverRevision < currentRevision) {
-        const recovered = await recoverFromSnapshot('server revision is behind local revision');
-        if (!recovered) return;
-        currentRevision = Number(revisionRef.current ?? 0);
-        serverState = await getBoardSyncState(boardId, boardKey);
-        serverRevision = Number(serverState?.revision ?? currentRevision);
+        // A stale replica/read must never replace a newer confirmed local canvas with
+        // an older snapshot. A later event or heartbeat will retry the O(1) revision read.
+        console.warn('Server revision is temporarily behind the confirmed local revision');
+        window.setTimeout(() => syncFromServer(false), 1_000);
+        return;
       }
 
       let pageCount = 0;
@@ -4295,29 +4577,9 @@ function BoardWorkspace({
         // Refresh the target after every short/final page instead of guessing its end.
         if (changes.length < INSURANCE_SYNC_PAGE_SIZE || currentRevision >= serverRevision) {
           // eslint-disable-next-line no-await-in-loop
-          serverState = await getBoardSyncState(boardId, boardKey);
+          serverState = await getBoardRevision(boardId, boardKey);
           serverRevision = Number(serverState?.revision ?? currentRevision);
         }
-      }
-
-      const hasPendingServerImage = fabricCanvasRef.current?.getObjects()
-        .some((object) => Boolean(object.pendingImageSerialized));
-      const integrityDue = !hasPendingServerImage
-        && Date.now() - Number(lastIntegrityCheckRef.current ?? 0) >= INTEGRITY_CHECK_INTERVAL;
-      if (serverRevision === Number(revisionRef.current ?? 0) && integrityDue) {
-        lastIntegrityCheckRef.current = Date.now();
-        const canvas = fabricCanvasRef.current;
-        const localObjects = canvas?.getObjects?.().filter((object) => (
-          !object?.transientPreview && !object?.transientTransformFallback && !object?.transientSelectionProxy
-        )) ?? [];
-        const localCount = localObjects.length;
-        const localHash = serverState?.stateHash
-          ? await sha256(canvasCanonicalString(canvas, backgroundRef.current))
-          : null;
-        const stateMismatch = serverState?.objectCount !== null
-          && (Number(serverState.objectCount) !== Number(localCount)
-            || (serverState.stateHash && localHash !== serverState.stateHash));
-        if (stateMismatch && !await recoverFromSnapshot('integrity hash mismatch')) return;
       }
 
       if (Number(revisionRef.current ?? 0) > startingRevision) {
@@ -4351,33 +4613,201 @@ function BoardWorkspace({
     getLocalMutationIds,
   ]);
 
+  const replayPendingActionsLocally = useCallback(async (actions) => {
+    const canvas = fabricCanvasRef.current;
+    const pendingActions = Array.isArray(actions) ? actions : [];
+    const ops = pendingActions.flatMap((action) => (
+      Array.isArray(action?.ops) ? action.ops : []
+    ));
+    const pendingBackground = [...pendingActions]
+      .reverse()
+      .find((action) => BACKGROUNDS.has(action?.background))?.background ?? null;
+    if (!canvas || (!ops.length && !pendingBackground)) return;
+
+    const selectedIds = canvas.getActiveObjects()
+      .map((object) => object.boardObjectId)
+      .filter(Boolean)
+      .map(String);
+    const affectedIds = affectedOperationIds(ops);
+    const touchesSelection = selectedIds.some((id) => affectedIds.has(id));
+    const prepared = ops.map((op) => ({ op, revived: null }));
+    const reviveEntries = prepared
+      .map((entry, index) => ({ ...entry, index }))
+      .filter(({ op }) => op?.type === 'upsert' && op.object?.boardObjectId);
+
+    if (reviveEntries.length) {
+      const serialized = reviveEntries.map((entry) => entry.op.object);
+      try {
+        await preloadSerializedImages(serialized);
+        const revived = await util.enlivenObjects(serialized);
+        reviveEntries.forEach((entry, index) => {
+          prepared[entry.index].revived = revived[index] ?? null;
+        });
+      } catch {
+        for (const entry of reviveEntries) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await preloadSerializedImages(entry.op.object);
+            // eslint-disable-next-line no-await-in-loop
+            const [revived] = await util.enlivenObjects([entry.op.object]);
+            prepared[entry.index].revived = revived ?? null;
+          } catch {
+            const serializedType = String(entry.op.object?.type ?? '').toLowerCase();
+            if (serializedType !== 'image' && entry.op.object?.objectKind !== 'image') throw new Error('Не удалось восстановить локальный объект');
+            prepared[entry.index].revived = createPendingImagePlaceholder(entry.op.object);
+          }
+        }
+      }
+    }
+
+    applyingRemoteRef.current = true;
+    const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+    canvas.renderOnAddRemove = false;
+    try {
+      if (touchesSelection) canvas.discardActiveObject();
+      const touched = [];
+      for (const { op, revived } of prepared) {
+        if (op?.type === 'delete' && op.id) {
+          removeRegisteredObjectsById(op.id);
+          continue;
+        }
+        if (op?.type === 'transform') {
+          for (const patch of transformOperationEntries(op)) {
+            const object = registeredObjectsById(patch?.id).find((candidate) => (
+              !candidate.transientPreview
+              && !candidate.transientTransformFallback
+              && !candidate.transientSelectionProxy
+            ));
+            if (!object || !patch?.transform) continue;
+            object.set(patch.transform);
+            object.updatedAt = Number(patch.updatedAt ?? object.updatedAt ?? Date.now());
+            object.updatedBy = patch.updatedBy ?? object.updatedBy ?? clientIdRef.current;
+            object.dirty = true;
+            object.setCoords();
+            touched.push(object);
+          }
+          continue;
+        }
+        if (op?.type !== 'upsert' || !op.object?.boardObjectId || !revived) continue;
+        removeRegisteredObjectsById(op.object.boardObjectId);
+        revived.transientPreview = false;
+        revived.transientLiveDraw = false;
+        revived.transientAwaitingCommit = false;
+        canvas.add(revived);
+        serializedObjectCacheRef.current.set(revived, op.object);
+        touched.push(revived);
+        if (Number.isInteger(op.zIndex) && typeof canvas.moveObjectTo === 'function') {
+          canvas.moveObjectTo(revived, clamp(op.zIndex, 0, canvas.getObjects().length - 1));
+        }
+      }
+      deduplicateRegisteredObjectIds(affectedIds);
+      if (BACKGROUNDS.has(pendingBackground)) applyBackground(pendingBackground);
+      applyObjectInteractivityToObjects(touched, { render: false });
+      if (touchesSelection && activeToolRef.current === 'select' && selectedIds.length) {
+        const selectedObjects = selectedIds
+          .map((id) => registeredObjectsById(id).find((object) => (
+            !object.transientPreview
+            && !object.transientTransformFallback
+            && !object.transientSelectionProxy
+          )))
+          .filter(Boolean);
+        if (selectedObjects.length === 1) canvas.setActiveObject(selectedObjects[0]);
+        else if (selectedObjects.length > 1) {
+          canvas.setActiveObject(createOuterOnlyActiveSelection(selectedObjects, canvas));
+        }
+      }
+    } finally {
+      applyingRemoteRef.current = false;
+      canvas.renderOnAddRemove = previousRenderOnAddRemove;
+      canvas.requestRenderAll();
+    }
+  }, [
+    applyBackground,
+    applyObjectInteractivityToObjects,
+    deduplicateRegisteredObjectIds,
+    registeredObjectsById,
+    removeRegisteredObjectsById,
+  ]);
+
   const recoverRejectedServerAction = useCallback(async () => {
     const realtime = realtimeRef.current;
     realtime?.pauseWrites?.();
-    setSaveStatus('Сервер отклонил конфликтующее действие — восстанавливаю доску…');
+    setSaveStatus('Сервер отклонил конфликтующее действие — сверяю изменённые объекты…');
     setSyncTone('recovering');
+    let pendingActions = [];
     try {
-      // Do not replace an object underneath an active local gesture. Remaining pending
-      // actions stay paused and are rebased after the gesture is released.
-      while (getLocalMutationIds().size > 0) {
+      // Never patch an object underneath an active Pencil/touch gesture. Queued durable
+      // actions are handled separately and replayed after the missing server operations.
+      while (getLocalMutationIds({ includePending: false }).size > 0) {
         // eslint-disable-next-line no-await-in-loop
         await new Promise((resolve) => window.setTimeout(resolve, 250));
       }
-      const recovery = await getBoardRecovery(boardId, boardKey);
-      if (!recovery?.snapshot) throw new Error('Серверный снимок недоступен');
-      const pendingActions = await realtime?.getPendingActions?.();
-      let rebasedSnapshot = recovery.snapshot;
-      for (const pendingAction of Array.isArray(pendingActions) ? pendingActions : []) {
-        rebasedSnapshot = applyOpsToSnapshot(
-          rebasedSnapshot,
-          pendingAction?.ops ?? [],
-          pendingAction?.background ?? null,
-        );
+      pendingActions = await realtime?.getPendingActions?.() ?? [];
+      rebasingPendingActionsRef.current = true;
+
+      try {
+        let serverState = await getBoardRevision(boardId, boardKey);
+        if (!serverState) throw new Error('Серверная ревизия недоступна');
+        let serverRevision = Number(serverState.revision ?? 0);
+        let currentRevision = Number(revisionRef.current ?? 0);
+        let pageCount = 0;
+
+        while (serverRevision > currentRevision) {
+          pageCount += 1;
+          if (pageCount > 100) throw new Error('Слишком много страниц журнала конфликта');
+          // eslint-disable-next-line no-await-in-loop
+          const changes = await getBoardChanges(
+            boardId,
+            boardKey,
+            currentRevision,
+            INSURANCE_SYNC_PAGE_SIZE,
+          );
+          if (!changes?.length) throw new Error('Журнал операций недоступен или содержит разрыв');
+          for (const action of changes) {
+            const actionRevision = Number(action?.revision ?? 0);
+            if (actionRevision <= currentRevision) continue;
+            if (actionRevision !== currentRevision + 1) {
+              throw new Error(`Разрыв журнала: ожидалась ревизия ${currentRevision + 1}`);
+            }
+            const applyOperation = applyRemoteOpsRef.current;
+            if (!applyOperation) throw new Error('Обработчик адресной синхронизации не готов');
+            // eslint-disable-next-line no-await-in-loop
+            const applied = await applyOperation(
+              action.ops,
+              actionRevision,
+              false,
+              action.background,
+              action.actionId,
+              action.clientId,
+            );
+            if (!applied) throw new Error(`Не удалось применить ревизию ${actionRevision}`);
+            currentRevision = Number(revisionRef.current ?? currentRevision);
+          }
+          if (changes.length < INSURANCE_SYNC_PAGE_SIZE || currentRevision >= serverRevision) {
+            // eslint-disable-next-line no-await-in-loop
+            serverState = await getBoardRevision(boardId, boardKey);
+            serverRevision = Number(serverState?.revision ?? currentRevision);
+          }
+        }
+
+        await replayPendingActionsLocally(pendingActions);
+      } catch (journalError) {
+        // This is an emergency-only compatibility path for an absent/corrupt operation
+        // journal. It is never scheduled periodically and never runs merely because the
+        // board is idle.
+        console.warn('Targeted conflict recovery fell back to a snapshot', journalError);
+        const recovery = await getBoardRecovery(boardId, boardKey);
+        if (!recovery?.snapshot) throw new Error('Серверный снимок недоступен');
+        let rebasedSnapshot = recovery.snapshot;
+        for (const pendingAction of Array.isArray(pendingActions) ? pendingActions : []) {
+          rebasedSnapshot = applyOpsToSnapshot(
+            rebasedSnapshot,
+            pendingAction?.ops ?? [],
+            pendingAction?.background ?? null,
+          );
+        }
+        await applyAuthoritativeSnapshot(rebasedSnapshot, Number(recovery.revision ?? 0));
       }
-      await applyAuthoritativeSnapshot(
-        rebasedSnapshot,
-        Number(recovery.revision ?? 0),
-      );
       setSaveStatus('Конфликт устранён, локальные действия восстановлены');
       setSyncTone('recovered');
       window.clearTimeout(transientStatusTimerRef.current);
@@ -4390,9 +4820,16 @@ function BoardWorkspace({
       setSaveStatus('Не удалось устранить конфликт автоматически');
       setSyncTone('error');
     } finally {
+      rebasingPendingActionsRef.current = false;
       realtime?.resumeWrites?.();
     }
-  }, [applyAuthoritativeSnapshot, boardId, boardKey, getLocalMutationIds]);
+  }, [
+    applyAuthoritativeSnapshot,
+    boardId,
+    boardKey,
+    getLocalMutationIds,
+    replayPendingActionsLocally,
+  ]);
 
   const handleRemoteSelectionTransaction = useCallback((message) => {
     const task = authoritativeApplyQueueRef.current
@@ -4487,7 +4924,7 @@ function BoardWorkspace({
             // disabled around this whole transaction, so observers never see a blank
             // frame while many source objects become one lightweight live proxy.
             if (serialized) sourceIds.forEach((id) => removeBoardObjectsById(canvas, id));
-            removeSelectionTransactionObjects(canvas, transactionId);
+            removeRegisteredSelectionTransactionObjects(transactionId);
             canvas.add(proxy);
             const minimumZ = Number(message?.minimumZ ?? proxyRecord?.zIndex ?? 0);
             if (Number.isFinite(minimumZ) && typeof canvas.moveObjectTo === 'function') {
@@ -4684,7 +5121,7 @@ function BoardWorkspace({
               });
               remoteSelectionTransactionsRef.current.delete(transactionId);
             } else {
-              removeSelectionTransactionObjects(canvas, transactionId);
+              removeRegisteredSelectionTransactionObjects(transactionId);
               remoteSelectionTransactionsRef.current.delete(transactionId);
               window.setTimeout(() => syncFromServer(true), 40);
             }
@@ -4692,7 +5129,20 @@ function BoardWorkspace({
         } finally {
           applyingRemoteRef.current = false;
           canvas.renderOnAddRemove = previousRenderOnAddRemove;
-          applyObjectInteractivity();
+          const transactionState = transactionId
+            ? remoteSelectionTransactionsRef.current.get(transactionId)
+            : null;
+          const interactivityIds = new Set([
+            ...sourceIds,
+            ...(Array.isArray(message?.objectIds) ? message.objectIds : []),
+            ...(Array.isArray(transactionState?.sourceIds) ? transactionState.sourceIds : []),
+            transactionState?.proxyId,
+            message?.proxyId,
+          ].filter(Boolean).map(String));
+          applyObjectInteractivityToObjects([
+            ...[...interactivityIds].flatMap((objectId) => registeredObjectsById(objectId)),
+            transactionState?.proxy,
+          ]);
           canvas.requestRenderAll();
         }
       });
@@ -4700,7 +5150,12 @@ function BoardWorkspace({
       console.warn('Не удалось обработать временное групповое выделение', error);
       window.setTimeout(() => syncFromServer(true), 120);
     });
-  }, [applyObjectInteractivity, syncFromServer]);
+  }, [
+    applyObjectInteractivityToObjects,
+    registeredObjectsById,
+    removeRegisteredSelectionTransactionObjects,
+    syncFromServer,
+  ]);
 
   const refreshHistoryRecords = useCallback((records) => {
     const baseTimestamp = Date.now();
@@ -4772,7 +5227,7 @@ function BoardWorkspace({
             restore: true,
             reorder: true,
           })),
-        ]);
+        ], { atomic: true });
       }
 
       if (action.type === 'transform') {
@@ -4960,6 +5415,12 @@ function BoardWorkspace({
           window.setTimeout(() => syncFromServer(false), 500);
           return false;
         }
+        if (hasBackgroundChange
+          && !rebasingPendingActionsRef.current
+          && pendingLocalBackgroundMutationCountRef.current > 0) {
+          window.setTimeout(() => syncFromServer(false), 500);
+          return false;
+        }
 
         // Do not remove live previews before the authoritative objects are revived.
         // The replacement below is performed atomically with rendering paused, so the
@@ -5049,23 +5510,23 @@ function BoardWorkspace({
         const transformOnly = ops.length > 0
           && ops.every((op) => op?.type === 'transform')
           && !hasBackgroundChange;
-        // A member of Fabric ActiveSelection stores coordinates relative to the
-        // selection wrapper. A remote transform contains absolute scene placement, so
-        // briefly dismantle only when this exact selected object is being patched.
-        // Unrelated lightweight transforms leave the local selection completely alone.
-        const transformTouchesSelection = transformOnly
-          && transformIds.some((id) => selectedIdSet.has(String(id)));
+        // Never dismantle an iPad user's active selection for an unrelated action.
+        // Fabric stores selected members relative to its temporary wrapper, so only an
+        // authoritative operation touching one of those exact ids needs a short rebuild.
+        const actionTouchesSelection = [...affectedIds]
+          .some((id) => selectedIdSet.has(String(id)));
         applyingRemoteRef.current = true;
-        if (!transformOnly || transformTouchesSelection) canvas.discardActiveObject();
+        if (actionTouchesSelection) canvas.discardActiveObject();
         const previousRenderOnAddRemove = canvas.renderOnAddRemove;
         canvas.renderOnAddRemove = false;
         try {
+          const reconciledObjects = [];
           creationSessionsToReplace.forEach(({ clientId, sessionId }) => {
-            removeBoardObjectsByCreationSession(canvas, clientId, sessionId);
+            removeRegisteredObjectsByCreationSession(clientId, sessionId);
             remoteDrawSessionsRef.current.delete(`${clientId}:${sessionId}`);
           });
           [...new Set([...selectionTransactionIds, ...deleteMatchedTransactionIds])].forEach((transactionId) => {
-            removeSelectionTransactionObjects(canvas, transactionId);
+            removeRegisteredSelectionTransactionObjects(transactionId);
             remoteSelectionTransactionsRef.current.set(transactionId, {
               phase: 'authoritative',
               receivedAt: Date.now(),
@@ -5111,6 +5572,7 @@ function BoardWorkspace({
                 object.updatedBy = patch.updatedBy ?? sourceClientId ?? object.updatedBy;
                 object.dirty = true;
                 object.setCoords();
+                reconciledObjects.push(object);
                 penTransformSpatialApiRef.current?.updateObjects?.([object]);
                 const cached = serializedObjectCacheRef.current.get(object);
                 if (cached) {
@@ -5131,16 +5593,16 @@ function BoardWorkspace({
             if (skipDeleted || op?.type !== 'upsert' || !op.object?.boardObjectId || !revived) continue;
             if (op.restore) remoteDeletedObjectIdsRef.current.delete(String(op.object.boardObjectId));
             remotePreviewTokensRef.current.delete(String(op.object.boardObjectId));
-            const existingIndex = atomicReorderIds.has(String(op.object.boardObjectId))
-              ? -1
-              : canvas.getObjects().findIndex(
-                (object) => object.boardObjectId === op.object.boardObjectId,
-              );
+            const existingObject = op.preserveOrder && !atomicReorderIds.has(String(op.object.boardObjectId))
+              ? registeredObjectsById(op.object.boardObjectId)[0]
+              : null;
+            const existingIndex = existingObject ? canvas.getObjects().indexOf(existingObject) : -1;
             removeBoardObjectsById(canvas, op.object.boardObjectId);
             revived.transientPreview = false;
             revived.transientLiveDraw = false;
             revived.transientAwaitingCommit = false;
             canvas.add(revived);
+            reconciledObjects.push(revived);
             serializedObjectCacheRef.current.set(revived, op.object);
             const requestedIndex = op.preserveOrder && existingIndex >= 0
               ? existingIndex
@@ -5150,14 +5612,18 @@ function BoardWorkspace({
             }
           }
 
-          if (!transformOnly) deduplicateBoardObjects(canvas);
+          deduplicateRegisteredObjectIds(affectedIds);
           if (BACKGROUNDS.has(incomingBackground)) applyBackground(incomingBackground);
-          if (!transformOnly) applyObjectInteractivity();
-          if ((!transformOnly || transformTouchesSelection)
+          applyObjectInteractivityToObjects(reconciledObjects, { render: false });
+          if (actionTouchesSelection
             && activeToolRef.current === 'select'
             && selectedIds.length) {
             const selectedObjects = selectedIds
-              .map((id) => canvas.getObjects().find((object) => object.boardObjectId === id))
+              .map((id) => registeredObjectsById(id).find((object) => (
+                !object.transientPreview
+                && !object.transientTransformFallback
+                && !object.transientSelectionProxy
+              )))
               .filter(Boolean);
             if (selectedObjects.length === 1) {
               canvas.setActiveObject(selectedObjects[0]);
@@ -5165,11 +5631,17 @@ function BoardWorkspace({
               canvas.setActiveObject(createOuterOnlyActiveSelection(selectedObjects, canvas));
             }
           }
+          const verifiableOps = preparedOps
+            .filter((entry) => !entry.skipDeleted)
+            .map((entry) => entry.op);
+          if (!verifyAuthoritativeOps(verifiableOps, incomingBackground)) {
+            throw new Error(`Адресная проверка операции ${incomingRevision} не пройдена`);
+          }
           revisionRef.current = incomingRevision;
           bufferSnapshotAction(ops, incomingBackground, incomingRevision);
           if (transformOnly) {
             canvas.getActiveObject()?.setCoords?.();
-          } else {
+          } else if (actionTouchesSelection) {
             updateSelectionState();
             updateSelectionStyleState();
           }
@@ -5192,13 +5664,17 @@ function BoardWorkspace({
     return guardedTask;
   }, [
     applyBackground,
-    applyObjectInteractivity,
+    applyObjectInteractivityToObjects,
     bufferSnapshotAction,
+    deduplicateRegisteredObjectIds,
     getLocalMutationIds,
     registeredObjectsById,
+    removeRegisteredObjectsByCreationSession,
+    removeRegisteredSelectionTransactionObjects,
     syncFromServer,
     updateSelectionState,
     updateSelectionStyleState,
+    verifyAuthoritativeOps,
   ]);
 
   applyRemoteOpsRef.current = applyRemoteOps;
@@ -5484,8 +5960,11 @@ function BoardWorkspace({
     if (transaction?.proxy === canvas.getActiveObject()) {
       selectionTransactionTransitionRef.current = true;
       applyingRemoteRef.current = true;
-      canvas.discardActiveObject();
-      canvas.remove(transaction.proxy);
+      const composedDelete = localDeletionCompositorRef.current?.removeObjects?.([transaction.proxy]);
+      if (!composedDelete) {
+        canvas.discardActiveObject();
+        canvas.remove(transaction.proxy);
+      }
       applyingRemoteRef.current = false;
       realtimeRef.current?.sendSelectionTransaction?.({
         phase: 'commit',
@@ -5500,7 +5979,7 @@ function BoardWorkspace({
       localLockIdsRef.current = [];
       localSelectionTransactionRef.current = null;
       selectionTransactionTransitionRef.current = false;
-      canvas.requestRenderAll();
+      if (!composedDelete) canvas.requestRenderAll();
       updateSelectionState();
       updateSelectionStyleState();
       schedulePersistence();
@@ -5515,10 +5994,11 @@ function BoardWorkspace({
     const records = getObjectRecords(objects);
     const ids = records.map((record) => record.object.boardObjectId).filter(Boolean);
     applyingRemoteRef.current = true;
-    objects.forEach((object) => canvas.remove(object));
+    const composedDelete = localDeletionCompositorRef.current?.removeObjects?.(objects);
+    if (!composedDelete) objects.forEach((object) => canvas.remove(object));
     applyingRemoteRef.current = false;
     canvas.discardActiveObject();
-    canvas.requestRenderAll();
+    if (!composedDelete) canvas.requestRenderAll();
     updateSelectionState();
     updateSelectionStyleState();
     sendDeletes(ids);
@@ -5535,10 +6015,11 @@ function BoardWorkspace({
     const records = getObjectRecords(objects);
     const ids = records.map((record) => record.object.boardObjectId).filter(Boolean);
     applyingRemoteRef.current = true;
-    objects.forEach((object) => canvas.remove(object));
+    const composedDelete = localDeletionCompositorRef.current?.removeObjects?.(objects, { fullCanvas: true });
+    if (!composedDelete) objects.forEach((object) => canvas.remove(object));
     applyingRemoteRef.current = false;
     canvas.discardActiveObject();
-    canvas.requestRenderAll();
+    if (!composedDelete) canvas.requestRenderAll();
     updateSelectionState();
     updateSelectionStyleState();
     sendDeletes(ids);
@@ -5678,7 +6159,7 @@ function BoardWorkspace({
     flattenTarget(target).forEach((object, index) => {
       if (!object.boardObjectId) markObject(object, clientIdRef.current);
       else {
-        object.updatedAt = now + index;
+        object.updatedAt = Math.max(now + index, Number(object.updatedAt ?? 0) + 1);
         object.updatedBy = clientIdRef.current;
         registerCanvasObject(object);
       }
@@ -5767,19 +6248,16 @@ function BoardWorkspace({
     const affectedIds = frames.map((frame) => frame.id);
     if (affectedIds.some((id) => localLockIdsRef.current.includes(id))) return;
 
-    deduplicateBoardObjects(canvas);
+    deduplicateRegisteredObjectIds(affectedIds);
 
     const usedObjects = new Set();
-    const previewCandidates = canvas.getObjects().filter((object) => (
-      object.transientPreview
-      && (!object.creationClientId || object.creationClientId === remoteClientId)
-    ));
+    let legacyPreviewCandidates = null;
 
     const resolveExistingObject = (frame) => {
       const creationClientId = frame.creationClientId ?? remoteClientId;
-      const sameId = boardObjectsById(canvas, frame.id);
+      const sameId = registeredObjectsById(frame.id);
       const sameSession = frame.creationSessionId
-        ? boardObjectsByCreationSession(canvas, creationClientId, frame.creationSessionId)
+        ? registeredObjectsByCreationSession(creationClientId, frame.creationSessionId)
         : [];
       const candidates = [...new Set([...sameId, ...sameSession])]
         .filter((candidate) => !usedObjects.has(candidate));
@@ -5791,11 +6269,17 @@ function BoardWorkspace({
       // temporary drawing preview. Match such a preview by type, z-order and the
       // absolute transform of the first group frame instead of creating anything.
       if (!object) {
+        if (!legacyPreviewCandidates) {
+          legacyPreviewCandidates = canvas.getObjects().filter((candidate) => (
+            candidate.transientPreview
+            && (!candidate.creationClientId || candidate.creationClientId === remoteClientId)
+          ));
+        }
         const expectedKind = frame.objectKind ?? frame.objectType ?? null;
         const expectedIndex = Number(frame.zIndex ?? -1);
         let best = null;
         let bestScore = Number.POSITIVE_INFINITY;
-        previewCandidates.forEach((candidate) => {
+        legacyPreviewCandidates.forEach((candidate) => {
           if (usedObjects.has(candidate)) return;
           const candidateKind = candidate.objectKind ?? candidate.type ?? null;
           if (expectedKind && candidateKind && expectedKind !== candidateKind) return;
@@ -5827,6 +6311,7 @@ function BoardWorkspace({
       object.boardObjectId = frame.id;
       object.creationSessionId = frame.creationSessionId ?? object.creationSessionId ?? null;
       object.creationClientId = creationClientId ?? object.creationClientId ?? null;
+      registerCanvasObject(object);
       return object;
     };
 
@@ -5865,7 +6350,17 @@ function BoardWorkspace({
 
     applyingRemoteRef.current = true;
     try {
+      let appliedAnyFrame = false;
       resolved.forEach(({ frame, object }) => {
+        const incomingUpdatedAt = Number(frame.updatedAt ?? 0);
+        const authoritativeUpdatedAt = Number(object.updatedAt ?? 0);
+        // Realtime and durable operations use separate transports. Under an iPad
+        // network stall an old update/start frame can therefore arrive after the
+        // server-confirmed transform. The old code applied it unconditionally while
+        // retaining the newer updatedAt, leaving this one client at wrong coordinates
+        // until the group was moved again. Equal timestamps are allowed: the final
+        // live `end` frame and its durable transform intentionally share one position.
+        if (incomingUpdatedAt > 0 && authoritativeUpdatedAt > incomingUpdatedAt) return;
         util.applyTransformToObject(object, frame.matrix.map(Number));
         object.previewReceivedAt = Date.now();
         if (object.selectionTransactionId) {
@@ -5874,8 +6369,9 @@ function BoardWorkspace({
         }
         object.dirty = true;
         object.setCoords();
+        appliedAnyFrame = true;
       });
-      canvas.requestRenderAll();
+      if (appliedAnyFrame) canvas.requestRenderAll();
     } catch (error) {
       console.warn('Не удалось применить живое изменение объекта', error);
       window.setTimeout(() => syncFromServer(true), 120);
@@ -5905,9 +6401,19 @@ function BoardWorkspace({
     });
     if (lockUiChanged) {
       setRemoteLocks([...remoteLocksRef.current.entries()].map(([objectId, lock]) => ({ objectId, ...lock })));
-      applyObjectInteractivity();
+      applyObjectInteractivityToObjects(
+        lockIds.flatMap((objectId) => registeredObjectsById(objectId)),
+      );
     }
-  }, [applyObjectInteractivity, handleRemoteCursor, syncFromServer]);
+  }, [
+    applyObjectInteractivityToObjects,
+    deduplicateRegisteredObjectIds,
+    handleRemoteCursor,
+    registeredObjectsByCreationSession,
+    registeredObjectsById,
+    registerCanvasObject,
+    syncFromServer,
+  ]);
 
   const handleRemoteTransform = useCallback((message) => {
     const task = remoteTransformApplyQueueRef.current
@@ -6060,7 +6566,12 @@ function BoardWorkspace({
     const deletedAt = Number(remoteDeletedObjectIdsRef.current.get(objectId)?.timestamp ?? 0);
     if (deletedAt && Date.now() - deletedAt < 120000) {
       if (phase === 'cancel' || phase === 'end') {
-        removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId);
+        removeRegisteredObjectsByCreationSession(
+          remoteClientId,
+          sessionId,
+          null,
+          { transientOnly: true },
+        );
       }
       return;
     }
@@ -6075,7 +6586,12 @@ function BoardWorkspace({
       remoteDrawSessionsRef.current.set(sessionKey, {
         ...(previous ?? {}), sessionOrder, sequence, objectId, receivedAt: Date.now(), ended: true,
       });
-      removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId);
+      removeRegisteredObjectsByCreationSession(
+        remoteClientId,
+        sessionId,
+        null,
+        { transientOnly: true },
+      );
       canvas.requestRenderAll();
       return;
     }
@@ -6115,16 +6631,18 @@ function BoardWorkspace({
       awaitingCommit: ended,
     });
 
-    const sessionPreviews = canvas.getObjects().filter((object) => (
-      object.transientPreview
-      && object.creationSessionId === sessionId
-      && (!object.creationClientId || object.creationClientId === remoteClientId)
-    ));
-    const existingObjects = boardObjectsById(canvas, objectId);
+    const sessionPreviews = registeredObjectsByCreationSession(remoteClientId, sessionId)
+      .filter((object) => object.transientPreview);
+    const existingObjects = registeredObjectsById(objectId);
     const authoritativeExisting = existingObjects.find((object) => !object.transientPreview);
     const existing = authoritativeExisting ?? existingObjects[0] ?? sessionPreviews[0] ?? null;
     if (authoritativeExisting) {
-      removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId);
+      removeRegisteredObjectsByCreationSession(
+        remoteClientId,
+        sessionId,
+        null,
+        { transientOnly: true },
+      );
       canvas.requestRenderAll();
       return;
     }
@@ -6181,7 +6699,13 @@ function BoardWorkspace({
       canvas.renderOnAddRemove = previousRenderOnAddRemove;
       canvas.requestRenderAll();
     }
-  }, [handleRemoteCursor, syncFromServer]);
+  }, [
+    handleRemoteCursor,
+    registeredObjectsByCreationSession,
+    registeredObjectsById,
+    removeRegisteredObjectsByCreationSession,
+    syncFromServer,
+  ]);
 
   const flushRemotePreviewQueue = useCallback(() => {
     const pendingState = remotePreviewPendingRef.current;
@@ -6224,13 +6748,15 @@ function BoardWorkspace({
 
               const creationSessionId = serialized?.creationSessionId;
               const creationClientId = serialized?.creationClientId ?? message?.clientId ?? '';
-              const existingObjects = boardObjectsById(canvas, id);
+              const existingObjects = registeredObjectsById(id);
               const authoritativeExisting = existingObjects.find((object) => !object.transientPreview);
               const existing = authoritativeExisting ?? existingObjects[0] ?? null;
               const existingIndex = existing ? canvas.getObjects().indexOf(existing) : canvas.getObjects().length;
               if (authoritativeExisting) {
                 if (creationSessionId) {
-                  removeTransientDrawPreviewsBySession(canvas, creationClientId, creationSessionId);
+                  registeredObjectsByCreationSession(creationClientId, creationSessionId)
+                    .filter((object) => object.transientPreview)
+                    .forEach((object) => canvas.remove(object));
                 } else {
                   existingObjects
                     .filter((object) => object.transientPreview)
@@ -6242,7 +6768,7 @@ function BoardWorkspace({
               const oldObjects = [...new Set([
                 ...existingObjects,
                 ...(creationSessionId
-                  ? boardObjectsByCreationSession(canvas, creationClientId, creationSessionId)
+                  ? registeredObjectsByCreationSession(creationClientId, creationSessionId)
                   : []),
               ])];
               revived.transientPreview = true;
@@ -6281,7 +6807,7 @@ function BoardWorkspace({
       });
 
     remotePreviewApplyQueueRef.current = task;
-  }, [syncFromServer]);
+  }, [registeredObjectsByCreationSession, registeredObjectsById, syncFromServer]);
 
   const enqueueRemotePreviewRecords = useCallback((records, message) => {
     const safeRecords = Array.isArray(records) ? records : [];
@@ -6351,7 +6877,7 @@ function BoardWorkspace({
         const [revived] = await util.enlivenObjects([record.object]);
         if (!revived || getLocalMutationIds().has(objectId)) return;
 
-        const existing = boardObjectsById(canvas, objectId);
+        const existing = registeredObjectsById(objectId);
         const incomingUpdatedAt = Number(record?.object?.updatedAt ?? 0);
         const newestExistingUpdate = Math.max(
           0,
@@ -6385,13 +6911,13 @@ function BoardWorkspace({
         } finally {
           applyingRemoteRef.current = false;
           canvas.renderOnAddRemove = previousRenderOnAddRemove;
-          applyObjectInteractivity();
+          applyObjectInteractivityToObjects([revived], { render: false });
           canvas.requestRenderAll();
         }
       });
 
     authoritativeApplyQueueRef.current = task;
-  }, [applyObjectInteractivity, getLocalMutationIds]);
+  }, [applyObjectInteractivityToObjects, getLocalMutationIds, registeredObjectsById]);
 
   const handleRemoteDeletePreview = useCallback((message) => {
     const canvas = fabricCanvasRef.current;
@@ -6400,12 +6926,19 @@ function BoardWorkspace({
     const timestamp = Date.now();
     const idSet = new Set(ids);
     const activeIds = canvas.getActiveObjects().map((object) => String(object.boardObjectId ?? ''));
+    const deletedActiveObject = activeIds.some((id) => idSet.has(id));
+    const previewObjects = [...new Set(ids.flatMap((id) => registeredObjectsById(id)))];
 
     applyingRemoteRef.current = true;
     const previousRenderOnAddRemove = canvas.renderOnAddRemove;
     canvas.renderOnAddRemove = false;
+    let composedDelete = false;
     try {
-      if (activeIds.some((id) => idSet.has(id))) canvas.discardActiveObject();
+      composedDelete = Boolean(localDeletionCompositorRef.current?.removeObjects?.(
+        previewObjects,
+        { discardActiveObject: deletedActiveObject },
+      ));
+      if (!composedDelete && deletedActiveObject) canvas.discardActiveObject();
       ids.forEach((id) => {
         remoteDeletedObjectIdsRef.current.set(id, {
           timestamp,
@@ -6420,7 +6953,7 @@ function BoardWorkspace({
       for (const [sessionKey, session] of remoteDrawSessionsRef.current) {
         if (!idSet.has(String(session?.objectId ?? ''))) continue;
         const [remoteClientId, ...sessionParts] = sessionKey.split(':');
-        removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionParts.join(':'));
+        removeRegisteredObjectsByCreationSession(remoteClientId, sessionParts.join(':'));
         remoteDrawSessionsRef.current.delete(sessionKey);
       }
       for (const [sessionKey, session] of remoteTransformSessionsRef.current) {
@@ -6432,12 +6965,16 @@ function BoardWorkspace({
     } finally {
       applyingRemoteRef.current = false;
       canvas.renderOnAddRemove = previousRenderOnAddRemove;
-      applyObjectInteractivity();
       updateSelectionState();
       updateSelectionStyleState();
-      canvas.requestRenderAll();
+      if (!composedDelete) canvas.requestRenderAll();
     }
-  }, [applyObjectInteractivity, updateSelectionState, updateSelectionStyleState]);
+  }, [
+    registeredObjectsById,
+    removeRegisteredObjectsByCreationSession,
+    updateSelectionState,
+    updateSelectionStyleState,
+  ]);
 
   const changeGuestMode = useCallback(async (mode) => {
     await setGuestMode(boardId, boardKey, mode);
@@ -7018,6 +7555,128 @@ function BoardWorkspace({
       layer.element.height = 1;
     };
 
+    const clipViewportRectToCanvas = (rect) => {
+      const source = finiteRect(rect);
+      const left = clamp(source.left, 0, canvas.getWidth());
+      const top = clamp(source.top, 0, canvas.getHeight());
+      const right = clamp(source.right, 0, canvas.getWidth());
+      const bottom = clamp(source.bottom, 0, canvas.getHeight());
+      if (right <= left || bottom <= top) return null;
+      return finiteRect({ left, top, width: right - left, height: bottom - top });
+    };
+
+    const mergeOverlappingViewportRects = (rects) => {
+      const merged = [];
+      for (const source of Array.isArray(rects) ? rects : []) {
+        let current = clipViewportRectToCanvas(source);
+        if (!current) continue;
+        let mergedAgain = true;
+        while (mergedAgain) {
+          mergedAgain = false;
+          for (let index = merged.length - 1; index >= 0; index -= 1) {
+            const candidate = merged[index];
+            const touches = current.left <= candidate.right + 2
+              && current.right + 2 >= candidate.left
+              && current.top <= candidate.bottom + 2
+              && current.bottom + 2 >= candidate.top;
+            if (!touches) continue;
+            const left = Math.min(current.left, candidate.left);
+            const top = Math.min(current.top, candidate.top);
+            const right = Math.max(current.right, candidate.right);
+            const bottom = Math.max(current.bottom, candidate.bottom);
+            current = finiteRect({ left, top, width: right - left, height: bottom - top });
+            merged.splice(index, 1);
+            mergedAgain = true;
+          }
+        }
+        merged.push(current);
+      }
+      return merged;
+    };
+
+    const compositeCroppedLayerIntoLowerCanvas = (layer) => {
+      const lowerCanvas = canvas.lowerCanvasEl;
+      const context = lowerCanvas?.getContext?.('2d');
+      if (!context || !layer?.element) return false;
+      const ratioX = lowerCanvas.width / Math.max(1, canvas.getWidth());
+      const ratioY = lowerCanvas.height / Math.max(1, canvas.getHeight());
+      context.save();
+      try {
+        context.setTransform(1, 0, 0, 1, 0, 0);
+        context.drawImage(
+          layer.element,
+          Math.round(layer.rect.left * ratioX),
+          Math.round(layer.rect.top * ratioY),
+          Math.round(layer.rect.width * ratioX),
+          Math.round(layer.rect.height * ratioY),
+        );
+      } finally {
+        context.restore();
+      }
+      return true;
+    };
+
+    const renderLocalDeletionPatches = (rects) => {
+      const patches = mergeOverlappingViewportRects(rects);
+      if (!patches.length) return true;
+      try {
+        for (const screenRect of patches) {
+          const patch = createCroppedRasterLayer(screenRect, 'object-eraser-patch', 0);
+          try {
+            drawBackgroundIntoCroppedLayer(patch);
+            const sceneRect = sceneRectFromViewportRect(screenRect, canvas.viewportTransform);
+            renderObjectsIntoCroppedLayer(patch, queryTransformSpatialObjects(sceneRect));
+            if (!compositeCroppedLayerIntoLowerCanvas(patch)) return false;
+          } finally {
+            disposeCroppedRasterLayer(patch);
+          }
+        }
+        return true;
+      } catch (error) {
+        console.warn('Не удалось отрисовать локальную область удаления', error);
+        return false;
+      }
+    };
+
+    const removeObjectsWithLocalDeletionPatches = (objects, {
+      fullCanvas = false,
+      discardActiveObject = true,
+    } = {}) => {
+      const targets = [...new Set((Array.isArray(objects) ? objects : [objects]).filter((object) => (
+        object?.canvas === canvas
+      )))];
+      if (!targets.length) return true;
+      const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
+      const patchRects = fullCanvas
+        ? [finiteRect({ left: 0, top: 0, width: canvas.getWidth(), height: canvas.getHeight() })]
+        : targets.map((object) => {
+          const entry = transformSpatialIndex.entries.get(object);
+          const bounds = finiteRect(entry?.bounds ?? object.getBoundingRect());
+          return expandedRect(viewportRectFromSceneRect(bounds, viewport), 4);
+        });
+      const previousRenderOnAddRemove = canvas.renderOnAddRemove;
+      canvas.renderOnAddRemove = false;
+      try {
+        if (discardActiveObject) canvas.discardActiveObject();
+        targets.forEach((object) => canvas.remove(object));
+        // discardActiveObject() asks Fabric for a full lower-canvas render even though
+        // only its transparent controls changed. Cancel that request and clear the top
+        // backing store directly; the cropped patches update the lower scene below.
+        if (discardActiveObject) {
+          canvas.cancelRequestedRender?.();
+          hardClearPenTransformTop();
+        }
+        if (!renderLocalDeletionPatches(patchRects)) canvas.requestRenderAll();
+      } finally {
+        canvas.renderOnAddRemove = previousRenderOnAddRemove;
+      }
+      return true;
+    };
+
+    localDeletionCompositorRef.current = {
+      removeObjects: removeObjectsWithLocalDeletionPatches,
+    };
+
     const finishPenTransformIsolation = ({ composite = true } = {}) => {
       const session = penTransformIsolationRef.current;
       if (!session || session.canvas !== canvas) return false;
@@ -7451,7 +8110,7 @@ function BoardWorkspace({
       onSyncRequired() {
         syncFromServer(true);
       },
-      onCommit(result, action) {
+      onCommit(result, action, batchMeta = null) {
         const currentRevision = Number(revisionRef.current ?? 0);
         const committedRevision = Number(result?.revision ?? currentRevision);
         const rejected = Array.isArray(result?.rejectedObjectIds)
@@ -7478,6 +8137,42 @@ function BoardWorkspace({
             result?.appliedBackground ?? action?.background ?? null,
             committedRevision,
           );
+
+          const isLastInBatch = Number(batchMeta?.batchIndex ?? 0)
+            === Number(batchMeta?.batchCount ?? 1) - 1;
+          if (isLastInBatch) {
+            const batchActions = Array.isArray(batchMeta?.actions) ? batchMeta.actions : [action];
+            const batchResults = Array.isArray(batchMeta?.results) ? batchMeta.results : [result];
+            const verificationOps = finalVerificationOps(batchActions, batchResults);
+            const verificationBackground = [...batchActions]
+              .map((batchAction, index) => (
+                batchResults[index]?.appliedBackground ?? batchAction?.background ?? null
+              ))
+              .reverse()
+              .find((value) => BACKGROUNDS.has(value)) ?? null;
+            // Promise waiters clear their per-object pending markers immediately after
+            // onCommit returns. Verify on the next task so a new user gesture always wins.
+            window.setTimeout(() => {
+              authoritativeApplyQueueRef.current
+                .catch(() => undefined)
+                .then(async () => {
+                  if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) return;
+                  if (verifyAuthoritativeOps(verificationOps, verificationBackground)) return;
+                  await replayPendingActionsLocally([{
+                    ops: verificationOps,
+                    background: verificationBackground,
+                  }]);
+                  if (!verifyAuthoritativeOps(verificationOps, verificationBackground)) {
+                    throw new Error('Локальная адресная проверка подтверждённого действия не пройдена');
+                  }
+                })
+                .catch((verificationError) => {
+                  console.warn('Не удалось адресно сверить собственное действие', verificationError);
+                  setSaveStatus('Нужна повторная синхронизация изменения');
+                  setSyncTone('error');
+                });
+            }, 0);
+          }
         } else {
           syncFromServer(true);
         }
@@ -7557,16 +8252,18 @@ function BoardWorkspace({
     );
     const lockCleanupInterval = window.setInterval(() => {
       const now = Date.now();
-      let changed = false;
+      const expiredLockIds = [];
       for (const [objectId, lock] of remoteLocksRef.current) {
         if (Number(lock.expiresAt ?? 0) <= now) {
           remoteLocksRef.current.delete(objectId);
-          changed = true;
+          expiredLockIds.push(objectId);
         }
       }
-      if (changed) {
+      if (expiredLockIds.length) {
         setRemoteLocks([...remoteLocksRef.current.entries()].map(([objectId, lock]) => ({ objectId, ...lock })));
-        applyObjectInteractivity();
+        applyObjectInteractivityToObjects(
+          expiredLockIds.flatMap((objectId) => registeredObjectsById(objectId)),
+        );
       }
       setRemoteCursors((current) => current.filter((cursor) => now - Number(cursor.receivedAt ?? 0) < 12000));
       for (const [sessionKey, session] of remoteTransformSessionsRef.current) {
@@ -7577,7 +8274,7 @@ function BoardWorkspace({
       let removedTransient = false;
       for (const [transactionId, transaction] of remoteSelectionTransactionsRef.current) {
         if (now - Number(transaction.receivedAt ?? 0) <= 45000) continue;
-        if (removeSelectionTransactionObjects(canvas, transactionId).length) removedTransient = true;
+        if (removeRegisteredSelectionTransactionObjects(transactionId).length) removedTransient = true;
         remoteSelectionTransactionsRef.current.delete(transactionId);
       }
       for (const [objectId, tombstone] of remoteDeletedObjectIdsRef.current) {
@@ -8273,24 +8970,27 @@ function BoardWorkspace({
     }
 
     function objectEraserCandidatesNear(scenePoint) {
-      const cellSize = 192;
-      const cellX = Math.floor(scenePoint.x / cellSize);
-      const cellY = Math.floor(scenePoint.y / cellSize);
-      const nearby = [...objectEraserGlobalCandidatesRef.current];
-      const seen = new Set(nearby.map((entry) => entry.object));
-      for (let y = cellY - 1; y <= cellY + 1; y += 1) {
-        for (let x = cellX - 1; x <= cellX + 1; x += 1) {
-          const bucket = objectEraserGridRef.current.get(`${x}:${y}`);
-          if (!bucket) continue;
-          bucket.forEach((entry) => {
-            if (seen.has(entry.object)) return;
-            seen.add(entry.object);
-            nearby.push(entry);
-          });
-        }
-      }
-      nearby.sort((left, right) => Number(right.zIndex ?? 0) - Number(left.zIndex ?? 0));
-      return nearby;
+      const zoomLevel = Math.max(canvas.getZoom(), MIN_ZOOM);
+      const sceneTolerance = 12 / zoomLevel;
+      const queryRect = finiteRect({
+        left: scenePoint.x - sceneTolerance,
+        top: scenePoint.y - sceneTolerance,
+        width: sceneTolerance * 2,
+        height: sceneTolerance * 2,
+      });
+      // The large-board Pencil compositor already maintains this index incrementally for
+      // adds, deletes and transforms. Reusing it avoids the former full board scan and
+      // getBoundingRect() call for every object at the start of each eraser gesture.
+      return queryTransformSpatialObjects(queryRect)
+        .reverse()
+        .map((object) => {
+          const entry = transformSpatialIndex.entries.get(object);
+          return {
+            object,
+            bounds: entry?.bounds ?? finiteRect(object.getBoundingRect()),
+            zIndex: Number(entry?.order ?? 0),
+          };
+        });
     }
 
     function eraseAtClientPoint(clientX, clientY) {
@@ -8310,9 +9010,11 @@ function BoardWorkspace({
         objectEraserCandidatesNear(scenePoint),
       );
       if (!target) return;
+      const spatialEntry = transformSpatialIndex.entries.get(target);
+      const targetBounds = finiteRect(spatialEntry?.bounds ?? target.getBoundingRect());
       const record = {
         object: serializeObject(target),
-        zIndex: objectEraserZIndexRef.current.get(target) ?? 0,
+        zIndex: Number(spatialEntry?.order ?? 0),
       };
       const id = record?.object?.boardObjectId;
       if (!id || objectEraserRecordsRef.current.has(id)) return;
@@ -8321,10 +9023,15 @@ function BoardWorkspace({
       applyingRemoteRef.current = true;
       canvas.remove(target);
       applyingRemoteRef.current = false;
+      const targetScreenRect = expandedRect(
+        viewportRectFromSceneRect(targetBounds, canvas.viewportTransform),
+        4,
+      );
+      objectEraserPendingPatchRects.push(targetScreenRect);
       if (!objectEraserRenderFrameRef.current) {
         objectEraserRenderFrameRef.current = window.requestAnimationFrame(() => {
           objectEraserRenderFrameRef.current = null;
-          canvas.requestRenderAll();
+          flushObjectEraserVisualPatches();
         });
       }
     }
@@ -8333,14 +9040,12 @@ function BoardWorkspace({
       if (!erasingRef.current) return;
       erasingRef.current = false;
       objectEraserPointerRef.current = null;
-      objectEraserGridRef.current.clear();
-      objectEraserGlobalCandidatesRef.current = [];
-      objectEraserZIndexRef.current.clear();
       if (objectEraserRenderFrameRef.current) {
         window.cancelAnimationFrame(objectEraserRenderFrameRef.current);
         objectEraserRenderFrameRef.current = null;
-        canvas.requestRenderAll();
       }
+      flushObjectEraserVisualPatches();
+      restoreObjectEraserRenderMode();
       const records = [...objectEraserRecordsRef.current.values()];
       objectEraserRecordsRef.current = new Map();
       updateSelectionState();
@@ -8424,7 +9129,7 @@ function BoardWorkspace({
         if (activePencilRef.current === pendingPencil) activePencilRef.current = null;
         if (pendingPencil.cancelled) {
           finishLiveDraw('cancel', pendingPencil.sessionId);
-          removeBoardObjectsByCreationSession(canvas, clientId, pendingPencil.sessionId);
+          removeRegisteredObjectsByCreationSession(clientId, pendingPencil.sessionId);
           applyingRemoteRef.current = true;
           canvas.remove(path);
           applyingRemoteRef.current = false;
@@ -8434,7 +9139,7 @@ function BoardWorkspace({
         // The authoritative Fabric path owns the session. Remove every temporary or
         // interrupted sibling carrying the same session, even when a buggy browser
         // assigned it a different boardObjectId.
-        removeBoardObjectsByCreationSession(canvas, clientId, pendingPencil.sessionId, path);
+        removeRegisteredObjectsByCreationSession(clientId, pendingPencil.sessionId, path);
       }
       if (isPartialEraserPath) {
         path.set({
@@ -8749,11 +9454,15 @@ function BoardWorkspace({
       const objectId = String(target.boardObjectId ?? '');
       const newTextDraft = newTextDraftIdsRef.current.delete(objectId);
       const emptyText = String(target.text ?? '').trim().length === 0;
+      let emptyTextComposedDelete = false;
 
       if (emptyText) {
         const records = getObjectRecords([target]);
         applyingRemoteRef.current = true;
-        canvas.remove(target);
+        emptyTextComposedDelete = Boolean(
+          localDeletionCompositorRef.current?.removeObjects?.([target]),
+        );
+        if (!emptyTextComposedDelete) canvas.remove(target);
         applyingRemoteRef.current = false;
         if (objectId) sendDeletes([objectId]);
         const latestAction = undoStackRef.current.at(-1);
@@ -8788,7 +9497,7 @@ function BoardWorkspace({
       canvas.discardActiveObject();
       updateSelectionState();
       updateSelectionStyleState();
-      canvas.requestRenderAll();
+      if (!emptyTextComposedDelete) canvas.requestRenderAll();
       schedulePersistence();
       setSaveStatus(emptyText ? 'Пустой текст удалён' : 'Текст сохранён');
     });
@@ -9623,6 +10332,25 @@ function BoardWorkspace({
     let arrowPanFrame = null;
     let lastArrowPanAt = 0;
     let objectEraserDelayTimer = null;
+    let objectEraserPreviousRenderOnAddRemove = null;
+    let objectEraserPendingPatchRects = [];
+
+    function restoreObjectEraserRenderMode() {
+      if (objectEraserPreviousRenderOnAddRemove == null) return;
+      canvas.renderOnAddRemove = objectEraserPreviousRenderOnAddRemove;
+      objectEraserPreviousRenderOnAddRemove = null;
+    }
+
+    function flushObjectEraserVisualPatches() {
+      const rects = objectEraserPendingPatchRects;
+      objectEraserPendingPatchRects = [];
+      if (!rects.length) return;
+      // Deleted objects have already been removed from the persistent spatial index.
+      // Repaint only their visible footprints and objects that overlap those footprints.
+      // A full Fabric render is retained solely as a safety fallback if the cropped
+      // compositor is unavailable, preserving correctness without penalising normal use.
+      if (!renderLocalDeletionPatches(rects)) canvas.requestRenderAll();
+    }
 
     const mobileGameLibrarySequence = [1, 2, 3, 2, 1];
     let mobileGameLibraryGesture = {
@@ -10536,37 +11264,17 @@ function BoardWorkspace({
       objectEraserDelayTimer = null;
       erasingRef.current = true;
       objectEraserRecordsRef.current = new Map();
-      const eraserObjects = canvas.getObjects();
-      objectEraserZIndexRef.current = new Map(eraserObjects.map((object, index) => [object, index]));
-      const eraserEntries = eraserObjects.map((object, zIndex) => ({
-        object,
-        zIndex,
-        bounds: object.getBoundingRect(),
-      }));
-      objectEraserGridRef.current = new Map();
-      objectEraserGlobalCandidatesRef.current = [];
-      const cellSize = 192;
-      eraserEntries.forEach((entry) => {
-        const { bounds } = entry;
-        const minX = Math.floor(bounds.left / cellSize);
-        const maxX = Math.floor((bounds.left + bounds.width) / cellSize);
-        const minY = Math.floor(bounds.top / cellSize);
-        const maxY = Math.floor((bounds.top + bounds.height) / cellSize);
-        const cellCount = (maxX - minX + 1) * (maxY - minY + 1);
-        if (cellCount > 64) {
-          objectEraserGlobalCandidatesRef.current.push(entry);
-          return;
-        }
-        for (let y = minY; y <= maxY; y += 1) {
-          for (let x = minX; x <= maxX; x += 1) {
-            const key = `${x}:${y}`;
-            const bucket = objectEraserGridRef.current.get(key) ?? [];
-            bucket.push(entry);
-            objectEraserGridRef.current.set(key, bucket);
-          }
-        }
-      });
+      objectEraserPendingPatchRects = [];
+      if (objectEraserPreviousRenderOnAddRemove == null) {
+        objectEraserPreviousRenderOnAddRemove = canvas.renderOnAddRemove;
+      }
+      // canvas.remove() normally schedules a whole-board render for every erased object.
+      // Keep Fabric's automatic add/remove renderer off only for this eraser contact; the
+      // cropped compositor below paints the affected pixels directly into the lower canvas.
+      canvas.renderOnAddRemove = false;
       canvas.discardActiveObject();
+      canvas.cancelRequestedRender?.();
+      hardClearPenTransformTop();
       updateSelectionState();
       updateSelectionStyleState();
       objectEraserPointerRef.current = {
@@ -11273,16 +11981,18 @@ function BoardWorkspace({
         window.cancelAnimationFrame(objectEraserRenderFrameRef.current);
         objectEraserRenderFrameRef.current = null;
       }
+      objectEraserPendingPatchRects = [];
+      restoreObjectEraserRenderMode();
       canvas.off('object:added', handleRegistryObjectAdded);
       canvas.off('object:removed', handleRegistryObjectRemoved);
       canvas.off('before:render', drawBoardBackgroundOnCanvas);
+      localDeletionCompositorRef.current = null;
       objectRegistryRef.current.clear();
+      creationSessionRegistryRef.current.clear();
+      selectionTransactionRegistryRef.current.clear();
       serializedObjectCacheRef.current = new WeakMap();
       selectionVisualSignatureRef.current = '';
       selectionVisualActiveRef.current = null;
-      objectEraserGridRef.current.clear();
-      objectEraserGlobalCandidatesRef.current = [];
-      objectEraserZIndexRef.current.clear();
       selectionUiTouchedRef.current.clear();
       resizeObserver.disconnect();
       realtimeRef.current?.disconnect();

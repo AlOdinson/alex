@@ -1,9 +1,9 @@
 {
-  "version": "1.31.14",
-  "packageVersion": "1.31.14",
-  "base": "1.31.13",
-  "release": "Extended stroke widths 50px and 100px",
-  "date": "2026-08-08",
-  "name": "extended-stroke-widths",
-  "label": "Alex Board 1.31.14"
+  "version": "1.31.17",
+  "packageVersion": "1.31.17",
+  "base": "1.31.16",
+  "release": "Event-driven targeted reconciliation",
+  "date": "2026-08-13",
+  "name": "event-driven-targeted-reconciliation",
+  "label": "Alex Board 1.31.17"
 }

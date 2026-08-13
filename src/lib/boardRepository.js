@@ -7,6 +7,7 @@ import {
   getCachedSnapshot,
   getConfirmedActionsAfter,
   getPendingActions,
+  setCachedSnapshot,
 } from './idb.js';
 
 const LOCAL_PREFIX = 'alex-board:board:';

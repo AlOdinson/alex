@@ -575,7 +575,12 @@ export function connectBoardRealtime({
       emitPendingCount();
       processedActions.forEach((action, index) => {
         const result = results[index];
-        onCommit?.(result, action);
+        onCommit?.(result, action, {
+          batchIndex: index,
+          batchCount: processedActions.length,
+          actions: processedActions,
+          results,
+        });
         resolveActionWaiter(action, result);
       });
       // Realtime fanout must not hold the durable write queue. Ably is only the
