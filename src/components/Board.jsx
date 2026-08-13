@@ -1795,9 +1795,6 @@ function BoardWorkspace({
     pointerId: null,
     active: false,
     nextMoveAt: 0,
-    compatibilityGuardUntil: 0,
-    generation: 0,
-    lastEndedAt: 0,
   });
   const transformGestureRef = useRef({
     activeId: null,
@@ -3005,24 +3002,13 @@ function BoardWorkspace({
     const canvas = fabricCanvasRef.current;
     const switchingTool = nextTool !== activeToolRef.current;
     if (switchingTool) {
-      // Tool switching is an unconditional escape hatch from a stale Safari Pencil
-      // selection/transform. It must work even when a previous pointerup was interrupted
-      // by an exception or WebKit omitted the expected compatibility event.
+      // Tool switching is an unconditional escape hatch from an interrupted Pencil
+      // selection. Fabric owns the Pointer Event directly, so there is no custom
+      // pointer capture or synthetic compatibility-mouse session to release.
       const selectionSession = selectionPenSessionRef.current;
-      const capturedPointerId = selectionSession.pointerId;
-      try {
-        if (capturedPointerId != null
-          && canvas?.upperCanvasEl?.hasPointerCapture?.(capturedPointerId)) {
-          canvas.upperCanvasEl.releasePointerCapture(capturedPointerId);
-        }
-      } catch {
-        // WebKit may already have released the capture.
-      }
-      selectionSession.generation += 1;
       selectionSession.pointerId = null;
       selectionSession.active = false;
       selectionSession.nextMoveAt = 0;
-      selectionSession.compatibilityGuardUntil = 0;
       selectionDragRef.current = null;
       if (selectionMoveFrameRef.current != null) {
         window.cancelAnimationFrame(selectionMoveFrameRef.current);
@@ -7631,6 +7617,10 @@ function BoardWorkspace({
     const canvas = new Canvas(canvasElement, {
       preserveObjectStacking: true,
       selection: false,
+      // Let Fabric consume the real Pointer Event for mouse, touch and Apple Pencil.
+      // With the default disabled, Pencil was transformed through Safari's synthetic
+      // mouse stream while the board also processed the real pen stream.
+      enablePointerEvents: true,
       enableRetinaScaling: true,
       perPixelTargetFind: false,
       skipOffscreen: true,
@@ -7850,6 +7840,26 @@ function BoardWorkspace({
     };
 
     let selectionTargetFindRestoreState = null;
+    let transformTargetFindRestoreState = null;
+
+    const suppressTargetFindDuringTransform = () => {
+      if (transformTargetFindRestoreState) return;
+      transformTargetFindRestoreState = { skipTargetFind: canvas.skipTargetFind };
+      // Canvas._cacheTransformEventData() asks findTarget() on every move even though it
+      // immediately replaces the result with _currentTransform.target. On a dense board
+      // that is an O(all objects) scan per Pencil sample. The documented flag makes the
+      // redundant lookup O(1) without changing Fabric's transform target.
+      canvas.skipTargetFind = true;
+    };
+
+    const restoreTargetFindAfterTransform = () => {
+      const state = transformTargetFindRestoreState;
+      transformTargetFindRestoreState = null;
+      if (!state || fabricCanvasRef.current !== canvas) return;
+      canvas.skipTargetFind = state.skipTargetFind;
+    };
+
+    canvas.on('mouse:up:before', restoreTargetFindAfterTransform);
 
     const createCroppedRasterLayer = (rect, className, zIndex) => {
       const safeRect = finiteRect(rect);
@@ -9399,6 +9409,7 @@ function BoardWorkspace({
 
     canvas.on('before:transform', ({ transform, e: nativeEvent }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
+      suppressTargetFindDuringTransform();
       const pointerType = nativeEvent?.pointerType
         ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
       transformGestureRef.current.pointerType = pointerType;
@@ -9406,18 +9417,12 @@ function BoardWorkspace({
         modifiedBeforeRef.current = [];
         transformGestureRef.current.activeId = beginLiveTransform(transform.target);
         lastLockBroadcastRef.current = Date.now();
-        if (pointerType === 'pen' && manuallyPaintedPencilSelectionTarget) {
-          clearManualPencilSelectionFrame();
-        }
         return;
       }
       modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
       sendLocalLock(transform.target, true);
       transformGestureRef.current.activeId = beginLiveTransform(transform.target);
       lastLockBroadcastRef.current = Date.now();
-      if (pointerType === 'pen' && manuallyPaintedPencilSelectionTarget) {
-        clearManualPencilSelectionFrame();
-      }
     });
 
     const broadcastLiveTransform = ({ target }) => {
@@ -9439,6 +9444,7 @@ function BoardWorkspace({
     canvas.on('object:skewing', broadcastLiveTransform);
 
     canvas.on('object:modified', ({ target }) => {
+      restoreTargetFindAfterTransform();
       if (applyingRemoteRef.current || applyingHistoryRef.current || !target) return;
       if (target.transientSelectionProxy) {
         endLiveTransform(target);
@@ -9555,57 +9561,12 @@ function BoardWorkspace({
         if (fabricCanvasRef.current === canvas) refreshSelectionUi();
       });
     };
-    let manuallyPaintedPencilSelectionTarget = null;
-    const clearManualPencilSelectionFrame = () => {
-      if (!manuallyPaintedPencilSelectionTarget) return;
-      manuallyPaintedPencilSelectionTarget = null;
-      const contextTop = canvas.contextTop;
-      if (!contextTop) return;
-      try {
-        canvas.clearContext?.(contextTop);
-        canvas.contextTopDirty = false;
-      } catch { /* Ignore a disposed top layer. */ }
-    };
     const startTransactionalSelection = () => {
       // Selection UI is cosmetic. Run it after Fabric has completed the current pointer
-      // event so clearing a large ActiveSelection cannot block the Pencil contact itself.
-      manuallyPaintedPencilSelectionTarget = null;
-      queueSelectionUiRefresh();
-    };
-    const startFreshPencilSingleSelection = () => {
-      // A fresh single-object Pencil selection is created during the same native
-      // pointerdown that can immediately become a drag. On busy boards the Pencil
-      // transform compositor cancels Fabric's pending full render in before:transform,
-      // so the first selection frame could be postponed until pointerup. Draw only the
-      // controls on the top canvas synchronously before that cancellation can happen.
-      // Touch, mouse, selection:updated and group paths stay exactly on 1.31.2.
-      const active = canvas.getActiveObject();
-      if (selectionPenSessionRef.current.active
-        && active
-        && !isActiveSelectionObject(active)) {
-        active.hasControls = canEditRef.current;
-        active.hasBorders = canEditRef.current;
-        try { active.setCoords?.(); } catch { /* Ignore a disposed target. */ }
-        const contextTop = canvas.contextTop;
-        if (contextTop && typeof active._renderControls === 'function') {
-          try {
-            canvas.clearContext?.(contextTop);
-            active._renderControls(contextTop);
-            manuallyPaintedPencilSelectionTarget = active;
-            // This frame was painted outside Fabric's normal render cycle. Mark the
-            // upper context dirty so the next regular render can always clear it.
-            canvas.contextTopDirty = true;
-          } catch {
-            try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
-          }
-        } else {
-          try { canvas.renderTop?.(); } catch { /* Ignore a disposed top layer. */ }
-        }
-      }
+      // event so a large ActiveSelection cannot block the contact itself.
       queueSelectionUiRefresh();
     };
     const finishTransactionalSelection = () => {
-      manuallyPaintedPencilSelectionTarget = null;
       queueSelectionUiRefresh();
     };
 
@@ -9620,7 +9581,7 @@ function BoardWorkspace({
     canvas.on('object:added', handleRegistryObjectAdded);
     canvas.on('object:removed', handleRegistryObjectRemoved);
 
-    canvas.on('selection:created', startFreshPencilSingleSelection);
+    canvas.on('selection:created', startTransactionalSelection);
     canvas.on('selection:updated', startTransactionalSelection);
     canvas.on('selection:cleared', finishTransactionalSelection);
 
@@ -10039,12 +10000,6 @@ function BoardWorkspace({
     canvas.on('mouse:down', (event) => {
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
-      if (activeToolRef.current === 'select'
-        && shouldSuppressSelectionCompatibilityEvent(nativeEvent)) {
-        nativeEvent?.preventDefault?.();
-        nativeEvent?.stopPropagation?.();
-        return;
-      }
       if (performance.now() < eyedropperCompatibilityGuardUntilRef.current
         && nativeEvent?.pointerType !== 'pen') {
         nativeEvent?.preventDefault?.();
@@ -10339,9 +10294,6 @@ function BoardWorkspace({
 
     canvas.on('mouse:move', (event) => {
       const nativeEvent = event.e;
-      if (activeToolRef.current === 'select'
-        && Number(nativeEvent?.buttons ?? 0) > 0
-        && shouldSuppressSelectionCompatibilityEvent(nativeEvent)) return;
       if (nativeEvent?.pointerId != null && rejectedPointerIdsRef.current.has(nativeEvent.pointerId)) return;
       const textTapCandidate = textTapCandidateRef.current;
       if (textTapCandidate
@@ -10425,12 +10377,6 @@ function BoardWorkspace({
     canvas.on('mouse:up', (event) => {
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
-      if (activeToolRef.current === 'select'
-        && shouldSuppressSelectionCompatibilityEvent(nativeEvent)) {
-        nativeEvent?.preventDefault?.();
-        nativeEvent?.stopPropagation?.();
-        return;
-      }
       if (performance.now() < eyedropperCompatibilityGuardUntilRef.current
         && nativeEvent?.pointerType !== 'pen') {
         nativeEvent?.preventDefault?.();
@@ -10807,6 +10753,10 @@ function BoardWorkspace({
     }
 
     function abortFabricDrawingForTouchGesture(event) {
+      if (canvas._currentTransform && typeof canvas.endCurrentTransform === 'function') {
+        try { canvas.endCurrentTransform(event); } catch { /* Continue gesture cleanup. */ }
+      }
+      canvas._groupSelector = null;
       if (!canvas._isCurrentlyDrawing) return;
       try {
         if (typeof canvas._onMouseUpInDrawingMode === 'function') {
@@ -10822,6 +10772,9 @@ function BoardWorkspace({
 
     function releaseFabricTouchOwnership(event) {
       if (event?.touches?.length !== 0) return;
+      // Pointer-enabled Fabric receives the real pointerup independently. Calling its
+      // legacy TouchEvent handler as well would finalize the same contact twice.
+      if (canvas.enablePointerEvents) return;
       try {
         if (typeof canvas._onTouchEnd === 'function') canvas._onTouchEnd(event);
         else canvas.mainTouchId = undefined;
@@ -11051,16 +11004,6 @@ function BoardWorkspace({
       event?.stopImmediatePropagation?.();
     }
 
-    function shouldSuppressSelectionCompatibilityEvent(event) {
-      const session = selectionPenSessionRef.current;
-      // Capture phase starts a new native Pencil session before Fabric receives its
-      // mouse-like wrapper. While that new contact is active, the wrapper belongs to the
-      // current gesture and must pass. Only the short tail after release is a duplicate.
-      if (session.active) return false;
-      if (performance.now() >= Number(session.compatibilityGuardUntil ?? 0)) return false;
-      return event?.pointerType == null || event?.pointerType === 'mouse';
-    }
-
     function restoreSelectionTargetFind() {
       const state = selectionTargetFindRestoreState;
       selectionTargetFindRestoreState = null;
@@ -11079,13 +11022,10 @@ function BoardWorkspace({
     }
 
     function armExactSelectionTargetFind({ pen = false, event = null } = {}) {
-      // Preserve Fabric's normal finger/mouse behaviour. Pencil keeps precise per-pixel
-      // selection for an individual object, plus a small screen-space proximity halo.
-      // A large ActiveSelection is the exception: Fabric would render every selected
-      // member into a probe canvas synchronously on every Pencil-down, so repeat group
-      // drags use the already-visible selection frame and controls instead.
-      // A missed compatibility event from an earlier contact cannot leak its temporary
-      // padding into the next physical Pencil contact.
+      // Preserve Fabric's normal geometric hit-test and give Pencil a small proximity
+      // halo. Per-pixel probing renders candidates into a synchronous scratch canvas;
+      // that is unnecessary for moving an already visible object and becomes costly on
+      // a dense iPad board.
       restoreSelectionTargetFind();
       selectionTargetFindRestoreState = {
         perPixelTargetFind: canvas.perPixelTargetFind,
@@ -11093,8 +11033,7 @@ function BoardWorkspace({
         paddedObjects: [],
       };
       const state = selectionTargetFindRestoreState;
-      const activeTarget = canvas.getActiveObject();
-      canvas.perPixelTargetFind = Boolean(pen && !isActiveSelectionObject(activeTarget));
+      canvas.perPixelTargetFind = false;
       if (pen) {
         const tolerance = Math.max(Number(canvas.targetFindTolerance ?? 0), 9);
         // Fabric 7 sizes a dedicated pixel-probe canvas in setTargetFindTolerance().
@@ -11151,48 +11090,15 @@ function BoardWorkspace({
         || !canEditRef.current
         || event.button > 0) return false;
       const session = selectionPenSessionRef.current;
-      if (session.active && session.pointerId === event.pointerId) {
-        suppressSelectionCompatibilityEvent(event);
-        return true;
-      }
-
-      // A new real Pencil contact must immediately cancel the duplicate-event tail from
-      // the previous contact. Otherwise Fabric can expose the new contact as a mouse-like
-      // event and the old time guard rejects it, restarting the same lock on every retry.
-      session.generation += 1;
-      session.compatibilityGuardUntil = 0;
-      if (session.active && session.pointerId != null && session.pointerId !== event.pointerId) {
-        finalizeSelectionMarquee(null, { cancelled: true });
-        try {
-          if (touchTarget.hasPointerCapture?.(session.pointerId)) {
-            touchTarget.releasePointerCapture(session.pointerId);
-          }
-        } catch {
-          // A stale WebKit capture can be replaced by the new contact below.
+      if (session.active) {
+        // A second physical pointerdown means WebKit omitted the preceding end event.
+        // Close the stale Fabric transform now so the new contact can start immediately
+        // instead of forcing the user to wait for an idle watchdog.
+        restoreTargetFindAfterTransform();
+        finalizeSelectionMarquee(event, { cancelled: true });
+        if (canvas._currentTransform && typeof canvas.endCurrentTransform === 'function') {
+          try { canvas.endCurrentTransform(event); } catch { /* Continue with new contact. */ }
         }
-      }
-      session.pointerId = event.pointerId;
-      session.active = true;
-      session.nextMoveAt = 0;
-      try { touchTarget.setPointerCapture(event.pointerId); } catch { /* Safari may reject capture. */ }
-      return false;
-    }
-
-    function finishSelectionPenSession(event) {
-      const session = selectionPenSessionRef.current;
-      if (event.pointerType !== 'pen' || !session.active || session.pointerId !== event.pointerId) return false;
-      const cancelled = event.type === 'pointercancel' || event.type === 'lostpointercapture';
-
-      // Complete a Pencil marquee directly from the native release. Safari's mirrored
-      // mouse tail is suppressed only for a very short period after this exact contact.
-      finalizeSelectionMarquee(event, { cancelled });
-
-      const endedAt = performance.now();
-      session.lastEndedAt = endedAt;
-      session.compatibilityGuardUntil = endedAt + 140;
-      session.active = false;
-      session.nextMoveAt = 0;
-      if (cancelled) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
         if (localLockIdsRef.current.length) {
           realtimeRef.current?.sendLock(localLockIdsRef.current, false);
@@ -11200,15 +11106,38 @@ function BoardWorkspace({
         }
       }
 
-      // Release and clear synchronously. The former setTimeout(0) could erase a newly
-      // started session when Safari quickly reused the same pointerId.
-      try {
-        if (touchTarget.hasPointerCapture?.(event.pointerId)) touchTarget.releasePointerCapture(event.pointerId);
-      } catch {
-        // WebKit may already have released capture before pointerup reaches this listener.
+      // Fabric listens to this same Pointer Event and moves its temporary listeners to
+      // document during the drag. Do not add another pointer capture: releasing it from
+      // pointerup synchronously emits lostpointercapture and used to re-enter cleanup for
+      // the same physical Pencil contact.
+      session.pointerId = event.pointerId;
+      session.active = true;
+      session.nextMoveAt = 0;
+      return false;
+    }
+
+    function finishSelectionPenSession(event) {
+      const session = selectionPenSessionRef.current;
+      if (event.pointerType !== 'pen' || !session.active || session.pointerId !== event.pointerId) return false;
+      const cancelled = event.type === 'pointercancel';
+      session.active = false;
+      session.nextMoveAt = 0;
+      session.pointerId = null;
+      if (cancelled) {
+        finalizeSelectionMarquee(event, { cancelled: true });
+        restoreTargetFindAfterTransform();
+        // Fabric has no pointercancel listener. Explicitly close only the interrupted
+        // transform; normal pointerup continues into Fabric and is finalized there.
+        if (canvas._currentTransform && typeof canvas.endCurrentTransform === 'function') {
+          try { canvas.endCurrentTransform(event); } catch { /* Continue cleanup below. */ }
+        }
+        endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
+        if (localLockIdsRef.current.length) {
+          realtimeRef.current?.sendLock(localLockIdsRef.current, false);
+          localLockIdsRef.current = [];
+        }
+        canvas.requestRenderAll();
       }
-      if (!session.active && session.pointerId === event.pointerId) session.pointerId = null;
-      if (cancelled) canvas.requestRenderAll();
       return true;
     }
 
@@ -11220,11 +11149,6 @@ function BoardWorkspace({
       snapshotPersistTimerRef.current = null;
       if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
 
-      if (activeToolRef.current === 'select'
-        && shouldSuppressSelectionCompatibilityEvent(event)) {
-        suppressSelectionCompatibilityEvent(event);
-        return;
-      }
       if (activeToolRef.current === 'select'
         && !eyedropperActiveRef.current
         && canEditRef.current
@@ -11322,12 +11246,6 @@ function BoardWorkspace({
         consumeEyedropperPointerEvent(event);
         return;
       }
-      if (activeToolRef.current === 'select'
-        && Number(event.buttons ?? 0) > 0
-        && shouldSuppressSelectionCompatibilityEvent(event)) {
-        suppressSelectionCompatibilityEvent(event);
-        return;
-      }
       if (rejectedPointerIdsRef.current.has(event.pointerId)
         && !isStylusFallbackPointerEvent(event)) {
         rejectPointerEvent(event);
@@ -11350,11 +11268,11 @@ function BoardWorkspace({
             suppressSelectionCompatibilityEvent(event);
             return;
           }
-          // Throttle by elapsed time instead of waiting for requestAnimationFrame. If
-          // WebKit delays a frame under GPU pressure, a frame-owned boolean remains set
-          // and rejects every subsequent Pencil move until the user stops touching the
-          // board. An 8ms window still supports 120Hz Pencil motion without that lock.
-          selectionSession.nextMoveAt = moveNow + 8;
+          // Match the already smooth one-finger path. Apple Pencil can deliver pointer
+          // samples substantially faster than the display can paint; accepting at most
+          // one move per 16 ms prevents unrenderable full-canvas work from accumulating.
+          // This is time-based, so it cannot remain latched while a frame is delayed.
+          selectionSession.nextMoveAt = moveNow + 16;
         }
         updateCreationDraftFromNativeEvent(event);
         return;
@@ -11367,21 +11285,9 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerEnd(event) {
-      const cancelledPointer = event.type === 'pointercancel' || event.type === 'lostpointercapture';
+      const cancelledPointer = event.type === 'pointercancel';
       restoreSelectionTargetFind();
-      if (event.type === 'lostpointercapture') {
-        const ownsSelection = selectionPenSessionRef.current.active
-          && selectionPenSessionRef.current.pointerId === event.pointerId;
-        const ownsPenInput = penInputRef.current.active
-          && penInputRef.current.pointerId === event.pointerId;
-        if (!ownsSelection && !ownsPenInput) return;
-      }
       if (finishEyedropperPenContact(event)) return;
-      if (activeToolRef.current === 'select'
-        && shouldSuppressSelectionCompatibilityEvent(event)) {
-        suppressSelectionCompatibilityEvent(event);
-        return;
-      }
       finishSelectionPenSession(event);
 
       if (rejectedPointerIdsRef.current.has(event.pointerId)
@@ -11588,7 +11494,6 @@ function BoardWorkspace({
     touchTarget.addEventListener('pointermove', handlePalmPointerMove, { passive: false, capture: true });
     touchTarget.addEventListener('pointerup', handlePalmPointerEnd, { passive: false, capture: true });
     touchTarget.addEventListener('pointercancel', handlePalmPointerEnd, { passive: false, capture: true });
-    touchTarget.addEventListener('lostpointercapture', handlePalmPointerEnd, { passive: false, capture: true });
     touchTarget.addEventListener('pointerdown', handleObjectEraserPointerDown, { passive: false, capture: true });
     touchTarget.addEventListener('pointermove', handleObjectEraserPointerMove, { passive: false, capture: true });
     touchTarget.addEventListener('pointerup', handleObjectEraserPointerEnd, { passive: false, capture: true });
@@ -11824,6 +11729,18 @@ function BoardWorkspace({
     function handleWindowBlur() {
       cancelCreationDraft('window-blur');
       restoreSelectionTargetFind();
+      restoreTargetFindAfterTransform();
+      const selectionSession = selectionPenSessionRef.current;
+      selectionSession.active = false;
+      selectionSession.pointerId = null;
+      selectionSession.nextMoveAt = 0;
+      penInputRef.current.active = false;
+      penInputRef.current.pointerId = null;
+      penInputRef.current.suppressUntil = 0;
+      if (canvas._currentTransform && typeof canvas.endCurrentTransform === 'function') {
+        try { canvas.endCurrentTransform(); } catch { /* Continue releasing local state. */ }
+      }
+      canvas._groupSelector = null;
       selectionDragRef.current = null;
       hideSelectionMarquee();
       endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
@@ -12033,7 +11950,6 @@ function BoardWorkspace({
       touchTarget.removeEventListener('pointermove', handlePalmPointerMove, true);
       touchTarget.removeEventListener('pointerup', handlePalmPointerEnd, true);
       touchTarget.removeEventListener('pointercancel', handlePalmPointerEnd, true);
-      touchTarget.removeEventListener('lostpointercapture', handlePalmPointerEnd, true);
       touchTarget.removeEventListener('pointerdown', handleObjectEraserPointerDown, true);
       touchTarget.removeEventListener('pointermove', handleObjectEraserPointerMove, true);
       touchTarget.removeEventListener('pointerup', handleObjectEraserPointerEnd, true);
@@ -12054,6 +11970,8 @@ function BoardWorkspace({
       window.clearTimeout(liveDrawSendRef.current.timer);
       canvas.off('mouse:down:before', restoreSelectionTargetFindBeforeFabricLogic);
       restoreSelectionTargetFind();
+      canvas.off('mouse:up:before', restoreTargetFindAfterTransform);
+      restoreTargetFindAfterTransform();
       window.clearTimeout(deferredTransformTimer);
       deferredTransformTimer = null;
       deferredTransformEntries.clear();
@@ -12102,9 +12020,6 @@ function BoardWorkspace({
         pointerId: null,
         active: false,
         nextMoveAt: 0,
-        compatibilityGuardUntil: 0,
-        generation: 0,
-        lastEndedAt: 0,
       };
       transformGestureRef.current = {
         activeId: null,

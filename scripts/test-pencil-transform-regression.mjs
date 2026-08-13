@@ -31,15 +31,23 @@ for (const blockedFabricRenderAssignment of [
   );
 }
 
-assert.match(boardSource, /addEventListener\('lostpointercapture', handlePalmPointerEnd/);
-assert.match(boardSource, /removeEventListener\('lostpointercapture', handlePalmPointerEnd/);
-assert.match(boardSource, /selectionSession\.nextMoveAt = moveNow \+ 8/);
+assert.match(boardSource, /enablePointerEvents: true/);
+assert.doesNotMatch(boardSource, /addEventListener\('lostpointercapture', handlePalmPointerEnd/);
+const selectionPenSessionSource = boardSource.slice(
+  boardSource.indexOf('function beginSelectionPenSession'),
+  boardSource.indexOf('function handlePalmPointerDown'),
+);
+assert.doesNotMatch(selectionPenSessionSource, /setPointerCapture|releasePointerCapture/);
+assert.match(boardSource, /selectionSession\.nextMoveAt = moveNow \+ 16/);
 assert.doesNotMatch(boardSource, /selectionSession\.moveFramePending/);
 assert.doesNotMatch(boardSource, /canvas\.perPixelTargetFind = true/);
-assert.match(
-  boardSource,
-  /canvas\.perPixelTargetFind = Boolean\(pen && !isActiveSelectionObject\(activeTarget\)\)/,
-);
+assert.match(boardSource, /canvas\.perPixelTargetFind = false/);
+assert.match(boardSource, /const suppressTargetFindDuringTransform/);
+assert.match(boardSource, /canvas\.skipTargetFind = true/);
+assert.match(boardSource, /canvas\.on\('mouse:up:before', restoreTargetFindAfterTransform\)/);
+assert.match(boardSource, /canvas\.off\('mouse:up:before', restoreTargetFindAfterTransform\)/);
+assert.doesNotMatch(boardSource, /shouldSuppressSelectionCompatibilityEvent/);
+assert.doesNotMatch(boardSource, /manuallyPaintedPencilSelectionTarget/);
 
 const transformCommitSource = boardSource.slice(
   boardSource.indexOf("canvas.on('object:modified'"),
@@ -50,13 +58,13 @@ assert.doesNotMatch(transformCommitSource, /requestAnimationFrame/);
 
 assert.doesNotMatch(toolbarSource, /window\.requestAnimationFrame/);
 
-// Model thirty immediate Pencil contacts. A time deadline may drop excess coalesced move
-// samples, but ending a contact always resets it synchronously and never needs a frame.
+// Model thirty immediate Pencil contacts. A time deadline may drop excess samples, but
+// ending a contact always resets synchronously and never depends on a rendered frame.
 const session = { active: false, pointerId: null, nextMoveAt: 0 };
 for (let gesture = 0; gesture < 30; gesture += 1) {
   session.active = true;
   session.pointerId = gesture + 1;
-  session.nextMoveAt = 1000 + gesture * 10 + 8;
+  session.nextMoveAt = 1000 + gesture * 20 + 16;
   session.active = false;
   session.pointerId = null;
   session.nextMoveAt = 0;
