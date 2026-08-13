@@ -1,9 +1,9 @@
 {
-  "version": "1.32.2",
-  "packageVersion": "1.32.2",
+  "version": "1.32.3",
+  "packageVersion": "1.32.3",
   "base": "1.32.0",
-  "release": "Direct Apple Pencil transforms",
+  "release": "Precise Apple Pencil selection",
   "date": "2026-08-14",
-  "name": "direct-apple-pencil-transforms",
-  "label": "Alex Board 1.32.2"
+  "name": "precise-apple-pencil-selection",
+  "label": "Alex Board 1.32.3"
 }

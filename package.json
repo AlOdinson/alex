@@ -1,14 +1,14 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.32.2",
+  "version": "1.32.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:pencil": "node scripts/test-pencil-transform-regression.mjs && node scripts/benchmark-transform-hotpath.mjs",
-    "test:sync": "node scripts/test-sync-convergence.mjs && node scripts/test-authoritative-log.mjs && node scripts/test-pencil-transform-regression.mjs && node scripts/benchmark-transform-hotpath.mjs"
+    "test:pencil": "node scripts/test-pencil-transform-regression.mjs && node scripts/test-pencil-precise-selection.mjs && node scripts/benchmark-transform-hotpath.mjs",
+    "test:sync": "node scripts/test-sync-convergence.mjs && node scripts/test-authoritative-log.mjs && node scripts/test-pencil-transform-regression.mjs && node scripts/test-pencil-precise-selection.mjs && node scripts/benchmark-transform-hotpath.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",

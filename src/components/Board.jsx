@@ -11022,10 +11022,10 @@ function BoardWorkspace({
     }
 
     function armExactSelectionTargetFind({ pen = false, event = null } = {}) {
-      // Preserve Fabric's normal geometric hit-test and give Pencil a small proximity
-      // halo. Per-pixel probing renders candidates into a synchronous scratch canvas;
-      // that is unnecessary for moving an already visible object and becomes costly on
-      // a dense iPad board.
+      // Pencil selection is exact only for this pointerdown. Fabric renders just the
+      // tiny probe around the contact, so transparent space inside a line/path/group
+      // bounding box is not a hit. mouse:down:before restores the normal fast mode
+      // after Fabric has cached the target; no move event performs a pixel probe.
       restoreSelectionTargetFind();
       selectionTargetFindRestoreState = {
         perPixelTargetFind: canvas.perPixelTargetFind,
@@ -11033,9 +11033,11 @@ function BoardWorkspace({
         paddedObjects: [],
       };
       const state = selectionTargetFindRestoreState;
-      canvas.perPixelTargetFind = false;
+      canvas.perPixelTargetFind = Boolean(pen);
       if (pen) {
-        const tolerance = Math.max(Number(canvas.targetFindTolerance ?? 0), 9);
+        // Keep the allowance in screen pixels and deliberately match the normal select
+        // tool. The former 9 px padding made empty bounding-box space feel selectable.
+        const tolerance = 2;
         // Fabric 7 sizes a dedicated pixel-probe canvas in setTargetFindTolerance().
         // Assigning a larger value directly leaves that backing canvas too small.
         if (typeof canvas.setTargetFindTolerance === 'function') canvas.setTargetFindTolerance(tolerance);

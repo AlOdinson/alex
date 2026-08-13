@@ -40,8 +40,9 @@ const selectionPenSessionSource = boardSource.slice(
 assert.doesNotMatch(selectionPenSessionSource, /setPointerCapture|releasePointerCapture/);
 assert.match(boardSource, /selectionSession\.nextMoveAt = moveNow \+ 16/);
 assert.doesNotMatch(boardSource, /selectionSession\.moveFramePending/);
-assert.doesNotMatch(boardSource, /canvas\.perPixelTargetFind = true/);
-assert.match(boardSource, /canvas\.perPixelTargetFind = false/);
+assert.match(boardSource, /canvas\.perPixelTargetFind = Boolean\(pen\)/);
+assert.match(boardSource, /const tolerance = 2/);
+assert.match(boardSource, /canvas\.on\('mouse:down:before', restoreSelectionTargetFindBeforeFabricLogic\)/);
 assert.match(boardSource, /const suppressTargetFindDuringTransform/);
 assert.match(boardSource, /canvas\.skipTargetFind = true/);
 assert.match(boardSource, /canvas\.on\('mouse:up:before', restoreTargetFindAfterTransform\)/);
