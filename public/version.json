@@ -1,9 +1,9 @@
 {
-  "version": "1.32.6",
-  "packageVersion": "1.32.6",
+  "version": "1.32.7",
+  "packageVersion": "1.32.7",
   "base": "1.32.0",
-  "release": "Lossless rapid Apple Pencil contacts",
+  "release": "Apple Pencil exact-contact diagnostic",
   "date": "2026-08-15",
-  "name": "lossless-rapid-pencil-contacts",
-  "label": "Alex Board 1.32.6"
+  "name": "pencil-exact-contact-diagnostic",
+  "label": "Alex Board 1.32.7"
 }

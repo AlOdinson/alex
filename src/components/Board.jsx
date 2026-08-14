@@ -68,6 +68,7 @@ import {
   renderFabricCanvas,
   shareCanvasPng,
 } from '../lib/exportBoard.js';
+import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';
 
 const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
@@ -1832,6 +1833,7 @@ function BoardWorkspace({
     suppressUntil: 0,
   });
   const penContactSerialRef = useRef(0);
+  const pencilDiagnosticsRef = useRef(null);
   const stylusTouchFallbackRef = useRef({
     active: false,
     mode: null,
@@ -3195,6 +3197,14 @@ function BoardWorkspace({
             key,
             Number(pendingLocalObjectMutationCountsRef.current.get(key) ?? 0) + 1,
           );
+        });
+        pencilDiagnosticsRef.current?.record('DURABLE enqueue', {
+          chunk: index + 1,
+          chunkCount: chunks.length,
+          atomic: atomic && index === 0,
+          serializedSize,
+          opTypes: chunk.map((operation) => operation?.type ?? 'unknown'),
+          objectIds: [...objectIds],
         });
         return Promise.resolve(realtime.sendOps(chunk, {
           serializedSize,
@@ -7644,6 +7654,25 @@ function BoardWorkspace({
     canvas.getRetinaScaling = () => renderPixelRatio;
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
+    pencilDiagnosticsRef.current = createPencilDiagnostics({
+      version: '1.32.7-diagnostic',
+      getContext: () => ({
+        tool: activeToolRef.current,
+        penActive: Boolean(penInputRef.current.active),
+        penPointerId: penInputRef.current.pointerId,
+        penSource: penInputRef.current.source,
+        penContact: penInputRef.current.contactSerial,
+        fallbackActive: Boolean(stylusTouchFallbackRef.current.active),
+        fallbackMode: stylusTouchFallbackRef.current.mode,
+        fallbackPointerId: stylusTouchFallbackRef.current.pointerId,
+        activeGeneration: activePencilRef.current?.generation ?? null,
+        activePointerId: activePencilRef.current?.pointerId ?? null,
+        fabricDrawing: Boolean(canvas._isCurrentlyDrawing),
+        drawingMode: Boolean(canvas.isDrawingMode),
+        revision: Number(revisionRef.current ?? 0),
+        pendingWrites: Number(pendingServerWritesRef.current ?? 0),
+      }),
+    });
 
     const drawBoardBackgroundOnCanvas = (event = {}) => {
       const context = event.ctx ?? canvas.contextContainer;
@@ -8326,6 +8355,20 @@ function BoardWorkspace({
         syncFromServer(true);
       },
       onCommit(result, action, batchMeta = null) {
+        const committedOpsForDiagnostic = Array.isArray(result?.appliedOps)
+          ? result.appliedOps
+          : (Array.isArray(action?.ops) ? action.ops : []);
+        pencilDiagnosticsRef.current?.record('DURABLE confirmed', {
+          actionId: action?.actionId ?? null,
+          revision: Number(result?.revision ?? revisionRef.current ?? 0),
+          changed: result?.changed ?? null,
+          needsSync: Boolean(result?.needsSync),
+          rejectedCount: Array.isArray(result?.rejectedObjectIds)
+            ? result.rejectedObjectIds.length
+            : 0,
+          opTypes: committedOpsForDiagnostic.map((operation) => operation?.type ?? 'unknown'),
+          objectIds: [...affectedOperationIds(committedOpsForDiagnostic)],
+        });
         const currentRevision = Number(revisionRef.current ?? 0);
         const committedRevision = Number(result?.revision ?? currentRevision);
         const rejected = Array.isArray(result?.rejectedObjectIds)
@@ -8400,6 +8443,7 @@ function BoardWorkspace({
         }
       },
       onPendingChange(count) {
+        pencilDiagnosticsRef.current?.record('DURABLE pending', { count: Number(count ?? 0) });
         pendingServerWritesRef.current = count;
         setPendingCount(count);
         if (count > 0 && navigator.onLine !== false) {
@@ -8604,6 +8648,12 @@ function BoardWorkspace({
       if (!object || applyingRemoteRef.current || applyingHistoryRef.current) return;
       markObject(object, clientId);
       const records = [recordForJustAddedObject(object)];
+      pencilDiagnosticsRef.current?.record('BOARD commitAddedObject', {
+        objectId: object.boardObjectId ?? null,
+        sessionId: object.creationSessionId ?? null,
+        objectKind: String(object.objectKind ?? object.type ?? 'unknown'),
+        pathPointCount: Array.isArray(object.path) ? object.path.length : null,
+      });
       const alreadyStreamedAsLiveDraw = Boolean(object.creationSessionId)
         && ['path', 'line'].includes(String(object.objectKind ?? object.type ?? '').toLowerCase());
       // A completed live stroke is already kept visible on observers until the server
@@ -9327,6 +9377,14 @@ function BoardWorkspace({
       const isPartialEraserPath = activeToolRef.current === 'eraser'
         && eraserModeRef.current === 'partial';
       const activePending = activePencilRef.current;
+      pencilDiagnosticsRef.current?.record('FABRIC path:created', {
+        objectIdBeforeBinding: path?.boardObjectId ?? null,
+        pathPointCount: Array.isArray(path?.path) ? path.path.length : null,
+        partialEraser: isPartialEraserPath,
+        pendingGeneration: activePending?.generation ?? null,
+        pendingPointerId: activePending?.pointerId ?? null,
+        pendingConsumed: activePending?.consumed ?? null,
+      });
       // Fabric emits path:created synchronously from the pointerup that finalizes its
       // current brush. There can therefore be exactly one owner: the current physical
       // contact token. Keeping old contacts in a timed/spatial candidate pool made a
@@ -9987,6 +10045,19 @@ function BoardWorkspace({
     canvas.on('mouse:down', (event) => {
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
+      if (nativeEvent?.pointerType === 'pen') {
+        pencilDiagnosticsRef.current?.record('FABRIC pointerdown', {
+          pointerId: pointerId ?? null,
+          marker: nativeEvent.alexStylusTouchFallback
+            ? 'synthetic-touch'
+            : (nativeEvent.alexStylusNativeBridge ? 'native-bridge' : 'native'),
+          x: Number(nativeEvent.clientX ?? 0),
+          y: Number(nativeEvent.clientY ?? 0),
+          buttons: Number(nativeEvent.buttons ?? 0),
+          pressure: Number(nativeEvent.pressure ?? 0),
+          targetId: event.target?.boardObjectId ?? null,
+        });
+      }
       if (performance.now() < eyedropperCompatibilityGuardUntilRef.current
         && nativeEvent?.pointerType !== 'pen') {
         nativeEvent?.preventDefault?.();
@@ -10180,6 +10251,15 @@ function BoardWorkspace({
         };
         pendingPencilQueueRef.current.push(pendingPencil);
         activePencilRef.current = pendingPencil;
+        pencilDiagnosticsRef.current?.record('PENCIL pending opened', {
+          generation,
+          objectId,
+          sessionId,
+          pointerId: pointerId ?? null,
+          pointerType: pendingPencil.pointerType,
+          x: Number(point.x),
+          y: Number(point.y),
+        });
       }
 
       if (activeToolRef.current === 'text') {
@@ -10346,6 +10426,18 @@ function BoardWorkspace({
     canvas.on('mouse:up', (event) => {
       const nativeEvent = event?.e;
       const pointerId = nativeEvent?.pointerId;
+      if (nativeEvent?.pointerType === 'pen') {
+        pencilDiagnosticsRef.current?.record('FABRIC pointerup', {
+          pointerId: pointerId ?? null,
+          marker: nativeEvent.alexStylusTouchFallback
+            ? 'synthetic-touch'
+            : (nativeEvent.alexStylusNativeBridge ? 'native-bridge' : 'native'),
+          x: Number(nativeEvent.clientX ?? 0),
+          y: Number(nativeEvent.clientY ?? 0),
+          activeGeneration: activePencilRef.current?.generation ?? null,
+          activeConsumed: activePencilRef.current?.consumed ?? null,
+        });
+      }
       if (performance.now() < eyedropperCompatibilityGuardUntilRef.current
         && nativeEvent?.pointerType !== 'pen') {
         nativeEvent?.preventDefault?.();
@@ -10392,6 +10484,12 @@ function BoardWorkspace({
         // path:created is emitted synchronously before Fabric's mouse:up event. If the
         // exact contact is still pending here, it produced no path and can be retired
         // immediately. No timer is allowed to gate the next physical Pencil contact.
+        pencilDiagnosticsRef.current?.record('PENCIL no path at mouseup', {
+          generation: pending.generation,
+          objectId: pending.objectId,
+          sessionId: pending.sessionId,
+          pointerId: pending.pointerId ?? null,
+        });
         retirePendingPencil(pending, { cancelled: true });
       }
 
@@ -10629,6 +10727,15 @@ function BoardWorkspace({
 
     function retirePendingPencil(pending, { cancelled = true } = {}) {
       if (!pending) return false;
+      pencilDiagnosticsRef.current?.record('PENCIL pending retired', {
+        generation: pending.generation ?? null,
+        objectId: pending.objectId ?? null,
+        sessionId: pending.sessionId ?? null,
+        pointerId: pending.pointerId ?? null,
+        cancelled: Boolean(cancelled),
+        alreadyConsumed: Boolean(pending.consumed),
+        ageMs: Date.now() - Number(pending.startedAt ?? Date.now()),
+      });
       window.clearTimeout(pending.cancelTimer);
       pending.cancelTimer = null;
       pending.cancelled = Boolean(cancelled);
@@ -10656,6 +10763,14 @@ function BoardWorkspace({
     }
 
     function discardFabricFreeDrawing({ cancelPending = true } = {}) {
+      pencilDiagnosticsRef.current?.record('FABRIC drawing discarded', {
+        cancelPending: Boolean(cancelPending),
+        hadPending: Boolean(activePencilRef.current),
+        wasDrawing: Boolean(canvas._isCurrentlyDrawing),
+        brushPointCount: Array.isArray(canvas.freeDrawingBrush?._points)
+          ? canvas.freeDrawingBrush._points.length
+          : null,
+      });
       if (cancelPending) retirePendingPencil(activePencilRef.current, { cancelled: true });
       canvas._isCurrentlyDrawing = false;
       const brush = canvas.freeDrawingBrush;
@@ -10855,6 +10970,15 @@ function BoardWorkspace({
 
       const identifier = touchId(stylus);
       const state = stylusTouchFallbackRef.current;
+      pencilDiagnosticsRef.current?.record('ARBITRATION stylus touchstart', {
+        touchId: identifier,
+        previousActive: Boolean(state.active),
+        previousMode: state.mode,
+        previousPointerId: state.pointerId,
+        nativePenActive: Boolean(penInputRef.current.active),
+        nativePenPointerId: penInputRef.current.pointerId,
+        timeStamp: Number(event.timeStamp ?? 0),
+      });
       if (!state.active && stylusTouchMatchesNativePointer(event, stylus)) {
         const pen = penInputRef.current;
         pen.stylusTouchId = identifier;
@@ -10867,6 +10991,11 @@ function BoardWorkspace({
           lastClientX: Number(stylus.clientX ?? 0),
           lastClientY: Number(stylus.clientY ?? 0),
         };
+        pencilDiagnosticsRef.current?.record('ARBITRATION touch bound to native', {
+          touchId: identifier,
+          pointerId: pen.pointerId,
+          contactSerial: pen.contactSerial,
+        });
         // Do not preventDefault on the TouchEvent paired with a real PointerEvent.
         // WebKit may otherwise cancel the remaining native Pencil move/up stream.
         return true;
@@ -10875,6 +11004,12 @@ function BoardWorkspace({
       // A touchstart always begins a new physical contact, even when iPadOS reuses the
       // same Touch.identifier. Cancel any predecessor whose native pointerup was lost.
       if (state.active) {
+        pencilDiagnosticsRef.current?.record('ARBITRATION previous touch superseded', {
+          touchId: state.touchId,
+          pointerId: state.pointerId,
+          mode: state.mode,
+          contactSerial: state.contactSerial,
+        });
         const priorStylus = {
           identifier: state.touchId,
           clientX: state.lastClientX,
@@ -10909,6 +11044,11 @@ function BoardWorkspace({
         lastClientX: Number(stylus.clientX ?? 0),
         lastClientY: Number(stylus.clientY ?? 0),
       };
+      pencilDiagnosticsRef.current?.record('ARBITRATION synthetic contact opened', {
+        touchId: identifier,
+        pointerId: stylusTouchFallbackRef.current.pointerId,
+        contactSerial,
+      });
       claimStylusTouchEvent(event);
       dispatchStylusFallbackPointer('pointerdown', stylus);
       return true;
@@ -10942,6 +11082,14 @@ function BoardWorkspace({
         radiusY: 0.5,
         touchType: 'stylus',
       };
+      pencilDiagnosticsRef.current?.record('ARBITRATION stylus touch end', {
+        eventType: event.type,
+        cancelled: Boolean(cancelled),
+        touchId: state.touchId,
+        pointerId: state.pointerId,
+        mode: state.mode,
+        contactSerial: state.contactSerial,
+      });
       if (state.mode === 'synthetic') {
         claimStylusTouchEvent(event);
         dispatchStylusFallbackPointer(cancelled ? 'pointercancel' : 'pointerup', stylus);
@@ -10951,6 +11099,12 @@ function BoardWorkspace({
           && pen.contactSerial === state.contactSerial
           && pen.pointerId === state.pointerId;
         if (nativeContactStillOpen) {
+          pencilDiagnosticsRef.current?.record('ARBITRATION native end bridged', {
+            touchId: state.touchId,
+            pointerId: state.pointerId,
+            contactSerial: state.contactSerial,
+            cancelled: Boolean(cancelled),
+          });
           // Complete Fabric synchronously from the matching stylus touchend when Safari
           // omits/delays pointerup. A later duplicate native end is rejected by id.
           dispatchStylusFallbackPointer(
@@ -11170,6 +11324,23 @@ function BoardWorkspace({
     function handlePalmPointerDown(event) {
       lastBoardInteractionAtRef.current = Date.now();
       clearNativeBoardSelection();
+      if (event.pointerType === 'pen') {
+        pencilDiagnosticsRef.current?.record('APP capture pointerdown', {
+          pointerId: event.pointerId ?? null,
+          marker: isStylusFallbackPointerEvent(event)
+            ? 'synthetic-touch'
+            : (isStylusNativeBridgePointerEvent(event) ? 'native-bridge' : 'native'),
+          timeStamp: Number(event.timeStamp ?? 0),
+          x: Number(event.clientX ?? 0),
+          y: Number(event.clientY ?? 0),
+          buttons: Number(event.buttons ?? 0),
+          pressure: Number(event.pressure ?? 0),
+          previousPenActive: Boolean(penInputRef.current.active),
+          previousPenPointerId: penInputRef.current.pointerId,
+          previousPendingGeneration: activePencilRef.current?.generation ?? null,
+          wasFabricDrawing: Boolean(canvas._isCurrentlyDrawing),
+        });
+      }
       if (event.pointerType === 'touch' && event.pointerId != null) {
         activeBoardTouchPointerIds.add(event.pointerId);
       }
@@ -11185,6 +11356,12 @@ function BoardWorkspace({
       }
 
       if (shouldRejectNativePenAfterTouchFallback(event)) {
+        pencilDiagnosticsRef.current?.record('APP pointerdown rejected as duplicate', {
+          pointerId: event.pointerId ?? null,
+          fallbackMode: stylusTouchFallbackRef.current.mode,
+          fallbackPointerId: stylusTouchFallbackRef.current.pointerId,
+          fallbackContactSerial: stylusTouchFallbackRef.current.contactSerial,
+        });
         if (event.pointerId != null) rejectedPointerIdsRef.current.add(event.pointerId);
         rejectPointerEvent(event);
         return;
@@ -11208,6 +11385,14 @@ function BoardWorkspace({
         if (drawingToolActive && (penInputRef.current.active
           || activePencilRef.current
           || canvas._isCurrentlyDrawing)) {
+          pencilDiagnosticsRef.current?.record('APP stale contact before new down', {
+            pointerId: event.pointerId ?? null,
+            previousPenActive: Boolean(penInputRef.current.active),
+            previousPenPointerId: penInputRef.current.pointerId,
+            previousPenContact: penInputRef.current.contactSerial,
+            previousPendingGeneration: activePencilRef.current?.generation ?? null,
+            wasFabricDrawing: Boolean(canvas._isCurrentlyDrawing),
+          });
           discardFabricFreeDrawing({ cancelPending: true });
         }
 
@@ -11245,6 +11430,13 @@ function BoardWorkspace({
           lastClientY: Number(event.clientY ?? 0),
           suppressUntil: 0,
         };
+        pencilDiagnosticsRef.current?.record('APP pen ownership opened', {
+          pointerId: event.pointerId ?? null,
+          source: penInputRef.current.source,
+          contactSerial,
+          fallbackContact,
+          interruptedTouchGesture,
+        });
 
         const justAfterTouchGesture = performance.now()
           - Number(lastTouchGestureEndedAtRef.current ?? 0) < 350;
@@ -11360,6 +11552,22 @@ function BoardWorkspace({
 
     function handlePalmPointerEnd(event) {
       const cancelledPointer = event.type === 'pointercancel';
+      if (event.pointerType === 'pen') {
+        pencilDiagnosticsRef.current?.record('APP capture pointer end', {
+          eventType: event.type,
+          pointerId: event.pointerId ?? null,
+          marker: isStylusFallbackPointerEvent(event)
+            ? 'synthetic-touch'
+            : (isStylusNativeBridgePointerEvent(event) ? 'native-bridge' : 'native'),
+          timeStamp: Number(event.timeStamp ?? 0),
+          trackedPointerId: penInputRef.current.pointerId,
+          trackedContactSerial: penInputRef.current.contactSerial,
+          matchesTracked: penInputRef.current.pointerId === event.pointerId,
+          rejected: rejectedPointerIdsRef.current.has(event.pointerId),
+          activeGeneration: activePencilRef.current?.generation ?? null,
+          fabricDrawing: Boolean(canvas._isCurrentlyDrawing),
+        });
+      }
       if (event.pointerType === 'touch' && event.pointerId != null) {
         activeBoardTouchPointerIds.delete(event.pointerId);
         if (blockedGesturePointerIds.has(event.pointerId)) {
@@ -11383,6 +11591,10 @@ function BoardWorkspace({
       if (rejectedPointerIdsRef.current.has(event.pointerId)
         && !isStylusFallbackPointerEvent(event)
         && !isStylusNativeBridgePointerEvent(event)) {
+        pencilDiagnosticsRef.current?.record('APP pointer end rejected', {
+          eventType: event.type,
+          pointerId: event.pointerId ?? null,
+        });
         clearPendingNativeCreationPointer(event);
         rejectPointerEvent(event);
         window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
@@ -11417,6 +11629,13 @@ function BoardWorkspace({
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
         penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
+        pencilDiagnosticsRef.current?.record('APP pen ownership closed', {
+          eventType: event.type,
+          pointerId: event.pointerId ?? null,
+          contactSerial: penInputRef.current.contactSerial,
+          cancelled: cancelledPointer,
+          suppressUntil: penInputRef.current.suppressUntil,
+        });
         if (cancelledPointer) {
           const pending = activePencilRef.current;
           if (pending?.pointerId === event.pointerId) {
@@ -12246,6 +12465,8 @@ function BoardWorkspace({
       resizeObserver.disconnect();
       realtimeRef.current?.disconnect();
       realtimeRef.current = null;
+      pencilDiagnosticsRef.current?.destroy();
+      pencilDiagnosticsRef.current = null;
       canvas.dispose();
       fabricCanvasRef.current = null;
     };
