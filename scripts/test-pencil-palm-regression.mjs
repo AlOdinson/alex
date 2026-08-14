@@ -8,16 +8,21 @@ const fallbackSource = boardSource.slice(
   boardSource.indexOf('function beginStylusTouchFallback'),
   boardSource.indexOf('function isLikelyPalmTouch'),
 );
-assert.match(fallbackSource, /return state\.active;/);
+assert.match(fallbackSource, /return state\.active && state\.mode === 'synthetic';/);
 assert.doesNotMatch(fallbackSource, /guardUntil|distance <= 42|\+ 180/);
 
 // A duplicate native pointer is rejected only while its synthetic fallback contact is
 // active. Thirty immediately neighbouring contacts after release must all be accepted.
 const shouldRejectNativePen = (event, fallback) => (
-  event.pointerType === 'pen' && !event.syntheticFallback && fallback.active
+  event.pointerType === 'pen'
+  && !event.syntheticFallback
+  && fallback.active
+  && fallback.mode === 'synthetic'
 );
-const fallback = { active: true };
+const fallback = { active: true, mode: 'synthetic' };
 assert.equal(shouldRejectNativePen({ pointerType: 'pen' }, fallback), true);
+fallback.mode = 'native';
+assert.equal(shouldRejectNativePen({ pointerType: 'pen' }, fallback), false);
 fallback.active = false;
 for (let contact = 0; contact < 30; contact += 1) {
   assert.equal(

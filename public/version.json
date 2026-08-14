@@ -1,9 +1,9 @@
 {
-  "version": "1.32.5",
-  "packageVersion": "1.32.5",
+  "version": "1.32.6",
+  "packageVersion": "1.32.6",
   "base": "1.32.0",
-  "release": "Rapid Apple Pencil strokes and clean pinch zoom",
-  "date": "2026-08-14",
-  "name": "rapid-pencil-clean-pinch",
-  "label": "Alex Board 1.32.5"
+  "release": "Lossless rapid Apple Pencil contacts",
+  "date": "2026-08-15",
+  "name": "lossless-rapid-pencil-contacts",
+  "label": "Alex Board 1.32.6"
 }

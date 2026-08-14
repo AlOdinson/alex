@@ -1820,13 +1820,22 @@ function BoardWorkspace({
   const penInputRef = useRef({
     pointerId: null,
     active: false,
+    source: null,
+    contactSerial: 0,
+    downEventTimeStamp: 0,
+    downClientX: 0,
+    downClientY: 0,
+    stylusTouchId: null,
     lastSeenAt: 0,
     lastClientX: 0,
     lastClientY: 0,
     suppressUntil: 0,
   });
+  const penContactSerialRef = useRef(0);
   const stylusTouchFallbackRef = useRef({
     active: false,
+    mode: null,
+    contactSerial: 0,
     touchId: null,
     pointerId: null,
     lastClientX: 0,
@@ -9810,9 +9819,17 @@ function BoardWorkspace({
       const prepared = prepareEyedropperSample(scenePoint, viewportPoint);
       clearPendingNativeCreationPointer(event);
       rejectedPointerIdsRef.current.delete(event.pointerId);
+      const contactSerial = penContactSerialRef.current + 1;
+      penContactSerialRef.current = contactSerial;
       penInputRef.current = {
         pointerId: event.pointerId,
         active: true,
+        source: 'native',
+        contactSerial,
+        downEventTimeStamp: Number(event.timeStamp ?? 0),
+        downClientX: Number(event.clientX ?? 0),
+        downClientY: Number(event.clientY ?? 0),
+        stylusTouchId: null,
         lastSeenAt: Date.now(),
         lastClientX: Number(event.clientX ?? 0),
         lastClientY: Number(event.clientY ?? 0),
@@ -9837,6 +9854,8 @@ function BoardWorkspace({
         if (penInputRef.current.pointerId === session.pointerId) {
           penInputRef.current.active = false;
           penInputRef.current.pointerId = null;
+          penInputRef.current.source = null;
+          penInputRef.current.stylusTouchId = null;
           penInputRef.current.suppressUntil = 0;
         }
         eyedropperCompatibilityGuardUntilRef.current = performance.now() + 220;
@@ -9861,6 +9880,8 @@ function BoardWorkspace({
       if (penInputRef.current.pointerId === event.pointerId) {
         penInputRef.current.active = false;
         penInputRef.current.pointerId = null;
+        penInputRef.current.source = null;
+        penInputRef.current.stylusTouchId = null;
         penInputRef.current.lastSeenAt = now;
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
@@ -10695,6 +10716,10 @@ function BoardWorkspace({
       return Boolean(event?.alexStylusTouchFallback);
     }
 
+    function isStylusNativeBridgePointerEvent(event) {
+      return Boolean(event?.alexStylusNativeBridge);
+    }
+
     function findStylusTouch(event, expectedId = null) {
       const candidates = [
         ...touchArray(event?.changedTouches),
@@ -10706,13 +10731,20 @@ function BoardWorkspace({
       )) ?? null;
     }
 
+    function findChangedStylusTouch(event, expectedId = null) {
+      return touchArray(event?.changedTouches).find((touch) => (
+        isStylusTouch(touch)
+        && (expectedId == null || touchId(touch) === expectedId)
+      )) ?? null;
+    }
+
     function fallbackPointerIdForTouch(identifier) {
       const numeric = Number(identifier);
       const safeIdentifier = Number.isFinite(numeric) ? Math.abs(Math.trunc(numeric)) : 1;
       return 1_500_000_000 + (safeIdentifier % 100_000_000);
     }
 
-    function dispatchStylusFallbackPointer(type, touch) {
+    function dispatchStylusFallbackPointer(type, touch, { nativeBridge = false } = {}) {
       if (!touch) return false;
       const state = stylusTouchFallbackRef.current;
       const ending = type === 'pointerup' || type === 'pointercancel';
@@ -10752,13 +10784,14 @@ function BoardWorkspace({
           try { Object.defineProperty(synthetic, key, { configurable: true, value }); } catch { /* Ignore. */ }
         }
       }
+      const marker = nativeBridge ? 'alexStylusNativeBridge' : 'alexStylusTouchFallback';
       try {
-        Object.defineProperty(synthetic, 'alexStylusTouchFallback', {
+        Object.defineProperty(synthetic, marker, {
           configurable: true,
           value: true,
         });
       } catch {
-        synthetic.alexStylusTouchFallback = true;
+        synthetic[marker] = true;
       }
       state.lastClientX = init.clientX;
       state.lastClientY = init.clientY;
@@ -10771,25 +10804,106 @@ function BoardWorkspace({
       event.stopImmediatePropagation?.();
     }
 
+    function resetStylusTouchFallback(stylus = null) {
+      const state = stylusTouchFallbackRef.current;
+      stylusTouchFallbackRef.current = {
+        active: false,
+        mode: null,
+        contactSerial: 0,
+        touchId: null,
+        pointerId: null,
+        lastClientX: Number(stylus?.clientX ?? state.lastClientX ?? 0),
+        lastClientY: Number(stylus?.clientY ?? state.lastClientY ?? 0),
+      };
+    }
+
+    function stylusTouchMatchesNativePointer(event, stylus) {
+      const pen = penInputRef.current;
+      if (!pen.active || pen.source !== 'native' || pen.stylusTouchId != null) return false;
+      const eventTime = Number(event?.timeStamp);
+      const pointerTime = Number(pen.downEventTimeStamp);
+      const timeDelta = Number.isFinite(eventTime) && Number.isFinite(pointerTime)
+        ? Math.abs(eventTime - pointerTime)
+        : Number.POSITIVE_INFINITY;
+      const distance = Math.hypot(
+        Number(stylus?.clientX ?? 0) - Number(pen.downClientX ?? 0),
+        Number(stylus?.clientY ?? 0) - Number(pen.downClientY ?? 0),
+      );
+      // PointerEvent and TouchEvent for one physical Pencil contact are dispatched in
+      // the same WebKit turn. This narrow identity check only deduplicates that pair;
+      // it never creates a delay after a completed stroke.
+      return timeDelta <= 32 && distance <= 24;
+    }
+
+    function cancelStalePenContact() {
+      const pen = penInputRef.current;
+      if (!pen.active) return;
+      if (pen.pointerId != null) rejectedPointerIdsRef.current.add(pen.pointerId);
+      discardFabricFreeDrawing({ cancelPending: true });
+      pen.active = false;
+      pen.pointerId = null;
+      pen.source = null;
+      pen.stylusTouchId = null;
+      pen.suppressUntil = 0;
+    }
+
     function beginStylusTouchFallback(event) {
-      const stylus = findStylusTouch(event);
+      // Only a changed stylus touch denotes a new physical contact. Looking through all
+      // active touches here made a new palm touch restart or consume the current Pencil.
+      const stylus = findChangedStylusTouch(event);
       if (!stylus) return false;
-      // Pointer Events remain the preferred path. The TouchEvent route is activated only
-      // when WebKit delivered a stylus touch without first delivering pointerdown.
-      if (penInputRef.current.active && !stylusTouchFallbackRef.current.active) return false;
 
       const identifier = touchId(stylus);
       const state = stylusTouchFallbackRef.current;
-      if (state.active && state.touchId === identifier) {
-        claimStylusTouchEvent(event);
+      if (!state.active && stylusTouchMatchesNativePointer(event, stylus)) {
+        const pen = penInputRef.current;
+        pen.stylusTouchId = identifier;
+        stylusTouchFallbackRef.current = {
+          active: true,
+          mode: 'native',
+          contactSerial: pen.contactSerial,
+          touchId: identifier,
+          pointerId: pen.pointerId,
+          lastClientX: Number(stylus.clientX ?? 0),
+          lastClientY: Number(stylus.clientY ?? 0),
+        };
+        // Do not preventDefault on the TouchEvent paired with a real PointerEvent.
+        // WebKit may otherwise cancel the remaining native Pencil move/up stream.
         return true;
       }
+
+      // A touchstart always begins a new physical contact, even when iPadOS reuses the
+      // same Touch.identifier. Cancel any predecessor whose native pointerup was lost.
       if (state.active) {
-        dispatchStylusFallbackPointer('pointercancel', stylus);
+        const priorStylus = {
+          identifier: state.touchId,
+          clientX: state.lastClientX,
+          clientY: state.lastClientY,
+          force: 0,
+          radiusX: 0.5,
+          radiusY: 0.5,
+          touchType: 'stylus',
+        };
+        if (state.mode === 'synthetic') {
+          dispatchStylusFallbackPointer('pointercancel', priorStylus);
+        } else {
+          cancelStalePenContact();
+        }
+        resetStylusTouchFallback(priorStylus);
       }
+
+      // WebKit occasionally omits the preceding native pointerup, but still reports the
+      // next stylus TouchEvent. The old code returned here and swallowed every other
+      // short symbol. Supersede the stale contact and let TouchEvent recover this one.
+      cancelStalePenContact();
+
+      const contactSerial = penContactSerialRef.current + 1;
+      penContactSerialRef.current = contactSerial;
 
       stylusTouchFallbackRef.current = {
         active: true,
+        mode: 'synthetic',
+        contactSerial,
         touchId: identifier,
         pointerId: fallbackPointerIdForTouch(identifier),
         lastClientX: Number(stylus.clientX ?? 0),
@@ -10805,15 +10919,21 @@ function BoardWorkspace({
       if (!state.active) return false;
       const stylus = findStylusTouch(event, state.touchId);
       if (!stylus) return false;
-      claimStylusTouchEvent(event);
-      dispatchStylusFallbackPointer('pointermove', stylus);
+      state.lastClientX = Number(stylus.clientX ?? state.lastClientX ?? 0);
+      state.lastClientY = Number(stylus.clientY ?? state.lastClientY ?? 0);
+      // Native PointerEvents remain the high-frequency drawing stream. TouchEvent only
+      // tracks the matching contact so it can supply a missing pointerup.
+      if (state.mode === 'synthetic') {
+        claimStylusTouchEvent(event);
+        dispatchStylusFallbackPointer('pointermove', stylus);
+      }
       return true;
     }
 
     function finishStylusTouchFallback(event, cancelled = false) {
       const state = stylusTouchFallbackRef.current;
       if (!state.active) return false;
-      const stylus = findStylusTouch(event, state.touchId) ?? {
+      const stylus = findChangedStylusTouch(event, state.touchId) ?? {
         identifier: state.touchId,
         clientX: state.lastClientX,
         clientY: state.lastClientY,
@@ -10822,15 +10942,26 @@ function BoardWorkspace({
         radiusY: 0.5,
         touchType: 'stylus',
       };
-      claimStylusTouchEvent(event);
-      dispatchStylusFallbackPointer(cancelled ? 'pointercancel' : 'pointerup', stylus);
-      stylusTouchFallbackRef.current = {
-        active: false,
-        touchId: null,
-        pointerId: null,
-        lastClientX: Number(stylus.clientX ?? state.lastClientX ?? 0),
-        lastClientY: Number(stylus.clientY ?? state.lastClientY ?? 0),
-      };
+      if (state.mode === 'synthetic') {
+        claimStylusTouchEvent(event);
+        dispatchStylusFallbackPointer(cancelled ? 'pointercancel' : 'pointerup', stylus);
+      } else {
+        const pen = penInputRef.current;
+        const nativeContactStillOpen = pen.active
+          && pen.contactSerial === state.contactSerial
+          && pen.pointerId === state.pointerId;
+        if (nativeContactStillOpen) {
+          // Complete Fabric synchronously from the matching stylus touchend when Safari
+          // omits/delays pointerup. A later duplicate native end is rejected by id.
+          dispatchStylusFallbackPointer(
+            cancelled ? 'pointercancel' : 'pointerup',
+            stylus,
+            { nativeBridge: true },
+          );
+          if (state.pointerId != null) rejectedPointerIdsRef.current.add(state.pointerId);
+        }
+      }
+      resetStylusTouchFallback(stylus);
       return true;
     }
 
@@ -10840,7 +10971,7 @@ function BoardWorkspace({
       // Only the native event that overlaps the currently active synthetic contact is a
       // duplicate. A completed fallback must never create a time/distance dead zone:
       // rapid neighbouring Pencil strokes are legitimate new physical contacts.
-      return state.active;
+      return state.active && state.mode === 'synthetic';
     }
 
     function isLikelyPalmTouch(touch) {
@@ -11095,9 +11226,20 @@ function BoardWorkspace({
           lastTouchGestureEndedAtRef.current = performance.now();
         }
 
+        const fallbackContact = isStylusFallbackPointerEvent(event);
+        const contactSerial = fallbackContact
+          ? Number(stylusTouchFallbackRef.current.contactSerial ?? 0)
+          : penContactSerialRef.current + 1;
+        if (!fallbackContact) penContactSerialRef.current = contactSerial;
         penInputRef.current = {
           pointerId: event.pointerId,
           active: true,
+          source: fallbackContact ? 'synthetic' : 'native',
+          contactSerial,
+          downEventTimeStamp: Number(event.timeStamp ?? 0),
+          downClientX: Number(event.clientX ?? 0),
+          downClientY: Number(event.clientY ?? 0),
+          stylusTouchId: fallbackContact ? stylusTouchFallbackRef.current.touchId : null,
           lastSeenAt: Date.now(),
           lastClientX: Number(event.clientX ?? 0),
           lastClientY: Number(event.clientY ?? 0),
@@ -11181,7 +11323,8 @@ function BoardWorkspace({
         return;
       }
       if (rejectedPointerIdsRef.current.has(event.pointerId)
-        && !isStylusFallbackPointerEvent(event)) {
+        && !isStylusFallbackPointerEvent(event)
+        && !isStylusNativeBridgePointerEvent(event)) {
         rejectPointerEvent(event);
         return;
       }
@@ -11238,7 +11381,8 @@ function BoardWorkspace({
       finishSelectionPenSession(event);
 
       if (rejectedPointerIdsRef.current.has(event.pointerId)
-        && !isStylusFallbackPointerEvent(event)) {
+        && !isStylusFallbackPointerEvent(event)
+        && !isStylusNativeBridgePointerEvent(event)) {
         clearPendingNativeCreationPointer(event);
         rejectPointerEvent(event);
         window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
@@ -11256,8 +11400,19 @@ function BoardWorkspace({
       clearPendingNativeCreationPointer(event);
       if (event.pointerType === 'pen' && penInputRef.current.pointerId === event.pointerId) {
         const now = Date.now();
+        const trackedStylus = stylusTouchFallbackRef.current;
+        if (trackedStylus.active
+          && trackedStylus.mode === 'native'
+          && trackedStylus.contactSerial === penInputRef.current.contactSerial) {
+          resetStylusTouchFallback({
+            clientX: event.clientX,
+            clientY: event.clientY,
+          });
+        }
         penInputRef.current.active = false;
         penInputRef.current.pointerId = null;
+        penInputRef.current.source = null;
+        penInputRef.current.stylusTouchId = null;
         penInputRef.current.lastSeenAt = now;
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
@@ -11731,6 +11886,8 @@ function BoardWorkspace({
       selectionSession.nextMoveAt = 0;
       penInputRef.current.active = false;
       penInputRef.current.pointerId = null;
+      penInputRef.current.source = null;
+      penInputRef.current.stylusTouchId = null;
       penInputRef.current.suppressUntil = 0;
       if (canvas._currentTransform && typeof canvas.endCurrentTransform === 'function') {
         try { canvas.endCurrentTransform(); } catch { /* Continue releasing local state. */ }
@@ -11996,6 +12153,8 @@ function BoardWorkspace({
       eyedropperCompatibilityGuardUntilRef.current = 0;
       stylusTouchFallbackRef.current = {
         active: false,
+        mode: null,
+        contactSerial: 0,
         touchId: null,
         pointerId: null,
         lastClientX: 0,
