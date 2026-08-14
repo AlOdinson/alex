@@ -1780,6 +1780,7 @@ function BoardWorkspace({
   });
   const pendingPencilQueueRef = useRef([]);
   const activePencilRef = useRef(null);
+  const pencilStrokeGenerationRef = useRef(0);
   const remoteDrawSessionsRef = useRef(new Map());
   const remoteDeletedObjectIdsRef = useRef(new Map());
   const remotePreviewTokensRef = useRef(new Map());
@@ -8576,10 +8577,24 @@ function BoardWorkspace({
     window.addEventListener('online', syncOnOnline);
     document.addEventListener('visibilitychange', syncOnVisibility);
 
+    function recordForJustAddedObject(object) {
+      const serialized = serializeObject(object);
+      serializedObjectCacheRef.current.set(object, serialized);
+      const internalObjects = Array.isArray(canvas._objects) ? canvas._objects : null;
+      const lastIndex = Number(internalObjects?.length ?? 0) - 1;
+      // Fabric appends a completed path/shape to _objects before path:created/add fires.
+      // The overwhelmingly common add path is therefore O(1); only an unusual caller
+      // that inserts elsewhere falls back to the existing general layer lookup.
+      if (lastIndex >= 0 && internalObjects[lastIndex] === object) {
+        return { object: serialized, zIndex: lastIndex };
+      }
+      return getObjectRecords([object])[0] ?? { object: serialized, zIndex: -1 };
+    }
+
     function commitAddedObject(object) {
       if (!object || applyingRemoteRef.current || applyingHistoryRef.current) return;
       markObject(object, clientId);
-      const records = getObjectRecords([object]);
+      const records = [recordForJustAddedObject(object)];
       const alreadyStreamedAsLiveDraw = Boolean(object.creationSessionId)
         && ['path', 'line'].includes(String(object.objectKind ?? object.type ?? '').toLowerCase());
       // A completed live stroke is already kept visible on observers until the server
@@ -9302,62 +9317,15 @@ function BoardWorkspace({
     canvas.on('path:created', ({ path }) => {
       const isPartialEraserPath = activeToolRef.current === 'eraser'
         && eraserModeRef.current === 'partial';
-      const now = Date.now();
       const activePending = activePencilRef.current;
-      const candidates = pendingPencilQueueRef.current.filter((pending) => (
-        !pending.consumed && now - Number(pending.startedAt ?? 0) < 1800
-      ));
-
-      // Match the Fabric path to the stroke that started at the same scene point.
-      // Pure FIFO/LIFO matching can attach a delayed path:created event to a different
-      // rapid stroke, which gives the observer a valid but completely unrelated line.
-      let pathStartPoint = null;
-      try {
-        const firstCommand = Array.isArray(path?.path)
-          ? path.path.find((command) => Array.isArray(command) && command[0] === 'M')
-          : null;
-        if (firstCommand && Number.isFinite(Number(firstCommand[1])) && Number.isFinite(Number(firstCommand[2]))) {
-          const localPoint = new Point(
-            Number(firstCommand[1]) - Number(path.pathOffset?.x ?? 0),
-            Number(firstCommand[2]) - Number(path.pathOffset?.y ?? 0),
-          );
-          pathStartPoint = util.transformPoint(localPoint, path.calcTransformMatrix());
-        }
-      } catch {
-        pathStartPoint = null;
-      }
-
-      let pendingCandidate = null;
-      if (pathStartPoint) {
-        const tolerance = Math.max(14, 34 / Math.max(canvas.getZoom(), MIN_ZOOM));
-        const ranked = candidates
-          .map((pending) => ({
-            pending,
-            distance: pending.firstPoint
-              ? Math.hypot(
-                Number(pending.firstPoint.x) - pathStartPoint.x,
-                Number(pending.firstPoint.y) - pathStartPoint.y,
-              )
-              : Number.POSITIVE_INFINITY,
-          }))
-          .sort((left, right) => left.distance - right.distance
-            || Number(left.pending.startedAt ?? 0) - Number(right.pending.startedAt ?? 0));
-        if (ranked[0]?.distance <= tolerance) pendingCandidate = ranked[0].pending;
-      }
-
-      if (!pendingCandidate) {
-        const recentlyReleased = candidates
-          .filter((pending) => pending.mouseReleased
-            && now - Number(pending.releasedAt ?? 0) <= 750)
-          .sort((left, right) => Number(left.releasedAt ?? 0) - Number(right.releasedAt ?? 0));
-        pendingCandidate = recentlyReleased[0]
-          ?? (activePending && !activePending.consumed ? activePending : null)
-          ?? candidates[0]
-          ?? null;
-      }
-
-      const pendingPencil = !isPartialEraserPath && pendingCandidate
-        ? pendingCandidate
+      // Fabric emits path:created synchronously from the pointerup that finalizes its
+      // current brush. There can therefore be exactly one owner: the current physical
+      // contact token. Keeping old contacts in a timed/spatial candidate pool made a
+      // fast nearby mark ("=", "13") inherit or cancel the preceding stroke.
+      const pendingPencil = !isPartialEraserPath
+        && activePending
+        && !activePending.consumed
+        ? activePending
         : null;
       if (pendingPencil) {
         pendingPencil.consumed = true;
@@ -10005,22 +9973,6 @@ function BoardWorkspace({
         return;
       }
       if (pointerId != null && rejectedPointerIdsRef.current.has(pointerId)) return;
-      if (activeToolRef.current === 'pencil') {
-        const activeStroke = activePencilRef.current;
-        if (activeStroke && !activeStroke.mouseReleased) {
-          // One physical pointer owns one stroke from start to finish. A palm or a
-          // second finger cannot open another Fabric path while that stroke is active.
-          if (pointerId == null || activeStroke.pointerId !== pointerId) {
-            nativeEvent.preventDefault?.();
-            nativeEvent.stopPropagation?.();
-            nativeEvent.stopImmediatePropagation?.();
-            return;
-          }
-          // Safari can occasionally repeat mouse:down for the same Pencil pointer.
-          nativeEvent.preventDefault?.();
-          return;
-        }
-      }
       const scenePoint = event.scenePoint ?? canvas.getScenePoint(nativeEvent);
       lastPointerSceneRef.current = scenePoint;
       if (toolbarPasteAwaitingPointRef.current) {
@@ -10178,17 +10130,14 @@ function BoardWorkspace({
 
       if (activeToolRef.current === 'pencil') {
         const point = scenePoint;
-        const now = Date.now();
-        // A stroke that produced no Fabric path must never remain at the front of a
-        // FIFO queue and steal the id of the next stroke.
-        pendingPencilQueueRef.current = pendingPencilQueueRef.current.filter((pending) => {
-          const stale = pending.consumed
-            || now - Number(pending.startedAt ?? 0) > 1800
-            || (pending.mouseReleased && now - Number(pending.releasedAt ?? now) > 750);
-          if (stale) window.clearTimeout(pending.cancelTimer);
-          return !stale;
-        });
-        if (activePencilRef.current?.mouseReleased) activePencilRef.current = null;
+        // Capture-phase input cleanup normally retires an interrupted contact before
+        // Fabric sees this down event. This synchronous fallback also covers desktop
+        // mouse implementations that do not expose PointerEvent capture consistently.
+        if (activePencilRef.current && !activePencilRef.current.consumed) {
+          retirePendingPencil(activePencilRef.current, { cancelled: true });
+        }
+        const generation = pencilStrokeGenerationRef.current + 1;
+        pencilStrokeGenerationRef.current = generation;
         const objectId = randomToken(10);
         const sessionId = beginLiveDraw('pencil', objectId, point, {
           stroke: hexToRgba(colorRef.current, opacityRef.current),
@@ -10199,6 +10148,7 @@ function BoardWorkspace({
           sessionId,
           pointerId,
           pointerType: nativeEvent?.pointerType ?? 'unknown',
+          generation,
           cancelTimer: null,
           startedAt: Date.now(),
           mouseReleased: false,
@@ -10418,23 +10368,10 @@ function BoardWorkspace({
       if (activeToolRef.current === 'pencil' && activePencilRef.current) {
         const pending = activePencilRef.current;
         if (pointerId != null && pending.pointerId != null && pointerId !== pending.pointerId) return;
-        pending.mouseReleased = true;
-        pending.releasedAt = Date.now();
-        window.clearTimeout(pending.cancelTimer);
-        if (pending.cancelled) {
-          finishLiveDraw('cancel', pending.sessionId);
-        } else {
-          finishLiveDraw('end', pending.sessionId);
-        }
-        // path:created is normally emitted during this same mouse-up. Keep the exact
-        // pending record briefly for Safari, then discard it before another stroke can
-        // ever reuse its id.
-        pending.cancelTimer = window.setTimeout(() => {
-          const index = pendingPencilQueueRef.current.indexOf(pending);
-          if (index >= 0) pendingPencilQueueRef.current.splice(index, 1);
-          if (activePencilRef.current === pending) activePencilRef.current = null;
-          if (!pending.consumed) finishLiveDraw('cancel', pending.sessionId);
-        }, pending.cancelled ? 80 : 850);
+        // path:created is emitted synchronously before Fabric's mouse:up event. If the
+        // exact contact is still pending here, it produced no path and can be retired
+        // immediately. No timer is allowed to gate the next physical Pencil contact.
+        retirePendingPencil(pending, { cancelled: true });
       }
 
       finalizeSelectionMarquee(nativeEvent);
@@ -10478,6 +10415,12 @@ function BoardWorkspace({
     const touchTarget = canvas.upperCanvasEl;
 
     const activeTouchPointers = new Set();
+    // Pointer-level ownership is tracked independently from TouchEvent gesture metrics.
+    // The second pointerdown arrives before the matching two-touch touchstart, so this
+    // is the only phase where Fabric can be stopped before it turns a pinch into a path.
+    const activeBoardTouchPointerIds = new Set();
+    const blockedGesturePointerIds = new Set();
+    let drawingSuspendedForTouchGesture = false;
     const heldArrowKeys = new Map();
     let arrowPanFrame = null;
     let lastArrowPanAt = 0;
@@ -10655,6 +10598,57 @@ function BoardWorkspace({
       event.stopImmediatePropagation?.();
     }
 
+    function blockPointerFromFabric(event) {
+      // Do not preventDefault here: iPadOS must still emit the matching TouchEvent so
+      // the board's two-finger recognizer can calculate zoom. Stopping propagation in
+      // capture phase is enough to keep this PointerEvent out of Fabric.
+      event.stopPropagation?.();
+      event.stopImmediatePropagation?.();
+    }
+
+    function retirePendingPencil(pending, { cancelled = true } = {}) {
+      if (!pending) return false;
+      window.clearTimeout(pending.cancelTimer);
+      pending.cancelTimer = null;
+      pending.cancelled = Boolean(cancelled);
+      pending.mouseReleased = true;
+      pending.releasedAt = Date.now();
+      pending.consumed = true;
+      const queueIndex = pendingPencilQueueRef.current.indexOf(pending);
+      if (queueIndex >= 0) pendingPencilQueueRef.current.splice(queueIndex, 1);
+      if (activePencilRef.current === pending) activePencilRef.current = null;
+      finishLiveDraw(cancelled ? 'cancel' : 'end', pending.sessionId);
+      if (cancelled) removeRegisteredObjectsByCreationSession(clientId, pending.sessionId);
+      return true;
+    }
+
+    function releaseFabricFreeDrawingListeners() {
+      const upperCanvas = canvas.upperCanvasEl;
+      if (!upperCanvas) return;
+      const prefix = canvas.enablePointerEvents ? 'pointer' : 'mouse';
+      const ownerDocument = upperCanvas.ownerDocument ?? document;
+      ownerDocument.removeEventListener(`${prefix}up`, canvas._onMouseUp);
+      ownerDocument.removeEventListener(`${prefix}move`, canvas._onMouseMove);
+      // Fabric moves this listener from the canvas to document for each active contact.
+      // Re-home it after an explicit cancellation so the very next stroke receives moves.
+      upperCanvas.addEventListener(`${prefix}move`, canvas._onMouseMove, { passive: false });
+    }
+
+    function discardFabricFreeDrawing({ cancelPending = true } = {}) {
+      if (cancelPending) retirePendingPencil(activePencilRef.current, { cancelled: true });
+      canvas._isCurrentlyDrawing = false;
+      const brush = canvas.freeDrawingBrush;
+      if (brush) {
+        if (Array.isArray(brush._points)) brush._points = [];
+        brush.oldEnd = undefined;
+        brush.drawStraightLine = false;
+        if ('_hasStraightLine' in brush) brush._hasStraightLine = false;
+      }
+      try { canvas.clearContext?.(canvas.contextTop); } catch { /* Top context is optional. */ }
+      canvas.contextTopDirty = false;
+      releaseFabricFreeDrawingListeners();
+    }
+
     function eligibleHandoffTouchPair(event) {
       if (event?.type !== 'touchstart') return null;
       const fingers = touchArray(event.touches).filter((touch) => !isStylusTouch(touch));
@@ -10675,17 +10669,9 @@ function BoardWorkspace({
         try { canvas.endCurrentTransform(event); } catch { /* Continue gesture cleanup. */ }
       }
       canvas._groupSelector = null;
-      if (!canvas._isCurrentlyDrawing) return;
-      try {
-        if (typeof canvas._onMouseUpInDrawingMode === 'function') {
-          canvas._onMouseUpInDrawingMode(event);
-        } else {
-          canvas._isCurrentlyDrawing = false;
-        }
-      } catch {
-        canvas._isCurrentlyDrawing = false;
-        try { canvas.clearContext?.(canvas.contextTop); } catch { /* Ignore cleanup fallback. */ }
-      }
+      // Never pass a TouchEvent into a brush opened by PointerEvent. Fabric rejects it
+      // as a non-main event and leaves both _isCurrentlyDrawing and contextTop alive.
+      discardFabricFreeDrawing({ cancelPending: true });
     }
 
     function releaseFabricTouchOwnership(event) {
@@ -11053,6 +11039,9 @@ function BoardWorkspace({
     function handlePalmPointerDown(event) {
       lastBoardInteractionAtRef.current = Date.now();
       clearNativeBoardSelection();
+      if (event.pointerType === 'touch' && event.pointerId != null) {
+        activeBoardTouchPointerIds.add(event.pointerId);
+      }
       // A scheduled whole-board compaction must never begin during the next Pencil
       // gesture. It will be re-armed only after a long genuine idle period.
       window.clearTimeout(snapshotPersistTimerRef.current);
@@ -11079,6 +11068,17 @@ function BoardWorkspace({
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit
         // a rejected palm id from an earlier contact.
         rejectedPointerIdsRef.current.delete(event.pointerId);
+
+        const drawingToolActive = activeToolRef.current === 'pencil'
+          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial');
+        // A pointerdown always denotes a new physical contact even when WebKit reuses
+        // the same pointerId. Close a missing/cancelled predecessor synchronously before
+        // this event reaches Fabric; the new contact must never wait for a watchdog.
+        if (drawingToolActive && (penInputRef.current.active
+          || activePencilRef.current
+          || canvas._isCurrentlyDrawing)) {
+          discardFabricFreeDrawing({ cancelPending: true });
+        }
 
         const interruptedGesture = touchGestureRef.current;
         const interruptedTouchGesture = Boolean(interruptedGesture?.active);
@@ -11138,11 +11138,39 @@ function BoardWorkspace({
           rejectPointerEvent(event);
           return;
         }
+
+        const drawingToolActive = activeToolRef.current === 'pencil'
+          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial');
+        const gestureCandidates = [...activeBoardTouchPointerIds]
+          .filter((pointerId) => !rejectedPointerIdsRef.current.has(pointerId));
+        if (drawingToolActive && gestureCandidates.length >= 2) {
+          gestureCandidates.forEach((pointerId) => blockedGesturePointerIds.add(pointerId));
+          drawingSuspendedForTouchGesture = true;
+          cancelActiveDrawingForTouchGesture();
+          abortFabricDrawingForTouchGesture(event);
+          canvas.isDrawingMode = false;
+          canvas.selection = false;
+          clearPendingNativeCreationPointer(event);
+          blockPointerFromFabric(event);
+          return;
+        }
+
+        // A prior one-finger contact that ended without a usable pointerup cannot own
+        // this new contact. Retire it before Fabric resets its shared PencilBrush.
+        const staleTouchStroke = drawingToolActive
+          && activePencilRef.current
+          && activePencilRef.current.pointerType === 'touch'
+          && activePencilRef.current.pointerId !== event.pointerId;
+        if (staleTouchStroke) discardFabricFreeDrawing({ cancelPending: true });
       }
       rememberNativeCreationPointer(event);
     }
 
     function handlePalmPointerMove(event) {
+      if (event.pointerType === 'touch' && blockedGesturePointerIds.has(event.pointerId)) {
+        blockPointerFromFabric(event);
+        return;
+      }
       const sampledPenContact = eyedropperPenContactRef.current;
       if (event.pointerType === 'pen'
         && sampledPenContact?.pointerId === event.pointerId) {
@@ -11189,6 +11217,22 @@ function BoardWorkspace({
 
     function handlePalmPointerEnd(event) {
       const cancelledPointer = event.type === 'pointercancel';
+      if (event.pointerType === 'touch' && event.pointerId != null) {
+        activeBoardTouchPointerIds.delete(event.pointerId);
+        if (blockedGesturePointerIds.has(event.pointerId)) {
+          blockedGesturePointerIds.delete(event.pointerId);
+          blockPointerFromFabric(event);
+          if (activeBoardTouchPointerIds.size === 0) {
+            const gesture = touchGestureRef.current;
+            if (gesture) finishTouchGesture(gesture);
+            else if (drawingSuspendedForTouchGesture) {
+              drawingSuspendedForTouchGesture = false;
+              applyCanvasInputMode();
+            }
+          }
+          return;
+        }
+      }
       restoreSelectionTargetFind();
       if (finishEyedropperPenContact(event)) return;
       finishSelectionPenSession(event);
@@ -11221,11 +11265,9 @@ function BoardWorkspace({
         if (cancelledPointer) {
           const pending = activePencilRef.current;
           if (pending?.pointerId === event.pointerId) {
-            pending.cancelled = true;
-            pending.mouseReleased = true;
-            pending.releasedAt = now;
-            finishLiveDraw('cancel', pending.sessionId);
+            retirePendingPencil(pending, { cancelled: true });
           }
+          discardFabricFreeDrawing({ cancelPending: false });
         }
         // A normal Pencil-up leaves Fabric in drawing mode. Reconfiguring here used to
         // scan every object after every stroke, so only repair an actually disabled mode.
@@ -11407,12 +11449,7 @@ function BoardWorkspace({
     function cancelActiveDrawingForTouchGesture() {
       cancelCreationDraft('touch-gesture');
       const pending = activePencilRef.current;
-      if (pending && !pending.mouseReleased) {
-        pending.cancelled = true;
-        pending.mouseReleased = true;
-        pending.releasedAt = Date.now();
-        finishLiveDraw('cancel', pending.sessionId);
-      }
+      if (pending) retirePendingPencil(pending, { cancelled: true });
       liveDrawSendRef.current.acceptingPoints = false;
     }
 
@@ -11450,7 +11487,9 @@ function BoardWorkspace({
         Number(gesture.generation ?? 0),
       ) + 1;
       lastTouchGestureEndedAtRef.current = performance.now();
-      if (gesture.active && restoreInput) applyCanvasInputMode();
+      const mustRestoreDrawing = gesture.active || drawingSuspendedForTouchGesture;
+      drawingSuspendedForTouchGesture = false;
+      if (mustRestoreDrawing && restoreInput) applyCanvasInputMode();
       return Boolean(gesture.active);
     }
 
@@ -11611,6 +11650,10 @@ function BoardWorkspace({
     }
 
     function handleTouchEnd(event) {
+      if (event.touches.length === 0) {
+        activeBoardTouchPointerIds.clear();
+        blockedGesturePointerIds.clear();
+      }
       if (consumeEyedropperStylusTouch(event)) return;
       if (finishStylusTouchFallback(event, false)) return;
       if (shouldSuppressTouchEvent(event, { ending: true })) return;
@@ -11629,7 +11672,13 @@ function BoardWorkspace({
       }
 
       const gesture = touchGestureRef.current;
-      if (!gesture || gesture !== gestureAtEventStart || !belongsToCurrentGesture) return;
+      if (!gesture || gesture !== gestureAtEventStart || !belongsToCurrentGesture) {
+        if (event.touches.length === 0 && drawingSuspendedForTouchGesture) {
+          drawingSuspendedForTouchGesture = false;
+          applyCanvasInputMode();
+        }
+        return;
+      }
       const fingers = unsuppressedFingerTouches(event.touches);
       if (fingers.length >= 2) return;
       rejectTouchEvent(event);
@@ -11638,12 +11687,20 @@ function BoardWorkspace({
     }
 
     function handleTouchCancel(event) {
+      if (event.touches.length === 0) {
+        activeBoardTouchPointerIds.clear();
+        blockedGesturePointerIds.clear();
+      }
       if (consumeEyedropperStylusTouch(event)) return;
       resetMobileGameLibraryGesture();
       if (finishStylusTouchFallback(event, true)) return;
       if (shouldSuppressTouchEvent(event, { ending: true })) return;
       const gesture = touchGestureRef.current;
       if (gesture && touchEventBelongsToGesture(event, gesture)) finishTouchGesture(gesture);
+      else if (event.touches.length === 0 && drawingSuspendedForTouchGesture) {
+        drawingSuspendedForTouchGesture = false;
+        applyCanvasInputMode();
+      }
       rejectTouchEvent(event);
       releaseFabricTouchOwnership(event);
     }
@@ -11660,6 +11717,12 @@ function BoardWorkspace({
 
     function handleWindowBlur() {
       cancelCreationDraft('window-blur');
+      if (activePencilRef.current || canvas._isCurrentlyDrawing) {
+        discardFabricFreeDrawing({ cancelPending: true });
+      }
+      activeBoardTouchPointerIds.clear();
+      blockedGesturePointerIds.clear();
+      drawingSuspendedForTouchGesture = false;
       restoreSelectionTargetFind();
       restoreTargetFindAfterTransform();
       const selectionSession = selectionPenSessionRef.current;
@@ -11940,6 +12003,9 @@ function BoardWorkspace({
       };
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
+      activeBoardTouchPointerIds.clear();
+      blockedGesturePointerIds.clear();
+      drawingSuspendedForTouchGesture = false;
       touchGestureRef.current = null;
       touchGestureGenerationRef.current = 0;
       lastTouchGestureEndedAtRef.current = 0;

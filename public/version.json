@@ -1,9 +1,9 @@
 {
-  "version": "1.32.4",
-  "packageVersion": "1.32.4",
+  "version": "1.32.5",
+  "packageVersion": "1.32.5",
   "base": "1.32.0",
-  "release": "Reliable Apple Pencil palm rejection",
+  "release": "Rapid Apple Pencil strokes and clean pinch zoom",
   "date": "2026-08-14",
-  "name": "reliable-apple-pencil-palm-rejection",
-  "label": "Alex Board 1.32.4"
+  "name": "rapid-pencil-clean-pinch",
+  "label": "Alex Board 1.32.5"
 }
