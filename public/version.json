@@ -1,9 +1,9 @@
 {
-  "version": "1.32.3",
-  "packageVersion": "1.32.3",
+  "version": "1.32.4",
+  "packageVersion": "1.32.4",
   "base": "1.32.0",
-  "release": "Precise Apple Pencil selection",
+  "release": "Reliable Apple Pencil palm rejection",
   "date": "2026-08-14",
-  "name": "precise-apple-pencil-selection",
-  "label": "Alex Board 1.32.3"
+  "name": "reliable-apple-pencil-palm-rejection",
+  "label": "Alex Board 1.32.4"
 }

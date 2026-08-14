@@ -626,6 +626,9 @@ button:disabled {
   --board-offset-y: 0px;
   touch-action: none;
   overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
   background-color: #ffffff;
 }
 
@@ -652,7 +655,21 @@ button:disabled {
 .canvas-host .upper-canvas,
 .canvas-host .lower-canvas {
   touch-action: none !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
   background: transparent !important;
+}
+
+/* Keep Fabric's hidden text input and any future in-board editor fully editable. Safari
+   historically treats -webkit-user-select as inherited, so restore it explicitly. */
+.canvas-host input,
+.canvas-host textarea,
+.canvas-host [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 
 @media (max-width: 900px) {

@@ -93,7 +93,6 @@ const PENCIL_TOUCH_GRACE_MS = 240;
 const TOUCH_GESTURE_ARM_MS = 80;
 const TOUCH_GESTURE_MOVE_THRESHOLD = 6;
 const PALM_CONTACT_RADIUS = 22;
-const PENCIL_HANDOFF_IDLE_MS = 18;
 const PENCIL_HANDOFF_MAX_RADIUS = 34;
 const PENCIL_HANDOFF_MIN_SEPARATION = 20;
 const DRAWING_STYLE_TOOL_IDS = new Set(['pencil', 'line', 'shape']);
@@ -1831,7 +1830,6 @@ function BoardWorkspace({
     pointerId: null,
     lastClientX: 0,
     lastClientY: 0,
-    guardUntil: 0,
   });
   const rejectedPointerIdsRef = useRef(new Set());
   const suppressedTouchIdsRef = useRef(new Set());
@@ -10480,7 +10478,6 @@ function BoardWorkspace({
     const touchTarget = canvas.upperCanvasEl;
 
     const activeTouchPointers = new Set();
-    const handoffTouchPointers = new Map();
     const heldArrowKeys = new Map();
     let arrowPanFrame = null;
     let lastArrowPanAt = 0;
@@ -10658,35 +10655,6 @@ function BoardWorkspace({
       event.stopImmediatePropagation?.();
     }
 
-    function rememberHandoffTouchPointer(event) {
-      if (event.pointerType !== 'touch' || event.pointerId == null) return;
-      handoffTouchPointers.set(event.pointerId, {
-        id: event.pointerId,
-        clientX: Number(event.clientX ?? 0),
-        clientY: Number(event.clientY ?? 0),
-        radius: Math.max(Number(event.width ?? 0), Number(event.height ?? 0)),
-        seenAt: Date.now(),
-      });
-    }
-
-    function forgetHandoffTouchPointer(event) {
-      if (event.pointerType === 'touch' && event.pointerId != null) {
-        handoffTouchPointers.delete(event.pointerId);
-      }
-    }
-
-    function eligibleHandoffPointerPair() {
-      const contacts = [...handoffTouchPointers.values()]
-        .filter((contact) => Date.now() - Number(contact.seenAt ?? 0) < 500);
-      if (contacts.length !== 2) return null;
-      if (contacts.some((contact) => Number(contact.radius ?? 0) > PENCIL_HANDOFF_MAX_RADIUS)) return null;
-      const separation = Math.hypot(
-        contacts[0].clientX - contacts[1].clientX,
-        contacts[0].clientY - contacts[1].clientY,
-      );
-      return separation >= PENCIL_HANDOFF_MIN_SEPARATION ? contacts : null;
-    }
-
     function eligibleHandoffTouchPair(event) {
       if (event?.type !== 'touchstart') return null;
       const fingers = touchArray(event.touches).filter((touch) => !isStylusTouch(touch));
@@ -10700,56 +10668,6 @@ function BoardWorkspace({
         Number(fingers[0]?.clientY ?? 0) - Number(fingers[1]?.clientY ?? 0),
       );
       return separation >= PENCIL_HANDOFF_MIN_SEPARATION ? fingers : null;
-    }
-
-    function makeSyntheticPenUpEvent() {
-      const pen = penInputRef.current;
-      const init = {
-        bubbles: false,
-        cancelable: true,
-        clientX: Number(pen.lastClientX ?? 0),
-        clientY: Number(pen.lastClientY ?? 0),
-        button: 0,
-        buttons: 0,
-        pointerId: Number(pen.pointerId ?? 1),
-        pointerType: 'pen',
-        isPrimary: true,
-        pressure: 0,
-      };
-      try {
-        return new PointerEvent('pointerup', init);
-      } catch {
-        return {
-          type: 'pointerup',
-          ...init,
-          preventDefault() {},
-          stopPropagation() {},
-          stopImmediatePropagation() {},
-        };
-      }
-    }
-
-    function finishPenForTwoFingerHandoff() {
-      const pen = penInputRef.current;
-      if (!pen.active || Date.now() - Number(pen.lastSeenAt ?? 0) < PENCIL_HANDOFF_IDLE_MS) return false;
-      const syntheticUp = makeSyntheticPenUpEvent();
-      try {
-        if (canvas._isCurrentlyDrawing && typeof canvas._onMouseUpInDrawingMode === 'function') {
-          canvas._onMouseUpInDrawingMode(syntheticUp);
-        }
-      } catch {
-        return false;
-      }
-      const now = Date.now();
-      penInputRef.current = {
-        pointerId: null,
-        active: false,
-        lastSeenAt: now,
-        lastClientX: Number(pen.lastClientX ?? 0),
-        lastClientY: Number(pen.lastClientY ?? 0),
-        suppressUntil: 0,
-      };
-      return true;
     }
 
     function abortFabricDrawingForTouchGesture(event) {
@@ -10781,10 +10699,6 @@ function BoardWorkspace({
       } catch {
         canvas.mainTouchId = undefined;
       }
-    }
-
-    function isLikelyPalmPointer(event) {
-      return Math.max(Number(event?.width ?? 0), Number(event?.height ?? 0)) >= PALM_CONTACT_RADIUS;
     }
 
     function isStylusTouch(touch) {
@@ -10894,7 +10808,6 @@ function BoardWorkspace({
         pointerId: fallbackPointerIdForTouch(identifier),
         lastClientX: Number(stylus.clientX ?? 0),
         lastClientY: Number(stylus.clientY ?? 0),
-        guardUntil: performance.now() + 250,
       };
       claimStylusTouchEvent(event);
       dispatchStylusFallbackPointer('pointerdown', stylus);
@@ -10931,10 +10844,6 @@ function BoardWorkspace({
         pointerId: null,
         lastClientX: Number(stylus.clientX ?? state.lastClientX ?? 0),
         lastClientY: Number(stylus.clientY ?? state.lastClientY ?? 0),
-        // Reject a late native pointer event generated for the same physical contact.
-        // A genuinely new rapid contact still has its own touchstart and will use this
-        // fallback route if its pointerdown is caught by the guard.
-        guardUntil: performance.now() + 180,
       };
       return true;
     }
@@ -10942,12 +10851,10 @@ function BoardWorkspace({
     function shouldRejectNativePenAfterTouchFallback(event) {
       if (event.pointerType !== 'pen' || isStylusFallbackPointerEvent(event)) return false;
       const state = stylusTouchFallbackRef.current;
-      if (!state.active && performance.now() >= Number(state.guardUntil ?? 0)) return false;
-      const distance = Math.hypot(
-        Number(event.clientX ?? 0) - Number(state.lastClientX ?? 0),
-        Number(event.clientY ?? 0) - Number(state.lastClientY ?? 0),
-      );
-      return state.active || distance <= 42;
+      // Only the native event that overlaps the currently active synthetic contact is a
+      // duplicate. A completed fallback must never create a time/distance dead zone:
+      // rapid neighbouring Pencil strokes are legitimate new physical contacts.
+      return state.active;
     }
 
     function isLikelyPalmTouch(touch) {
@@ -11145,12 +11052,11 @@ function BoardWorkspace({
 
     function handlePalmPointerDown(event) {
       lastBoardInteractionAtRef.current = Date.now();
+      clearNativeBoardSelection();
       // A scheduled whole-board compaction must never begin during the next Pencil
       // gesture. It will be re-armed only after a long genuine idle period.
       window.clearTimeout(snapshotPersistTimerRef.current);
       snapshotPersistTimerRef.current = null;
-      if (event.pointerType === 'touch') rememberHandoffTouchPointer(event);
-
       if (activeToolRef.current === 'select'
         && !eyedropperActiveRef.current
         && canEditRef.current
@@ -11219,14 +11125,12 @@ function BoardWorkspace({
       // drawing pointer. During the brief release grace period only a large contact is
       // rejected, so a deliberate small one-finger stroke can still start immediately.
       if (event.pointerType === 'touch') {
-        const pair = eligibleHandoffPointerPair();
-        const handedOff = Boolean(pair) && finishPenForTwoFingerHandoff();
         const contactRadius = Math.max(Number(event.width ?? 0), Number(event.height ?? 0));
-        const likelyPalm = isLikelyPalmPointer(event);
-        const additionalContact = event.isPrimary === false;
-        const duringPencil = !handedOff
-          && penInputRef.current.active
-          && (likelyPalm || additionalContact);
+        // Never synthesize Pencil-up from simultaneous touch contacts. iPadOS may expose
+        // different parts of one resting hand as two small fingers; treating those as a
+        // zoom handoff truncates a legitimate curved stroke. A real two-finger gesture is
+        // armed normally as soon as the Pencil's own pointerup has completed.
+        const duringPencil = penInputRef.current.active;
         const duringGrace = Date.now() < Number(penInputRef.current.suppressUntil ?? 0)
           && contactRadius > PENCIL_HANDOFF_MAX_RADIUS;
         if (duringPencil || duringGrace) {
@@ -11278,9 +11182,6 @@ function BoardWorkspace({
         }
         updateCreationDraftFromNativeEvent(event);
         return;
-      }
-      if (event.pointerType === 'touch' && handoffTouchPointers.has(event.pointerId)) {
-        rememberHandoffTouchPointer(event);
       }
       if (rejectedPointerIdsRef.current.has(event.pointerId)) rejectPointerEvent(event);
       else updateCreationDraftFromNativeEvent(event);
@@ -11342,7 +11243,6 @@ function BoardWorkspace({
         // synchronously lets the same palm-up event finish or split the Pencil stroke.
         window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
       }
-      forgetHandoffTouchPointer(event);
       lastBoardInteractionAtRef.current = Date.now();
       if (snapshotCompactionNeededRef.current) schedulePersistence();
     }
@@ -11574,8 +11474,6 @@ function BoardWorkspace({
 
     function shouldSuppressTouchEvent(event, { ending = false } = {}) {
       const now = Date.now();
-      const touchPair = eligibleHandoffTouchPair(event);
-      if (penInputRef.current.active && touchPair) finishPenForTwoFingerHandoff();
       if (penInputRef.current.active) {
         // IMPORTANT: do not call preventDefault() for the TouchEvent while Pencil is
         // active. On iPadOS Safari the Pencil can be represented in the same touch
@@ -11592,6 +11490,10 @@ function BoardWorkspace({
         const graceContacts = [...touchArray(event.touches), ...touchArray(event.changedTouches)];
         const bypassPair = eligibleHandoffTouchPair(event);
         const bypassIds = new Set((bypassPair ?? []).map((touch) => touchId(touch)));
+        // The first finger may have been provisionally suppressed before the second one
+        // arrived. Once two deliberate, separated contacts are present, release both ids
+        // so the normal armed pinch recognizer can start immediately after Pencil-up.
+        for (const identifier of bypassIds) suppressedTouchIdsRef.current.delete(identifier);
         const palmContacts = graceContacts.filter((touch) => {
           if (isStylusTouch(touch) || bypassIds.has(touchId(touch))) return false;
           return isLikelyPalmTouch(touch);
@@ -11606,6 +11508,33 @@ function BoardWorkspace({
         return true;
       }
       return false;
+    }
+
+    function isNativeBoardTextTarget(target) {
+      return target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || Boolean(target?.isContentEditable)
+        || Boolean(target?.closest?.('[contenteditable="true"]'));
+    }
+
+    function clearNativeBoardSelection() {
+      const selection = window.getSelection?.();
+      if (!selection || selection.rangeCount === 0) return;
+      const nodeBelongsToBoard = (node) => {
+        const element = node?.nodeType === 1 ? node : node?.parentElement;
+        return Boolean(element && (element === host || host.contains(element)));
+      };
+      if (nodeBelongsToBoard(selection.anchorNode) || nodeBelongsToBoard(selection.focusNode)) {
+        selection.removeAllRanges();
+      }
+    }
+
+    function handleNativeBoardSelectionStart(event) {
+      // Fabric text editing owns its hidden textarea and remains selectable. Everything
+      // else inside the board is an interactive drawing surface, never page content.
+      if (isNativeBoardTextTarget(event.target)) return;
+      if (event.cancelable) event.preventDefault();
+      clearNativeBoardSelection();
     }
 
     function consumeEyedropperStylusTouch(event) {
@@ -11723,6 +11652,7 @@ function BoardWorkspace({
     touchTarget.addEventListener('touchmove', handleTouchMove, { passive: false, capture: true });
     touchTarget.addEventListener('touchend', handleTouchEnd, { passive: false, capture: true });
     touchTarget.addEventListener('touchcancel', handleTouchCancel, { passive: false, capture: true });
+    host.addEventListener('selectstart', handleNativeBoardSelectionStart, { passive: false, capture: true });
 
     function handleContextMenu(event) {
       event.preventDefault();
@@ -11960,6 +11890,7 @@ function BoardWorkspace({
       touchTarget.removeEventListener('touchmove', handleTouchMove, true);
       touchTarget.removeEventListener('touchend', handleTouchEnd, true);
       touchTarget.removeEventListener('touchcancel', handleTouchCancel, true);
+      host.removeEventListener('selectstart', handleNativeBoardSelectionStart, true);
       host.removeEventListener('dragenter', handleDragOver);
       host.removeEventListener('dragover', handleDragOver);
       host.removeEventListener('drop', handleDrop);
@@ -12006,11 +11937,9 @@ function BoardWorkspace({
         pointerId: null,
         lastClientX: 0,
         lastClientY: 0,
-        guardUntil: 0,
       };
       rejectedPointerIdsRef.current.clear();
       suppressedTouchIdsRef.current.clear();
-      handoffTouchPointers.clear();
       touchGestureRef.current = null;
       touchGestureGenerationRef.current = 0;
       lastTouchGestureEndedAtRef.current = 0;
