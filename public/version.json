@@ -1,9 +1,9 @@
 {
-  "version": "1.32.12",
-  "packageVersion": "1.32.12",
+  "version": "1.32.13",
+  "packageVersion": "1.32.13",
   "base": "1.32.0",
-  "release": "Zero-delay repeated Pencil selection and transforms",
+  "release": "Immediate Apple Pencil re-grab after transforms",
   "date": "2026-08-15",
-  "name": "zero-delay-pencil-select",
-  "label": "Alex Board 1.32.12"
+  "name": "immediate-pencil-regrab",
+  "label": "Alex Board 1.32.13"
 }

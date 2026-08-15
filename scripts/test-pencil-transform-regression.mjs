@@ -75,6 +75,41 @@ assert.match(penReleaseSource, /const drawingToolNeedsPalmGrace = activeToolRef\
 assert.match(penReleaseSource, /penInputRef\.current\.suppressUntil = drawingToolNeedsPalmGrace\s*\? now \+ PENCIL_TOUCH_GRACE_MS\s*:\s*0/,
   'Selection/transform Pencil releases must have no 240 ms touch-side grace');
 
+const staleTransformReleaseSource = boardSource.slice(
+  boardSource.indexOf('function releaseStaleSelectionTransform'),
+  boardSource.indexOf('function handlePalmPointerDown'),
+);
+assert.match(staleTransformReleaseSource, /canvas\.endCurrentTransform\(event\)/,
+  'A Fabric transform missed by pointerup must be closed synchronously');
+assert.match(staleTransformReleaseSource, /switchFabricInputMode\(true\)/,
+  'Selection must be restored to direct PointerEvents without Fabric touch cooldown');
+assert.match(staleTransformReleaseSource, /queueMicrotask\(\(\) =>/,
+  'Post-pointerup ownership verification must run before the next native event');
+assert.doesNotMatch(staleTransformReleaseSource, /setTimeout|requestAnimationFrame/,
+  'Re-arming Pencil selection must not depend on a timer or rendered frame');
+
+const beginSelectionSource = boardSource.slice(
+  boardSource.indexOf('function beginSelectionPenSession'),
+  boardSource.indexOf('function finishSelectionPenSession'),
+);
+assert.match(beginSelectionSource, /\|\| canvas\._currentTransform/,
+  'A stale Fabric transform must be repaired even if the app session already ended');
+assert.ok(
+  beginSelectionSource.indexOf('releaseStaleSelectionTransform')
+    < beginSelectionSource.indexOf('session.pointerId = event.pointerId'),
+  'Previous transform ownership must be released before the new Pencil contact opens',
+);
+
+const pointerDownSource = boardSource.slice(
+  boardSource.indexOf('function handlePalmPointerDown'),
+  boardSource.indexOf('function handlePalmPointerMove'),
+);
+assert.ok(
+  pointerDownSource.indexOf('beginSelectionPenSession(event);')
+    < pointerDownSource.indexOf('armExactSelectionTargetFind({ pen: event.pointerType'),
+  'Stale transform cleanup must precede exact hit-test arming for the new contact',
+);
+
 assert.doesNotMatch(toolbarSource, /window\.requestAnimationFrame/);
 
 // Model thirty immediate Pencil contacts. A time deadline may drop excess samples, but

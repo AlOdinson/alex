@@ -7679,7 +7679,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.12-zero-delay-pencil-select',
+      version: '1.32.13-immediate-pencil-regrab',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -7693,6 +7693,10 @@ function BoardWorkspace({
         activePointerId: activePencilRef.current?.pointerId ?? null,
         fabricDrawing: Boolean(canvas._isCurrentlyDrawing),
         drawingMode: Boolean(canvas.isDrawingMode),
+        fabricPointerEvents: Boolean(canvas.enablePointerEvents),
+        fabricTransformActive: Boolean(canvas._currentTransform),
+        fabricTouchDownCooldown: Boolean(canvas._willAddMouseDown),
+        selectionPenActive: Boolean(selectionPenSessionRef.current.active),
         revision: Number(revisionRef.current ?? 0),
         pendingWrites: Number(pendingServerWritesRef.current ?? 0),
       }),
@@ -11291,6 +11295,59 @@ function BoardWorkspace({
     };
     canvas.on('mouse:down:before', restoreSelectionTargetFindBeforeFabricLogic);
 
+    function releaseStaleSelectionTransform(event, {
+      phase = 'unknown',
+      finishMarquee = false,
+    } = {}) {
+      const hadFabricTransform = Boolean(canvas._currentTransform);
+      const hadLiveTransform = Boolean(liveTransformSendRef.current.sessionId);
+      const hadTargetFindOverride = Boolean(transformTargetFindRestoreState);
+      const hadMarquee = Boolean(selectionDragRef.current);
+      const hadLocks = localLockIdsRef.current.length > 0;
+      const hadStaleState = hadFabricTransform
+        || hadLiveTransform
+        || hadTargetFindOverride
+        || hadMarquee
+        || hadLocks;
+
+      restoreTargetFindAfterTransform();
+      if (hadMarquee) finalizeSelectionMarquee(event, { cancelled: !finishMarquee });
+      if (canvas._currentTransform && typeof canvas.endCurrentTransform === 'function') {
+        try { canvas.endCurrentTransform(event); } catch { /* Continue releasing collaboration state. */ }
+      }
+      if (liveTransformSendRef.current.sessionId) {
+        endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
+      }
+      if (localLockIdsRef.current.length) {
+        realtimeRef.current?.sendLock(localLockIdsRef.current, false);
+        localLockIdsRef.current = [];
+      }
+      transformGestureRef.current.activeId = null;
+      transformGestureRef.current.pointerType = null;
+      modifiedBeforeRef.current = [];
+
+      // Selection must always stay on Fabric's direct PointerEvent route. In particular,
+      // never let Fabric's TouchEvent fallback install its built-in 400 ms mouse-down
+      // cooldown after a Pencil transform.
+      const pointerModeReady = switchFabricInputMode(true);
+      if (hadStaleState || !pointerModeReady || !canvas.enablePointerEvents) {
+        pencilDiagnosticsRef.current?.record('SELECTION transform ownership repaired', {
+          phase,
+          pointerId: event?.pointerId ?? null,
+          hadFabricTransform,
+          hadLiveTransform,
+          hadTargetFindOverride,
+          hadMarquee,
+          hadLocks,
+          pointerModeReady,
+          fabricPointerEvents: Boolean(canvas.enablePointerEvents),
+          fabricTouchDownCooldown: Boolean(canvas._willAddMouseDown),
+        });
+      }
+      if (hadStaleState) canvas.requestRenderAll();
+      return hadStaleState;
+    }
+
     function beginSelectionPenSession(event) {
       if (event.pointerType !== 'pen'
         || activeToolRef.current !== 'select'
@@ -11298,20 +11355,18 @@ function BoardWorkspace({
         || !canEditRef.current
         || event.button > 0) return false;
       const session = selectionPenSessionRef.current;
-      if (session.active) {
-        // A second physical pointerdown means WebKit omitted the preceding end event.
-        // Close the stale Fabric transform now so the new contact can start immediately
-        // instead of forcing the user to wait for an idle watchdog.
-        restoreTargetFindAfterTransform();
-        finalizeSelectionMarquee(event, { cancelled: true });
-        if (canvas._currentTransform && typeof canvas.endCurrentTransform === 'function') {
-          try { canvas.endCurrentTransform(event); } catch { /* Continue with new contact. */ }
-        }
-        endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
-        if (localLockIdsRef.current.length) {
-          realtimeRef.current?.sendLock(localLockIdsRef.current, false);
-          localLockIdsRef.current = [];
-        }
+      const staleAppSession = session.active;
+      // At capture phase Fabric has not processed this new pointerdown yet. Therefore
+      // any current Fabric transform/live lock can only belong to the previous Pencil
+      // contact, even if our own capture-phase pointerup already marked the app session
+      // inactive. The old active-only condition missed exactly that split ownership and
+      // made Fabric reject every new down until a delayed compatibility event arrived.
+      if (staleAppSession
+        || canvas._currentTransform
+        || liveTransformSendRef.current.sessionId
+        || transformTargetFindRestoreState
+        || localLockIdsRef.current.length) {
+        releaseStaleSelectionTransform(event, { phase: 'before-next-down' });
       }
 
       // Fabric listens to this same Pointer Event and moves its temporary listeners to
@@ -11332,19 +11387,21 @@ function BoardWorkspace({
       session.nextMoveAt = 0;
       session.pointerId = null;
       if (cancelled) {
-        finalizeSelectionMarquee(event, { cancelled: true });
-        restoreTargetFindAfterTransform();
-        // Fabric has no pointercancel listener. Explicitly close only the interrupted
-        // transform; normal pointerup continues into Fabric and is finalized there.
-        if (canvas._currentTransform && typeof canvas.endCurrentTransform === 'function') {
-          try { canvas.endCurrentTransform(event); } catch { /* Continue cleanup below. */ }
-        }
-        endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
-        if (localLockIdsRef.current.length) {
-          realtimeRef.current?.sendLock(localLockIdsRef.current, false);
-          localLockIdsRef.current = [];
-        }
-        canvas.requestRenderAll();
+        // Fabric has no pointercancel listener, so cancellation is finalized now.
+        releaseStaleSelectionTransform(event, { phase: 'pointercancel' });
+      } else {
+        // This capture listener runs before Fabric's document-level pointerup handler.
+        // A microtask runs after the complete native event dispatch: normally it is a
+        // no-op, but if WebKit omitted/stopped Fabric's handler it closes the transform
+        // before the browser can deliver the next physical Pencil pointerdown. No timer,
+        // animation frame or idle period participates in re-arming selection.
+        queueMicrotask(() => {
+          if (disposed || fabricCanvasRef.current !== canvas) return;
+          releaseStaleSelectionTransform(event, {
+            phase: 'after-pointerup-microtask',
+            finishMarquee: true,
+          });
+        });
       }
       return true;
     }
@@ -11376,13 +11433,6 @@ function BoardWorkspace({
       // gesture. It will be re-armed only after a long genuine idle period.
       window.clearTimeout(snapshotPersistTimerRef.current);
       snapshotPersistTimerRef.current = null;
-      if (activeToolRef.current === 'select'
-        && !eyedropperActiveRef.current
-        && canEditRef.current
-        && event.button <= 0) {
-        armExactSelectionTargetFind({ pen: event.pointerType === 'pen', event });
-      }
-
       if (shouldRejectNativePenAfterTouchFallback(event)) {
         pencilDiagnosticsRef.current?.record('APP pointerdown rejected as duplicate', {
           pointerId: event.pointerId ?? null,
@@ -11398,7 +11448,16 @@ function BoardWorkspace({
       // Eyedropper owns its complete Pencil stream in capture phase. Fabric sees
       // neither pointerdown nor pointerup, so no stale pencil/mouse session can survive.
       if (beginEyedropperPenContact(event)) return;
-      if (beginSelectionPenSession(event)) return;
+      beginSelectionPenSession(event);
+      if (activeToolRef.current === 'select'
+        && !eyedropperActiveRef.current
+        && canEditRef.current
+        && event.button <= 0) {
+        // Arm exact hit testing only after any predecessor transform has been closed.
+        // Otherwise restoreTargetFindAfterTransform could overwrite the new contact's
+        // target-find settings while both events share the capture phase.
+        armExactSelectionTargetFind({ pen: event.pointerType === 'pen', event });
+      }
 
       if (event.pointerType === 'pen') {
         // Pointer ids may be reused by Safari. A new Pencil contact must never inherit

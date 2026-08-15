@@ -1,7 +1,7 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.32.12",
+  "version": "1.32.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
