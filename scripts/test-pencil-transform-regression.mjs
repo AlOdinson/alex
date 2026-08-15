@@ -78,6 +78,21 @@ assert.match(marqueeFinalizeSource, /queryTransformSpatialObjects\(selectionRect
   'Marquee selection must query only nearby indexed objects');
 assert.doesNotMatch(marqueeFinalizeSource, /window\.requestAnimationFrame\s*\(/,
   'Marquee selection must exist before the next rapid Pencil contact');
+assert.match(marqueeFinalizeSource, /pencilMarquee\s*\? renderSelectionControlsOnTop\(canvas\)/,
+  'A completed Pencil marquee must paint selection controls in the pointerup task');
+assert.match(marqueeFinalizeSource, /if \(!pencilMarquee\) canvas\.requestRenderAll\(\)/,
+  'Pencil marquee feedback must not wait for a full lower-canvas render');
+assert.match(marqueeFinalizeSource, /SELECTION marquee finalized/,
+  'Diagnostics must record the logical result of every Pencil marquee');
+
+const immediateSelectionControlsSource = boardSource.slice(
+  boardSource.indexOf('function renderSelectionControlsOnTop'),
+  boardSource.indexOf('function hexToRgba'),
+);
+assert.match(immediateSelectionControlsSource, /canvas\.drawControls\(canvas\.contextTop\)/,
+  'Fabric 7 controls must be painted explicitly; renderTop() alone only draws the group selector');
+assert.match(immediateSelectionControlsSource, /canvas\.contextTopDirty = true/,
+  'A later normal Fabric render must know that the temporary top controls need clearing');
 
 const penReleaseSource = boardSource.slice(
   boardSource.indexOf('function handlePalmPointerEnd'),
@@ -119,8 +134,10 @@ const selectionClearSource = boardSource.slice(
 assert.match(selectionClearSource, /nativeEvent\?\.pointerType !== 'pen'/);
 assert.match(selectionClearSource, /canvas\.cancelRequestedRender\?\.\(\)/,
   'Pencil deselection must not leave a full-board render ahead of the next marquee');
-assert.match(selectionClearSource, /canvas\.renderTop\?\.\(\)/,
-  'Cancelling the lower render must still refresh selection controls');
+assert.match(selectionClearSource, /renderSelectionControlsOnTop\(canvas\)/,
+  'Cancelling the lower render must still clear or refresh the explicit top controls');
+assert.match(selectionClearSource, /if \(!controlsWereOnTop\) return/,
+  'A Pencil deselect must retain the normal lower render when controls were painted there');
 
 const beginSelectionSource = boardSource.slice(
   boardSource.indexOf('function beginSelectionPenSession'),

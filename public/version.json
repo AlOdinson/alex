@@ -1,9 +1,9 @@
 {
-  "version": "1.32.15",
-  "packageVersion": "1.32.15",
+  "version": "1.32.16",
+  "packageVersion": "1.32.16",
   "base": "1.32.0",
-  "release": "Apple Pencil input-priority transform finalization",
+  "release": "Immediate Apple Pencil selection controls",
   "date": "2026-08-15",
-  "name": "pencil-input-priority",
-  "label": "Alex Board 1.32.15"
+  "name": "immediate-pencil-selection",
+  "label": "Alex Board 1.32.16"
 }

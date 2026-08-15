@@ -600,6 +600,37 @@ function createOuterOnlyActiveSelection(objects, canvas) {
   return selection;
 }
 
+function hardClearFabricTopCanvas(canvas) {
+  const contextTop = canvas?.contextTop;
+  const upperCanvas = canvas?.upperCanvasEl;
+  if (!contextTop || !upperCanvas) return false;
+  contextTop.save();
+  try {
+    contextTop.setTransform(1, 0, 0, 1, 0, 0);
+    contextTop.clearRect(0, 0, upperCanvas.width, upperCanvas.height);
+  } finally {
+    contextTop.restore();
+  }
+  canvas.contextTopDirty = false;
+  return true;
+}
+
+function renderSelectionControlsOnTop(canvas) {
+  if (!hardClearFabricTopCanvas(canvas)) return false;
+  // Fabric 7 renderTop() only paints the temporary group selector/free-drawing layer;
+  // active-object controls normally belong to the full lower-canvas render. Draw just
+  // those controls explicitly so a Pencil marquee is visible in the same pointerup task
+  // without repainting every board object.
+  canvas.renderTop?.();
+  const active = canvas.getActiveObject?.();
+  if (!active || typeof canvas.drawControls !== 'function') return false;
+  canvas.drawControls(canvas.contextTop);
+  // A later normal renderAll() must clear this temporary top copy before drawing the
+  // controls in Fabric's regular lower-canvas pass.
+  canvas.contextTopDirty = true;
+  return true;
+}
+
 function hexToRgba(hex, opacity) {
   const normalized = hex.replace('#', '');
   const value = Number.parseInt(normalized.length === 3
@@ -2902,7 +2933,7 @@ function BoardWorkspace({
         active.hasControls = true;
         active.hasBorders = true;
       }
-      if (restored) canvas.renderTop?.();
+      if (restored) renderSelectionControlsOnTop(canvas);
       return;
     }
 
@@ -2937,7 +2968,7 @@ function BoardWorkspace({
       objectCaching: false,
     });
     active.setCoords();
-    canvas.renderTop?.();
+    renderSelectionControlsOnTop(canvas);
   }, [restoreSelectionMemberControl]);
 
 
@@ -7681,7 +7712,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.15-pencil-input-priority',
+      version: '1.32.16-immediate-pencil-selection',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -7952,22 +7983,7 @@ function BoardWorkspace({
     };
 
     const hardClearPenTransformTop = () => {
-      const contextTop = canvas.contextTop;
-      const upperCanvas = canvas.upperCanvasEl;
-      if (!contextTop || !upperCanvas) return;
-      // Fabric's helper normally clears contextTop correctly, but the large-board
-      // compositor deliberately interrupts the normal render lifecycle. Safari can
-      // therefore leave pixels from offset controls (rotation / hand) in the backing
-      // store even after the border itself has been refreshed. Clear the physical
-      // backing canvas with an identity transform so no old control pixel survives.
-      contextTop.save();
-      try {
-        contextTop.setTransform(1, 0, 0, 1, 0, 0);
-        contextTop.clearRect(0, 0, upperCanvas.width, upperCanvas.height);
-      } finally {
-        contextTop.restore();
-      }
-      canvas.contextTopDirty = false;
+      hardClearFabricTopCanvas(canvas);
     };
 
     const drawBackgroundIntoCroppedLayer = (layer) => {
@@ -8166,13 +8182,13 @@ function BoardWorkspace({
         const startedAt = performance.now();
         canvas.cancelRequestedRender?.();
         const patched = renderLocalDeletionPatches(dirtyRects);
-        hardClearPenTransformTop();
-        canvas.renderTop?.();
+        const controlsPainted = renderSelectionControlsOnTop(canvas);
         pencilDiagnosticsRef.current?.record('SELECTION Pencil transform patches', {
           rectCount: mergeOverlappingViewportRects(dirtyRects).length,
           objectCount: Array.isArray(objects) ? objects.length : 1,
           hadPendingRender,
           patched,
+          controlsPainted,
           elapsedMs: performance.now() - startedAt,
         });
         if (!patched) canvas.requestRenderAll();
@@ -9687,6 +9703,7 @@ function BoardWorkspace({
       queueSelectionUiRefresh();
       const nativeEvent = selectionEvent?.e;
       if (nativeEvent?.pointerType !== 'pen' || activeToolRef.current !== 'select') return;
+      const controlsWereOnTop = Boolean(canvas.contextTopDirty);
       // Fabric treats deselection as a scene change and requests a complete render even
       // though only transparent controls on contextTop changed. Cancel that request
       // after Fabric's pointerdown returns, but only when the same Pencil contact opened
@@ -9699,13 +9716,18 @@ function BoardWorkspace({
           || canvas._currentTransform
           || !drag
           || !selectionDragOwnsEvent(drag, nativeEvent)) return;
+        // If the selection came from a finger/mouse or a completed normal Fabric frame,
+        // its controls are baked into the lower canvas. In that case keep Fabric's own
+        // requested render so those pixels are erased correctly. The fast path is only
+        // safe for controls that we explicitly placed on the transparent top canvas.
+        if (!controlsWereOnTop) return;
         const hadPendingRender = Boolean(canvas.nextRenderHandle);
         canvas.cancelRequestedRender?.();
-        hardClearPenTransformTop();
-        canvas.renderTop?.();
+        renderSelectionControlsOnTop(canvas);
         pencilDiagnosticsRef.current?.record('SELECTION Pencil deselect render skipped', {
           pointerId: nativeEvent.pointerId ?? null,
           hadPendingRender,
+          controlsWereOnTop,
         });
       });
     };
@@ -10139,7 +10161,21 @@ function BoardWorkspace({
       if (cancelled || activeToolRef.current !== 'select') return true;
 
       const selectionRect = normalizedSceneRect(selectionDrag.start, selectionDrag.end);
-      if (selectionRect.width < 3 && selectionRect.height < 3) return true;
+      const pencilMarquee = nativeEvent?.pointerType === 'pen';
+      if (selectionRect.width < 3 && selectionRect.height < 3) {
+        pencilDiagnosticsRef.current?.record('SELECTION marquee finalized', {
+          pointerId: nativeEvent?.pointerId ?? null,
+          pointerType: nativeEvent?.pointerType ?? selectionDrag.pointerType ?? 'unknown',
+          width: selectionRect.width,
+          height: selectionRect.height,
+          candidateCount: 0,
+          selectedCount: 0,
+          activeId: canvas.getActiveObject()?.boardObjectId ?? null,
+          tooSmall: true,
+          controlsPainted: false,
+        });
+        return true;
+      }
 
       // The selected target must exist before the next physical Pencil contact. The old
       // requestAnimationFrame deferred this work by at least one frame; on a busy iPad
@@ -10150,7 +10186,8 @@ function BoardWorkspace({
       if (fabricCanvasRef.current !== canvas || activeToolRef.current !== 'select') return true;
       canvas.discardActiveObject();
       const now = Date.now();
-      const selected = queryTransformSpatialObjects(selectionRect).filter((object) => {
+      const candidates = queryTransformSpatialObjects(selectionRect);
+      const selected = candidates.filter((object) => {
         if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || !object.selectable) return false;
         const lock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
         if (lock && Number(lock.expiresAt ?? 0) > now) return false;
@@ -10162,7 +10199,27 @@ function BoardWorkspace({
         updateSelectionState();
         updateSelectionStyleState();
       }
-      canvas.requestRenderAll();
+      // Fabric 7 does not include active-object controls in renderTop(). A Pencil
+      // marquee used to hide its immediate DOM rectangle here and then wait for a full
+      // lower-canvas frame, so the selection already existed but looked ignored. Paint
+      // only the active controls synchronously; fingers/mouse keep Fabric's normal path.
+      const controlsPainted = pencilMarquee
+        ? renderSelectionControlsOnTop(canvas)
+        : false;
+      if (!pencilMarquee) canvas.requestRenderAll();
+      const activeObject = canvas.getActiveObject();
+      pencilDiagnosticsRef.current?.record('SELECTION marquee finalized', {
+        pointerId: nativeEvent?.pointerId ?? null,
+        pointerType: nativeEvent?.pointerType ?? selectionDrag.pointerType ?? 'unknown',
+        width: selectionRect.width,
+        height: selectionRect.height,
+        candidateCount: candidates.length,
+        selectedCount: selected.length,
+        activeId: activeObject?.boardObjectId ?? null,
+        activeType: activeObject?.type ?? null,
+        tooSmall: false,
+        controlsPainted,
+      });
       return true;
     }
 
