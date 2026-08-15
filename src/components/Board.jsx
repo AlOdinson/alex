@@ -7679,7 +7679,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.11-hybrid-pencil-input',
+      version: '1.32.12-zero-delay-pencil-select',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -10045,24 +10045,28 @@ function BoardWorkspace({
       const selectionRect = normalizedSceneRect(selectionDrag.start, selectionDrag.end);
       if (selectionRect.width < 3 && selectionRect.height < 3) return true;
 
-      window.requestAnimationFrame(() => {
-        if (fabricCanvasRef.current !== canvas || activeToolRef.current !== 'select') return;
-        canvas.discardActiveObject();
-        const now = Date.now();
-        const selected = canvas.getObjects().filter((object) => {
-          if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || !object.selectable) return false;
-          const lock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
-          if (lock && Number(lock.expiresAt ?? 0) > now) return false;
-          return objectFastIntersectsRect(object, selectionRect);
-        });
-        if (selected.length === 1) canvas.setActiveObject(selected[0]);
-        else if (selected.length > 1) canvas.setActiveObject(createOuterOnlyActiveSelection(selected, canvas));
-        else {
-          updateSelectionState();
-          updateSelectionStyleState();
-        }
-        canvas.requestRenderAll();
+      // The selected target must exist before the next physical Pencil contact. The old
+      // requestAnimationFrame deferred this work by at least one frame; on a busy iPad
+      // that frame could arrive hundreds of milliseconds later, so a rapid follow-up
+      // drag landed on an empty/stale selection. The spatial index limits the synchronous
+      // work to objects whose bounding boxes actually overlap the marquee instead of
+      // scanning the whole board.
+      if (fabricCanvasRef.current !== canvas || activeToolRef.current !== 'select') return true;
+      canvas.discardActiveObject();
+      const now = Date.now();
+      const selected = queryTransformSpatialObjects(selectionRect).filter((object) => {
+        if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || !object.selectable) return false;
+        const lock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
+        if (lock && Number(lock.expiresAt ?? 0) > now) return false;
+        return objectFastIntersectsRect(object, selectionRect);
       });
+      if (selected.length === 1) canvas.setActiveObject(selected[0]);
+      else if (selected.length > 1) canvas.setActiveObject(createOuterOnlyActiveSelection(selected, canvas));
+      else {
+        updateSelectionState();
+        updateSelectionStyleState();
+      }
+      canvas.requestRenderAll();
       return true;
     }
 
@@ -11652,7 +11656,15 @@ function BoardWorkspace({
         penInputRef.current.lastSeenAt = now;
         penInputRef.current.lastClientX = Number(event.clientX ?? penInputRef.current.lastClientX ?? 0);
         penInputRef.current.lastClientY = Number(event.clientY ?? penInputRef.current.lastClientY ?? 0);
-        penInputRef.current.suppressUntil = now + PENCIL_TOUCH_GRACE_MS;
+        // Palm-release grace is only useful while a following touch could become ink.
+        // In the select tool it delayed Safari's touch-side handoff after every Pencil
+        // drag even though selection cannot draw a palm stroke. Release ownership
+        // immediately so the next Pencil selection/drag or pinch has no 240 ms gate.
+        const drawingToolNeedsPalmGrace = activeToolRef.current === 'pencil'
+          || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial');
+        penInputRef.current.suppressUntil = drawingToolNeedsPalmGrace
+          ? now + PENCIL_TOUCH_GRACE_MS
+          : 0;
         pencilDiagnosticsRef.current?.record('APP pen ownership closed', {
           eventType: event.type,
           pointerId: event.pointerId ?? null,

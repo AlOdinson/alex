@@ -1,9 +1,9 @@
 {
-  "version": "1.32.11",
-  "packageVersion": "1.32.11",
+  "version": "1.32.12",
+  "packageVersion": "1.32.12",
   "base": "1.32.0",
-  "release": "Independent fast Pencil drawing and transform paths",
+  "release": "Zero-delay repeated Pencil selection and transforms",
   "date": "2026-08-15",
-  "name": "hybrid-pencil-input",
-  "label": "Alex Board 1.32.11"
+  "name": "zero-delay-pencil-select",
+  "label": "Alex Board 1.32.12"
 }

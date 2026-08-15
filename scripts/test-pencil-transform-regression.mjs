@@ -58,6 +58,23 @@ const transformCommitSource = boardSource.slice(
 assert.match(transformCommitSource, /queueDeferredTransformPersistence\(recordInputs\)/);
 assert.doesNotMatch(transformCommitSource, /requestAnimationFrame/);
 
+const marqueeFinalizeSource = boardSource.slice(
+  boardSource.indexOf('function finalizeSelectionMarquee'),
+  boardSource.indexOf("canvas.on('mouse:down'"),
+);
+assert.match(marqueeFinalizeSource, /queryTransformSpatialObjects\(selectionRect\)/,
+  'Marquee selection must query only nearby indexed objects');
+assert.doesNotMatch(marqueeFinalizeSource, /window\.requestAnimationFrame\s*\(/,
+  'Marquee selection must exist before the next rapid Pencil contact');
+
+const penReleaseSource = boardSource.slice(
+  boardSource.indexOf('function handlePalmPointerEnd'),
+  boardSource.indexOf('function activateObjectEraserPointer'),
+);
+assert.match(penReleaseSource, /const drawingToolNeedsPalmGrace = activeToolRef\.current === 'pencil'/);
+assert.match(penReleaseSource, /penInputRef\.current\.suppressUntil = drawingToolNeedsPalmGrace\s*\? now \+ PENCIL_TOUCH_GRACE_MS\s*:\s*0/,
+  'Selection/transform Pencil releases must have no 240 ms touch-side grace');
+
 assert.doesNotMatch(toolbarSource, /window\.requestAnimationFrame/);
 
 // Model thirty immediate Pencil contacts. A time deadline may drop excess samples, but
