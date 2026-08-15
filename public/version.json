@@ -1,9 +1,9 @@
 {
-  "version": "1.32.16",
-  "packageVersion": "1.32.16",
+  "version": "1.32.17",
+  "packageVersion": "1.32.17",
   "base": "1.32.0",
-  "release": "Immediate Apple Pencil selection controls",
+  "release": "Immediate Pencil selection after deselect tap",
   "date": "2026-08-15",
-  "name": "immediate-pencil-selection",
-  "label": "Alex Board 1.32.16"
+  "name": "pencil-deselect-handoff",
+  "label": "Alex Board 1.32.17"
 }

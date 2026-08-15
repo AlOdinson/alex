@@ -161,6 +161,20 @@ assert.ok(
   'Stale transform cleanup must precede exact hit-test arming for the new contact',
 );
 
+const compatibilityMouseSuppressionSource = boardSource.slice(
+  boardSource.indexOf('function suppressPenSelectionCompatibilityMouse'),
+  boardSource.indexOf('function restoreSelectionTargetFind'),
+);
+assert.match(compatibilityMouseSuppressionSource, /event\.cancelable\) event\.preventDefault\(\)/,
+  'A short Pencil deselect tap must suppress WebKit compatibility mouse events');
+assert.doesNotMatch(compatibilityMouseSuppressionSource, /stopPropagation|stopImmediatePropagation/,
+  'Compatibility suppression must leave the original PointerEvent visible to Fabric');
+assert.ok(
+  pointerDownSource.indexOf('suppressPenSelectionCompatibilityMouse(event);')
+    < pointerDownSource.indexOf('armExactSelectionTargetFind({ pen: event.pointerType'),
+  'Compatibility suppression must happen during pointerdown before Fabric target finding',
+);
+
 assert.doesNotMatch(toolbarSource, /window\.requestAnimationFrame/);
 
 // Model thirty immediate Pencil contacts. A time deadline may drop excess samples, but

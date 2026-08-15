@@ -7712,7 +7712,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.16-immediate-pencil-selection',
+      version: '1.32.17-pencil-deselect-handoff',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -11368,6 +11368,32 @@ function BoardWorkspace({
       event?.stopImmediatePropagation?.();
     }
 
+    function suppressPenSelectionCompatibilityMouse(event) {
+      const eligible = event?.pointerType === 'pen'
+        && event?.isPrimary !== false
+        && activeToolRef.current === 'select'
+        && !eyedropperActiveRef.current
+        && canEditRef.current
+        && Number(event?.button ?? 0) <= 0;
+      if (!eligible) return false;
+
+      // A short Apple Pencil tap (the normal way to clear a selection) is mapped by
+      // WebKit to a delayed compatibility mousedown/mouseup pair. A real drag does not
+      // get that pair, which is why immediate re-selection worked after moving but not
+      // after a blank tap. Cancelling only pointerdown's default action sets the Pointer
+      // Events PREVENT MOUSE EVENT flag. Propagation is deliberately untouched so Fabric
+      // receives and owns the original pen PointerEvent exactly as before.
+      if (event.cancelable) event.preventDefault();
+      const suppressed = Boolean(event.defaultPrevented);
+      pencilDiagnosticsRef.current?.record('SELECTION compatibility mouse suppression', {
+        pointerId: event.pointerId ?? null,
+        cancelable: Boolean(event.cancelable),
+        suppressed,
+        propagationPreserved: true,
+      });
+      return suppressed;
+    }
+
     function restoreSelectionTargetFind() {
       const state = selectionTargetFindRestoreState;
       selectionTargetFindRestoreState = null;
@@ -11596,6 +11622,7 @@ function BoardWorkspace({
       // neither pointerdown nor pointerup, so no stale pencil/mouse session can survive.
       if (beginEyedropperPenContact(event)) return;
       beginSelectionPenSession(event);
+      suppressPenSelectionCompatibilityMouse(event);
       if (activeToolRef.current === 'select'
         && !eyedropperActiveRef.current
         && canEditRef.current
