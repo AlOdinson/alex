@@ -7655,7 +7655,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.8-diagnostic',
+      version: '1.32.9-fast-input',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -11379,6 +11379,24 @@ function BoardWorkspace({
 
         const drawingToolActive = activeToolRef.current === 'pencil'
           || (activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial');
+        // Fabric's PointerEvent path does not claim pointerdown itself. On iPad Safari
+        // that leaves WebKit free to emit a delayed compatibility mouse contact after
+        // the Pencil is lifted. A quick following Pencil contact can then be absorbed by
+        // that still-open browser gesture before it ever reaches this page. Claim only
+        // editable free-drawing contacts, while deliberately leaving propagation intact
+        // so Fabric receives and draws this very same PointerEvent.
+        const shouldSuppressPenCompatibilityMouse = drawingToolActive
+          && canEditRef.current
+          && event.button <= 0
+          && event.cancelable;
+        if (shouldSuppressPenCompatibilityMouse) {
+          event.preventDefault();
+          pencilDiagnosticsRef.current?.record('APP pen pointerdown claimed', {
+            pointerId: event.pointerId ?? null,
+            tool: activeToolRef.current,
+            defaultPrevented: Boolean(event.defaultPrevented),
+          });
+        }
         // A pointerdown always denotes a new physical contact even when WebKit reuses
         // the same pointerId. Close a missing/cancelled predecessor synchronously before
         // this event reaches Fabric; the new contact must never wait for a watchdog.

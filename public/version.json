@@ -1,9 +1,9 @@
 {
-  "version": "1.32.8",
-  "packageVersion": "1.32.8",
+  "version": "1.32.9",
+  "packageVersion": "1.32.9",
   "base": "1.32.0",
-  "release": "Apple Pencil orphan-contact diagnostic",
+  "release": "Fast consecutive Apple Pencil input",
   "date": "2026-08-15",
-  "name": "pencil-orphan-contact-diagnostic",
-  "label": "Alex Board 1.32.8"
+  "name": "fast-consecutive-pencil-input",
+  "label": "Alex Board 1.32.9"
 }
