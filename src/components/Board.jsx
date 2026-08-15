@@ -7655,7 +7655,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.7-diagnostic',
+      version: '1.32.8-diagnostic',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),

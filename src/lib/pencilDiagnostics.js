@@ -1,6 +1,6 @@
 const DEBUG_QUERY_KEY = 'pencilDebug';
-const MAX_LOG_LINES = 2400;
-const VISIBLE_LOG_LINES = 70;
+const MAX_LOG_LINES = 4800;
+const VISIBLE_LOG_LINES = 80;
 
 function debugEnabled() {
   if (typeof window === 'undefined') return false;
@@ -14,6 +14,10 @@ function debugEnabled() {
 function numeric(value, fallback = null) {
   const result = Number(value);
   return Number.isFinite(result) ? Number(result.toFixed(2)) : fallback;
+}
+
+function pointerHasContact(event) {
+  return Number(event?.buttons ?? 0) !== 0 || Number(event?.pressure ?? 0) > 0.001;
 }
 
 function touchSummary(touch) {
@@ -61,14 +65,26 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
   let sequence = 0;
   let pointerContactSequence = 0;
   let touchContactSequence = 0;
+  let orphanPointerSequence = 0;
+  let orphanStylusSequence = 0;
+  let mouseContactSequence = 0;
   let renderFrame = null;
   let collapsed = false;
+  let mouseContact = null;
+  let lastPenEventAt = Number.NEGATIVE_INFINITY;
   const lines = [];
   const pointerContacts = new Map();
   const touchContacts = new Map();
+  const orphanPointerContacts = new Map();
+  const orphanStylusContacts = new Map();
+  const pointerStates = new Map();
   const counters = {
     pointerContacts: 0,
     touchContacts: 0,
+    orphanPointerContacts: 0,
+    orphanStylusContacts: 0,
+    mouseContacts: 0,
+    rawUpdates: 0,
     fabricDowns: 0,
     paths: 0,
     durableEnqueues: 0,
@@ -146,6 +162,10 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
     summary.textContent = [
       `P:${counters.pointerContacts}`,
       `T:${counters.touchContacts}`,
+      `OrphanP:${counters.orphanPointerContacts}`,
+      `OrphanT:${counters.orphanStylusContacts}`,
+      `Mouse:${counters.mouseContacts}`,
+      `Raw:${counters.rawUpdates}`,
       `Fabric↓:${counters.fabricDowns}`,
       `paths:${counters.paths}`,
       `enqueue:${counters.durableEnqueues}`,
@@ -166,6 +186,14 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
     renderFrame = window.requestAnimationFrame(render);
   };
 
+  const rememberPointerState = (pointerId, value) => {
+    pointerStates.delete(pointerId);
+    pointerStates.set(pointerId, value);
+    if (pointerStates.size > 64) {
+      pointerStates.delete(pointerStates.keys().next().value);
+    }
+  };
+
   const record = (kind, details = {}) => {
     sequence += 1;
     if (kind === 'FABRIC pointerdown') counters.fabricDowns += 1;
@@ -183,16 +211,37 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
   const pointerHandler = (event) => {
     if (event.target?.closest?.('[data-pencil-debug-panel="true"]')) return;
     if (event.pointerType !== 'pen') return;
+    const now = performance.now();
+    lastPenEventAt = now;
     const pointerId = Number(event.pointerId ?? -1);
+    const buttons = Number(event.buttons ?? 0);
+    const pressure = numeric(event.pressure, 0);
+    const hasContact = pointerHasContact(event);
+    const previousState = pointerStates.get(pointerId) ?? null;
     const marker = event.alexStylusTouchFallback
       ? 'synthetic-touch'
       : (event.alexStylusNativeBridge ? 'native-bridge' : 'native');
     if (event.type === 'pointerdown') {
+      const orphan = orphanPointerContacts.get(pointerId);
+      if (orphan) {
+        record('RAW pointerdown after orphan contact', {
+          o: orphan.serial,
+          pointerId,
+          marker,
+          ageMs: numeric(now - orphan.startedAt),
+          samples: orphan.samples,
+          rawUpdates: orphan.rawUpdates,
+        });
+        orphanPointerContacts.delete(pointerId);
+      }
       const previous = pointerContacts.get(pointerId);
       const contact = {
         serial: pointerContactSequence + 1,
-        startedAt: performance.now(),
+        startedAt: now,
         moves: 0,
+        rawUpdates: 0,
+        firstMoveSeen: false,
+        firstRawUpdateSeen: false,
       };
       pointerContactSequence = contact.serial;
       counters.pointerContacts = pointerContactSequence;
@@ -202,30 +251,136 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
         pointerId,
         marker,
         previousStillOpen: previous?.serial ?? null,
-        previousAgeMs: previous ? numeric(performance.now() - previous.startedAt) : null,
+        previousAgeMs: previous ? numeric(now - previous.startedAt) : null,
         ts: numeric(event.timeStamp),
         x: numeric(event.clientX),
         y: numeric(event.clientY),
-        buttons: Number(event.buttons ?? 0),
-        pressure: numeric(event.pressure, 0),
+        buttons,
+        pressure,
       });
+      rememberPointerState(pointerId, { hasContact, buttons, pressure, type: event.type, at: now });
       return;
     }
     const contact = pointerContacts.get(pointerId);
-    if (event.type === 'pointermove') {
-      if (!contact) return;
-      contact.moves += 1;
-      if (contact.moves === 1) {
-        record('RAW first pointermove', {
-          p: contact.serial,
-          pointerId,
-          marker,
-          ts: numeric(event.timeStamp),
-          buttons: Number(event.buttons ?? 0),
-          pressure: numeric(event.pressure, 0),
-        });
+    if (event.type === 'pointermove' || event.type === 'pointerrawupdate') {
+      if (event.type === 'pointerrawupdate') counters.rawUpdates += 1;
+      if (contact) {
+        if (event.type === 'pointermove') contact.moves += 1;
+        else contact.rawUpdates += 1;
+        const firstForType = event.type === 'pointermove'
+          ? !contact.firstMoveSeen
+          : !contact.firstRawUpdateSeen;
+        if (event.type === 'pointermove') contact.firstMoveSeen = true;
+        else contact.firstRawUpdateSeen = true;
+        if (firstForType) {
+          record(`RAW first ${event.type}`, {
+            p: contact.serial,
+            pointerId,
+            marker,
+            ts: numeric(event.timeStamp),
+            x: numeric(event.clientX),
+            y: numeric(event.clientY),
+            buttons,
+            pressure,
+          });
+        }
+        if (previousState && previousState.hasContact !== hasContact) {
+          record('RAW pointer contact-state transition', {
+            p: contact.serial,
+            pointerId,
+            eventType: event.type,
+            fromContact: previousState.hasContact,
+            toContact: hasContact,
+            previousButtons: previousState.buttons,
+            buttons,
+            previousPressure: previousState.pressure,
+            pressure,
+            ts: numeric(event.timeStamp),
+            x: numeric(event.clientX),
+            y: numeric(event.clientY),
+          });
+        }
+        rememberPointerState(pointerId, { hasContact, buttons, pressure, type: event.type, at: now });
+        return;
       }
+
+      let orphan = orphanPointerContacts.get(pointerId);
+      if (hasContact) {
+        if (!orphan) {
+          orphan = {
+            serial: orphanPointerSequence + 1,
+            startedAt: now,
+            samples: 0,
+            rawUpdates: 0,
+          };
+          orphanPointerSequence = orphan.serial;
+          counters.orphanPointerContacts = orphanPointerSequence;
+          orphanPointerContacts.set(pointerId, orphan);
+          record('RAW orphan pen contact start', {
+            o: orphan.serial,
+            pointerId,
+            eventType: event.type,
+            marker,
+            previousEventType: previousState?.type ?? null,
+            previousButtons: previousState?.buttons ?? null,
+            previousPressure: previousState?.pressure ?? null,
+            ts: numeric(event.timeStamp),
+            x: numeric(event.clientX),
+            y: numeric(event.clientY),
+            buttons,
+            pressure,
+          });
+        }
+        orphan.samples += 1;
+        if (event.type === 'pointerrawupdate') orphan.rawUpdates += 1;
+        if (orphan.samples > 1) {
+          record('RAW orphan pen contact sample', {
+            o: orphan.serial,
+            pointerId,
+            eventType: event.type,
+            sample: orphan.samples,
+            ts: numeric(event.timeStamp),
+            x: numeric(event.clientX),
+            y: numeric(event.clientY),
+            buttons,
+            pressure,
+          });
+        }
+      } else if (orphan) {
+        record('RAW orphan pen contact end by hover', {
+          o: orphan.serial,
+          pointerId,
+          eventType: event.type,
+          ageMs: numeric(now - orphan.startedAt),
+          samples: orphan.samples,
+          rawUpdates: orphan.rawUpdates,
+          ts: numeric(event.timeStamp),
+          x: numeric(event.clientX),
+          y: numeric(event.clientY),
+          buttons,
+          pressure,
+        });
+        orphanPointerContacts.delete(pointerId);
+      }
+      rememberPointerState(pointerId, { hasContact, buttons, pressure, type: event.type, at: now });
       return;
+    }
+    const orphan = orphanPointerContacts.get(pointerId);
+    if (orphan) {
+      record(`RAW orphan pen ${event.type}`, {
+        o: orphan.serial,
+        pointerId,
+        marker,
+        ageMs: numeric(now - orphan.startedAt),
+        samples: orphan.samples,
+        rawUpdates: orphan.rawUpdates,
+        ts: numeric(event.timeStamp),
+        x: numeric(event.clientX),
+        y: numeric(event.clientY),
+        buttons,
+        pressure,
+      });
+      orphanPointerContacts.delete(pointerId);
     }
     record(`RAW ${event.type}`, {
       p: contact?.serial ?? null,
@@ -236,25 +391,87 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
       ts: numeric(event.timeStamp),
       x: numeric(event.clientX),
       y: numeric(event.clientY),
-      buttons: Number(event.buttons ?? 0),
-      pressure: numeric(event.pressure, 0),
+      rawUpdates: contact?.rawUpdates ?? 0,
+      buttons,
+      pressure,
     });
     if (event.type === 'pointerup' || event.type === 'pointercancel') {
       pointerContacts.delete(pointerId);
+      pointerStates.delete(pointerId);
     }
   };
 
   const touchHandler = (event) => {
     if (event.target?.closest?.('[data-pencil-debug-panel="true"]')) return;
-    const changed = Array.from(event.changedTouches ?? []);
-    if (!changed.length || event.type === 'touchmove') return;
+    const changed = Array.from(event.changedTouches ?? event.touches ?? []);
+    if (!changed.length) return;
+    if (event.type === 'touchmove') {
+      for (const touch of changed) {
+        if (String(touch?.touchType ?? '').toLowerCase() !== 'stylus') continue;
+        const identifier = Number(touch.identifier ?? -1);
+        const contact = touchContacts.get(identifier);
+        if (contact) {
+          contact.moves = Number(contact.moves ?? 0) + 1;
+          if (contact.moves === 1) {
+            record('RAW first stylus touchmove', {
+              t: contact.serial,
+              ts: numeric(event.timeStamp),
+              touch: touchSummary(touch),
+              totalTouches: Number(event.touches?.length ?? 0),
+            });
+          }
+          continue;
+        }
+        let orphan = orphanStylusContacts.get(identifier);
+        if (!orphan) {
+          orphan = {
+            serial: orphanStylusSequence + 1,
+            startedAt: performance.now(),
+            samples: 0,
+          };
+          orphanStylusSequence = orphan.serial;
+          counters.orphanStylusContacts = orphanStylusSequence;
+          orphanStylusContacts.set(identifier, orphan);
+          record('RAW orphan stylus touchmove start', {
+            ot: orphan.serial,
+            touchId: identifier,
+            ts: numeric(event.timeStamp),
+            touch: touchSummary(touch),
+            totalTouches: Number(event.touches?.length ?? 0),
+          });
+        }
+        orphan.samples += 1;
+        if (orphan.samples > 1) {
+          record('RAW orphan stylus touchmove sample', {
+            ot: orphan.serial,
+            touchId: identifier,
+            sample: orphan.samples,
+            ts: numeric(event.timeStamp),
+            touch: touchSummary(touch),
+            totalTouches: Number(event.touches?.length ?? 0),
+          });
+        }
+      }
+      return;
+    }
     for (const touch of changed) {
       const identifier = Number(touch.identifier ?? -1);
       if (event.type === 'touchstart') {
+        const orphan = orphanStylusContacts.get(identifier);
+        if (orphan) {
+          record('RAW touchstart after orphan stylus move', {
+            ot: orphan.serial,
+            touchId: identifier,
+            ageMs: numeric(performance.now() - orphan.startedAt),
+            samples: orphan.samples,
+          });
+          orphanStylusContacts.delete(identifier);
+        }
         const previous = touchContacts.get(identifier);
         const contact = {
           serial: touchContactSequence + 1,
           startedAt: performance.now(),
+          moves: 0,
         };
         touchContactSequence = contact.serial;
         counters.touchContacts = touchContactSequence;
@@ -269,6 +486,19 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
         });
       } else {
         const contact = touchContacts.get(identifier);
+        const orphan = orphanStylusContacts.get(identifier);
+        if (!contact && orphan) {
+          record(`RAW orphan stylus ${event.type}`, {
+            ot: orphan.serial,
+            touchId: identifier,
+            ageMs: numeric(performance.now() - orphan.startedAt),
+            samples: orphan.samples,
+            ts: numeric(event.timeStamp),
+            touch: touchSummary(touch),
+            totalTouches: Number(event.touches?.length ?? 0),
+          });
+          orphanStylusContacts.delete(identifier);
+        }
         record(`RAW ${event.type}`, {
           t: contact?.serial ?? null,
           ageMs: contact ? numeric(performance.now() - contact.startedAt) : null,
@@ -281,20 +511,88 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
     }
   };
 
+  const mouseHandler = (event) => {
+    if (event.target?.closest?.('[data-pencil-debug-panel="true"]')) return;
+    const now = performance.now();
+    const buttons = Number(event.buttons ?? 0);
+    const details = {
+      x: numeric(event.clientX),
+      y: numeric(event.clientY),
+      button: Number(event.button ?? -1),
+      buttons,
+      ts: numeric(event.timeStamp),
+      firesTouchEvents: Boolean(event.sourceCapabilities?.firesTouchEvents),
+      trusted: Boolean(event.isTrusted),
+      sinceLastPenEventMs: numeric(now - lastPenEventAt),
+    };
+    if (event.type === 'mousedown') {
+      mouseContact = {
+        serial: mouseContactSequence + 1,
+        startedAt: now,
+        moves: 0,
+        implicit: false,
+      };
+      mouseContactSequence = mouseContact.serial;
+      counters.mouseContacts = mouseContactSequence;
+      record('RAW compatibility mousedown', { m: mouseContact.serial, ...details });
+      return;
+    }
+    if (event.type === 'mousemove') {
+      if (!mouseContact && buttons !== 0) {
+        mouseContact = {
+          serial: mouseContactSequence + 1,
+          startedAt: now,
+          moves: 0,
+          implicit: true,
+        };
+        mouseContactSequence = mouseContact.serial;
+        counters.mouseContacts = mouseContactSequence;
+        record('RAW orphan compatibility mouse contact', {
+          m: mouseContact.serial,
+          ...details,
+        });
+      }
+      if (!mouseContact) return;
+      mouseContact.moves += 1;
+      if (mouseContact.moves === 1) {
+        record('RAW first compatibility mousemove', {
+          m: mouseContact.serial,
+          implicit: mouseContact.implicit,
+          ...details,
+        });
+      }
+      return;
+    }
+    record('RAW compatibility mouseup', {
+      m: mouseContact?.serial ?? null,
+      implicit: mouseContact?.implicit ?? null,
+      ageMs: mouseContact ? numeric(now - mouseContact.startedAt) : null,
+      moves: mouseContact?.moves ?? 0,
+      ...details,
+    });
+    mouseContact = null;
+  };
+
   const rawListeners = [
     ['pointerdown', pointerHandler],
     ['pointermove', pointerHandler],
+    ['pointerrawupdate', pointerHandler],
     ['pointerup', pointerHandler],
     ['pointercancel', pointerHandler],
     ['touchstart', touchHandler],
+    ['touchmove', touchHandler],
     ['touchend', touchHandler],
     ['touchcancel', touchHandler],
+    ['mousedown', mouseHandler],
+    ['mousemove', mouseHandler],
+    ['mouseup', mouseHandler],
   ];
   rawListeners.forEach(([type, handler]) => {
     window.addEventListener(type, handler, { capture: true, passive: true });
   });
 
   const makeExport = () => {
+    updateSummary();
     const safePath = `${window.location.origin}${window.location.pathname}`;
     const header = [
       'Alex Board Apple Pencil diagnostic',
@@ -307,6 +605,10 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
       `viewport=${window.innerWidth}x${window.innerHeight}`,
       `devicePixelRatio=${numeric(window.devicePixelRatio, 1)}`,
       `summary=${summary.textContent}`,
+      `openPointerContacts=${pointerContacts.size}`,
+      `openOrphanPointerContacts=${orphanPointerContacts.size}`,
+      `openOrphanStylusContacts=${orphanStylusContacts.size}`,
+      `openMouseContact=${mouseContact ? 1 : 0}`,
       '--- events ---',
     ];
     return [...header, ...lines].join('\n');
@@ -337,8 +639,16 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
     sequence = 0;
     pointerContactSequence = 0;
     touchContactSequence = 0;
+    orphanPointerSequence = 0;
+    orphanStylusSequence = 0;
+    mouseContactSequence = 0;
+    mouseContact = null;
+    lastPenEventAt = Number.NEGATIVE_INFINITY;
     pointerContacts.clear();
     touchContacts.clear();
+    orphanPointerContacts.clear();
+    orphanStylusContacts.clear();
+    pointerStates.clear();
     Object.keys(counters).forEach((key) => { counters[key] = 0; });
     lines.length = 0;
     copyStatus.textContent = 'Очищено';
@@ -367,7 +677,11 @@ export function createPencilDiagnostics({ version = 'diagnostic', getContext = n
   panel.addEventListener('pointerdown', keepPanelEvent);
   panel.addEventListener('touchstart', keepPanelEvent, { passive: true });
 
-  record('DEBUG started', {});
+  record('DEBUG started', {
+    pointerEventSupported: typeof window.PointerEvent === 'function',
+    pointerRawUpdateSupported: 'onpointerrawupdate' in window,
+    touchEventSupported: typeof window.TouchEvent === 'function',
+  });
 
   return {
     record,

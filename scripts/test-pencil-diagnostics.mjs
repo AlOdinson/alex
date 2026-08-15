@@ -8,7 +8,7 @@ assert.match(diagnostics, /get\(DEBUG_QUERY_KEY\) === '1'/,
   'diagnostics must require the explicit pencilDebug=1 query flag');
 assert.match(diagnostics, /window\.addEventListener\(type, handler, \{ capture: true, passive: true \}\)/,
   'raw observation must remain passive and capture events before board handlers');
-assert.match(diagnostics, /MAX_LOG_LINES = 2400/,
+assert.match(diagnostics, /MAX_LOG_LINES = 4800/,
   'the in-memory journal must be bounded');
 assert.doesNotMatch(diagnostics, /\b(?:fetch|XMLHttpRequest|WebSocket)\s*\(/,
   'diagnostics must not transmit data');
@@ -17,6 +17,10 @@ assert.doesNotMatch(diagnostics, /\b(?:localStorage|sessionStorage|indexedDB|sup
 
 for (const marker of [
   'RAW pointerdown',
+  'RAW orphan pen contact start',
+  'RAW orphan pen contact sample',
+  'RAW orphan stylus touchmove start',
+  'RAW orphan compatibility mouse contact',
   'APP capture pointerdown',
   'FABRIC pointerdown',
   'FABRIC path:created',
@@ -27,6 +31,13 @@ for (const marker of [
 ]) {
   assert.ok(board.includes(marker) || diagnostics.includes(marker), `missing diagnostic marker: ${marker}`);
 }
+
+assert.match(diagnostics, /\['pointerrawupdate', pointerHandler\]/,
+  'diagnostics must observe pointerrawupdate without mutating it');
+assert.match(diagnostics, /\['touchmove', touchHandler\]/,
+  'diagnostics must observe stylus touchmove events that have no touchstart');
+assert.match(diagnostics, /pointerHasContact\(event\)/,
+  'orphan Pencil contact detection must use buttons or pressure');
 
 assert.match(board, /pencilDiagnosticsRef\.current = createPencilDiagnostics\(/,
   'Board must initialize the isolated diagnostic observer');

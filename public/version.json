@@ -1,9 +1,9 @@
 {
-  "version": "1.32.7",
-  "packageVersion": "1.32.7",
+  "version": "1.32.8",
+  "packageVersion": "1.32.8",
   "base": "1.32.0",
-  "release": "Apple Pencil exact-contact diagnostic",
+  "release": "Apple Pencil orphan-contact diagnostic",
   "date": "2026-08-15",
-  "name": "pencil-exact-contact-diagnostic",
-  "label": "Alex Board 1.32.7"
+  "name": "pencil-orphan-contact-diagnostic",
+  "label": "Alex Board 1.32.8"
 }
