@@ -1637,6 +1637,7 @@ function BoardWorkspace({
   const canvasElementRef = useRef(null);
   const canvasHostRef = useRef(null);
   const fabricCanvasRef = useRef(null);
+  const fabricInputModeSwitchRef = useRef(null);
   const realtimeRef = useRef(null);
   const gameLibraryVisibleRef = useRef(Boolean(initialAccess.gameLibraryVisible));
   const gameLibraryVisibilityBusyRef = useRef(false);
@@ -2943,6 +2944,10 @@ function BoardWorkspace({
   const applyCanvasInputMode = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
+    // Free drawing keeps Fabric's original iPad TouchEvent path, while selection and
+    // transforms use the direct PointerEvent path that can be throttled before Fabric.
+    // The switch is a no-op while the requested mode is already installed.
+    fabricInputModeSwitchRef.current?.(activeToolRef.current === 'select');
     const partialEraser = activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial';
     const shouldDraw = canEditRef.current
       && !eyedropperActiveRef.current
@@ -3016,6 +3021,9 @@ function BoardWorkspace({
       // selection. Fabric owns the Pointer Event directly, so there is no custom
       // pointer capture or synthetic compatibility-mouse session to release.
       const selectionSession = selectionPenSessionRef.current;
+      if (canvas?._currentTransform && typeof canvas.endCurrentTransform === 'function') {
+        try { canvas.endCurrentTransform(); } catch { /* Continue switching input mode. */ }
+      }
       selectionSession.pointerId = null;
       selectionSession.active = false;
       selectionSession.nextMoveAt = 0;
@@ -7642,6 +7650,26 @@ function BoardWorkspace({
       fireRightClick: true,
       stopContextMenu: true,
     });
+    const addFabricDomListener = (element, type, listener, options) => {
+      element.addEventListener(type, listener, options);
+    };
+    const switchFabricInputMode = (usePointerEvents) => {
+      const nextPointerMode = Boolean(usePointerEvents);
+      if (Boolean(canvas.enablePointerEvents) === nextPointerMode) return true;
+      // Never replace Fabric's document listeners in the middle of an active contact.
+      // All normal tool switches close the current drawing/transform before this runs.
+      if (canvas._isCurrentlyDrawing || canvas._currentTransform) return false;
+      if (typeof canvas.removeListeners !== 'function'
+        || typeof canvas.addOrRemove !== 'function') return false;
+
+      canvas.removeListeners();
+      canvas.enablePointerEvents = nextPointerMode;
+      // The previous TouchEvent owner must not leak into the next tool's first contact.
+      canvas.mainTouchId = undefined;
+      canvas.addOrRemove(addFabricDomListener);
+      return true;
+    };
+    fabricInputModeSwitchRef.current = switchFabricInputMode;
     // Full devicePixelRatio can be 3-4 on phones and would multiply the canvas area
     // by 9-16. A capped 2x backing store keeps vector edges sharp without making a
     // busy board unnecessarily heavy. setDimensions() below rebuilds both canvases
@@ -7651,7 +7679,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.10-original-pencil-input',
+      version: '1.32.11-hybrid-pencil-input',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -12463,6 +12491,7 @@ function BoardWorkspace({
       realtimeRef.current = null;
       pencilDiagnosticsRef.current?.destroy();
       pencilDiagnosticsRef.current = null;
+      fabricInputModeSwitchRef.current = null;
       canvas.dispose();
       fabricCanvasRef.current = null;
     };

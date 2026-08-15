@@ -1,9 +1,9 @@
 {
-  "version": "1.32.10",
-  "packageVersion": "1.32.10",
+  "version": "1.32.11",
+  "packageVersion": "1.32.11",
   "base": "1.32.0",
-  "release": "Original reliable Apple Pencil drawing input",
+  "release": "Independent fast Pencil drawing and transform paths",
   "date": "2026-08-15",
-  "name": "original-pencil-input",
-  "label": "Alex Board 1.32.10"
+  "name": "hybrid-pencil-input",
+  "label": "Alex Board 1.32.11"
 }
