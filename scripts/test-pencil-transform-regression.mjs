@@ -31,7 +31,8 @@ for (const blockedFabricRenderAssignment of [
   );
 }
 
-assert.match(boardSource, /enablePointerEvents: true/);
+assert.doesNotMatch(boardSource, /enablePointerEvents: true/,
+  'Production canvas must retain the original iPad TouchEvent drawing path');
 assert.doesNotMatch(boardSource, /addEventListener\('lostpointercapture', handlePalmPointerEnd/);
 const selectionPenSessionSource = boardSource.slice(
   boardSource.indexOf('function beginSelectionPenSession'),

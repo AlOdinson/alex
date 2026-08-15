@@ -1,9 +1,9 @@
 {
-  "version": "1.32.9",
-  "packageVersion": "1.32.9",
+  "version": "1.32.10",
+  "packageVersion": "1.32.10",
   "base": "1.32.0",
-  "release": "Fast consecutive Apple Pencil input",
+  "release": "Original reliable Apple Pencil drawing input",
   "date": "2026-08-15",
-  "name": "fast-consecutive-pencil-input",
-  "label": "Alex Board 1.32.9"
+  "name": "original-pencil-input",
+  "label": "Alex Board 1.32.10"
 }
