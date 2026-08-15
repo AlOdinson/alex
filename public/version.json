@@ -1,9 +1,9 @@
 {
-  "version": "1.32.14",
-  "packageVersion": "1.32.14",
+  "version": "1.32.15",
+  "packageVersion": "1.32.15",
   "base": "1.32.0",
-  "release": "Immediate Apple Pencil marquee feedback after transforms",
+  "release": "Apple Pencil input-priority transform finalization",
   "date": "2026-08-15",
-  "name": "immediate-pencil-marquee",
-  "label": "Alex Board 1.32.14"
+  "name": "pencil-input-priority",
+  "label": "Alex Board 1.32.15"
 }

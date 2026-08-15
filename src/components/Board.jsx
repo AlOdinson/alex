@@ -1804,6 +1804,7 @@ function BoardWorkspace({
     signature: '',
     committedAt: 0,
     pointerType: null,
+    startingViewportRects: [],
   });
   const deferredTransformFlushRef = useRef(null);
   const penTransformSpatialApiRef = useRef(null);
@@ -3040,6 +3041,7 @@ function BoardWorkspace({
       }
       transformGestureRef.current.activeId = null;
       transformGestureRef.current.pointerType = null;
+      transformGestureRef.current.startingViewportRects = [];
       modifiedBeforeRef.current = [];
       if (liveTransformSendRef.current.sessionId) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas?.getActiveObject());
@@ -7679,7 +7681,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.14-immediate-pencil-marquee',
+      version: '1.32.15-pencil-input-priority',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -7696,6 +7698,7 @@ function BoardWorkspace({
         fabricPointerEvents: Boolean(canvas.enablePointerEvents),
         fabricTransformActive: Boolean(canvas._currentTransform),
         fabricTouchDownCooldown: Boolean(canvas._willAddMouseDown),
+        fabricRenderPending: Boolean(canvas.nextRenderHandle),
         selectionPenActive: Boolean(selectionPenSessionRef.current.active),
         revision: Number(revisionRef.current ?? 0),
         pendingWrites: Number(pendingServerWritesRef.current ?? 0),
@@ -8134,6 +8137,46 @@ function BoardWorkspace({
         console.warn('Не удалось отрисовать локальную область удаления', error);
         return false;
       }
+    };
+
+    const transformViewportPatchRects = (objects) => {
+      const viewport = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
+      return [...new Set((Array.isArray(objects) ? objects : [objects]).filter(Boolean))]
+        .map((object) => {
+          const entry = transformSpatialIndex.entries.get(object);
+          const bounds = finiteRect(entry?.bounds ?? object.getBoundingRect());
+          return expandedRect(viewportRectFromSceneRect(bounds, viewport), 6);
+        });
+    };
+
+    const finalizePencilTransformPatches = (objects, startingRects) => {
+      const dirtyRects = [
+        ...(Array.isArray(startingRects) ? startingRects : []),
+        ...transformViewportPatchRects(objects),
+      ];
+      if (!dirtyRects.length) return;
+      // Fabric queues a complete lower-canvas render after object:modified. That render
+      // is redundant for a Pencil transform because every move was already painted and
+      // it monopolises the main thread exactly when the next rapid selection begins.
+      // After Fabric finishes pointerup, cancel only that queued frame and repaint the
+      // old/new dirty regions using the same bounded compositor as the object eraser.
+      queueMicrotask(() => {
+        if (disposed || fabricCanvasRef.current !== canvas || canvas._currentTransform) return;
+        const hadPendingRender = Boolean(canvas.nextRenderHandle);
+        const startedAt = performance.now();
+        canvas.cancelRequestedRender?.();
+        const patched = renderLocalDeletionPatches(dirtyRects);
+        hardClearPenTransformTop();
+        canvas.renderTop?.();
+        pencilDiagnosticsRef.current?.record('SELECTION Pencil transform patches', {
+          rectCount: mergeOverlappingViewportRects(dirtyRects).length,
+          objectCount: Array.isArray(objects) ? objects.length : 1,
+          hadPendingRender,
+          patched,
+          elapsedMs: performance.now() - startedAt,
+        });
+        if (!patched) canvas.requestRenderAll();
+      });
     };
 
     const removeObjectsWithLocalDeletionPatches = (objects, {
@@ -9474,8 +9517,12 @@ function BoardWorkspace({
       const pointerType = nativeEvent?.pointerType
         ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
       transformGestureRef.current.pointerType = pointerType;
+      transformGestureRef.current.startingViewportRects = pointerType === 'pen'
+        ? transformViewportPatchRects(flattenTarget(transform.target))
+        : [];
       if (transform.target.transientSelectionProxy) {
         modifiedBeforeRef.current = [];
+        transformGestureRef.current.startingViewportRects = [];
         transformGestureRef.current.activeId = beginLiveTransform(transform.target);
         lastLockBroadcastRef.current = Date.now();
         return;
@@ -9514,6 +9561,7 @@ function BoardWorkspace({
         modifiedBeforeRef.current = [];
         transformGestureRef.current.activeId = null;
         transformGestureRef.current.pointerType = null;
+        transformGestureRef.current.startingViewportRects = [];
         canvas.requestRenderAll();
         return;
       }
@@ -9529,6 +9577,8 @@ function BoardWorkspace({
       const beforeTransforms = modifiedBeforeRef.current;
       const zIndexMap = liveTransformSendRef.current.zIndexMap;
       const gestureId = transformGestureRef.current.activeId;
+      const completedPointerType = transformGestureRef.current.pointerType;
+      const startingViewportRects = transformGestureRef.current.startingViewportRects ?? [];
       let afterTransforms = [];
       let recordInputs = [];
       let transformCaptureFailed = false;
@@ -9550,6 +9600,7 @@ function BoardWorkspace({
       if (transformCaptureFailed) {
         transformGestureRef.current.activeId = null;
         transformGestureRef.current.pointerType = null;
+        transformGestureRef.current.startingViewportRects = [];
         sendLocalLock(selectedObjects, false);
         canvas.requestRenderAll();
         return;
@@ -9571,6 +9622,7 @@ function BoardWorkspace({
       if (duplicateGesture || duplicateSignature) {
         transformGestureRef.current.activeId = null;
         transformGestureRef.current.pointerType = null;
+        transformGestureRef.current.startingViewportRects = [];
         sendLocalLock(selectedObjects, false);
         return;
       }
@@ -9579,6 +9631,7 @@ function BoardWorkspace({
       transformGestureRef.current.committedAt = commitNow;
       transformGestureRef.current.activeId = null;
       transformGestureRef.current.pointerType = null;
+      transformGestureRef.current.startingViewportRects = [];
 
       const commitObjects = () => {
         // Fabric has already rendered the final transform. Release collaboration locks
@@ -9598,6 +9651,9 @@ function BoardWorkspace({
       // mutation. Queue it synchronously for groups too, so a delayed animation frame
       // cannot hold locks or drop the first of two rapid Pencil moves.
       commitObjects();
+      if (completedPointerType === 'pen') {
+        finalizePencilTransformPatches(selectedObjects, startingViewportRects);
+      }
     });
 
     const refreshSelectionUi = () => {
@@ -9627,8 +9683,31 @@ function BoardWorkspace({
       // event so a large ActiveSelection cannot block the contact itself.
       queueSelectionUiRefresh();
     };
-    const finishTransactionalSelection = () => {
+    const finishTransactionalSelection = (selectionEvent = {}) => {
       queueSelectionUiRefresh();
+      const nativeEvent = selectionEvent?.e;
+      if (nativeEvent?.pointerType !== 'pen' || activeToolRef.current !== 'select') return;
+      // Fabric treats deselection as a scene change and requests a complete render even
+      // though only transparent controls on contextTop changed. Cancel that request
+      // after Fabric's pointerdown returns, but only when the same Pencil contact opened
+      // our blank-area marquee. This keeps the first new selection from sitting behind
+      // an O(all objects) frame while leaving mouse/finger and object mutations intact.
+      queueMicrotask(() => {
+        const drag = selectionDragRef.current;
+        if (disposed
+          || fabricCanvasRef.current !== canvas
+          || canvas._currentTransform
+          || !drag
+          || !selectionDragOwnsEvent(drag, nativeEvent)) return;
+        const hadPendingRender = Boolean(canvas.nextRenderHandle);
+        canvas.cancelRequestedRender?.();
+        hardClearPenTransformTop();
+        canvas.renderTop?.();
+        pencilDiagnosticsRef.current?.record('SELECTION Pencil deselect render skipped', {
+          pointerId: nativeEvent.pointerId ?? null,
+          hadPendingRender,
+        });
+      });
     };
 
     const handleRegistryObjectAdded = ({ target }) => {
@@ -11342,6 +11421,7 @@ function BoardWorkspace({
       }
       transformGestureRef.current.activeId = null;
       transformGestureRef.current.pointerType = null;
+      transformGestureRef.current.startingViewportRects = [];
       modifiedBeforeRef.current = [];
 
       // Selection must always stay on Fabric's direct PointerEvent route. In particular,
@@ -11362,7 +11442,7 @@ function BoardWorkspace({
           fabricTouchDownCooldown: Boolean(canvas._willAddMouseDown),
         });
       }
-      if (hadStaleState) canvas.requestRenderAll();
+      if (hadStaleState && phase === 'pointercancel') canvas.requestRenderAll();
       return hadStaleState;
     }
 
@@ -11407,20 +11487,12 @@ function BoardWorkspace({
       if (cancelled) {
         // Fabric has no pointercancel listener, so cancellation is finalized now.
         releaseStaleSelectionTransform(event, { phase: 'pointercancel' });
-      } else {
-        // This capture listener runs before Fabric's document-level pointerup handler.
-        // A microtask runs after the complete native event dispatch: normally it is a
-        // no-op, but if WebKit omitted/stopped Fabric's handler it closes the transform
-        // before the browser can deliver the next physical Pencil pointerdown. No timer,
-        // animation frame or idle period participates in re-arming selection.
-        queueMicrotask(() => {
-          if (disposed || fabricCanvasRef.current !== canvas) return;
-          releaseStaleSelectionTransform(event, {
-            phase: 'after-pointerup-microtask',
-            finishMarquee: true,
-          });
-        });
       }
+      // A normal pointerup continues to Fabric's document listener in the same native
+      // dispatch. Do not finalize it early from capture phase: that duplicated
+      // object:modified/render work before the first following Pencil contact. If WebKit
+      // ever omits Fabric's listener, beginSelectionPenSession repairs the stale owner
+      // synchronously before the next pointerdown is allowed through.
       return true;
     }
 
@@ -12538,6 +12610,7 @@ function BoardWorkspace({
         signature: '',
         committedAt: 0,
         pointerType: null,
+        startingViewportRects: [],
       };
       liveDrawSendRef.current.sessionId = null;
       liveDrawSendRef.current.lastSentPointIndex = 0;

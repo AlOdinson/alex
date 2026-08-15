@@ -95,10 +95,32 @@ assert.match(staleTransformReleaseSource, /canvas\.endCurrentTransform\(event\)/
   'A Fabric transform missed by pointerup must be closed synchronously');
 assert.match(staleTransformReleaseSource, /switchFabricInputMode\(true\)/,
   'Selection must be restored to direct PointerEvents without Fabric touch cooldown');
-assert.match(staleTransformReleaseSource, /queueMicrotask\(\(\) =>/,
-  'Post-pointerup ownership verification must run before the next native event');
 assert.doesNotMatch(staleTransformReleaseSource, /setTimeout|requestAnimationFrame/,
   'Re-arming Pencil selection must not depend on a timer or rendered frame');
+assert.match(staleTransformReleaseSource, /phase === 'pointercancel'/,
+  'Only a cancelled contact may request a recovery render');
+
+const finishSelectionSource = boardSource.slice(
+  boardSource.indexOf('function finishSelectionPenSession'),
+  boardSource.indexOf('function handlePalmPointerDown'),
+);
+assert.doesNotMatch(finishSelectionSource, /after-pointerup-microtask|queueMicrotask/,
+  'Capture phase must not pre-empt Fabric normal pointerup/final render lifecycle');
+assert.match(finishSelectionSource, /releaseStaleSelectionTransform\(event, \{ phase: 'pointercancel' \}\)/,
+  'Pointer cancellation must still release Fabric synchronously');
+
+assert.match(boardSource, /function finalizePencilTransformPatches|const finalizePencilTransformPatches/);
+assert.match(boardSource, /canvas\.cancelRequestedRender\?\.\(\);\s*const patched = renderLocalDeletionPatches\(dirtyRects\)/,
+  'Pencil transform completion must replace the full render with bounded dirty patches');
+const selectionClearSource = boardSource.slice(
+  boardSource.indexOf('const finishTransactionalSelection'),
+  boardSource.indexOf('const handleRegistryObjectAdded'),
+);
+assert.match(selectionClearSource, /nativeEvent\?\.pointerType !== 'pen'/);
+assert.match(selectionClearSource, /canvas\.cancelRequestedRender\?\.\(\)/,
+  'Pencil deselection must not leave a full-board render ahead of the next marquee');
+assert.match(selectionClearSource, /canvas\.renderTop\?\.\(\)/,
+  'Cancelling the lower render must still refresh selection controls');
 
 const beginSelectionSource = boardSource.slice(
   boardSource.indexOf('function beginSelectionPenSession'),
