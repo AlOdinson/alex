@@ -41,6 +41,18 @@ const selectionPenSessionSource = boardSource.slice(
 assert.doesNotMatch(selectionPenSessionSource, /setPointerCapture|releasePointerCapture/);
 assert.match(boardSource, /selectionSession\.nextMoveAt = moveNow \+ 16/);
 assert.doesNotMatch(boardSource, /selectionSession\.moveFramePending/);
+assert.match(boardSource, /function paintSelectionMarqueeImmediately\(\)/);
+assert.match(boardSource, /selectionDrag\.end = new Point\(point\.x, point\.y\);\s*paintSelectionMarqueeImmediately\(\)/,
+  'Pencil marquee feedback must be committed before transform move throttling');
+const selectionMoveCaptureSource = boardSource.slice(
+  boardSource.indexOf('function handlePalmPointerMove'),
+  boardSource.indexOf('function handlePalmPointerEnd'),
+);
+assert.ok(
+  selectionMoveCaptureSource.indexOf('paintSelectionMarqueeImmediately();')
+    < selectionMoveCaptureSource.indexOf('const moveNow = performance.now();'),
+  'The cheap Pencil marquee must bypass the 16 ms Fabric transform limiter',
+);
 assert.match(boardSource, /canvas\.perPixelTargetFind = Boolean\(pen\)/);
 assert.match(boardSource, /const tolerance = 2/);
 assert.match(boardSource, /canvas\.on\('mouse:down:before', restoreSelectionTargetFindBeforeFabricLogic\)/);

@@ -7679,7 +7679,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.13-immediate-pencil-regrab',
+      version: '1.32.14-immediate-pencil-marquee',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -10014,6 +10014,19 @@ function BoardWorkspace({
       selectionMoveFrameRef.current = window.requestAnimationFrame(paintSelectionMarquee);
     }
 
+    function paintSelectionMarqueeImmediately() {
+      // A rapid Pencil re-selection can begin and end between two delayed animation
+      // frames on a busy iPad. Commit the lightweight DOM overlay during the native
+      // pointermove itself so the user sees the new marquee before any Fabric render.
+      // This path never renders or scans board objects; final selection still uses the
+      // spatial index in finalizeSelectionMarquee().
+      if (selectionMoveFrameRef.current != null) {
+        window.cancelAnimationFrame(selectionMoveFrameRef.current);
+        selectionMoveFrameRef.current = null;
+      }
+      paintSelectionMarquee();
+    }
+
     function selectionDragOwnsEvent(drag, nativeEvent) {
       if (!drag) return false;
       if (drag.pointerId == null || nativeEvent?.pointerId == null) return true;
@@ -10244,6 +10257,8 @@ function BoardWorkspace({
           end: new Point(point.x, point.y),
           pointerId,
           pointerType: nativeEvent?.pointerType ?? 'unknown',
+          startedAt: performance.now(),
+          immediateFeedbackRecorded: false,
         };
         if (selectionBoxRef.current) {
           canvas.remove(selectionBoxRef.current);
@@ -10430,7 +10445,10 @@ function BoardWorkspace({
         && activeToolRef.current === 'select'
         && selectionDragOwnsEvent(selectionDragRef.current, nativeEvent)) {
         selectionDragRef.current.end = new Point(cursorScenePoint.x, cursorScenePoint.y);
-        scheduleSelectionMarqueePaint();
+        // Native Pencil capture already painted this exact sample before Fabric's
+        // mouse:move callback. Fingers and desktop pointers retain the coalesced rAF
+        // path because they do not suffer the post-transform rapid-contact symptom.
+        if (nativeEvent?.pointerType !== 'pen') scheduleSelectionMarqueePaint();
       }
       const activeStroke = activePencilRef.current;
       const pencilPointerMatches = !activeStroke
@@ -11617,6 +11635,29 @@ function BoardWorkspace({
           // The cursor tool does not need Fabric target finding until pointerdown.
           if (!selectionSession.active || selectionSession.pointerId !== event.pointerId) {
             suppressSelectionCompatibilityEvent(event);
+            return;
+          }
+          const selectionDrag = selectionDragRef.current;
+          if (selectionDrag && selectionDragOwnsEvent(selectionDrag, event)) {
+            const clientX = Number(event.clientX);
+            const clientY = Number(event.clientY);
+            if (Number.isFinite(clientX) && Number.isFinite(clientY)) {
+              const point = scenePointFromClient(clientX, clientY);
+              selectionDrag.end = new Point(point.x, point.y);
+              paintSelectionMarqueeImmediately();
+              if (!selectionDrag.immediateFeedbackRecorded) {
+                selectionDrag.immediateFeedbackRecorded = true;
+                pencilDiagnosticsRef.current?.record('SELECTION immediate marquee feedback', {
+                  pointerId: event.pointerId ?? null,
+                  latencyMs: Math.max(0, performance.now() - Number(selectionDrag.startedAt ?? 0)),
+                  dx: point.x - selectionDrag.start.x,
+                  dy: point.y - selectionDrag.start.y,
+                });
+              }
+            }
+            // Do not apply the transform sample limiter to the cheap marquee overlay.
+            // Returning from this capture listener does not stop propagation, so Fabric
+            // still receives the same move and keeps its native pointer lifecycle intact.
             return;
           }
           const moveNow = performance.now();

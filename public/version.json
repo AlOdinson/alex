@@ -1,9 +1,9 @@
 {
-  "version": "1.32.13",
-  "packageVersion": "1.32.13",
+  "version": "1.32.14",
+  "packageVersion": "1.32.14",
   "base": "1.32.0",
-  "release": "Immediate Apple Pencil re-grab after transforms",
+  "release": "Immediate Apple Pencil marquee feedback after transforms",
   "date": "2026-08-15",
-  "name": "immediate-pencil-regrab",
-  "label": "Alex Board 1.32.13"
+  "name": "immediate-pencil-marquee",
+  "label": "Alex Board 1.32.14"
 }
