@@ -15,6 +15,8 @@ const LOCAL_PREFIX = 'alex-board:board:';
 const BULK_ACTION_THRESHOLD = 220_000;
 const BULK_ACTION_CHUNK_TARGET = 150_000;
 const BULK_UPLOAD_CONCURRENCY = 4;
+const BOARD_LIBRARY_RPC_CHUNK = 50;
+const BOARD_DELETE_RPC_CHUNK = 20;
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
 
 function isSerializedActiveSelection(object) {
@@ -449,21 +451,36 @@ function incompatibleProtocolError(cause = null) {
 export async function createBoard(title = 'Новая доска', studentName = '') {
   const boardId = randomToken(12);
   const ownerKey = randomToken(28);
-  const shareKey = await deriveShareKey(ownerKey);
-  const ownerKeyHash = await sha256(ownerKey);
+  const [shareKey, ownerKeyHash] = await Promise.all([
+    deriveShareKey(ownerKey),
+    sha256(ownerKey),
+  ]);
   const shareKeyHash = await sha256(shareKey);
   const realtimeKey = randomToken(18);
+  const createdAt = new Date().toISOString();
 
   if (isSupabaseConfigured) {
-    const { error } = await supabase.rpc('create_board', {
+    const fastCreateArgs = {
       p_id: boardId,
       p_title: title,
+      p_student_name: studentName,
       p_owner_key_hash: ownerKeyHash,
       p_share_key_hash: shareKeyHash,
       p_realtime_key: realtimeKey,
-    });
-    if (error) throw error;
-    if (studentName.trim()) {
+    };
+    const { data, error } = await supabase.rpc('create_board_fast_v8', fastCreateArgs);
+    if (error && !isMissingFunctionError(error)) throw error;
+    if (error) {
+      const { error: legacyError } = await supabase.rpc('create_board', {
+        p_id: boardId,
+        p_title: title,
+        p_owner_key_hash: ownerKeyHash,
+        p_share_key_hash: shareKeyHash,
+        p_realtime_key: realtimeKey,
+      });
+      if (legacyError) throw legacyError;
+    }
+    if (error && studentName.trim()) {
       const { error: metadataError } = await supabase.rpc('set_board_metadata_v4', {
         p_id: boardId,
         p_owner_key_hash: ownerKeyHash,
@@ -474,6 +491,13 @@ export async function createBoard(title = 'Новая доска', studentName =
         throw metadataError;
       }
     }
+    const createdRow = Array.isArray(data) ? data[0] : data;
+    return {
+      boardId,
+      ownerKey,
+      shareKey,
+      createdAt: createdRow?.created_at ?? createdAt,
+    };
   } else {
     setLocalBoard(boardId, {
       id: boardId,
@@ -487,12 +511,119 @@ export async function createBoard(title = 'Новая доска', studentName =
       snapshot: { version: 2, background: 'grid', canvas: { objects: [] } },
       snapshotRevision: 0,
       revision: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt,
+      updatedAt: createdAt,
     });
   }
 
-  return { boardId, ownerKey, shareKey };
+  return { boardId, ownerKey, shareKey, createdAt };
+}
+
+async function prepareOwnedBoardEntries(entries) {
+  const safeEntries = (Array.isArray(entries) ? entries : [])
+    .filter((entry) => entry?.boardId && entry?.ownerKey)
+    .map((entry) => ({ ...entry, boardId: String(entry.boardId) }));
+  const hashes = await Promise.all(safeEntries.map((entry) => sha256(entry.ownerKey)));
+  return safeEntries.map((entry, index) => ({
+    ...entry,
+    ownerKeyHash: hashes[index],
+  }));
+}
+
+export async function getOwnedBoardSummaries(entries) {
+  const prepared = await prepareOwnedBoardEntries(entries);
+  if (!prepared.length) return [];
+
+  if (!isSupabaseConfigured) {
+    return prepared.flatMap((entry) => {
+      const board = getLocalBoard(entry.boardId);
+      if (!board || board.ownerKeyHash !== entry.ownerKeyHash) return [];
+      return [{
+        boardId: entry.boardId,
+        title: board.title,
+        studentName: board.studentName ?? '',
+        createdAt: board.createdAt ?? null,
+        updatedAt: board.updatedAt ?? null,
+        lastLessonAt: board.updatedAt ?? null,
+      }];
+    });
+  }
+
+  const summaries = [];
+  for (let offset = 0; offset < prepared.length; offset += BOARD_LIBRARY_RPC_CHUNK) {
+    const chunk = prepared.slice(offset, offset + BOARD_LIBRARY_RPC_CHUNK);
+    // One lightweight metadata query replaces one full snapshot download per board.
+    // eslint-disable-next-line no-await-in-loop
+    const { data, error } = await supabase.rpc('get_owned_board_summaries_v8', {
+      p_entries: chunk.map((entry) => ({
+        boardId: entry.boardId,
+        ownerKeyHash: entry.ownerKeyHash,
+      })),
+    });
+    if (error) throw error;
+    summaries.push(...(Array.isArray(data) ? data : []));
+  }
+
+  return summaries.map((row) => ({
+    boardId: String(row.board_id),
+    title: row.title,
+    studentName: row.student_name ?? '',
+    createdAt: row.created_at ?? null,
+    updatedAt: row.updated_at ?? null,
+    lastLessonAt: row.last_lesson_at ?? row.updated_at ?? null,
+  }));
+}
+
+export async function deleteOwnedBoards(entries, { clearCaches = true } = {}) {
+  const prepared = await prepareOwnedBoardEntries(entries);
+  if (!prepared.length) return { deletedBoardIds: [], failedBoardIds: [] };
+
+  const deletedBoardIds = [];
+  if (isSupabaseConfigured) {
+    for (let offset = 0; offset < prepared.length; offset += BOARD_DELETE_RPC_CHUNK) {
+      const chunk = prepared.slice(offset, offset + BOARD_DELETE_RPC_CHUNK);
+      // eslint-disable-next-line no-await-in-loop
+      const { data, error } = await supabase.rpc('delete_owned_boards_v8', {
+        p_entries: chunk.map((entry) => ({
+          boardId: entry.boardId,
+          ownerKeyHash: entry.ownerKeyHash,
+        })),
+      });
+      if (error && !isMissingFunctionError(error)) throw error;
+      if (!error) {
+        deletedBoardIds.push(...(Array.isArray(data) ? data : []).map((row) => (
+          String(row.board_id ?? row)
+        )));
+        continue;
+      }
+      for (const entry of chunk) {
+        // Compatibility fallback for a client published before its migration.
+        // eslint-disable-next-line no-await-in-loop
+        const { data: deleted, error: deleteError } = await supabase.rpc('delete_board_v4', {
+          p_id: entry.boardId,
+          p_owner_key_hash: entry.ownerKeyHash,
+        });
+        if (deleteError) throw deleteError;
+        if (deleted) deletedBoardIds.push(entry.boardId);
+      }
+    }
+  } else {
+    for (const entry of prepared) {
+      const board = getLocalBoard(entry.boardId);
+      if (!board || board.ownerKeyHash !== entry.ownerKeyHash) continue;
+      deleteLocalBoard(entry.boardId);
+      deletedBoardIds.push(entry.boardId);
+    }
+  }
+
+  const deletedSet = new Set(deletedBoardIds);
+  const failedBoardIds = prepared
+    .map((entry) => entry.boardId)
+    .filter((boardId) => !deletedSet.has(boardId));
+  const cleanup = Promise.all(deletedBoardIds.map((boardId) => clearBoardCache(boardId)));
+  if (clearCaches) await cleanup;
+  else cleanup.catch(() => undefined);
+  return { deletedBoardIds, failedBoardIds };
 }
 
 export async function getBoardAccess(boardId, key) {
@@ -735,6 +866,7 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
   const newOwnerHash = await sha256(newOwnerKey);
   const newShareHash = await sha256(newShareKey);
   const newRealtimeKey = randomToken(18);
+  const createdAt = new Date().toISOString();
 
   if (isSupabaseConfigured) {
     // A board copy must include every locally completed action. Pending operations are
@@ -820,7 +952,7 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
     });
   }
 
-  return { boardId: newBoardId, ownerKey: newOwnerKey, shareKey: newShareKey };
+  return { boardId: newBoardId, ownerKey: newOwnerKey, shareKey: newShareKey, createdAt };
 }
 
 export async function applyBoardActionBatch(boardId, key, actions, knownRevision = 0) {

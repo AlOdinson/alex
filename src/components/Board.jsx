@@ -1566,6 +1566,8 @@ export default function Board({ boardId }) {
             ownerKey: resolvedKey,
             title: result.title,
             studentName: result.studentName ?? '',
+            createdAt: result.createdAt ?? null,
+            updatedAt: result.lastLessonAt ?? result.updatedAt ?? null,
           });
         }
         if (!cancelled) {
