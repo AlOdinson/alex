@@ -1,5 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import DrawingPresets from './DrawingPresets.jsx';
 import ShapePalette from './ShapePalette.jsx';
+import {
+  sliderStepToWidth,
+  STROKE_WIDTH_STEPS,
+  widthToSliderStep,
+} from '../lib/drawingPresets.js';
 
 const TOOLS = [
   { id: 'select', label: 'Выделение', icon: '↖' },
@@ -9,32 +15,6 @@ const TOOLS = [
   { id: 'text', label: 'Текст', icon: 'T' },
 ];
 
-
-const STROKE_WIDTH_STEPS = [
-  ...Array.from({ length: 24 }, (_, index) => index + 1),
-  50,
-  100,
-];
-
-function widthToSliderStep(width) {
-  const numeric = Number(width);
-  if (!Number.isFinite(numeric)) return 3;
-  let bestIndex = 0;
-  let bestDistance = Infinity;
-  STROKE_WIDTH_STEPS.forEach((candidate, index) => {
-    const distance = Math.abs(candidate - numeric);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestIndex = index;
-    }
-  });
-  return bestIndex + 1;
-}
-
-function sliderStepToWidth(step) {
-  const index = Math.max(0, Math.min(STROKE_WIDTH_STEPS.length - 1, Math.round(Number(step)) - 1));
-  return STROKE_WIDTH_STEPS[index];
-}
 
 const FONTS = [
   ['Arial', 'Arial'],
@@ -246,6 +226,7 @@ export default function Toolbar({
   setOpacity,
   width,
   setWidth,
+  onApplyDrawingPreset,
   eraserMode,
   setEraserMode,
   eraserWidth,
@@ -477,6 +458,14 @@ export default function Toolbar({
       </div>
 
       <div className="toolbar-secondary-row">
+        <DrawingPresets
+          color={color}
+          opacity={opacity}
+          width={width}
+          canApply={canEdit && showDrawingSettings}
+          onApply={onApplyDrawingPreset}
+        />
+
         {showDrawingSettings && (
           <div className="tool-group drawing-controls">
             <label className="color-control" title="Цвет">

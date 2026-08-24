@@ -16,7 +16,6 @@ const BULK_ACTION_THRESHOLD = 220_000;
 const BULK_ACTION_CHUNK_TARGET = 150_000;
 const BULK_UPLOAD_CONCURRENCY = 4;
 const BOARD_LIBRARY_RPC_CHUNK = 50;
-const BOARD_DELETE_RPC_CHUNK = 20;
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
 
 function isSerializedActiveSelection(object) {
@@ -574,56 +573,97 @@ export async function getOwnedBoardSummaries(entries) {
   }));
 }
 
-export async function deleteOwnedBoards(entries, { clearCaches = true } = {}) {
+export async function deleteOwnedBoards(entries, { clearCaches = true, onProgress = null } = {}) {
   const prepared = await prepareOwnedBoardEntries(entries);
-  if (!prepared.length) return { deletedBoardIds: [], failedBoardIds: [] };
+  if (!prepared.length) {
+    return { deletedBoardIds: [], detachedBoardIds: [], failedBoardIds: [], failures: [] };
+  }
 
   const deletedBoardIds = [];
-  if (isSupabaseConfigured) {
-    for (let offset = 0; offset < prepared.length; offset += BOARD_DELETE_RPC_CHUNK) {
-      const chunk = prepared.slice(offset, offset + BOARD_DELETE_RPC_CHUNK);
-      // eslint-disable-next-line no-await-in-loop
-      const { data, error } = await supabase.rpc('delete_owned_boards_v8', {
-        p_entries: chunk.map((entry) => ({
-          boardId: entry.boardId,
-          ownerKeyHash: entry.ownerKeyHash,
-        })),
-      });
-      if (error && !isMissingFunctionError(error)) throw error;
-      if (!error) {
-        deletedBoardIds.push(...(Array.isArray(data) ? data : []).map((row) => (
-          String(row.board_id ?? row)
-        )));
-        continue;
-      }
-      for (const entry of chunk) {
-        // Compatibility fallback for a client published before its migration.
+  const detachedBoardIds = [];
+  const failures = [];
+  let completed = 0;
+
+  // Each board is intentionally deleted in its own request/transaction. A populated
+  // board can have thousands of dependent action/object rows. Deleting 20 boards in
+  // one RPC made the whole batch exceed Supabase's statement timeout and roll back.
+  // Sequential single-board commits also avoid lock spikes while collaborators are
+  // still connected to other boards.
+  for (const entry of prepared) {
+    let deleted = false;
+    let detached = false;
+    let failure = null;
+    try {
+      if (isSupabaseConfigured) {
         // eslint-disable-next-line no-await-in-loop
-        const { data: deleted, error: deleteError } = await supabase.rpc('delete_board_v4', {
+        const { data, error } = await supabase.rpc('delete_board_v4', {
           p_id: entry.boardId,
           p_owner_key_hash: entry.ownerKeyHash,
         });
-        if (deleteError) throw deleteError;
-        if (deleted) deletedBoardIds.push(entry.boardId);
+        if (error) throw error;
+        deleted = Boolean(data);
+        // A false result means the board is already absent or this saved owner key no
+        // longer matches. The server correctly refuses deletion, but the explicit local
+        // cleanup can still remove that unusable card from this device.
+        detached = !deleted;
+      } else {
+        const board = getLocalBoard(entry.boardId);
+        deleted = Boolean(board && board.ownerKeyHash === entry.ownerKeyHash);
+        if (deleted) deleteLocalBoard(entry.boardId);
+        detached = !deleted;
       }
+    } catch (caught) {
+      failure = {
+        boardId: entry.boardId,
+        message: caught instanceof Error
+          ? caught.message
+          : String(caught?.message ?? 'Не удалось удалить доску'),
+        code: caught?.code ?? null,
+      };
     }
-  } else {
-    for (const entry of prepared) {
-      const board = getLocalBoard(entry.boardId);
-      if (!board || board.ownerKeyHash !== entry.ownerKeyHash) continue;
-      deleteLocalBoard(entry.boardId);
+
+    if (deleted || detached) {
       deletedBoardIds.push(entry.boardId);
+      if (detached) detachedBoardIds.push(entry.boardId);
+      if (clearCaches) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await clearBoardCache(entry.boardId);
+        } catch {
+          // The server deletion/detach decision has already completed. A cache cleanup
+          // failure must not put the removed card back into the failed list.
+        }
+      } else {
+        clearBoardCache(entry.boardId).catch(() => undefined);
+      }
+    } else if (failure) {
+      failures.push(failure);
+    }
+
+    completed += 1;
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress({
+          boardId: entry.boardId,
+          completed,
+          total: prepared.length,
+          deleted: deleted || detached,
+          detached,
+          failed: failures.length,
+          failure,
+        });
+      } catch {
+        // UI progress is optional and must never interrupt deletion.
+      }
     }
   }
 
-  const deletedSet = new Set(deletedBoardIds);
-  const failedBoardIds = prepared
-    .map((entry) => entry.boardId)
-    .filter((boardId) => !deletedSet.has(boardId));
-  const cleanup = Promise.all(deletedBoardIds.map((boardId) => clearBoardCache(boardId)));
-  if (clearCaches) await cleanup;
-  else cleanup.catch(() => undefined);
-  return { deletedBoardIds, failedBoardIds };
+  return {
+    deletedBoardIds,
+    detachedBoardIds,
+    failedBoardIds: failures.map((failure) => failure.boardId),
+    failures,
+  };
 }
 
 export async function getBoardAccess(boardId, key) {

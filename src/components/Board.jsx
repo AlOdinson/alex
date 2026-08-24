@@ -3170,6 +3170,35 @@ function BoardWorkspace({
     configureBrushAndMode();
   }, [configureBrushAndMode]);
 
+  const applyDrawingPreset = useCallback((preset) => {
+    if (!canEditRef.current || !preset) return;
+    const activeTool = activeToolRef.current;
+    if (!['pencil', 'line', 'shape', 'text'].includes(activeTool)) return;
+    const requestedColor = String(preset.color ?? '').toLowerCase();
+    const nextColor = /^#[0-9a-f]{6}$/.test(requestedColor)
+      ? requestedColor
+      : colorRef.current;
+    const nextOpacity = clamp(Number(preset.opacity ?? opacityRef.current), 0.05, 1);
+    const nextWidth = clamp(Math.round(Number(preset.width ?? widthRef.current)), 1, 100);
+
+    colorRef.current = nextColor;
+    opacityRef.current = nextOpacity;
+    widthRef.current = nextWidth;
+    if (DRAWING_STYLE_TOOL_IDS.has(activeTool)) {
+      drawingStylesRef.current[activeTool] = {
+        color: nextColor,
+        opacity: nextOpacity,
+        width: nextWidth,
+      };
+    }
+    setColorState(nextColor);
+    setOpacityState(nextOpacity);
+    setWidthState(nextWidth);
+    // Apply all three values to Fabric in one pass. Three sequential setter calls can
+    // expose intermediate brush styles to a Pencil contact that starts immediately.
+    configureBrushAndMode();
+  }, [configureBrushAndMode]);
+
   const toggleEyedropper = useCallback(() => {
     if (!canEditRef.current) return;
     const canvas = fabricCanvasRef.current;
@@ -13238,6 +13267,7 @@ function BoardWorkspace({
         setOpacity={setOpacity}
         width={width}
         setWidth={setWidth}
+        onApplyDrawingPreset={applyDrawingPreset}
         eraserMode={eraserMode}
         setEraserMode={setEraserMode}
         eraserWidth={eraserWidth}

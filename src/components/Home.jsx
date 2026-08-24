@@ -42,8 +42,12 @@ export default function Home() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedBoardIds, setSelectedBoardIds] = useState(() => new Set());
   const [deletingSelected, setDeletingSelected] = useState(false);
+  const [autoPruning, setAutoPruning] = useState(false);
+  const [deletionProgress, setDeletionProgress] = useState(null);
   const refreshSequenceRef = useRef(0);
   const libraryRefreshRef = useRef(Promise.resolve());
+  const autoPruneRunningRef = useRef(false);
+  const autoPruneAttemptedRef = useRef(new Set());
 
   const refreshBoards = useCallback(async () => {
     const refreshSequence = refreshSequenceRef.current + 1;
@@ -94,24 +98,63 @@ export default function Home() {
     });
   }, [boards]);
 
-  async function enforceOwnedBoardLimit(preserveBoardId) {
-    const overflow = getOwnedBoardsOverLimit(OWNED_BOARD_LIMIT, preserveBoardId);
+  useEffect(() => {
+    if (
+      loadingBoards
+      || selectionMode
+      || deletingSelected
+      || autoPruneRunningRef.current
+      || boards.length <= OWNED_BOARD_LIMIT
+    ) return;
+
+    const overflow = getOwnedBoardsOverLimit(OWNED_BOARD_LIMIT)
+      .filter((board) => !autoPruneAttemptedRef.current.has(board.boardId));
     if (!overflow.length) return;
-    const result = await deleteOwnedBoards(overflow, { clearCaches: false });
-    forgetOwnedBoards(result.deletedBoardIds);
-    if (result.failedBoardIds.length) {
-      throw new Error(
-        `Новая доска создана, но ${result.failedBoardIds.length} старых досок не удалось удалить. Повторите удаление из списка.`,
-      );
-    }
-  }
+
+    overflow.forEach((board) => autoPruneAttemptedRef.current.add(board.boardId));
+    autoPruneRunningRef.current = true;
+    setAutoPruning(true);
+    setDeletionProgress({ kind: 'limit', completed: 0, total: overflow.length });
+
+    void (async () => {
+      try {
+        const result = await deleteOwnedBoards(overflow, {
+          clearCaches: false,
+          onProgress: (progress) => {
+            if (progress.deleted) {
+              forgetOwnedBoard(progress.boardId);
+              setBoards((current) => current.filter((board) => board.boardId !== progress.boardId));
+            }
+            setDeletionProgress({
+              kind: 'limit',
+              completed: progress.completed,
+              total: progress.total,
+            });
+          },
+        });
+        forgetOwnedBoards(result.deletedBoardIds);
+        if (result.failedBoardIds.length) {
+          setError(
+            `Удалено ${result.deletedBoardIds.length} старых досок. `
+            + `${result.failedBoardIds.length} не удалось удалить — нажмите «Обновить», чтобы повторить.`,
+          );
+        }
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : 'Не удалось убрать старые доски');
+      } finally {
+        await refreshBoards();
+        setDeletionProgress(null);
+        setAutoPruning(false);
+        autoPruneRunningRef.current = false;
+      }
+    })();
+  }, [boards.length, deletingSelected, loadingBoards, refreshBoards, selectionMode]);
 
   async function handleCreate() {
     setCreating(true);
     setError('');
-    let created = null;
     try {
-      created = await createBoard(title, studentName);
+      const created = await createBoard(title, studentName);
       rememberOwnedBoard({
         boardId: created.boardId,
         ownerKey: created.ownerKey,
@@ -119,16 +162,13 @@ export default function Home() {
         studentName,
         createdAt: created.createdAt,
       });
-      // The metadata request starts together with the page and normally finishes before
-      // creation. Waiting here makes the oldest-board choice exact without serializing
-      // the two network requests.
-      await libraryRefreshRef.current;
-      await enforceOwnedBoardLimit(created.boardId);
+      // Board creation and old-board cleanup are independent operations. The previous
+      // implementation created the board successfully, then reported a creation error
+      // when a large cleanup batch timed out. The Home page trims overflow separately.
       window.location.assign(`${import.meta.env.BASE_URL}board/${created.boardId}?key=${encodeURIComponent(created.ownerKey)}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось создать доску');
       setCreating(false);
-      if (created) await refreshBoards();
     }
   }
 
@@ -164,7 +204,6 @@ export default function Home() {
         studentName: board.studentName ?? '',
         createdAt: created.createdAt ?? new Date().toISOString(),
       });
-      await enforceOwnedBoardLimit(created.boardId);
       await refreshBoards();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось скопировать доску');
@@ -210,12 +249,29 @@ export default function Home() {
 
     setDeletingSelected(true);
     setError('');
+    setDeletionProgress({ kind: 'selected', completed: 0, total: selectedBoards.length });
     try {
-      const result = await deleteOwnedBoards(selectedBoards);
+      const result = await deleteOwnedBoards(selectedBoards, {
+        onProgress: (progress) => {
+          if (progress.deleted) {
+            forgetOwnedBoard(progress.boardId);
+            setBoards((current) => current.filter((board) => board.boardId !== progress.boardId));
+          }
+          setDeletionProgress({
+            kind: 'selected',
+            completed: progress.completed,
+            total: progress.total,
+          });
+        },
+      });
       forgetOwnedBoards(result.deletedBoardIds);
       setSelectedBoardIds(new Set(result.failedBoardIds));
       if (result.failedBoardIds.length) {
-        setError(`Не удалось удалить ${result.failedBoardIds.length} досок. Остальные удалены.`);
+        const firstMessage = result.failures?.[0]?.message;
+        setError(
+          `Не удалось удалить ${result.failedBoardIds.length} из ${selectedBoards.length} досок. `
+          + `Остальные удалены.${firstMessage ? ` Причина: ${firstMessage}` : ''}`,
+        );
       } else {
         setSelectionMode(false);
       }
@@ -223,9 +279,12 @@ export default function Home() {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось удалить выбранные доски');
     } finally {
+      setDeletionProgress(null);
       setDeletingSelected(false);
     }
   }
+
+  const libraryBusy = deletingSelected || autoPruning;
 
   return (
     <main className="home-page home-page-wide">
@@ -282,16 +341,18 @@ export default function Home() {
           <div className="board-library-heading-actions">
             {selectionMode ? (
               <>
-                <button type="button" className="secondary-button" onClick={toggleSelectAll} disabled={deletingSelected}>
+                <button type="button" className="secondary-button" onClick={toggleSelectAll} disabled={libraryBusy}>
                   {selectedBoardIds.size === boards.length && boards.length ? 'Снять выделение' : 'Выделить все'}
                 </button>
                 <button
                   type="button"
                   className="danger-button"
                   onClick={handleDeleteSelected}
-                  disabled={!selectedBoardIds.size || deletingSelected}
+                  disabled={!selectedBoardIds.size || libraryBusy}
                 >
-                  {deletingSelected ? 'Удаляю…' : `Удалить выбранные (${selectedBoardIds.size})`}
+                  {deletingSelected && deletionProgress?.kind === 'selected'
+                    ? `Удаляю ${deletionProgress.completed}/${deletionProgress.total}…`
+                    : `Удалить выбранные (${selectedBoardIds.size})`}
                 </button>
                 <button
                   type="button"
@@ -300,7 +361,7 @@ export default function Home() {
                     setSelectionMode(false);
                     setSelectedBoardIds(new Set());
                   }}
-                  disabled={deletingSelected}
+                  disabled={libraryBusy}
                 >
                   Отмена
                 </button>
@@ -308,7 +369,7 @@ export default function Home() {
             ) : (
               <>
                 {boards.length > 0 && (
-                  <button type="button" className="secondary-button" onClick={() => setSelectionMode(true)}>
+                  <button type="button" className="secondary-button" onClick={() => setSelectionMode(true)} disabled={libraryBusy}>
                     Выбрать
                   </button>
                 )}
@@ -316,9 +377,10 @@ export default function Home() {
                   type="button"
                   className="secondary-button"
                   onClick={() => {
+                    autoPruneAttemptedRef.current.clear();
                     libraryRefreshRef.current = refreshBoards();
                   }}
-                  disabled={loadingBoards}
+                  disabled={loadingBoards || libraryBusy}
                 >
                   {loadingBoards ? 'Проверяю…' : 'Обновить'}
                 </button>
@@ -326,6 +388,13 @@ export default function Home() {
             )}
           </div>
         </div>
+
+        {autoPruning && deletionProgress?.kind === 'limit' && (
+          <div className="notice board-cleanup-progress" role="status" aria-live="polite">
+            Убираю старые доски сверх лимита 50: {deletionProgress.completed} из {deletionProgress.total}.
+            Можно сразу создать и открыть новую доску.
+          </div>
+        )}
 
         {loadingBoards && boards.length === 0 && <div className="library-empty">Загружаю список…</div>}
         {!loadingBoards && boards.length === 0 && (
@@ -361,18 +430,18 @@ export default function Home() {
                 >
                   Открыть
                 </a>
-                <button type="button" className="secondary-button compact-button" onClick={() => handleRename(board)}>
+                <button type="button" className="secondary-button compact-button" onClick={() => handleRename(board)} disabled={libraryBusy}>
                   Переименовать
                 </button>
                 <button
                   type="button"
                   className="secondary-button compact-button"
                   onClick={() => handleDuplicate(board)}
-                  disabled={Boolean(duplicatingBoardId)}
+                  disabled={Boolean(duplicatingBoardId) || libraryBusy}
                 >
                   {duplicatingBoardId === board.boardId ? 'Копирую…' : 'Копировать'}
                 </button>
-                <button type="button" className="danger-button compact-button" onClick={() => handleDelete(board)}>
+                <button type="button" className="danger-button compact-button" onClick={() => handleDelete(board)} disabled={libraryBusy}>
                   Удалить
                 </button>
               </div>}

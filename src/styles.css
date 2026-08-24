@@ -1128,6 +1128,11 @@ button:disabled {
   }
 }
 
+/* Alex Board 1.32.21 — safe incremental board cleanup */
+.board-cleanup-progress {
+  margin: 12px 0 4px;
+}
+
 /* Alex Board 0.4.0 — collaboration status, board library, cursors, locks and export */
 .home-page-wide {
   width: min(1180px, calc(100% - 32px));
@@ -2505,4 +2510,253 @@ html.game-viewport-locked #root {
   background: rgba(37, 99, 235, 0.08);
   transform-origin: 0 0;
   will-change: transform, width, height;
+}
+
+/* Alex Board 1.32.20 — three device-local drawing presets */
+.drawing-presets-anchor {
+  position: relative;
+  flex: 0 0 auto;
+  height: 37px;
+  padding: 4px 13px 3px 4px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.drawing-preset-cells {
+  display: flex;
+  gap: 4px;
+}
+
+.drawing-preset-button,
+.drawing-preset-editor-button {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #64748b;
+}
+
+.drawing-preset-button {
+  width: 28px;
+  height: 28px;
+  padding: 2px;
+  border-radius: 7px;
+}
+
+.drawing-preset-button:hover:not(:disabled),
+.drawing-preset-button.active {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.16);
+}
+
+.drawing-preset-button.empty {
+  border-style: dashed;
+}
+
+.drawing-preset-swatch {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  overflow: hidden;
+  place-items: center;
+  border-radius: 4px;
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #e5e7eb 25%, transparent 25%),
+    linear-gradient(-45deg, #e5e7eb 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e5e7eb 75%),
+    linear-gradient(-45deg, transparent 75%, #e5e7eb 75%);
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+  background-size: 8px 8px;
+}
+
+.drawing-preset-swatch-color {
+  position: absolute;
+  inset: 0;
+}
+
+.drawing-preset-empty-mark {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.72);
+  color: #64748b;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.drawing-presets-gear {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: -2px;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  background: #ffffff;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.16);
+}
+
+.drawing-presets-gear:hover,
+.drawing-presets-gear.active {
+  border-color: #60a5fa;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.drawing-presets-menu {
+  position: fixed;
+  z-index: 1400;
+  overflow: auto;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+  background: #ffffff;
+  color: #1e293b;
+  box-shadow: 0 18px 46px rgba(15, 23, 42, 0.24);
+  overscroll-behavior: contain;
+}
+
+.drawing-presets-menu-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.drawing-presets-menu-heading > div {
+  display: grid;
+  gap: 2px;
+}
+
+.drawing-presets-menu-heading strong {
+  font-size: 14px;
+}
+
+.drawing-presets-menu-heading span {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.drawing-presets-editor {
+  display: grid;
+  gap: 13px;
+  padding: 12px;
+}
+
+.drawing-presets-editor-slots {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.drawing-preset-editor-button {
+  min-width: 0;
+  min-height: 62px;
+  display: grid;
+  grid-template-rows: 38px auto;
+  gap: 3px;
+  padding: 5px;
+  border-radius: 10px;
+}
+
+.drawing-preset-editor-button .drawing-preset-swatch {
+  width: 100%;
+  height: 38px;
+  border-radius: 6px;
+}
+
+.drawing-preset-editor-button > span:last-child {
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.drawing-preset-editor-button:hover,
+.drawing-preset-editor-button.active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.drawing-presets-hint {
+  margin: 2px 0 4px;
+  color: #64748b;
+  font-size: 12px;
+  text-align: center;
+}
+
+.drawing-preset-fields {
+  display: grid;
+  gap: 12px;
+}
+
+.drawing-preset-color-field {
+  display: grid;
+  grid-template-columns: 1fr 44px;
+  align-items: center;
+  gap: 10px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.drawing-preset-color-field input {
+  width: 44px;
+  height: 34px;
+  padding: 2px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.drawing-preset-slider {
+  display: grid;
+  grid-template-columns: 96px minmax(80px, 1fr) 44px;
+  align-items: center;
+  gap: 7px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.drawing-preset-slider input {
+  width: 100%;
+  margin: 0;
+}
+
+.drawing-preset-slider strong {
+  color: #334155;
+  font-size: 11px;
+  text-align: right;
+}
+
+.drawing-preset-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+@media (max-width: 520px) {
+  .drawing-preset-button {
+    width: 27px;
+    height: 27px;
+  }
+
+  .drawing-presets-anchor {
+    height: 35px;
+  }
 }

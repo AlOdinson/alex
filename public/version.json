@@ -1,9 +1,9 @@
 {
-  "version": "1.32.19",
-  "packageVersion": "1.32.19",
+  "version": "1.32.21",
+  "packageVersion": "1.32.21",
   "base": "1.32.0",
-  "release": "Fast board creation and capped owner library",
+  "release": "Safe incremental board cleanup",
   "date": "2026-08-24",
-  "name": "fast-board-library",
-  "label": "Alex Board 1.32.19"
+  "name": "safe-board-cleanup",
+  "label": "Alex Board 1.32.21"
 }
