@@ -20,6 +20,7 @@ import Toolbar from './Toolbar.jsx';
 import ShareDialog from './ShareDialog.jsx';
 import GameLibrary from './GameLibrary.jsx';
 import { ScreenShareOverlay, useAdaptiveScreenShare } from './ScreenShare.jsx';
+import MacBrowserHost, { isMacBrowserHostMode } from './MacBrowserHost.jsx';
 import {
   applyActionsToSnapshot,
   applyOpsToSnapshot,
@@ -1641,6 +1642,18 @@ export default function Board({ boardId }) {
     );
   }
 
+  if (isMacBrowserHostMode()) {
+    return (
+      <MacBrowserHost
+        boardId={boardId}
+        boardKey={boardKey}
+        realtimeKey={access.realtimeKey}
+        participantName={resolvedName}
+        permission={access.permission}
+      />
+    );
+  }
+
   if (workspaceMode === 'games') {
     return (
       <GameLibrary
@@ -1956,6 +1969,7 @@ function BoardWorkspace({
     realtimeRef,
     users,
     isOwner,
+    canEdit,
     clientId: clientIdRef.current,
     participantName,
   });

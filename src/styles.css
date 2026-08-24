@@ -6,7 +6,7 @@
   text-rendering: optimizeLegibility;
 }
 
-/* Alex Board 1.32.22 — isolated adaptive WebRTC screen sharing */
+/* Alex Board 1.33.0 — isolated adaptive WebRTC screen and Mac browser sharing */
 .screen-share-panel {
   position: fixed;
   z-index: 1200;
@@ -124,6 +124,92 @@
   background: #020617;
 }
 
+.screen-share-video-wrap.is-remote-browser {
+  touch-action: none;
+  cursor: default;
+}
+
+.screen-share-video-wrap.is-remote-browser video {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.remote-browser-toolbar {
+  min-height: 44px;
+  padding: 6px 8px;
+  display: grid;
+  grid-template-columns: 34px 34px 34px minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.28);
+  background: #f8fafc;
+}
+
+.remote-browser-toolbar button,
+.remote-browser-control-row button {
+  min-height: 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.remote-browser-toolbar button:disabled,
+.remote-browser-control-row button:disabled {
+  opacity: 0.45;
+}
+
+.remote-browser-toolbar form,
+.remote-browser-toolbar input {
+  width: 100%;
+}
+
+.remote-browser-toolbar input,
+.remote-browser-keyboard-input {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 12px;
+  outline: none;
+}
+
+.remote-browser-toolbar input:focus,
+.remote-browser-keyboard-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.remote-browser-toolbar > span {
+  min-width: 62px;
+  color: #64748b;
+  font-size: 10px;
+  text-align: right;
+}
+
+.remote-browser-toolbar > span.is-loading {
+  color: #2563eb;
+}
+
+.remote-browser-control-hint {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  max-width: calc(100% - 20px);
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.76);
+  color: #fff;
+  font-size: 11px;
+  pointer-events: none;
+}
+
 .screen-share-video-status {
   position: absolute;
   inset: 0;
@@ -183,6 +269,82 @@
   font-size: 10px;
 }
 
+.screen-share-footer.remote-browser-footer {
+  grid-template-columns: 1fr auto;
+}
+
+.remote-browser-control-row {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.remote-browser-control-row button {
+  padding: 5px 10px;
+  color: #1d4ed8;
+}
+
+.remote-browser-keyboard-input {
+  flex: 1 1 auto;
+  min-width: 100px;
+}
+
+.mac-browser-host-page {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.mac-browser-host-page section {
+  width: min(520px, 100%);
+  padding: 28px;
+  border: 1px solid #cbd5e1;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 18px 55px rgba(15, 23, 42, 0.14);
+  text-align: center;
+}
+
+.mac-browser-host-page h1 {
+  margin: 10px 0 8px;
+  font-size: 24px;
+}
+
+.mac-browser-host-page p {
+  margin: 0;
+  color: #334155;
+}
+
+.mac-browser-host-page small {
+  display: block;
+  margin-top: 8px;
+  color: #64748b;
+}
+
+.mac-browser-host-page canvas {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  left: -10px;
+  top: -10px;
+  opacity: 0.001;
+  pointer-events: none;
+}
+
+.mac-browser-host-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #16a34a;
+  box-shadow: 0 0 0 5px rgba(22, 163, 74, 0.12);
+}
+
 @media (max-width: 760px) {
   .screen-share-panel {
     right: max(8px, env(safe-area-inset-right));
@@ -198,6 +360,14 @@
 
   .screen-share-video-wrap {
     max-height: 48vh;
+  }
+
+  .remote-browser-toolbar {
+    grid-template-columns: 32px 32px 32px minmax(90px, 1fr);
+  }
+
+  .remote-browser-toolbar > span {
+    display: none;
   }
 }
 

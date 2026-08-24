@@ -408,6 +408,25 @@ export default function Toolbar({
               Автопилот
             </NavigationActionButton>
           )}
+          {canEdit && screenShare && (
+            <NavigationActionButton
+              active={screenShare.remoteBrowserActive}
+              disabled={screenShare.isHosting
+                || (screenShare.remoteBrowserActive && !isOwner)
+                || (screenShare.activeRemoteSession && !screenShare.remoteBrowserActive)
+                || screenShare.phase === 'requesting'}
+              title={screenShare.remoteBrowserActive
+                ? (isOwner ? 'Остановить браузер на Mac' : 'Браузер на Mac уже работает')
+                : (screenShare.remoteAvailable
+                  ? `Открыть общий браузер на ${screenShare.remoteAgentName || 'Mac'}`
+                  : 'Сначала запустите Alex Browser Server на Mac')}
+              onClick={screenShare.remoteBrowserActive
+                ? screenShare.stopRemoteBrowser
+                : screenShare.startRemoteBrowser}
+            >
+              {screenShare.remoteBrowserActive && isOwner ? 'Стоп браузер' : 'Браузер'}
+            </NavigationActionButton>
+          )}
           {isOwner && screenShare && (
             <NavigationActionButton
               active={screenShare.isHosting}

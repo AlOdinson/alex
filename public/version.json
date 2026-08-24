@@ -1,9 +1,9 @@
 {
-  "version": "1.32.22",
-  "packageVersion": "1.32.22",
+  "version": "1.33.0",
+  "packageVersion": "1.33.0",
   "base": "1.32.0",
-  "release": "Adaptive peer-to-peer screen sharing",
+  "release": "Adaptive local Mac remote browser",
   "date": "2026-08-25",
-  "name": "adaptive-screen-share",
-  "label": "Alex Board 1.32.22"
+  "name": "local-mac-browser",
+  "label": "Alex Board 1.33.0"
 }

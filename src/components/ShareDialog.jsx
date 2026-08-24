@@ -22,7 +22,10 @@ const MODES = [
 export default function ShareDialog({ boardId, ownerKey, guestMode, onChangeMode, onClose }) {
   const [shareUrl, setShareUrl] = useState('');
   const [copied, setCopied] = useState(false);
+  const [macCopied, setMacCopied] = useState(false);
   const [changing, setChanging] = useState(false);
+
+  const macServerUrl = `${window.location.origin}${import.meta.env.BASE_URL}board/${boardId}?key=${encodeURIComponent(ownerKey)}`;
 
   useEffect(() => {
     deriveShareKey(ownerKey).then((shareKey) => {
@@ -44,6 +47,21 @@ export default function ShareDialog({ boardId, ownerKey, guestMode, onChangeMode
     }
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  async function copyMacServerLink() {
+    try {
+      await navigator.clipboard.writeText(macServerUrl);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = macServerUrl;
+      document.body.append(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    setMacCopied(true);
+    window.setTimeout(() => setMacCopied(false), 1600);
   }
 
   async function changeMode(mode) {
@@ -102,6 +120,16 @@ export default function ShareDialog({ boardId, ownerKey, guestMode, onChangeMode
 
         <p className="security-note">
           Не отправляй ученику адрес из своей строки браузера: это ссылка владельца.
+        </p>
+
+        <label className="field">
+          <span>Локальный браузер на Mac</span>
+          <button type="button" className="secondary-button" onClick={copyMacServerLink}>
+            {macCopied ? 'Ссылка скопирована' : 'Скопировать ссылку для Mac-сервера'}
+          </button>
+        </label>
+        <p className="security-note">
+          Это секретная ссылка владельца. Вставляй её только в Alex Browser Server на своём Mac и не отправляй участникам.
         </p>
       </section>
     </div>

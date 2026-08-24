@@ -21,7 +21,7 @@ assert.deepEqual(
   {
     supported: false,
     iosLike: true,
-    advice: 'Этот браузер не разрешает захват экрана. Откройте эту же ссылку в Safari и попробуйте снова.',
+    advice: 'iPhone и iPad не разрешают веб-странице захватывать другую вкладку. Для показа сайтов запустите Alex Browser Server на Mac.',
   },
 );
 

@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { randomToken } from '../lib/ids.js';
 import {
   MAX_SCREEN_SHARE_VIEWERS,
+  normalizeRemoteBrowserState,
   normalizeScreenShareSignal,
   preferredScreenShareSession,
+  REMOTE_BROWSER_AGENT_TTL_MS,
+  REMOTE_BROWSER_DATA_CHANNEL,
+  remoteBrowserPointerCoordinates,
   rtcConfiguration,
   SCREEN_SHARE_PROFILES,
   SCREEN_SHARE_PROTOCOL,
@@ -17,7 +21,15 @@ const HOST_SIGNAL_TYPES = new Set(['host-start', 'host-stop', 'host-paused', 'of
 function closePeer(entry) {
   const peer = entry?.peer ?? entry;
   if (!peer) return;
+  const dataChannel = entry?.dataChannel;
+  if (dataChannel) {
+    dataChannel.onmessage = null;
+    dataChannel.onopen = null;
+    dataChannel.onclose = null;
+    try { dataChannel.close(); } catch { /* Already closed. */ }
+  }
   peer.ontrack = null;
+  peer.ondatachannel = null;
   peer.onicecandidate = null;
   peer.onconnectionstatechange = null;
   try {
@@ -90,6 +102,7 @@ export function useAdaptiveScreenShare({
   realtimeRef,
   users,
   isOwner,
+  canEdit,
   clientId,
   participantName,
 }) {
@@ -104,7 +117,10 @@ export function useAdaptiveScreenShare({
     profileId: 'idle',
     viewerCount: 0,
     networkDegraded: false,
+    sourceMode: null,
+    remoteBrowserState: null,
   });
+  const [remoteAgent, setRemoteAgent] = useState(null);
 
   const mountedRef = useRef(true);
   const activeSessionRef = useRef(null);
@@ -117,6 +133,7 @@ export function useAdaptiveScreenShare({
   const startBusyRef = useRef(false);
   const stopHostingRef = useRef(() => undefined);
   const processSignalRef = useRef(() => undefined);
+  const remoteControlChannelRef = useRef(null);
 
   const updateView = useCallback((patch) => {
     if (!mountedRef.current) return;
@@ -167,6 +184,7 @@ export function useAdaptiveScreenShare({
     }
     closePeer(viewerPeerRef.current);
     viewerPeerRef.current = null;
+    remoteControlChannelRef.current = null;
     pendingViewerIceRef.current = [];
   }, [clientId, sendSignal]);
 
@@ -196,6 +214,8 @@ export function useAdaptiveScreenShare({
         profileId: 'idle',
         viewerCount: 0,
         networkDegraded: false,
+        sourceMode: null,
+        remoteBrowserState: null,
       });
     }
   }, [clearHostPeers, clientId, sendSignal]);
@@ -217,6 +237,8 @@ export function useAdaptiveScreenShare({
         profileId: 'idle',
         viewerCount: 0,
         networkDegraded: false,
+        sourceMode: null,
+        remoteBrowserState: null,
       });
     }
   }, [clearViewerPeer, clientId]);
@@ -227,6 +249,7 @@ export function useAdaptiveScreenShare({
     sendSignal('host-start', {
       startedAt: session.startedAt,
       hostName: participantName,
+      sourceMode: session.sourceMode ?? 'screen',
       paused: Boolean(localStreamRef.current.getVideoTracks?.()[0]?.muted),
     }, session);
   }, [clientId, participantName, sendSignal]);
@@ -341,9 +364,24 @@ export function useAdaptiveScreenShare({
         : 'Устанавливается прямое соединение…',
       viewerCount: 0,
       networkDegraded: false,
+      sourceMode: candidate.sourceMode === 'remote-browser' ? 'remote-browser' : 'screen',
+      remoteBrowserState: candidate.remoteBrowserState ?? null,
     });
     await sendSignal('viewer-ready', { targetId: candidate.hostId }, candidate);
   }, [announceHost, clearViewerPeer, clientId, sendSignal, stopHosting, stream, updateView, view.phase]);
+
+  const handleRemoteBrowserData = useCallback((event) => {
+    let payload = null;
+    try {
+      payload = JSON.parse(String(event?.data ?? ''));
+    } catch {
+      return;
+    }
+    if (payload?.type !== 'remote-state') return;
+    const nextState = normalizeRemoteBrowserState(payload.state);
+    if (!nextState) return;
+    updateView({ remoteBrowserState: nextState });
+  }, [updateView]);
 
   const acceptOffer = useCallback(async (signal) => {
     const session = activeSessionRef.current;
@@ -355,6 +393,16 @@ export function useAdaptiveScreenShare({
     const peer = new RTCPeerConnection(rtcConfiguration());
     const entry = { peer, sessionId: signal.sessionId };
     viewerPeerRef.current = entry;
+    peer.ondatachannel = (event) => {
+      const channel = event.channel;
+      if (!channel || channel.label !== REMOTE_BROWSER_DATA_CHANNEL) return;
+      entry.dataChannel = channel;
+      remoteControlChannelRef.current = channel;
+      channel.onmessage = handleRemoteBrowserData;
+      channel.onclose = () => {
+        if (remoteControlChannelRef.current === channel) remoteControlChannelRef.current = null;
+      };
+    };
     peer.onicecandidate = (event) => {
       const candidate = serializableCandidate(event.candidate);
       if (!candidate) return;
@@ -413,12 +461,30 @@ export function useAdaptiveScreenShare({
         message: 'Не удалось открыть видеопоток. Обновите доску и повторите подключение.',
       });
     }
-  }, [clearViewerPeer, sendSignal, updateView]);
+  }, [clearViewerPeer, handleRemoteBrowserData, sendSignal, updateView]);
 
   processSignalRef.current = async (rawPayload) => {
     const signal = normalizeScreenShareSignal(rawPayload);
     if (!signal || signal.clientId === clientId) return;
     if (signal.targetId && signal.targetId !== clientId) return;
+
+    if (signal.type === 'remote-browser-available') {
+      if (signal.permission !== 'owner') return;
+      setRemoteAgent({
+        clientId: signal.clientId,
+        sessionId: signal.sessionId,
+        name: signal.agentName || signal.name || 'Mac',
+        expiresAt: Date.now() + REMOTE_BROWSER_AGENT_TTL_MS,
+        busy: Boolean(signal.busy),
+      });
+      return;
+    }
+    if (signal.type === 'remote-browser-unavailable') {
+      setRemoteAgent((current) => (
+        current?.clientId === signal.clientId ? null : current
+      ));
+      return;
+    }
     if (HOST_SIGNAL_TYPES.has(signal.type) && signal.permission !== 'owner') return;
 
     if (signal.type === 'host-start') {
@@ -428,6 +494,8 @@ export function useAdaptiveScreenShare({
         hostName: signal.hostName || signal.name || 'Учитель',
         startedAt: Number(signal.startedAt ?? signal.timestamp),
         paused: Boolean(signal.paused),
+        sourceMode: signal.sourceMode === 'remote-browser' ? 'remote-browser' : 'screen',
+        remoteBrowserState: normalizeRemoteBrowserState(signal.remoteBrowserState),
       });
       return;
     }
@@ -558,6 +626,7 @@ export function useAdaptiveScreenShare({
         hostId: clientId,
         hostName: participantName,
         startedAt: Date.now(),
+        sourceMode: 'screen',
       };
       activeSessionRef.current = session;
       localStreamRef.current = captured;
@@ -585,6 +654,8 @@ export function useAdaptiveScreenShare({
         profileId: 'active',
         viewerCount: 0,
         networkDegraded: false,
+        sourceMode: 'screen',
+        remoteBrowserState: null,
       });
       await applyCurrentProfile();
       announceHost();
@@ -606,6 +677,78 @@ export function useAdaptiveScreenShare({
     }
   }, [announceHost, applyCurrentProfile, capability, clientId, isOwner, participantName, sendSignal, updateView]);
 
+  const startRemoteBrowser = useCallback(async () => {
+    if (!canEdit || startBusyRef.current) return;
+    const current = activeSessionRef.current;
+    if (current) {
+      updateView({
+        phase: 'error',
+        role: current.hostId === clientId ? 'host' : 'viewer',
+        message: 'На этой доске уже идёт одна трансляция.',
+      });
+      return;
+    }
+    const agent = remoteAgent?.expiresAt > Date.now() ? remoteAgent : null;
+    if (!agent) {
+      updateView({
+        phase: 'remote-unavailable',
+        role: 'viewer',
+        sourceMode: 'remote-browser',
+        message: 'Alex Browser Server не найден. Запустите его на Mac и подключите к этой учительской доске.',
+      });
+      return;
+    }
+    startBusyRef.current = true;
+    updateView({
+      phase: 'requesting',
+      role: 'viewer',
+      sourceMode: 'remote-browser',
+      message: `Запускаю браузер на ${agent.name}…`,
+    });
+    try {
+      await sendSignal('remote-browser-start', {
+        targetId: agent.clientId,
+        requestedByName: participantName,
+      }, agent);
+    } finally {
+      window.setTimeout(() => { startBusyRef.current = false; }, 500);
+    }
+  }, [canEdit, clientId, participantName, remoteAgent, sendSignal, updateView]);
+
+  const sendRemoteCommand = useCallback((command, options = {}) => {
+    const session = activeSessionRef.current;
+    const channel = remoteControlChannelRef.current;
+    if (!session || session.sourceMode !== 'remote-browser' || channel?.readyState !== 'open') {
+      return false;
+    }
+    if (options.lossy && Number(channel.bufferedAmount ?? 0) > 96_000) return false;
+    try {
+      channel.send(JSON.stringify(command));
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const requestRemoteControl = useCallback(() => sendRemoteCommand({
+    type: 'control-request',
+    takeover: Boolean(isOwner),
+    name: participantName,
+  }), [isOwner, participantName, sendRemoteCommand]);
+
+  const releaseRemoteControl = useCallback(() => sendRemoteCommand({
+    type: 'control-release',
+  }), [sendRemoteCommand]);
+
+  const stopRemoteBrowser = useCallback(async () => {
+    const session = activeSessionRef.current;
+    if (!isOwner || !session || session.sourceMode !== 'remote-browser') return;
+    await sendSignal('remote-browser-stop', {
+      targetId: session.hostId,
+      reason: 'owner-stopped',
+    }, session);
+  }, [isOwner, sendSignal]);
+
   const toggle = useCallback(() => {
     const session = activeSessionRef.current;
     if (session?.hostId === clientId) stopHosting('user', true);
@@ -617,6 +760,17 @@ export function useAdaptiveScreenShare({
     if (activeSessionRef.current) leaveViewerSession(true);
     else updateView({ phase: 'idle', role: null, message: '' });
   }, [clientId, leaveViewerSession, updateView]);
+
+  useEffect(() => {
+    if (!remoteAgent) return undefined;
+    const delay = Math.max(250, remoteAgent.expiresAt - Date.now() + 50);
+    const timer = window.setTimeout(() => {
+      setRemoteAgent((current) => (
+        current?.expiresAt <= Date.now() ? null : current
+      ));
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [remoteAgent]);
 
   useEffect(() => {
     const session = activeSessionRef.current;
@@ -722,6 +876,9 @@ export function useAdaptiveScreenShare({
   const isHosting = view.role === 'host'
     && ['requesting', 'hosting', 'paused'].includes(view.phase);
   const activeRemoteSession = Boolean(activeSessionRef.current && activeSessionRef.current.hostId !== clientId);
+  const remoteBrowserActive = view.sourceMode === 'remote-browser'
+    && Boolean(activeSessionRef.current);
+  const remoteAvailable = Boolean(remoteAgent?.expiresAt > Date.now() && !remoteAgent.busy);
 
   return {
     ...view,
@@ -731,11 +888,23 @@ export function useAdaptiveScreenShare({
     capability,
     handleSignal,
     start,
+    startRemoteBrowser,
     stop: () => stopHosting('user', true),
+    stopRemoteBrowser,
     toggle,
     dismiss,
+    sendRemoteCommand,
+    requestRemoteControl,
+    releaseRemoteControl,
     isHosting,
     activeRemoteSession,
+    remoteBrowserActive,
+    remoteAvailable,
+    remoteAgentName: remoteAgent?.name ?? '',
+    clientId,
+    participantName,
+    canEdit,
+    isOwner,
     buttonDisabled: view.phase === 'requesting' || activeRemoteSession,
     profileLabel: SCREEN_SHARE_PROFILES[view.profileId]?.label ?? SCREEN_SHARE_PROFILES.idle.label,
   };
@@ -743,6 +912,8 @@ export function useAdaptiveScreenShare({
 
 export function ScreenShareOverlay({ screenShare }) {
   const videoRef = useRef(null);
+  const addressEditingRef = useRef(false);
+  const [addressValue, setAddressValue] = useState('');
   const {
     phase,
     role,
@@ -755,8 +926,27 @@ export function ScreenShareOverlay({ screenShare }) {
     networkDegraded,
     profileLabel,
     stop,
+    stopRemoteBrowser,
     dismiss,
+    sourceMode,
+    remoteBrowserState,
+    sendRemoteCommand,
+    requestRemoteControl,
+    releaseRemoteControl,
+    clientId,
+    canEdit,
+    isOwner,
   } = screenShare;
+
+  const remoteBrowser = sourceMode === 'remote-browser';
+  const hasRemoteControl = remoteBrowser
+    && Boolean(remoteBrowserState?.controllerId)
+    && remoteBrowserState.controllerId === clientId;
+
+  useEffect(() => {
+    if (!remoteBrowser || addressEditingRef.current) return;
+    setAddressValue(remoteBrowserState?.url ?? '');
+  }, [remoteBrowser, remoteBrowserState?.url]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -770,8 +960,43 @@ export function ScreenShareOverlay({ screenShare }) {
 
   if (phase === 'idle') return null;
   const present = role === 'host';
-  const simpleNotice = phase === 'unsupported' || phase === 'error' || phase === 'requesting';
-  const title = present ? 'Ваш экран' : `Экран: ${hostName || 'учитель'}`;
+  const simpleNotice = phase === 'unsupported'
+    || phase === 'remote-unavailable'
+    || phase === 'error'
+    || phase === 'requesting';
+  const title = remoteBrowser
+    ? 'Браузер на Mac'
+    : (present ? 'Ваш экран' : `Экран: ${hostName || 'учитель'}`);
+
+  const remotePoint = (event) => remoteBrowserPointerCoordinates({
+    clientX: event.clientX,
+    clientY: event.clientY,
+    rect: videoRef.current?.getBoundingClientRect(),
+    viewportWidth: remoteBrowserState?.width,
+    viewportHeight: remoteBrowserState?.height,
+  });
+
+  const sendPointer = (event, action, lossy = false) => {
+    if (!hasRemoteControl) return;
+    const point = remotePoint(event);
+    if (!point.inside && action === 'down') return;
+    sendRemoteCommand({
+      type: 'pointer',
+      action,
+      x: point.x,
+      y: point.y,
+      button: Number(event.button ?? 0),
+      buttons: Number(event.buttons ?? 0),
+      pointerType: String(event.pointerType ?? 'mouse'),
+      pointerId: Number(event.pointerId ?? 1),
+    }, { lossy });
+  };
+
+  const navigate = () => {
+    const value = addressValue.trim();
+    if (!value || !hasRemoteControl) return;
+    sendRemoteCommand({ type: 'navigate', url: value });
+  };
 
   return (
     <aside
@@ -795,20 +1020,87 @@ export function ScreenShareOverlay({ screenShare }) {
               {minimized ? '□' : '—'}
             </button>
           )}
-          {present && ['hosting', 'paused'].includes(phase) ? (
+          {remoteBrowser && isOwner && !simpleNotice ? (
+            <button type="button" className="screen-share-stop" onClick={stopRemoteBrowser}>Стоп</button>
+          ) : (present && ['hosting', 'paused'].includes(phase) ? (
             <button type="button" className="screen-share-stop" onClick={stop}>Стоп</button>
           ) : (simpleNotice && phase !== 'requesting' ? (
             <button type="button" aria-label="Закрыть" onClick={dismiss}>×</button>
-          ) : null)}
+          ) : null))}
         </div>
       </div>
 
       {!minimized && (
         <>
+          {remoteBrowser && stream && !simpleNotice && (
+            <div className="remote-browser-toolbar">
+              <button type="button" disabled={!hasRemoteControl || !remoteBrowserState?.canGoBack} onClick={() => sendRemoteCommand({ type: 'history', action: 'back' })} aria-label="Назад">←</button>
+              <button type="button" disabled={!hasRemoteControl || !remoteBrowserState?.canGoForward} onClick={() => sendRemoteCommand({ type: 'history', action: 'forward' })} aria-label="Вперёд">→</button>
+              <button type="button" disabled={!hasRemoteControl} onClick={() => sendRemoteCommand({ type: 'history', action: 'reload' })} aria-label="Обновить">↻</button>
+              <form onSubmit={(event) => { event.preventDefault(); navigate(); }}>
+                <input
+                  value={addressValue}
+                  disabled={!hasRemoteControl}
+                  aria-label="Адрес сайта"
+                  placeholder="Введите адрес сайта"
+                  onFocus={() => { addressEditingRef.current = true; }}
+                  onBlur={() => { addressEditingRef.current = false; }}
+                  onChange={(event) => setAddressValue(event.target.value)}
+                />
+              </form>
+              <span className={remoteBrowserState?.loading ? 'is-loading' : ''} title={remoteBrowserState?.title || ''}>
+                {remoteBrowserState?.loading ? 'Загрузка…' : 'Готово'}
+              </span>
+            </div>
+          )}
+
           {stream && !simpleNotice ? (
-            <div className="screen-share-video-wrap">
-              <video ref={videoRef} autoPlay playsInline muted />
+            <div
+              className={`screen-share-video-wrap ${remoteBrowser ? 'is-remote-browser' : ''}`}
+              onPointerDown={(event) => {
+                if (!remoteBrowser || !hasRemoteControl) return;
+                event.preventDefault();
+                event.currentTarget.setPointerCapture?.(event.pointerId);
+                sendPointer(event, 'down');
+              }}
+              onPointerMove={(event) => {
+                if (!remoteBrowser || !hasRemoteControl) return;
+                event.preventDefault();
+                sendPointer(event, 'move', true);
+              }}
+              onPointerUp={(event) => {
+                if (!remoteBrowser || !hasRemoteControl) return;
+                event.preventDefault();
+                sendPointer(event, 'up');
+                event.currentTarget.releasePointerCapture?.(event.pointerId);
+              }}
+              onPointerCancel={(event) => {
+                if (!remoteBrowser || !hasRemoteControl) return;
+                sendPointer(event, 'cancel');
+              }}
+              onWheel={(event) => {
+                if (!remoteBrowser || !hasRemoteControl) return;
+                event.preventDefault();
+                const point = remotePoint(event);
+                sendRemoteCommand({
+                  type: 'wheel',
+                  x: point.x,
+                  y: point.y,
+                  deltaX: event.deltaX,
+                  deltaY: event.deltaY,
+                }, { lossy: true });
+              }}
+              onContextMenu={(event) => remoteBrowser && event.preventDefault()}
+            >
+              <video ref={videoRef} autoPlay playsInline muted draggable={false} />
               {phase === 'paused' && <div className="screen-share-video-status">Пауза</div>}
+              {remoteBrowser && !hasRemoteControl && (
+                <div className="remote-browser-control-hint">
+                  {remoteBrowserState?.controllerId
+                    ? `Управляет: ${remoteBrowserState.controllerName || 'участник'}`
+                    : 'Управление свободно'}
+                </div>
+              )}
             </div>
           ) : (
             <div className="screen-share-message">
@@ -818,11 +1110,52 @@ export function ScreenShareOverlay({ screenShare }) {
           )}
 
           {!simpleNotice && (
-            <div className="screen-share-footer">
-              <span>{present ? `Зрителей: ${viewerCount}/${MAX_SCREEN_SHARE_VIEWERS}` : 'Прямое P2P-соединение'}</span>
-              <span>{networkDegraded ? 'Сеть слабая · качество снижено' : profileLabel}</span>
-              <small>На iPhone/iPad передача приостанавливается, если ведущий сворачивает Safari.</small>
-            </div>
+            remoteBrowser ? (
+              <div className="screen-share-footer remote-browser-footer">
+                <div className="remote-browser-control-row">
+                  {hasRemoteControl ? (
+                    <button type="button" onClick={releaseRemoteControl}>Освободить управление</button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={!canEdit || (Boolean(remoteBrowserState?.controllerId) && !isOwner)}
+                      onClick={requestRemoteControl}
+                    >
+                      {remoteBrowserState?.controllerId && isOwner ? 'Перехватить управление' : 'Управлять'}
+                    </button>
+                  )}
+                  {hasRemoteControl && (
+                    <input
+                      className="remote-browser-keyboard-input"
+                      inputMode="text"
+                      placeholder="Текст на сайт"
+                      aria-label="Ввод текста на сайт"
+                      onBeforeInput={(event) => {
+                        const text = event.nativeEvent?.data;
+                        if (text) sendRemoteCommand({ type: 'text', text });
+                      }}
+                      onKeyDown={(event) => {
+                        const special = new Set(['Enter', 'Backspace', 'Delete', 'Tab', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
+                        if (!special.has(event.key)) return;
+                        event.preventDefault();
+                        sendRemoteCommand({ type: 'key', key: event.key });
+                      }}
+                      value=""
+                      onChange={() => undefined}
+                    />
+                  )}
+                </div>
+                <span>Прямое P2P · {Number(remoteBrowserState?.frameRate ?? 0).toFixed(0)} кадр/с</span>
+                <span>{networkDegraded ? 'Сеть слабая · качество снижено' : 'Частота меняется автоматически'}</span>
+                <small>Кадры создаются только при изменении страницы. Старые кадры не накапливаются.</small>
+              </div>
+            ) : (
+              <div className="screen-share-footer">
+                <span>{present ? `Зрителей: ${viewerCount}/${MAX_SCREEN_SHARE_VIEWERS}` : 'Прямое P2P-соединение'}</span>
+                <span>{networkDegraded ? 'Сеть слабая · качество снижено' : profileLabel}</span>
+                <small>На iPhone/iPad передача приостанавливается, если ведущий сворачивает Safari.</small>
+              </div>
+            )
           )}
         </>
       )}

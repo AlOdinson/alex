@@ -1,5 +1,8 @@
 export const SCREEN_SHARE_PROTOCOL = 'alex-board-screen-share-v1';
 export const MAX_SCREEN_SHARE_VIEWERS = 3;
+export const MAX_REMOTE_BROWSER_VIEWERS = 4;
+export const REMOTE_BROWSER_DATA_CHANNEL = 'alex-board-remote-browser-v1';
+export const REMOTE_BROWSER_AGENT_TTL_MS = 9_000;
 
 export const SCREEN_SHARE_PROFILES = Object.freeze({
   idle: Object.freeze({
@@ -32,6 +35,10 @@ const SIGNAL_TYPES = new Set([
   'offer',
   'answer',
   'ice',
+  'remote-browser-available',
+  'remote-browser-start',
+  'remote-browser-stop',
+  'remote-browser-unavailable',
 ]);
 
 export function screenShareCapability(runtimeNavigator = globalThis.navigator) {
@@ -49,7 +56,7 @@ export function screenShareCapability(runtimeNavigator = globalThis.navigator) {
     advice: supported
       ? ''
       : (iosLike
-        ? 'Этот браузер не разрешает захват экрана. Откройте эту же ссылку в Safari и попробуйте снова.'
+        ? 'iPhone и iPad не разрешают веб-странице захватывать другую вкладку. Для показа сайтов запустите Alex Browser Server на Mac.'
         : 'Этот браузер или устройство не поддерживает передачу экрана через веб-страницу.'),
   };
 }
@@ -95,6 +102,50 @@ export function normalizeScreenShareSignal(payload) {
     targetId: payload.targetId ? String(payload.targetId) : '',
     permission: String(payload.permission ?? 'view'),
     timestamp: Number(payload.timestamp ?? Date.now()),
+  };
+}
+
+export function normalizeRemoteBrowserState(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const width = Math.max(1, Math.min(3840, Number(payload.width ?? 1280)));
+  const height = Math.max(1, Math.min(2160, Number(payload.height ?? 720)));
+  return {
+    url: String(payload.url ?? ''),
+    title: String(payload.title ?? ''),
+    loading: Boolean(payload.loading),
+    canGoBack: Boolean(payload.canGoBack),
+    canGoForward: Boolean(payload.canGoForward),
+    controllerId: String(payload.controllerId ?? ''),
+    controllerName: String(payload.controllerName ?? ''),
+    width,
+    height,
+    frameRate: Math.max(0, Math.min(30, Number(payload.frameRate ?? 0))),
+    quality: Math.max(1, Math.min(100, Number(payload.quality ?? 68))),
+  };
+}
+
+export function remoteBrowserPointerCoordinates({
+  clientX,
+  clientY,
+  rect,
+  viewportWidth = 1280,
+  viewportHeight = 720,
+}) {
+  const boxWidth = Math.max(1, Number(rect?.width ?? 1));
+  const boxHeight = Math.max(1, Number(rect?.height ?? 1));
+  const sourceWidth = Math.max(1, Number(viewportWidth ?? 1280));
+  const sourceHeight = Math.max(1, Number(viewportHeight ?? 720));
+  const scale = Math.min(boxWidth / sourceWidth, boxHeight / sourceHeight);
+  const renderedWidth = sourceWidth * scale;
+  const renderedHeight = sourceHeight * scale;
+  const offsetX = Number(rect?.left ?? 0) + (boxWidth - renderedWidth) / 2;
+  const offsetY = Number(rect?.top ?? 0) + (boxHeight - renderedHeight) / 2;
+  const x = (Number(clientX ?? 0) - offsetX) / scale;
+  const y = (Number(clientY ?? 0) - offsetY) / scale;
+  return {
+    x: Math.max(0, Math.min(sourceWidth, x)),
+    y: Math.max(0, Math.min(sourceHeight, y)),
+    inside: x >= 0 && y >= 0 && x <= sourceWidth && y <= sourceHeight,
   };
 }
 
