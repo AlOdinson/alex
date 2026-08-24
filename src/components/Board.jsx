@@ -22,11 +22,15 @@ import GameLibrary from './GameLibrary.jsx';
 import {
   applyActionsToSnapshot,
   applyOpsToSnapshot,
+  acquireBoardObjectLocks,
   getBoardAccess,
   getBoardChanges,
+  getBoardObjectLocks,
   getBoardRecovery,
   getBoardRevision,
   isSupabaseConfigured,
+  refreshBoardObjectLocks,
+  releaseBoardObjectLocks,
   saveBoardSnapshot,
   setGameLibraryVisibility,
   setGuestMode,
@@ -52,6 +56,8 @@ import {
 } from '../lib/convergence.js';
 import {
   applySerializedObjectPatch,
+  createConditionalDeleteOps,
+  createConditionalRecordPatchOps,
   createRecordPatchOps,
 } from '../lib/operationProtocol.js';
 import {
@@ -97,6 +103,10 @@ const PALM_CONTACT_RADIUS = 22;
 const PENCIL_HANDOFF_MAX_RADIUS = 34;
 const PENCIL_HANDOFF_MIN_SEPARATION = 20;
 const DRAWING_STYLE_TOOL_IDS = new Set(['pencil', 'line', 'shape']);
+const TRANSFORM_PROPERTY_KEYS = [
+  'left', 'top', 'originX', 'originY', 'angle',
+  'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY',
+];
 
 function isPhoneSizedTouchViewport() {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
@@ -1686,6 +1696,7 @@ function BoardWorkspace({
   const objectEraserRealtimeDeleteIdsRef = useRef(new Set());
   const objectEraserRealtimeTimerRef = useRef(null);
   const modifiedBeforeRef = useRef([]);
+  const modifiedBeforeRecordsRef = useRef([]);
   const clipboardRef = useRef([]);
   const clipboardCenterRef = useRef(null);
   const clipboardSourceBoardIdRef = useRef(null);
@@ -1772,6 +1783,16 @@ function BoardWorkspace({
   const historyCommandBusyRef = useRef(false);
   const remoteLocksRef = useRef(new Map());
   const localLockIdsRef = useRef([]);
+  const selectionLeaseRef = useRef({
+    generation: 0,
+    token: null,
+    ids: [],
+    state: 'none',
+    promise: null,
+    expiresAt: 0,
+  });
+  const selectionLeaseRefreshInFlightRef = useRef(false);
+  const selectionLeaseInteractionStateRef = useRef(new WeakMap());
   const lastLockBroadcastRef = useRef(0);
   const cursorSendRef = useRef({ lastSentAt: 0, timer: null, pending: null });
   const liveTransformSendRef = useRef({
@@ -2814,6 +2835,7 @@ function BoardWorkspace({
       );
       const permanentNonInteractive = Boolean(
         object.isEraserPath
+        || object.pendingImage
         || object.transientPreview
         || (object.transientSelectionProxy && !isLocalSelectionProxy)
       );
@@ -2863,6 +2885,7 @@ function BoardWorkspace({
       );
       const permanentNonInteractive = Boolean(
         object.isEraserPath
+        || object.pendingImage
         || object.transientPreview
         || (object.transientSelectionProxy && !isLocalSelectionProxy)
       );
@@ -3074,13 +3097,11 @@ function BoardWorkspace({
       transformGestureRef.current.pointerType = null;
       transformGestureRef.current.startingViewportRects = [];
       modifiedBeforeRef.current = [];
+      modifiedBeforeRecordsRef.current = [];
       if (liveTransformSendRef.current.sessionId) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas?.getActiveObject());
       }
-      if (localLockIdsRef.current.length) {
-        realtimeRef.current?.sendLock(localLockIdsRef.current, false);
-        localLockIdsRef.current = [];
-      }
+      releaseLocalSelectionLease(canvas.getActiveObject());
     }
     if (switchingTool && mobileTextEditorRef.current) closeMobileTextEditor();
     if (switchingTool && canvas?.getActiveObject()) {
@@ -3452,6 +3473,7 @@ function BoardWorkspace({
       localSelectionTransactionRef.current = transaction;
       canvas.setActiveObject(proxy);
       applyingRemoteRef.current = false;
+      acquireLocalSelectionLease(proxy);
       applyObjectInteractivityToObjects([proxy], { render: false });
       updateSelectionState();
       updateSelectionStyleState();
@@ -3544,6 +3566,7 @@ function BoardWorkspace({
         applyingRemoteRef.current = false;
         realtimeRef.current?.sendLock?.(transaction.sourceIds, false);
         localLockIdsRef.current = [];
+        releaseLocalSelectionLease(proxy);
         localSelectionTransactionRef.current = null;
         applyObjectInteractivity();
         updateSelectionState();
@@ -3623,6 +3646,7 @@ function BoardWorkspace({
       });
       realtimeRef.current?.sendLock?.(transaction.sourceIds, false);
       localLockIdsRef.current = [];
+      releaseLocalSelectionLease(proxy);
       localSelectionTransactionRef.current = null;
       applyObjectInteractivityToObjects(finalObjects, { render: false });
       schedulePersistence();
@@ -3653,6 +3677,7 @@ function BoardWorkspace({
       localSelectionTransactionRef.current = null;
       realtimeRef.current?.sendLock?.(transaction.sourceIds, false);
       localLockIdsRef.current = [];
+      releaseLocalSelectionLease(transaction.proxy);
       canvas.requestRenderAll();
     } finally {
       applyingRemoteRef.current = false;
@@ -5599,6 +5624,33 @@ function BoardWorkspace({
     }));
   }, []);
 
+  const commitConditionalHistoryOps = useCallback(async (ops) => {
+    const safeOps = Array.isArray(ops) ? ops.filter(Boolean) : [];
+    if (!safeOps.length) return { appliedOps: [], skippedConflicts: [] };
+    const results = await sendDurableOps(safeOps, { atomic: true });
+    const result = Array.isArray(results) ? results.at(-1) : null;
+    if (!result) throw new Error('Сервер не подтвердил безопасную отмену');
+    if (Array.isArray(result.rejectedObjectIds) && result.rejectedObjectIds.length) {
+      throw new Error('Один из объектов сейчас редактирует другой участник');
+    }
+    const appliedOps = Array.isArray(result.appliedOps) ? result.appliedOps : [];
+    if (appliedOps.length) await replayPendingActionsLocally([{ ops: appliedOps }]);
+    const skippedConflicts = Array.isArray(result.skippedConflicts)
+      ? result.skippedConflicts
+      : [];
+    if (skippedConflicts.length) {
+      const skippedFieldCount = skippedConflicts.reduce(
+        (count, conflict) => count + Math.max(1, conflict?.fields?.length ?? 0),
+        0,
+      );
+      setSaveStatus(`Отмена выполнена частично: пропущено ${skippedFieldCount} измен.`);
+      setSyncTone('saved');
+      window.clearTimeout(transientStatusTimerRef.current);
+      transientStatusTimerRef.current = window.setTimeout(() => setSaveStatus('Сохранено'), 2600);
+    }
+    return { ...result, appliedOps, skippedConflicts };
+  }, [replayPendingActionsLocally, sendDurableOps]);
+
   const applyHistoryAction = useCallback(async (action, direction) => {
     if (!action) return;
     applyingHistoryRef.current = true;
@@ -5607,86 +5659,84 @@ function BoardWorkspace({
       if (action.type !== 'background') fabricCanvasRef.current?.discardActiveObject();
       if (action.type === 'add') {
         if (direction === 'undo') {
-          const ids = action.records.map((record) => record.object.boardObjectId).filter(Boolean);
-          removeIdsLocally(ids);
-          await sendDeletes(ids);
+          await commitConditionalHistoryOps(createConditionalDeleteOps(action.records));
         } else {
           const restoredRecords = refreshHistoryRecords(action.records);
-          await applyRecordsLocally(restoredRecords);
-          await sendRecordUpserts(restoredRecords, { restore: true, reorder: true });
+          await commitConditionalHistoryOps(restoredRecords.map((record) => ({
+            type: 'upsert',
+            object: record.object,
+            zIndex: record.zIndex,
+            restore: true,
+            reorder: true,
+            ifDeletedBy: clientIdRef.current,
+          })));
         }
       }
 
       if (action.type === 'delete') {
         if (direction === 'undo') {
           const restoredRecords = refreshHistoryRecords(action.records);
-          await applyRecordsLocally(restoredRecords);
-          await sendRecordUpserts(restoredRecords, { restore: true, reorder: true });
+          action.lastRestoredRecords = restoredRecords;
+          await commitConditionalHistoryOps(restoredRecords.map((record) => ({
+            type: 'upsert',
+            object: record.object,
+            zIndex: record.zIndex,
+            restore: true,
+            reorder: true,
+            ifDeletedBy: clientIdRef.current,
+          })));
         } else {
-          const ids = action.records.map((record) => record.object.boardObjectId).filter(Boolean);
-          removeIdsLocally(ids);
-          await sendDeletes(ids);
+          await commitConditionalHistoryOps(createConditionalDeleteOps(
+            action.lastRestoredRecords ?? action.records,
+          ));
         }
       }
 
       if (action.type === 'modify') {
         const sourceRecords = direction === 'undo' ? action.after : action.before;
         const records = refreshHistoryRecords(direction === 'undo' ? action.before : action.after);
-        const ops = createRecordPatchOps(sourceRecords, records, {
+        const ops = createConditionalRecordPatchOps(sourceRecords, records, {
           reorder: Boolean(action.reorder),
         });
-        await replayPendingActionsLocally([{ ops }]);
-        await sendDurableOps(ops, { atomic: true });
+        await commitConditionalHistoryOps(ops);
       }
 
       if (action.type === 'replace') {
-        const removeRecords = direction === 'undo' ? action.after : action.before;
-        const restoreRecords = refreshHistoryRecords(
-          direction === 'undo' ? action.before : action.after,
-        );
-        const removeIds = removeRecords
-          .map((record) => record.object?.boardObjectId)
-          .filter(Boolean);
-        removeIdsLocally(removeIds);
-        await applyRecordsLocally(restoreRecords);
-        await sendDurableOps([
-          ...removeIds.map((id) => ({ type: 'delete', id })),
-          ...restoreRecords.map((record) => ({
-            type: 'upsert',
-            object: record.object,
-            zIndex: record.zIndex,
-            restore: true,
-            reorder: true,
-          })),
-        ], { atomic: true });
+        throw new Error('Составная замена больше не поддерживается историей');
       }
 
       if (action.type === 'transform') {
-        const canvas = fabricCanvasRef.current;
-        const frames = direction === 'undo' ? action.before : action.after;
-        if (canvas && Array.isArray(frames) && frames.length) {
-          canvas.discardActiveObject();
-          const touched = [];
-          for (const frame of frames) {
-            const candidates = registeredObjectsById(frame?.id)
-              .filter((object) => !object.transientPreview && !object.transientTransformFallback);
-            const object = candidates[0] ?? registeredObjectsById(frame?.id)[0] ?? null;
-            const matrix = compactTransformMatrix(frame?.matrix);
-            if (!object || !matrix) continue;
-            util.applyTransformToObject(object, matrix.map(Number));
-            markObject(object, clientIdRef.current);
-            object.dirty = true;
-            object.setCoords();
-            touched.push(object);
-          }
-          if (touched.length) {
-            const entries = captureTransformRecordInputs(touched);
-            await sendLightweightTransforms(entries);
-            applyObjectInteractivityToObjects(touched, { render: false });
-          }
-          canvas.requestRenderAll();
-          updateSelectionState();
-          updateSelectionStyleState();
+        const sourceRecords = direction === 'undo' ? action.afterRecords : action.beforeRecords;
+        const targetRecords = direction === 'undo' ? action.beforeRecords : action.afterRecords;
+        const sourceById = new Map((sourceRecords ?? []).map((record) => [
+          String(record?.object?.boardObjectId ?? ''),
+          record,
+        ]));
+        const baseTimestamp = Date.now();
+        const entries = (targetRecords ?? []).flatMap((record, index) => {
+          const id = String(record?.object?.boardObjectId ?? '');
+          const source = sourceById.get(id);
+          if (!id || !source) return [];
+          const transform = Object.fromEntries(TRANSFORM_PROPERTY_KEYS
+            .filter((key) => Object.prototype.hasOwnProperty.call(record.object ?? {}, key))
+            .map((key) => [key, record.object[key]]));
+          const ifTransform = Object.fromEntries(TRANSFORM_PROPERTY_KEYS
+            .filter((key) => Object.prototype.hasOwnProperty.call(source.object ?? {}, key))
+            .map((key) => [key, source.object[key]]));
+          return [{
+            id,
+            transform,
+            ifTransform,
+            updatedAt: baseTimestamp + index,
+            updatedBy: clientIdRef.current,
+          }];
+        });
+        if (entries.length) {
+          await commitConditionalHistoryOps([{
+            type: 'transform',
+            version: 1,
+            objects: entries,
+          }]);
         }
       }
 
@@ -5703,22 +5753,9 @@ function BoardWorkspace({
     }
   }, [
     applyBackground,
-    applyObjectInteractivityToObjects,
-    applyRecordsLocally,
-    getObjectRecords,
-    captureTransformRecordInputs,
-    markObject,
-    registeredObjectsById,
+    commitConditionalHistoryOps,
     refreshHistoryRecords,
-    removeIdsLocally,
     schedulePersistence,
-    sendDeletes,
-    sendDurableOps,
-    sendRecordPatches,
-    sendLightweightTransforms,
-    sendRecordUpserts,
-    updateSelectionState,
-    updateSelectionStyleState,
   ]);
 
   const undo = useCallback(async () => {
@@ -6624,6 +6661,35 @@ function BoardWorkspace({
     applyObjectInteractivityToObjects(touched);
   }, [applyObjectInteractivityToObjects, registeredObjectsById]);
 
+  const refreshServerObjectLocks = useCallback(async () => {
+    if (!isSupabaseConfigured || !boardReadyRef.current) return;
+    const locks = await getBoardObjectLocks(boardId, boardKey);
+    const now = Date.now();
+    const incomingIds = new Set();
+    for (const lock of locks) {
+      if (!lock.objectId || lock.clientId === clientIdRef.current || lock.expiresAt <= now) continue;
+      incomingIds.add(lock.objectId);
+      const current = remoteLocksRef.current.get(lock.objectId);
+      remoteLocksRef.current.set(lock.objectId, {
+        ...current,
+        ...lock,
+        name: current?.name ?? 'другой участник',
+        color: current?.color ?? '#64748b',
+        objectIds: current?.objectIds ?? [lock.objectId],
+        locked: true,
+        serverLease: true,
+      });
+    }
+    for (const [objectId, lock] of remoteLocksRef.current) {
+      if (lock?.serverLease && !incomingIds.has(objectId)) remoteLocksRef.current.delete(objectId);
+    }
+    setRemoteLocks([...remoteLocksRef.current.entries()]
+      .map(([objectId, lock]) => ({ objectId, ...lock })));
+    applyObjectInteractivityToObjects(
+      [...new Set([...incomingIds].flatMap((objectId) => registeredObjectsById(objectId)))],
+    );
+  }, [applyObjectInteractivityToObjects, boardId, boardKey, registeredObjectsById]);
+
   const sendCursorThrottled = useCallback((scenePoint) => {
     if (!scenePoint || !realtimeRef.current) return;
     const cursorState = cursorSendRef.current;
@@ -6655,6 +6721,231 @@ function BoardWorkspace({
     }
     realtimeRef.current.sendLock(ids, locked);
   }, []);
+
+  const selectionObjectIds = useCallback((objects) => {
+    const source = Array.isArray(objects) ? objects : [objects];
+    return [...new Set(source.flatMap((object) => {
+      if (object?.transientSelectionProxy && Array.isArray(object.selectionSourceIds)) {
+        return object.selectionSourceIds;
+      }
+      return flattenTarget(object).map((member) => member?.boardObjectId);
+    }).filter(Boolean).map(String))].sort();
+  }, []);
+
+  const setSelectionLeaseInteraction = useCallback((target, enabled) => {
+    const canvas = fabricCanvasRef.current;
+    const objects = [...new Set([target, ...flattenTarget(target)].filter(Boolean))];
+    for (const object of objects) {
+      if (!enabled) {
+        if (!selectionLeaseInteractionStateRef.current.has(object)) {
+          selectionLeaseInteractionStateRef.current.set(object, {
+            lockMovementX: Boolean(object.lockMovementX),
+            lockMovementY: Boolean(object.lockMovementY),
+            lockScalingX: Boolean(object.lockScalingX),
+            lockScalingY: Boolean(object.lockScalingY),
+            lockRotation: Boolean(object.lockRotation),
+            hasControls: Boolean(object.hasControls),
+          });
+        }
+        object.lockMovementX = true;
+        object.lockMovementY = true;
+        object.lockScalingX = true;
+        object.lockScalingY = true;
+        object.lockRotation = true;
+        object.hasControls = false;
+        continue;
+      }
+      const state = selectionLeaseInteractionStateRef.current.get(object);
+      if (!state) continue;
+      object.lockMovementX = state.lockMovementX;
+      object.lockMovementY = state.lockMovementY;
+      object.lockScalingX = state.lockScalingX;
+      object.lockScalingY = state.lockScalingY;
+      object.lockRotation = state.lockRotation;
+      object.hasControls = state.hasControls;
+      selectionLeaseInteractionStateRef.current.delete(object);
+    }
+    canvas?.requestRenderAll();
+  }, []);
+
+  const ownsSelectionLease = useCallback((objects) => {
+    const ids = selectionObjectIds(objects);
+    const lease = selectionLeaseRef.current;
+    return ids.length > 0
+      && lease.state === 'granted'
+      && lease.expiresAt > Date.now()
+      && ids.length === lease.ids.length
+      && ids.every((id, index) => id === lease.ids[index]);
+  }, [selectionObjectIds]);
+
+  const releaseLocalSelectionLease = useCallback((target = null) => {
+    const lease = selectionLeaseRef.current;
+    lease.generation += 1;
+    const token = lease.token;
+    const ids = [...lease.ids];
+    selectionLeaseRef.current = {
+      generation: lease.generation,
+      token: null,
+      ids: [],
+      state: 'none',
+      promise: null,
+      expiresAt: 0,
+    };
+    setSelectionLeaseInteraction(target, true);
+    if (ids.length) realtimeRef.current?.sendLock?.(ids, false);
+    localLockIdsRef.current = [];
+    if (token) {
+      releaseBoardObjectLocks(boardId, boardKey, clientIdRef.current, token)
+        .catch((error) => console.warn('Не удалось досрочно снять серверную блокировку', error));
+    }
+  }, [boardId, boardKey, setSelectionLeaseInteraction]);
+
+  const acquireLocalSelectionLease = useCallback((target) => {
+    if (!target || !canEditRef.current || applyingRemoteRef.current || applyingHistoryRef.current) {
+      return Promise.resolve(false);
+    }
+    const ids = selectionObjectIds(target);
+    if (!ids.length || flattenTarget(target).some((object) => object?.pendingImage)) {
+      setSelectionLeaseInteraction(target, false);
+      return Promise.resolve(false);
+    }
+    const current = selectionLeaseRef.current;
+    if (current.state === 'granted'
+      && current.expiresAt > Date.now()
+      && ids.length === current.ids.length
+      && ids.every((id, index) => id === current.ids[index])) {
+      setSelectionLeaseInteraction(target, true);
+      return Promise.resolve(true);
+    }
+    if (current.state === 'pending'
+      && ids.length === current.ids.length
+      && ids.every((id, index) => id === current.ids[index])) {
+      return current.promise ?? Promise.resolve(false);
+    }
+
+    const generation = current.generation + 1;
+    const token = randomToken(24);
+    const previousToken = current.token;
+    const previousIds = [...current.ids];
+    if (previousIds.length) realtimeRef.current?.sendLock?.(previousIds, false);
+    setSelectionLeaseInteraction(target, false);
+
+    const task = acquireBoardObjectLocks(
+      boardId,
+      boardKey,
+      clientIdRef.current,
+      token,
+      ids,
+    ).then((result) => {
+      const activeLease = selectionLeaseRef.current;
+      if (activeLease.generation !== generation) {
+        if (result.granted) {
+          releaseBoardObjectLocks(boardId, boardKey, clientIdRef.current, token)
+            .catch(() => undefined);
+        }
+        return false;
+      }
+      if (!result.granted) {
+        selectionLeaseRef.current = {
+          generation,
+          token: null,
+          ids: [],
+          state: 'none',
+          promise: null,
+          expiresAt: 0,
+        };
+        if (previousToken) {
+          releaseBoardObjectLocks(boardId, boardKey, clientIdRef.current, previousToken)
+            .catch(() => undefined);
+        }
+        for (const conflict of result.conflicts ?? []) {
+          remoteLocksRef.current.set(conflict.objectId, {
+            clientId: conflict.clientId,
+            name: 'другой участник',
+            color: '#64748b',
+            objectIds: [conflict.objectId],
+            locked: true,
+            expiresAt: conflict.expiresAt || Date.now() + 6_000,
+          });
+        }
+        const canvas = fabricCanvasRef.current;
+        const active = canvas?.getActiveObject();
+        if (active && selectionObjectIds(active).some((id) => ids.includes(id))) {
+          setSelectionLeaseInteraction(active, true);
+          canvas.discardActiveObject();
+          canvas.requestRenderAll();
+          updateSelectionState();
+          updateSelectionStyleState();
+        }
+        applyObjectInteractivityToObjects(
+          (result.conflicts ?? []).flatMap((conflict) => registeredObjectsById(conflict.objectId)),
+        );
+        setRemoteLocks([...remoteLocksRef.current.entries()]
+          .map(([objectId, lock]) => ({ objectId, ...lock })));
+        setSaveStatus('Объект уже выделен другим участником');
+        setSyncTone('saved');
+        window.clearTimeout(transientStatusTimerRef.current);
+        transientStatusTimerRef.current = window.setTimeout(() => setSaveStatus('Сохранено'), 1800);
+        return false;
+      }
+
+      selectionLeaseRef.current = {
+        generation,
+        token,
+        ids,
+        state: 'granted',
+        promise: null,
+        expiresAt: Number(result.expiresAt ?? Date.now() + 10_000),
+      };
+      localLockIdsRef.current = ids;
+      setSelectionLeaseInteraction(target, true);
+      realtimeRef.current?.sendLock?.(ids, true);
+      return true;
+    }).catch((error) => {
+      if (selectionLeaseRef.current.generation === generation) {
+        selectionLeaseRef.current = {
+          generation,
+          token: null,
+          ids: [],
+          state: 'none',
+          promise: null,
+          expiresAt: 0,
+        };
+        const canvas = fabricCanvasRef.current;
+        const active = canvas?.getActiveObject();
+        if (active && selectionObjectIds(active).some((id) => ids.includes(id))) {
+          setSelectionLeaseInteraction(active, true);
+          canvas.discardActiveObject();
+          canvas.requestRenderAll();
+          updateSelectionState();
+          updateSelectionStyleState();
+        }
+      }
+      console.warn('Не удалось закрепить выделение на сервере', error);
+      setSaveStatus('Нет подтверждения выделения — проверьте соединение');
+      setSyncTone('offline');
+      return false;
+    });
+
+    selectionLeaseRef.current = {
+      generation,
+      token,
+      ids,
+      state: 'pending',
+      promise: task,
+      expiresAt: 0,
+    };
+    return task;
+  }, [
+    applyObjectInteractivityToObjects,
+    boardId,
+    boardKey,
+    registeredObjectsById,
+    selectionObjectIds,
+    setSelectionLeaseInteraction,
+    updateSelectionState,
+    updateSelectionStyleState,
+  ]);
 
 
   const getLiveTransformObjects = useCallback((target) => (
@@ -7712,7 +8003,7 @@ function BoardWorkspace({
     fabricCanvasRef.current = canvas;
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
-      version: '1.32.17-pencil-deselect-handoff',
+      version: '1.32.18-collaboration-safety',
       getContext: () => ({
         tool: activeToolRef.current,
         penActive: Boolean(penInputRef.current.active),
@@ -8598,7 +8889,37 @@ function BoardWorkspace({
     const localLockRefreshInterval = window.setInterval(() => {
       const ids = [...new Set((localLockIdsRef.current ?? []).filter(Boolean).map(String))];
       if (ids.length) realtimeRef.current?.sendLock?.(ids, true);
+      const lease = selectionLeaseRef.current;
+      if (lease.state === 'granted'
+        && lease.token
+        && lease.expiresAt - Date.now() < 7_000
+        && !selectionLeaseRefreshInFlightRef.current) {
+        selectionLeaseRefreshInFlightRef.current = true;
+        refreshBoardObjectLocks(
+          boardId,
+          boardKey,
+          clientIdRef.current,
+          lease.token,
+        ).then((result) => {
+          if (selectionLeaseRef.current.token !== lease.token) return;
+          if (!result.refreshed) {
+            const active = fabricCanvasRef.current?.getActiveObject() ?? null;
+            releaseLocalSelectionLease(active);
+            fabricCanvasRef.current?.discardActiveObject();
+            fabricCanvasRef.current?.requestRenderAll();
+            return;
+          }
+          selectionLeaseRef.current.expiresAt = Number(result.expiresAt ?? Date.now() + 10_000);
+        }).catch((error) => {
+          console.warn('Не удалось продлить серверную блокировку выделения', error);
+        }).finally(() => {
+          selectionLeaseRefreshInFlightRef.current = false;
+        });
+      }
     }, LOCAL_LOCK_REFRESH_INTERVAL);
+    refreshServerObjectLocks().catch((error) => {
+      console.warn('Не удалось получить начальные блокировки объектов', error);
+    });
     const pendingImageRetryInterval = window.setInterval(
       () => retryPendingServerImages(),
       IMAGE_RETRY_INTERVAL,
@@ -9529,6 +9850,15 @@ function BoardWorkspace({
 
     canvas.on('before:transform', ({ transform, e: nativeEvent }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
+      if (!ownsSelectionLease(transform.target)) {
+        // Fabric can begin a drag in the same pointerdown that creates a selection.
+        // Freeze that transform until Supabase grants the object lease; this closes the
+        // simultaneous-grab race without adding any work to Pencil drawing.
+        setSelectionLeaseInteraction(transform.target, false);
+        acquireLocalSelectionLease(transform.target);
+        transform.actionHandler = () => false;
+        return;
+      }
       suppressTargetFindDuringTransform();
       const pointerType = nativeEvent?.pointerType
         ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
@@ -9538,12 +9868,14 @@ function BoardWorkspace({
         : [];
       if (transform.target.transientSelectionProxy) {
         modifiedBeforeRef.current = [];
+        modifiedBeforeRecordsRef.current = [];
         transformGestureRef.current.startingViewportRects = [];
         transformGestureRef.current.activeId = beginLiveTransform(transform.target);
         lastLockBroadcastRef.current = Date.now();
         return;
       }
       modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
+      modifiedBeforeRecordsRef.current = getObjectRecords(flattenTarget(transform.target));
       sendLocalLock(transform.target, true);
       transformGestureRef.current.activeId = beginLiveTransform(transform.target);
       lastLockBroadcastRef.current = Date.now();
@@ -9575,6 +9907,7 @@ function BoardWorkspace({
         target.previewReceivedAt = Date.now();
         target.setCoords();
         modifiedBeforeRef.current = [];
+        modifiedBeforeRecordsRef.current = [];
         transformGestureRef.current.activeId = null;
         transformGestureRef.current.pointerType = null;
         transformGestureRef.current.startingViewportRects = [];
@@ -9591,6 +9924,7 @@ function BoardWorkspace({
       // selected members is independent of the total number of objects on the board.
       updateTransformSpatialObjects(selectedObjects);
       const beforeTransforms = modifiedBeforeRef.current;
+      const beforeRecords = modifiedBeforeRecordsRef.current;
       const zIndexMap = liveTransformSendRef.current.zIndexMap;
       const gestureId = transformGestureRef.current.activeId;
       const completedPointerType = transformGestureRef.current.pointerType;
@@ -9610,6 +9944,7 @@ function BoardWorkspace({
         console.error('Не удалось собрать лёгкую transform-операцию', error);
       } finally {
         modifiedBeforeRef.current = [];
+        modifiedBeforeRecordsRef.current = [];
         endLiveTransform(target);
       }
 
@@ -9617,7 +9952,7 @@ function BoardWorkspace({
         transformGestureRef.current.activeId = null;
         transformGestureRef.current.pointerType = null;
         transformGestureRef.current.startingViewportRects = [];
-        sendLocalLock(selectedObjects, false);
+        if (ownsSelectionLease(selectedObjects)) sendLocalLock(selectedObjects, true);
         canvas.requestRenderAll();
         return;
       }
@@ -9639,7 +9974,7 @@ function BoardWorkspace({
         transformGestureRef.current.activeId = null;
         transformGestureRef.current.pointerType = null;
         transformGestureRef.current.startingViewportRects = [];
-        sendLocalLock(selectedObjects, false);
+        if (ownsSelectionLease(selectedObjects)) sendLocalLock(selectedObjects, true);
         return;
       }
       transformGestureRef.current.lastCommittedId = gestureId;
@@ -9651,10 +9986,25 @@ function BoardWorkspace({
 
       const commitObjects = () => {
         // Fabric has already rendered the final transform. Release collaboration locks
-        // and record Undo immediately; persistence must not hold the pointer-up frame.
-        sendLocalLock(selectedObjects, false);
+        // only when the selection itself is cleared. A selected object stays protected
+        // between consecutive moves, so another participant cannot grab it in the gap.
+        if (ownsSelectionLease(selectedObjects)) sendLocalLock(selectedObjects, true);
         if (beforeTransforms.length && afterTransforms.length) {
-          recordAction({ type: 'transform', before: beforeTransforms, after: afterTransforms });
+          recordAction({
+            type: 'transform',
+            before: beforeTransforms,
+            after: afterTransforms,
+            beforeRecords,
+            afterRecords: recordInputs.map((entry) => ({
+              object: {
+                boardObjectId: entry.id,
+                ...entry.transform,
+                updatedAt: entry.updatedAt,
+                updatedBy: entry.updatedBy,
+              },
+              zIndex: entry.zIndex,
+            })),
+          });
         }
 
         // Every input device uses the same lightweight durable transform. Apple
@@ -9698,9 +10048,15 @@ function BoardWorkspace({
       // Selection UI is cosmetic. Run it after Fabric has completed the current pointer
       // event so a large ActiveSelection cannot block the contact itself.
       queueSelectionUiRefresh();
+      const active = canvas.getActiveObject();
+      if (active) acquireLocalSelectionLease(active);
     };
     const finishTransactionalSelection = (selectionEvent = {}) => {
       queueSelectionUiRefresh();
+      const releasedTarget = selectionEvent?.deselected?.[0]
+        ?? [...selectionUiTouchedRef.current][0]
+        ?? null;
+      releaseLocalSelectionLease(releasedTarget);
       const nativeEvent = selectionEvent?.e;
       if (nativeEvent?.pointerType !== 'pen' || activeToolRef.current !== 'select') return;
       const controlsWereOnTop = Boolean(canvas.contextTopDirty);
@@ -10644,12 +11000,9 @@ function BoardWorkspace({
           transformGestureRef.current.activeId = null;
           transformGestureRef.current.pointerType = null;
           modifiedBeforeRef.current = [];
+          modifiedBeforeRecordsRef.current = [];
           canvas.requestRenderAll();
         }
-      }
-      if (localLockIdsRef.current.length) {
-        realtimeRef.current?.sendLock(localLockIdsRef.current, false);
-        localLockIdsRef.current = [];
       }
       if (panningRef.current) {
         panningRef.current = false;
@@ -11483,7 +11836,8 @@ function BoardWorkspace({
       const hadLiveTransform = Boolean(liveTransformSendRef.current.sessionId);
       const hadTargetFindOverride = Boolean(transformTargetFindRestoreState);
       const hadMarquee = Boolean(selectionDragRef.current);
-      const hadLocks = localLockIdsRef.current.length > 0;
+      const hadLocks = localLockIdsRef.current.length > 0
+        && selectionLeaseRef.current.state !== 'granted';
       const hadStaleState = hadFabricTransform
         || hadLiveTransform
         || hadTargetFindOverride
@@ -11498,7 +11852,7 @@ function BoardWorkspace({
       if (liveTransformSendRef.current.sessionId) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
       }
-      if (localLockIdsRef.current.length) {
+      if (hadLocks) {
         realtimeRef.current?.sendLock(localLockIdsRef.current, false);
         localLockIdsRef.current = [];
       }
@@ -11506,6 +11860,7 @@ function BoardWorkspace({
       transformGestureRef.current.pointerType = null;
       transformGestureRef.current.startingViewportRects = [];
       modifiedBeforeRef.current = [];
+      modifiedBeforeRecordsRef.current = [];
 
       // Selection must always stay on Fabric's direct PointerEvent route. In particular,
       // never let Fabric's TouchEvent fallback install its built-in 400 ms mouse-down
@@ -11546,7 +11901,7 @@ function BoardWorkspace({
         || canvas._currentTransform
         || liveTransformSendRef.current.sessionId
         || transformTargetFindRestoreState
-        || localLockIdsRef.current.length) {
+        || (localLockIdsRef.current.length && selectionLeaseRef.current.state !== 'granted')) {
         releaseStaleSelectionTransform(event, { phase: 'before-next-down' });
       }
 
@@ -12409,10 +12764,7 @@ function BoardWorkspace({
       endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas.getActiveObject());
       canvas.requestRenderAll();
       flushDeferredTransformPersistence({ force: true }).catch(() => undefined);
-      if (localLockIdsRef.current.length) {
-        realtimeRef.current?.sendLock(localLockIdsRef.current, false);
-        localLockIdsRef.current = [];
-      }
+      releaseLocalSelectionLease(canvas.getActiveObject());
       internalClipboardArmedRef.current = false;
       spacePressedRef.current = false;
       const activeText = canvas.getActiveObject();
@@ -12756,6 +13108,7 @@ function BoardWorkspace({
       selectionVisualActiveRef.current = null;
       selectionUiTouchedRef.current.clear();
       resizeObserver.disconnect();
+      releaseLocalSelectionLease(canvas.getActiveObject());
       realtimeRef.current?.disconnect();
       realtimeRef.current = null;
       pencilDiagnosticsRef.current?.destroy();

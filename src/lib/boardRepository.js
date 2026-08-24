@@ -152,6 +152,9 @@ function normalizeActionResult(data) {
     : [];
   const changed = data.changed !== false;
   const appliedOps = Array.isArray(data.applied_ops) ? data.applied_ops : [];
+  const skippedConflicts = Array.isArray(data.skipped_conflicts)
+    ? data.skipped_conflicts
+    : [];
   if (changed && !rejectedObjectIds.length && !appliedOps.length && data.applied_background == null) {
     throw new Error('Supabase v8 не вернул точный набор применённых операций');
   }
@@ -164,7 +167,107 @@ function normalizeActionResult(data) {
     appliedOps,
     appliedBackground: data.applied_background ?? null,
     rejectedObjectIds,
+    skippedConflicts,
   };
+}
+
+function normalizeObjectLockResult(data) {
+  const objectIds = Array.isArray(data?.objectIds)
+    ? data.objectIds.map(String)
+    : [];
+  const conflicts = Array.isArray(data?.conflicts)
+    ? data.conflicts.map((conflict) => ({
+      objectId: String(conflict?.objectId ?? ''),
+      clientId: String(conflict?.clientId ?? ''),
+      expiresAt: Date.parse(conflict?.expiresAt ?? '') || 0,
+    })).filter((conflict) => conflict.objectId)
+    : [];
+  return {
+    granted: Boolean(data?.granted),
+    refreshed: Boolean(data?.refreshed),
+    objectIds,
+    conflicts,
+    lockToken: data?.lockToken ?? null,
+    expiresAt: Date.parse(data?.expiresAt ?? '') || 0,
+  };
+}
+
+export async function acquireBoardObjectLocks(
+  boardId,
+  key,
+  clientId,
+  lockToken,
+  objectIds,
+) {
+  const safeIds = [...new Set((Array.isArray(objectIds) ? objectIds : [])
+    .filter(Boolean)
+    .map(String))];
+  if (!safeIds.length) return { granted: false, objectIds: [], conflicts: [] };
+  if (!isSupabaseConfigured) {
+    return {
+      granted: true,
+      objectIds: safeIds,
+      conflicts: [],
+      lockToken,
+      expiresAt: Date.now() + 12_000,
+    };
+  }
+  const keyHash = await sha256(key);
+  const { data, error } = await supabase.rpc('acquire_board_object_locks_v8', {
+    p_id: boardId,
+    p_key_hash: keyHash,
+    p_client_id: clientId,
+    p_lock_token: lockToken,
+    p_object_ids: safeIds,
+    p_ttl_seconds: 12,
+  });
+  if (error) throw error;
+  return normalizeObjectLockResult(data);
+}
+
+export async function refreshBoardObjectLocks(boardId, key, clientId, lockToken) {
+  if (!lockToken) return { refreshed: false, objectIds: [] };
+  if (!isSupabaseConfigured) {
+    return { refreshed: true, objectIds: [], lockToken, expiresAt: Date.now() + 12_000 };
+  }
+  const keyHash = await sha256(key);
+  const { data, error } = await supabase.rpc('refresh_board_object_locks_v8', {
+    p_id: boardId,
+    p_key_hash: keyHash,
+    p_client_id: clientId,
+    p_lock_token: lockToken,
+    p_ttl_seconds: 12,
+  });
+  if (error) throw error;
+  return normalizeObjectLockResult(data);
+}
+
+export async function releaseBoardObjectLocks(boardId, key, clientId, lockToken = null) {
+  if (!isSupabaseConfigured) return 0;
+  const keyHash = await sha256(key);
+  const { data, error } = await supabase.rpc('release_board_object_locks_v8', {
+    p_id: boardId,
+    p_key_hash: keyHash,
+    p_client_id: clientId,
+    p_lock_token: lockToken,
+  });
+  if (error) throw error;
+  return Number(data ?? 0);
+}
+
+export async function getBoardObjectLocks(boardId, key) {
+  if (!isSupabaseConfigured) return [];
+  const keyHash = await sha256(key);
+  const { data, error } = await supabase.rpc('get_board_object_locks_v8', {
+    p_id: boardId,
+    p_key_hash: keyHash,
+  });
+  if (error) throw error;
+  return (Array.isArray(data) ? data : []).map((lock) => ({
+    objectId: String(lock?.objectId ?? ''),
+    clientId: String(lock?.clientId ?? ''),
+    expiresAt: Date.parse(lock?.expiresAt ?? '') || 0,
+  })).filter((lock) => lock.objectId);
 }
 
 async function rebuildLocalSnapshot(boardId, fallbackSnapshot, fallbackRevision = 0) {

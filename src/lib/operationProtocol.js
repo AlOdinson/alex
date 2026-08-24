@@ -102,6 +102,61 @@ export function createRecordPatchOps(beforeRecords, afterRecords, { reorder = fa
   });
 }
 
+function fieldExpectation(object, keys) {
+  const ifFields = {};
+  const ifAbsent = [];
+  for (const key of keys) {
+    if (Object.prototype.hasOwnProperty.call(object ?? {}, key)) {
+      ifFields[key] = cloneJsonValue(object[key]);
+    } else {
+      ifAbsent.push(key);
+    }
+  }
+  return {
+    ...(Object.keys(ifFields).length ? { ifFields } : {}),
+    ...(ifAbsent.length ? { ifAbsent } : {}),
+  };
+}
+
+export function createConditionalRecordPatchOps(
+  currentRecords,
+  targetRecords,
+  { reorder = false } = {},
+) {
+  const currentById = new Map((Array.isArray(currentRecords) ? currentRecords : [])
+    .filter((record) => record?.object?.boardObjectId)
+    .map((record) => [String(record.object.boardObjectId), record]));
+  return createRecordPatchOps(currentRecords, targetRecords, { reorder }).map((operation) => {
+    if (operation.type !== 'patch') return operation;
+    const current = currentById.get(String(operation.id));
+    const changedKeys = [
+      ...Object.keys(operation.patch ?? {}),
+      ...(Array.isArray(operation.unset) ? operation.unset : []),
+    ];
+    return {
+      ...operation,
+      ...fieldExpectation(current?.object ?? {}, changedKeys),
+      ...(operation.reorder ? { ifZIndex: Number(current?.zIndex ?? -1) } : {}),
+    };
+  });
+}
+
+export function createConditionalDeleteOps(records) {
+  return (Array.isArray(records) ? records : []).flatMap((record) => {
+    const objectId = String(record?.object?.boardObjectId ?? '');
+    if (!objectId) return [];
+    const expectedObject = Object.fromEntries(Object.entries(record.object ?? {})
+      .filter(([key]) => shouldSynchronizeKey(key))
+      .map(([key, value]) => [key, cloneJsonValue(value)]));
+    return [{
+      type: 'delete',
+      id: objectId,
+      ifObjectVersion: expectedObject,
+      ...(Number.isInteger(record.zIndex) ? { ifZIndex: Number(record.zIndex) } : {}),
+    }];
+  });
+}
+
 export function applySerializedObjectPatch(sourceObject, operation) {
   if (!sourceObject || operation?.type !== 'patch' || !operation.id) return null;
   if (String(sourceObject.boardObjectId ?? '') !== String(operation.id)) return null;
