@@ -6,6 +6,201 @@
   text-rendering: optimizeLegibility;
 }
 
+/* Alex Board 1.32.22 — isolated adaptive WebRTC screen sharing */
+.screen-share-panel {
+  position: fixed;
+  z-index: 1200;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: max(14px, env(safe-area-inset-bottom));
+  width: min(58vw, 900px);
+  min-width: 320px;
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.2);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 60px rgba(15, 23, 42, 0.28);
+  color: #0f172a;
+  isolation: isolate;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.screen-share-panel.is-minimized {
+  width: min(360px, calc(100vw - 28px));
+  min-width: 0;
+}
+
+.screen-share-panel.is-notice {
+  width: min(440px, calc(100vw - 28px));
+  min-width: 0;
+}
+
+.screen-share-header {
+  min-height: 46px;
+  padding: 8px 10px 8px 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(248, 250, 252, 0.98);
+}
+
+.screen-share-panel.is-minimized .screen-share-header {
+  border-bottom: 0;
+}
+
+.screen-share-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.screen-share-title > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.screen-share-live-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #16a34a;
+  box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.13);
+}
+
+.screen-share-live-dot.is-paused {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
+}
+
+.screen-share-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.screen-share-header-actions button {
+  min-width: 32px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  background: #fff;
+  color: #334155;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.screen-share-header-actions .screen-share-stop {
+  border-color: #fecaca;
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.screen-share-video-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #020617;
+}
+
+.screen-share-video-wrap video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #020617;
+}
+
+.screen-share-video-status {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(2, 6, 23, 0.58);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 750;
+}
+
+.screen-share-message {
+  min-height: 118px;
+  padding: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.screen-share-spinner {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border: 3px solid #bfdbfe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: screen-share-spin 0.8s linear infinite;
+}
+
+@keyframes screen-share-spin {
+  to { transform: rotate(360deg); }
+}
+
+.screen-share-footer {
+  padding: 8px 12px 10px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 14px;
+  border-top: 1px solid rgba(148, 163, 184, 0.2);
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.screen-share-footer > span:nth-child(2) {
+  text-align: right;
+}
+
+.screen-share-footer small {
+  grid-column: 1 / -1;
+  color: #64748b;
+  font-size: 10px;
+}
+
+@media (max-width: 760px) {
+  .screen-share-panel {
+    right: max(8px, env(safe-area-inset-right));
+    bottom: max(8px, env(safe-area-inset-bottom));
+    width: calc(100vw - 16px - env(safe-area-inset-left) - env(safe-area-inset-right));
+    min-width: 0;
+    border-radius: 13px;
+  }
+
+  .screen-share-panel.is-minimized {
+    width: min(330px, calc(100vw - 16px));
+  }
+
+  .screen-share-video-wrap {
+    max-height: 48vh;
+  }
+}
+
 * {
   box-sizing: border-box;
 }

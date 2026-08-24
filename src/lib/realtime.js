@@ -109,6 +109,7 @@ export function connectBoardRealtime({
   onViewJump,
   onViewRequest,
   onGameLibraryVisibility,
+  onScreenShareSignal,
 }) {
   const topic = `board:${boardId}:${realtimeKey}`;
   const color = participantColor(clientId);
@@ -395,6 +396,9 @@ export function connectBoardRealtime({
     if (event === 'view-request') onViewRequest?.({ ...payload, receivedAt: Date.now() });
     if (event === 'game-library-visibility') {
       onGameLibraryVisibility?.({ ...payload, visible: Boolean(payload.visible), receivedAt: Date.now() });
+    }
+    if (event === 'screen-share-signal') {
+      onScreenShareSignal?.({ ...payload, receivedAt: Date.now() });
     }
   };
 
@@ -796,6 +800,7 @@ export function connectBoardRealtime({
       .on('broadcast', { event: 'view-jump' }, ({ payload }) => handleRealtimeEvent('view-jump', payload))
       .on('broadcast', { event: 'view-request' }, ({ payload }) => handleRealtimeEvent('view-request', payload))
       .on('broadcast', { event: 'game-library-visibility' }, ({ payload }) => handleRealtimeEvent('game-library-visibility', payload))
+      .on('broadcast', { event: 'screen-share-signal' }, ({ payload }) => handleRealtimeEvent('screen-share-signal', payload))
       .on('presence', { event: 'sync' }, () => {
         const state = supabaseChannel.presenceState();
         const users = Object.values(state)
@@ -1094,6 +1099,18 @@ export function connectBoardRealtime({
         visible: Boolean(visible),
         timestamp: Date.now(),
       });
+    },
+    sendScreenShareSignal(signal) {
+      if (!signal?.protocol || !signal?.type || !signal?.sessionId) {
+        return Promise.resolve('ignored');
+      }
+      return publishRealtime('screen-share-signal', {
+        ...signal,
+        clientId,
+        name,
+        permission,
+        timestamp: Date.now(),
+      }, { force: true });
     },
     flushPending,
     getPendingActions() {

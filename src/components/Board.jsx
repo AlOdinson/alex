@@ -19,6 +19,7 @@ import {
 import Toolbar from './Toolbar.jsx';
 import ShareDialog from './ShareDialog.jsx';
 import GameLibrary from './GameLibrary.jsx';
+import { ScreenShareOverlay, useAdaptiveScreenShare } from './ScreenShare.jsx';
 import {
   applyActionsToSnapshot,
   applyOpsToSnapshot,
@@ -1682,6 +1683,7 @@ function BoardWorkspace({
   const fabricCanvasRef = useRef(null);
   const fabricInputModeSwitchRef = useRef(null);
   const realtimeRef = useRef(null);
+  const screenShareSignalHandlerRef = useRef(null);
   const gameLibraryVisibleRef = useRef(Boolean(initialAccess.gameLibraryVisible));
   const gameLibraryVisibilityBusyRef = useRef(false);
   const toggleGameLibraryVisibilityRef = useRef(null);
@@ -1950,6 +1952,14 @@ function BoardWorkspace({
 
   const isOwner = permission === 'owner';
   const canEdit = permission === 'owner' || permission === 'edit';
+  const screenShare = useAdaptiveScreenShare({
+    realtimeRef,
+    users,
+    isOwner,
+    clientId: clientIdRef.current,
+    participantName,
+  });
+  screenShareSignalHandlerRef.current = screenShare.handleSignal;
   const compactKeyboardEnabled = useMemo(() => (
     typeof navigator !== 'undefined'
     && Number(navigator.maxTouchPoints ?? 0) > 0
@@ -8760,6 +8770,9 @@ function BoardWorkspace({
       onViewJump: handleRemoteViewJump,
       onViewRequest: handleRemoteViewRequest,
       onGameLibraryVisibility: handleRemoteGameLibraryVisibility,
+      onScreenShareSignal(payload) {
+        screenShareSignalHandlerRef.current?.(payload);
+      },
       onSyncRequired() {
         syncFromServer(true);
       },
@@ -13321,6 +13334,7 @@ function BoardWorkspace({
         onSelectionWidthChange={applySelectionWidth}
         eyedropperActive={eyedropperActive}
         onToggleEyedropper={toggleEyedropper}
+        screenShare={screenShare}
       />
 
       {!isSupabaseConfigured && (
@@ -13360,6 +13374,8 @@ function BoardWorkspace({
           ))}
         </div>
       </section>
+
+      <ScreenShareOverlay screenShare={screenShare} />
 
       {mobileTextEditor && compactKeyboardEnabled && (
         <div

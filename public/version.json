@@ -1,9 +1,9 @@
 {
-  "version": "1.32.21",
-  "packageVersion": "1.32.21",
+  "version": "1.32.22",
+  "packageVersion": "1.32.22",
   "base": "1.32.0",
-  "release": "Safe incremental board cleanup",
-  "date": "2026-08-24",
-  "name": "safe-board-cleanup",
-  "label": "Alex Board 1.32.21"
+  "release": "Adaptive peer-to-peer screen sharing",
+  "date": "2026-08-25",
+  "name": "adaptive-screen-share",
+  "label": "Alex Board 1.32.22"
 }

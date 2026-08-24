@@ -1,21 +1,22 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.32.21",
+  "version": "1.32.22",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test:screen-share": "node scripts/test-screen-share.mjs",
     "test:pencil": "node scripts/test-pencil-transform-regression.mjs && node scripts/test-pencil-precise-selection.mjs && node scripts/test-pencil-palm-regression.mjs && node scripts/test-pencil-contact-arbitration.mjs && node scripts/test-pencil-rapid-pinch-regression.mjs && node scripts/test-pencil-original-input-path.mjs && node scripts/test-pencil-tool-routing.mjs && node scripts/test-pencil-diagnostics.mjs && node scripts/test-pencil-diagnostics-runtime.mjs && node scripts/benchmark-transform-hotpath.mjs",
-    "test:sync": "node scripts/test-sync-convergence.mjs && node scripts/test-authoritative-log.mjs && node scripts/test-collaboration-safety.mjs && node scripts/test-fast-board-library.mjs && node scripts/test-drawing-presets.mjs && node scripts/test-pencil-transform-regression.mjs && node scripts/test-pencil-precise-selection.mjs && node scripts/test-pencil-palm-regression.mjs && node scripts/test-pencil-contact-arbitration.mjs && node scripts/test-pencil-rapid-pinch-regression.mjs && node scripts/test-pencil-original-input-path.mjs && node scripts/test-pencil-tool-routing.mjs && node scripts/test-pencil-diagnostics.mjs && node scripts/test-pencil-diagnostics-runtime.mjs && node scripts/benchmark-transform-hotpath.mjs"
+    "test:sync": "node scripts/test-screen-share.mjs && node scripts/test-sync-convergence.mjs && node scripts/test-authoritative-log.mjs && node scripts/test-collaboration-safety.mjs && node scripts/test-fast-board-library.mjs && node scripts/test-drawing-presets.mjs && node scripts/test-pencil-transform-regression.mjs && node scripts/test-pencil-precise-selection.mjs && node scripts/test-pencil-palm-regression.mjs && node scripts/test-pencil-contact-arbitration.mjs && node scripts/test-pencil-rapid-pinch-regression.mjs && node scripts/test-pencil-original-input-path.mjs && node scripts/test-pencil-tool-routing.mjs && node scripts/test-pencil-diagnostics.mjs && node scripts/test-pencil-diagnostics-runtime.mjs && node scripts/benchmark-transform-hotpath.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",
     "fabric": "7.4.0",
+    "heic-to": "1.5.2",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "heic-to": "1.5.2"
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "6.0.3",

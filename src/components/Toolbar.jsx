@@ -147,7 +147,7 @@ function IconButton({ title, children, active = false, disabled = false, onClick
 }
 
 
-function NavigationActionButton({ title, children, active = false, onClick }) {
+function NavigationActionButton({ title, children, active = false, disabled = false, onClick }) {
   const buttonRef = useRef(null);
   const actionRef = useRef(onClick);
   const suppressClickUntilRef = useRef(0);
@@ -160,7 +160,7 @@ function NavigationActionButton({ title, children, active = false, onClick }) {
 
     function handleStylusTouchStart(event) {
       const stylus = firstStylusTouch(event);
-      if (!stylus) return;
+      if (disabled || !stylus) return;
       if (event.cancelable) event.preventDefault();
       event.stopPropagation();
       suppressClickUntilRef.current = performance.now() + 900;
@@ -193,7 +193,7 @@ function NavigationActionButton({ title, children, active = false, onClick }) {
       button.removeEventListener('touchend', handleStylusTouchEnd, true);
       button.removeEventListener('touchcancel', handleStylusTouchCancel, true);
     };
-  }, []);
+  }, [disabled]);
 
   return (
     <button
@@ -202,6 +202,7 @@ function NavigationActionButton({ title, children, active = false, onClick }) {
       className={`navigation-text-button ${active ? 'active' : ''}`.trim()}
       title={title}
       aria-pressed={active}
+      disabled={disabled}
       onClick={(event) => {
         if (performance.now() < suppressClickUntilRef.current) {
           event.preventDefault();
@@ -280,6 +281,7 @@ export default function Toolbar({
   onShareImage,
   pendingCount = 0,
   syncTone = 'saved',
+  screenShare = null,
 }) {
   const [shapesOpen, setShapesOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -404,6 +406,20 @@ export default function Toolbar({
               onClick={onToggleAutopilot}
             >
               Автопилот
+            </NavigationActionButton>
+          )}
+          {isOwner && screenShare && (
+            <NavigationActionButton
+              active={screenShare.isHosting}
+              disabled={screenShare.buttonDisabled}
+              title={screenShare.activeRemoteSession
+                ? 'На этой доске уже идёт демонстрация экрана'
+                : (screenShare.isHosting
+                  ? 'Остановить демонстрацию экрана'
+                  : 'Показать экран или вкладку участникам')}
+              onClick={screenShare.toggle}
+            >
+              {screenShare.isHosting ? 'Стоп экран' : 'Экран'}
             </NavigationActionButton>
           )}
         </div>
