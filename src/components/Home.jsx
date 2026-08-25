@@ -17,6 +17,7 @@ import {
   rememberOwnedBoard,
   updateOwnedBoard,
 } from '../lib/boardLibrary.js';
+import TeacherAccountPanel from './TeacherAccountPanel.jsx';
 
 function formatDate(value) {
   if (!value) return 'Ещё не использовалась';
@@ -331,6 +332,8 @@ export default function Home() {
 
         {error && <p className="error-text">{error}</p>}
       </section>
+
+      {isSupabaseConfigured && <TeacherAccountPanel onBoardsClaimed={refreshBoards} />}
 
       <section className="board-library" aria-labelledby="board-library-title">
         <div className="board-library-heading">

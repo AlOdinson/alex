@@ -2,6 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { randomToken } from '../lib/ids.js';
 import { isSupabaseConfigured, supabase } from '../lib/supabase.js';
 import {
+  authorizeTeacherMacRequest,
+  registerTeacherMacAgent,
+} from '../lib/teacherAccount.js';
+import {
   MAX_REMOTE_BROWSER_VIEWERS,
   normalizeRemoteBrowserState,
   normalizeScreenShareSignal,
@@ -49,11 +53,12 @@ async function connectSignalChannel({
   clientId,
   name,
   onSignal,
+  forceSupabase = false,
 }) {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error('Supabase не настроен в этой сборке доски.');
   }
-  const topic = `board:${boardId}:${realtimeKey}`;
+  const topic = `screen-share-v2:${boardId}:${realtimeKey}`;
   const publishPayload = (signal) => ({
     ...signal,
     clientId,
@@ -62,7 +67,7 @@ async function connectSignalChannel({
     timestamp: Date.now(),
   });
 
-  if (window.Ably?.Realtime) {
+  if (!forceSupabase && window.Ably?.Realtime) {
     let client = null;
     try {
       client = new window.Ably.Realtime({
@@ -149,6 +154,36 @@ async function connectSignalChannel({
   };
 }
 
+async function connectAccountChannel({ realtimeKey, onSignal }) {
+  if (!isSupabaseConfigured || !supabase || !realtimeKey) {
+    throw new Error('Аккаунт учителя не подключён.');
+  }
+  const channel = supabase.channel(`teacher-account:${realtimeKey}`, {
+    config: { broadcast: { self: false } },
+  });
+  channel.on('broadcast', { event: 'mac-browser-account' }, ({ payload }) => onSignal(payload));
+  await new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error('Канал аккаунта не подключился')), 12_000);
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        window.clearTimeout(timer);
+        resolve();
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        window.clearTimeout(timer);
+        reject(new Error(`Канал аккаунта: ${status}`));
+      }
+    });
+  });
+  return {
+    publish(payload) {
+      return channel.send({ type: 'broadcast', event: 'mac-browser-account', payload });
+    },
+    close() {
+      return supabase.removeChannel(channel);
+    },
+  };
+}
+
 function bridgeUrlFromLocation() {
   const params = new URLSearchParams(window.location.search);
   const port = Number(params.get('alexBridgePort') ?? 0);
@@ -158,7 +193,8 @@ function bridgeUrlFromLocation() {
 }
 
 export function isMacBrowserHostMode() {
-  return new URLSearchParams(window.location.search).get('alexMacHost') === '1';
+  const params = new URLSearchParams(window.location.search);
+  return params.get('alexMacHost') === '1' || params.get('alexMacAccountHost') === '1';
 }
 
 export default function MacBrowserHost({
@@ -167,6 +203,7 @@ export default function MacBrowserHost({
   realtimeKey,
   participantName,
   permission,
+  accountMode = false,
 }) {
   const canvasRef = useRef(null);
   const [status, setStatus] = useState('Подключение к локальному серверу…');
@@ -176,6 +213,9 @@ export default function MacBrowserHost({
     let disposed = false;
     let bridge = null;
     let signalChannel = null;
+    let accountChannel = null;
+    let accountRealtimeKey = '';
+    let agentTokenHash = '';
     let stream = null;
     let track = null;
     let activeSession = null;
@@ -191,7 +231,10 @@ export default function MacBrowserHost({
     const agentClientId = `mac-browser-${randomToken(10)}`;
     const agentSessionId = `agent-${randomToken(12)}`;
     let availabilityTimer = null;
+    let registrationTimer = null;
     let hostTimer = null;
+    let credentialResolver = null;
+    const credentialsPromise = new Promise((resolve) => { credentialResolver = resolve; });
 
     const updateStatus = (next, extra = '') => {
       if (disposed) return;
@@ -245,6 +288,19 @@ export default function MacBrowserHost({
       busy: Boolean(activeSession),
     }, { sessionId: agentSessionId }).catch(() => undefined);
 
+    const announceAccountAvailability = () => {
+      if (!accountChannel) return Promise.resolve();
+      return accountChannel.publish({
+        protocol: SCREEN_SHARE_PROTOCOL,
+        type: 'account-browser-available',
+        clientId: agentClientId,
+        sessionId: agentSessionId,
+        agentName: 'Mac M1',
+        busy: Boolean(activeSession),
+        timestamp: Date.now(),
+      }).catch(() => undefined);
+    };
+
     const announceHost = () => {
       if (!activeSession) return Promise.resolve();
       return publish('host-start', {
@@ -273,8 +329,13 @@ export default function MacBrowserHost({
       closeAllPeers();
       sendBridge({ type: 'stop-session', reason });
       if (announce) await publish('host-stop', { reason }, previous).catch(() => undefined);
+      if (accountMode && signalChannel) {
+        await signalChannel.close().catch(() => undefined);
+        signalChannel = null;
+      }
       updateStatus('Mac подключён · браузер ожидает запуска');
-      announceAvailability();
+      if (accountMode) announceAccountAvailability();
+      else announceAvailability();
     };
 
     const handleRemoteData = (viewerId, rawData) => {
@@ -443,6 +504,51 @@ export default function MacBrowserHost({
       }
     };
 
+    const processAccountSignal = async (payload) => {
+      if (!accountMode || !payload || payload.type !== 'account-browser-start') return;
+      if (payload.targetId && payload.targetId !== agentClientId) return;
+      if (activeSession) {
+        await announceAccountAvailability();
+        return;
+      }
+      const boardIdValue = String(payload.boardId ?? '');
+      const boardKeyHash = String(payload.boardKeyHash ?? '');
+      if (!boardIdValue || !boardKeyHash || !agentTokenHash) return;
+      const authorization = await authorizeTeacherMacRequest(
+        agentTokenHash,
+        boardIdValue,
+        boardKeyHash,
+      );
+      if (!authorization?.realtimeKey) return;
+
+      if (signalChannel) await signalChannel.close().catch(() => undefined);
+      signalChannel = await connectSignalChannel({
+        boardId: boardIdValue,
+        boardKey: '',
+        realtimeKey: authorization.realtimeKey,
+        clientId: agentClientId,
+        name: 'Браузер на Mac',
+        onSignal: (signal) => {
+          pendingSignals.push(signal);
+          drainSignals().catch(() => undefined);
+        },
+        forceSupabase: true,
+      });
+      sendBridge({ type: 'signal-transport', transport: signalChannel.transport });
+      activeSession = {
+        sessionId: randomToken(18),
+        hostId: agentClientId,
+        startedAt: Date.now(),
+        sourceMode: 'remote-browser',
+      };
+      controllerId = String(payload.clientId ?? '');
+      controllerName = String(payload.requestedByName || payload.name || 'Участник');
+      sendBridge({ type: 'start-session', sessionId: activeSession.sessionId });
+      updateStatus('Удалённый браузер работает', `Управляет: ${controllerName}`);
+      await announceHost();
+      await announceAccountAvailability();
+    };
+
     const drawFrame = async (frame) => {
       if (drawBusy) {
         pendingFrame = frame;
@@ -524,6 +630,12 @@ export default function MacBrowserHost({
           handleRemoteData(String(payload.viewerId ?? ''), payload.command);
         } else if (payload?.type === 'session-stopped' && activeSession) {
           stopSession(payload.reason || 'mac-stopped', true);
+        } else if (payload?.type === 'agent-credentials') {
+          credentialResolver?.({
+            agentToken: String(payload.agentToken ?? ''),
+            pairingCode: String(payload.pairingCode ?? ''),
+          });
+          credentialResolver = null;
         }
       };
       await new Promise((resolve, reject) => {
@@ -544,6 +656,52 @@ export default function MacBrowserHost({
           updateStatus('Связь с Alex Browser Server потеряна');
         }
       };
+
+      if (accountMode) {
+        const credentials = await Promise.race([
+          credentialsPromise,
+          new Promise((_, reject) => window.setTimeout(
+            () => reject(new Error('Mac-сервис не передал данные привязки')),
+            10_000,
+          )),
+        ]);
+        const refreshRegistration = async () => {
+          const registration = await registerTeacherMacAgent(
+            credentials.agentToken,
+            credentials.pairingCode,
+            'Mac M1',
+          );
+          agentTokenHash = registration.tokenHash;
+          sendBridge({
+            type: 'account-status',
+            paired: Boolean(registration.paired),
+            agentId: registration.agentId,
+          });
+          const nextKey = String(registration.realtimeKey ?? '');
+          if (!registration.paired || !nextKey) {
+            if (accountChannel) await accountChannel.close().catch(() => undefined);
+            accountChannel = null;
+            accountRealtimeKey = '';
+            updateStatus('Mac ожидает привязки к аккаунту', 'Введите код с локальной страницы на главной странице Alex Board.');
+            return;
+          }
+          if (!accountChannel || accountRealtimeKey !== nextKey) {
+            if (accountChannel) await accountChannel.close().catch(() => undefined);
+            accountRealtimeKey = nextKey;
+            accountChannel = await connectAccountChannel({
+              realtimeKey: accountRealtimeKey,
+              onSignal: (signal) => processAccountSignal(signal).catch(() => undefined),
+            });
+          }
+          await announceAccountAvailability();
+          updateStatus('Mac привязан к аккаунту · ожидает запуска', 'Он доступен во всех старых и новых досках аккаунта.');
+        };
+        await refreshRegistration();
+        registrationTimer = window.setInterval(() => refreshRegistration().catch(() => undefined), AGENT_HEARTBEAT_MS);
+        availabilityTimer = window.setInterval(announceAccountAvailability, AGENT_HEARTBEAT_MS);
+        hostTimer = window.setInterval(announceHost, HOST_HEARTBEAT_MS);
+        return;
+      }
 
       signalChannel = await connectSignalChannel({
         boardId,
@@ -568,6 +726,7 @@ export default function MacBrowserHost({
     return () => {
       disposed = true;
       window.clearInterval(availabilityTimer);
+      window.clearInterval(registrationTimer);
       window.clearInterval(hostTimer);
       if (activeSession) publish('host-stop', { reason: 'agent-closed' }, activeSession).catch(() => undefined);
       publish('remote-browser-unavailable', { sessionId: agentSessionId }, { sessionId: agentSessionId }).catch(() => undefined);
@@ -575,8 +734,9 @@ export default function MacBrowserHost({
       track?.stop?.();
       bridge?.close?.();
       signalChannel?.close?.();
+      accountChannel?.close?.();
     };
-  }, [boardId, boardKey, participantName, permission, realtimeKey]);
+  }, [accountMode, boardId, boardKey, participantName, permission, realtimeKey]);
 
   return (
     <main className="mac-browser-host-page">

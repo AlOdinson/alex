@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { randomToken } from '../lib/ids.js';
+import { sha256 } from '../lib/ids.js';
+import { isSupabaseConfigured, supabase } from '../lib/supabase.js';
 import {
   MAX_SCREEN_SHARE_VIEWERS,
   normalizeRemoteBrowserState,
@@ -121,6 +123,10 @@ export function useAdaptiveScreenShare({
   canEdit,
   clientId,
   participantName,
+  boardId,
+  boardKey,
+  boardRealtimeKey,
+  teacherAccountKey,
 }) {
   const capability = useMemo(() => screenShareCapability(), []);
   const [stream, setStream] = useState(null);
@@ -153,6 +159,8 @@ export function useAdaptiveScreenShare({
   const stopHostingRef = useRef(() => undefined);
   const processSignalRef = useRef(() => undefined);
   const remoteControlChannelRef = useRef(null);
+  const accountChannelRef = useRef(null);
+  const directSignalChannelRef = useRef(null);
 
   const updateView = useCallback((patch) => {
     if (!mountedRef.current) return;
@@ -163,17 +171,34 @@ export function useAdaptiveScreenShare({
     const session = explicitSession ?? activeSessionRef.current;
     const sessionId = String(details.sessionId ?? session?.sessionId ?? '');
     if (!sessionId) return Promise.resolve('ignored');
+    const payload = {
+      protocol: SCREEN_SHARE_PROTOCOL,
+      type,
+      sessionId,
+      ...details,
+    };
+    const direct = directSignalChannelRef.current;
+    if (direct) {
+      return direct.ready.then(() => direct.channel.send({
+        type: 'broadcast',
+        event: 'screen-share-signal',
+        payload: {
+          ...payload,
+          clientId,
+          name: participantName,
+          permission: isOwner ? 'owner' : (canEdit ? 'edit' : 'view'),
+          timestamp: Date.now(),
+        },
+      })).catch(() => 'unavailable');
+    }
     try {
       return Promise.resolve(realtimeRef.current?.sendScreenShareSignal?.({
-        protocol: SCREEN_SHARE_PROTOCOL,
-        type,
-        sessionId,
-        ...details,
+        ...payload,
       })).catch(() => 'unavailable');
     } catch {
       return Promise.resolve('unavailable');
     }
-  }, [realtimeRef]);
+  }, [canEdit, clientId, isOwner, participantName, realtimeRef]);
 
   const applyCurrentProfile = useCallback(async () => {
     const profile = currentProfileRef.current;
@@ -588,6 +613,7 @@ export function useAdaptiveScreenShare({
         name: signal.agentName || signal.name || 'Mac',
         expiresAt: Date.now() + REMOTE_BROWSER_AGENT_TTL_MS,
         busy: Boolean(signal.busy),
+        source: 'board',
       });
       return;
     }
@@ -705,6 +731,69 @@ export function useAdaptiveScreenShare({
     Promise.resolve(processSignalRef.current(payload)).catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    if (!boardId || !boardRealtimeKey || !isSupabaseConfigured || !supabase) {
+      directSignalChannelRef.current = null;
+      return undefined;
+    }
+    let disposed = false;
+    const channel = supabase.channel(`screen-share-v2:${boardId}:${boardRealtimeKey}`, {
+      config: { broadcast: { self: false } },
+    });
+    channel.on('broadcast', { event: 'screen-share-signal' }, ({ payload }) => {
+      if (!disposed) handleSignal(payload);
+    });
+    const ready = new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => reject(new Error('Канал демонстрации не подключился')), 12_000);
+      channel.subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          window.clearTimeout(timer);
+          resolve();
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          window.clearTimeout(timer);
+          reject(new Error(`Канал демонстрации: ${status}`));
+        }
+      });
+    });
+    directSignalChannelRef.current = { channel, ready };
+    return () => {
+      disposed = true;
+      if (directSignalChannelRef.current?.channel === channel) directSignalChannelRef.current = null;
+      supabase.removeChannel(channel);
+    };
+  }, [boardId, boardRealtimeKey, handleSignal]);
+
+  useEffect(() => {
+    if (!teacherAccountKey || !isSupabaseConfigured || !supabase) {
+      accountChannelRef.current = null;
+      return undefined;
+    }
+    let disposed = false;
+    const channel = supabase.channel(`teacher-account:${teacherAccountKey}`, {
+      config: { broadcast: { self: false } },
+    });
+    accountChannelRef.current = channel;
+    channel.on('broadcast', { event: 'mac-browser-account' }, ({ payload }) => {
+      if (disposed || payload?.type !== 'account-browser-available') return;
+      const timestamp = Number(payload.timestamp ?? 0);
+      if (!payload.clientId || Math.abs(Date.now() - timestamp) > REMOTE_BROWSER_AGENT_TTL_MS * 2) return;
+      setRemoteAgent({
+        clientId: String(payload.clientId),
+        sessionId: String(payload.sessionId ?? ''),
+        name: String(payload.agentName || 'Mac'),
+        expiresAt: Date.now() + REMOTE_BROWSER_AGENT_TTL_MS,
+        busy: Boolean(payload.busy),
+        source: 'account',
+      });
+    });
+    channel.subscribe();
+    return () => {
+      disposed = true;
+      if (accountChannelRef.current === channel) accountChannelRef.current = null;
+      supabase.removeChannel(channel);
+    };
+  }, [teacherAccountKey]);
+
   const start = useCallback(async () => {
     if (!isOwner || startBusyRef.current) return;
     const current = activeSessionRef.current;
@@ -808,7 +897,16 @@ export function useAdaptiveScreenShare({
         phase: 'remote-unavailable',
         role: 'viewer',
         sourceMode: 'remote-browser',
-        message: 'Alex Browser Server не найден. Запустите его на Mac и подключите к этой учительской доске.',
+        message: 'Alex Browser Server не найден. Запустите его на привязанном Mac.',
+      });
+      return;
+    }
+    if (agent.busy) {
+      updateView({
+        phase: 'remote-unavailable',
+        role: 'viewer',
+        sourceMode: 'remote-browser',
+        message: 'Браузер на Mac уже используется в другой доске этого аккаунта.',
       });
       return;
     }
@@ -820,14 +918,32 @@ export function useAdaptiveScreenShare({
       message: `Запускаю браузер на ${agent.name}…`,
     });
     try {
-      await sendSignal('remote-browser-start', {
-        targetId: agent.clientId,
-        requestedByName: participantName,
-      }, agent);
+      if (agent.source === 'account' && accountChannelRef.current && teacherAccountKey) {
+        await accountChannelRef.current.send({
+          type: 'broadcast',
+          event: 'mac-browser-account',
+          payload: {
+            protocol: SCREEN_SHARE_PROTOCOL,
+            type: 'account-browser-start',
+            targetId: agent.clientId,
+            boardId,
+            boardKeyHash: await sha256(boardKey),
+            clientId,
+            name: participantName,
+            requestedByName: participantName,
+            timestamp: Date.now(),
+          },
+        });
+      } else {
+        await sendSignal('remote-browser-start', {
+          targetId: agent.clientId,
+          requestedByName: participantName,
+        }, agent);
+      }
     } finally {
       window.setTimeout(() => { startBusyRef.current = false; }, 500);
     }
-  }, [canEdit, clientId, participantName, remoteAgent, sendSignal, updateView]);
+  }, [boardId, boardKey, canEdit, clientId, participantName, remoteAgent, sendSignal, teacherAccountKey, updateView]);
 
   const sendRemoteCommand = useCallback((command, options = {}) => {
     const session = activeSessionRef.current;

@@ -1,5 +1,6 @@
 import Home from './components/Home.jsx';
 import Board from './components/Board.jsx';
+import MacBrowserHost, { isMacBrowserHostMode } from './components/MacBrowserHost.jsx';
 
 function parseRoute() {
   const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
@@ -13,6 +14,9 @@ function parseRoute() {
 }
 
 export default function App() {
+  if (isMacBrowserHostMode() && new URLSearchParams(window.location.search).get('alexMacAccountHost') === '1') {
+    return <MacBrowserHost accountMode />;
+  }
   const route = parseRoute();
   if (route.name === 'board') {
     return <Board boardId={route.boardId} />;

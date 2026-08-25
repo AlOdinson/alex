@@ -21,6 +21,7 @@ import ShareDialog from './ShareDialog.jsx';
 import GameLibrary from './GameLibrary.jsx';
 import { ScreenShareOverlay, useAdaptiveScreenShare } from './ScreenShare.jsx';
 import MacBrowserHost, { isMacBrowserHostMode } from './MacBrowserHost.jsx';
+import { getBoardTeacherAccount } from '../lib/teacherAccount.js';
 import {
   applyActionsToSnapshot,
   applyOpsToSnapshot,
@@ -1962,6 +1963,19 @@ function BoardWorkspace({
     opacity: 1,
     width: 3,
   });
+  const [teacherAccountKey, setTeacherAccountKey] = useState('');
+
+  useEffect(() => {
+    let disposed = false;
+    getBoardTeacherAccount(boardId, boardKey)
+      .then((account) => {
+        if (!disposed) setTeacherAccountKey(String(account?.realtimeKey ?? ''));
+      })
+      .catch(() => {
+        if (!disposed) setTeacherAccountKey('');
+      });
+    return () => { disposed = true; };
+  }, [boardId, boardKey]);
 
   const isOwner = permission === 'owner';
   const canEdit = permission === 'owner' || permission === 'edit';
@@ -1972,6 +1986,10 @@ function BoardWorkspace({
     canEdit,
     clientId: clientIdRef.current,
     participantName,
+    boardId,
+    boardKey,
+    boardRealtimeKey: initialAccess.realtimeKey,
+    teacherAccountKey,
   });
   screenShareSignalHandlerRef.current = screenShare.handleSignal;
   const compactKeyboardEnabled = useMemo(() => (
