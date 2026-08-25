@@ -592,7 +592,10 @@ export default function MacBrowserHost({
     };
 
     async function boot() {
-      if (permission !== 'owner') {
+      // A board-scoped host must prove ownership with that board's key. The
+      // account agent has no board yet: it is paired separately through the
+      // short-lived agent token and the authenticated teacher account.
+      if (!accountMode && permission !== 'owner') {
         throw new Error('Для Mac-сервера нужна специальная учительская ссылка с ключом владельца.');
       }
       const url = bridgeUrlFromLocation();

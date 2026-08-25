@@ -1,9 +1,9 @@
 {
-  "version": "1.34.0",
-  "packageVersion": "1.34.0",
+  "version": "1.34.1",
+  "packageVersion": "1.34.1",
   "base": "1.32.0",
   "release": "Teacher account and account-wide Mac browser",
   "date": "2026-08-25",
-  "name": "teacher-account-mac-browser",
-  "label": "Alex Board 1.34.0"
+  "name": "account-mac-reconnect",
+  "label": "Alex Board 1.34.1"
 }

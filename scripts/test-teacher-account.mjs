@@ -18,6 +18,11 @@ assert.match(screenShare, /teacher-account:\$\{teacherAccountKey\}/);
 assert.match(screenShare, /screen-share-v2:\$\{boardId\}:\$\{boardRealtimeKey\}/);
 assert.match(macHost, /account-browser-start/);
 assert.match(macHost, /forceSupabase: true/);
+assert.match(
+  macHost,
+  /if \(!accountMode && permission !== 'owner'\)/,
+  'account mode must reach the token-based pairing flow without a board owner key',
+);
 assert.match(migration, /add column if not exists owner_user_id uuid references auth\.users/);
 assert.match(migration, /revoke all on public\.teacher_accounts_v9 from anon, authenticated/);
 assert.match(migration, /revoke execute on function public\.claim_teacher_mac_agent_v9\(text\) from anon/);
