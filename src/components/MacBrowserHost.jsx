@@ -585,7 +585,7 @@ export default function MacBrowserHost({
         <h1>Alex Browser Server</h1>
         <p>{status}</p>
         {details && <small>{details}</small>}
-        <canvas ref={canvasRef} width="1280" height="720" aria-hidden="true" />
+        <canvas ref={canvasRef} width="1920" height="1080" aria-hidden="true" />
       </section>
     </main>
   );

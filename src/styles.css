@@ -6,7 +6,7 @@
   text-rendering: optimizeLegibility;
 }
 
-/* Alex Board 1.33.2 — direct WebRTC with protected Mac relay fallback */
+/* Alex Board 1.33.3 — Full HD direct WebRTC with protected Mac relay fallback */
 .screen-share-panel {
   position: fixed;
   z-index: 1200;

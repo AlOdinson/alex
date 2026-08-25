@@ -58,6 +58,7 @@ const [boardSource, hostSource, viewerSource] = await Promise.all([
 ]);
 assert.match(boardSource, /isMacBrowserHostMode\(\)/, 'the agent route must bypass the Fabric workspace');
 assert.match(hostSource, /canvas\.captureStream\(0\)/, 'idle pages must emit zero scheduled canvas frames');
+assert.match(hostSource, /width="1920" height="1080"/, 'the remote browser canvas must start in Full HD');
 assert.match(hostSource, /track\?\.requestFrame\?\.\(\)/, 'each changed frame must be requested explicitly');
 assert.match(hostSource, /Ably unavailable for Mac browser; using Supabase Realtime/);
 assert.match(hostSource, /transport: 'supabase'/);

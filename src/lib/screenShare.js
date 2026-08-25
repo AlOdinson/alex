@@ -107,8 +107,8 @@ export function normalizeScreenShareSignal(payload) {
 
 export function normalizeRemoteBrowserState(payload) {
   if (!payload || typeof payload !== 'object') return null;
-  const width = Math.max(1, Math.min(3840, Number(payload.width ?? 1280)));
-  const height = Math.max(1, Math.min(2160, Number(payload.height ?? 720)));
+  const width = Math.max(1, Math.min(3840, Number(payload.width ?? 1920)));
+  const height = Math.max(1, Math.min(2160, Number(payload.height ?? 1080)));
   return {
     url: String(payload.url ?? ''),
     title: String(payload.title ?? ''),
@@ -128,8 +128,8 @@ export function remoteBrowserPointerCoordinates({
   clientX,
   clientY,
   rect,
-  viewportWidth = 1280,
-  viewportHeight = 720,
+  viewportWidth = 1920,
+  viewportHeight = 1080,
 }) {
   const boxWidth = Math.max(1, Number(rect?.width ?? 1));
   const boxHeight = Math.max(1, Number(rect?.height ?? 1));

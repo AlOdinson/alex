@@ -1,9 +1,9 @@
 {
-  "version": "1.33.2",
-  "packageVersion": "1.33.2",
+  "version": "1.33.3",
+  "packageVersion": "1.33.3",
   "base": "1.32.0",
-  "release": "Protected Mac relay fallback",
+  "release": "Full HD Mac browser",
   "date": "2026-08-25",
-  "name": "protected-mac-relay-fallback",
-  "label": "Alex Board 1.33.2"
+  "name": "full-hd-mac-browser",
+  "label": "Alex Board 1.33.3"
 }
