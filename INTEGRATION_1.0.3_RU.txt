@@ -1,9 +1,0 @@
-ALEX BOARD 1.0.3 — ТЕХНИЧЕСКОЕ ОПИСАНИЕ
-
-Причина поломки 1.0.2:
-На iPadOS после PointerEvent для пальца браузер также создаёт совместимый TouchEvent. В unified input mode обработчики touchstart/touchmove/touchend вызывали preventDefault(), stopPropagation() и stopImmediatePropagation(). Safari мог после этого отменить активный pointer stream. Первый pointerdown попадал в новый контроллер, но последующие pointermove/up не доходили до него, из-за чего не работали ни один палец, ни pinch.
-
-Исправление:
-В режиме unified pointer input старые TouchEvent-обработчики только наблюдают секретный мобильный жест библиотеки игр и сразу выходят. Они не отменяют TouchEvent и не управляют Canvas. Вводом Canvas эксклюзивно управляют Pointer Events. Нативное перемещение страницы по-прежнему отключено CSS touch-action:none и preventDefault в pointer-обработчиках.
-
-Сетевой протокол, Fabric.Path, Ably, Supabase, IndexedDB и Undo/Redo не изменены. SQL не нужен.

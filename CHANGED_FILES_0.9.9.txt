@@ -1,9 +1,0 @@
-Alex Board 0.9.9
-
-src/components/Board.jsx
-package.json
-README.md
-UPDATE_INSTRUCTIONS_0.9.9_RU.txt
-INTEGRATION_0.9.9_RU.txt
-VALIDATION_0.9.9_RU.txt
-CHANGED_FILES_0.9.9.txt

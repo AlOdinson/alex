@@ -1,8 +1,0 @@
-src/components/Board.jsx
-package.json
-README.md
-UPDATE_INSTRUCTIONS.txt
-UPDATE_INSTRUCTIONS_1.0.3_RU.txt
-INTEGRATION_1.0.3_RU.txt
-VALIDATION_1.0.3_RU.txt
-CHANGED_FILES_1.0.3.txt

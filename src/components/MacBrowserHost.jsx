@@ -4,6 +4,7 @@ import { isSupabaseConfigured, supabase } from '../lib/supabase.js';
 import {
   authorizeTeacherMacRequest,
   registerTeacherMacAgent,
+  revokeTeacherMacAgentByToken,
 } from '../lib/teacherAccount.js';
 import {
   MAX_REMOTE_BROWSER_VIEWERS,
@@ -637,8 +638,24 @@ export default function MacBrowserHost({
           credentialResolver?.({
             agentToken: String(payload.agentToken ?? ''),
             pairingCode: String(payload.pairingCode ?? ''),
+            deviceName: String(payload.deviceName ?? 'Mac'),
           });
           credentialResolver = null;
+        } else if (payload?.type === 'agent-revoke-self') {
+          const requestId = String(payload.requestId ?? '');
+          revokeTeacherMacAgentByToken(agentTokenHash)
+            .then((revoked) => sendBridge({
+              type: 'agent-revoke-result',
+              requestId,
+              ok: true,
+              revoked,
+            }))
+            .catch((error) => sendBridge({
+              type: 'agent-revoke-result',
+              requestId,
+              ok: false,
+              error: error.message,
+            }));
         }
       };
       await new Promise((resolve, reject) => {
@@ -672,7 +689,7 @@ export default function MacBrowserHost({
           const registration = await registerTeacherMacAgent(
             credentials.agentToken,
             credentials.pairingCode,
-            'Mac M1',
+            credentials.deviceName,
           );
           agentTokenHash = registration.tokenHash;
           sendBridge({

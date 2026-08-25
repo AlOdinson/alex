@@ -1,8 +1,0 @@
-package.json
-src/styles.css
-public/games/percentage-ladybug-maze/index.html
-README.md
-INTEGRATION_0.9.3_RU.txt
-UPDATE_INSTRUCTIONS_0.9.3_RU.txt
-CHANGED_FILES_0.9.3.txt
-CHANGED_FILES.txt

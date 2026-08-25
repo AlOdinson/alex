@@ -11,6 +11,19 @@ function authRedirectUrl() {
   return new URL(import.meta.env.BASE_URL, window.location.origin).toString();
 }
 
+function normalizedEmail(email) {
+  const normalized = String(email ?? '').trim().toLowerCase();
+  if (!normalized || !normalized.includes('@')) throw new Error('Введите корректную почту.');
+  return normalized;
+}
+
+function validatedPassword(password) {
+  const value = String(password ?? '');
+  if (value.length < 8) throw new Error('Пароль должен содержать не менее 8 символов.');
+  if (value.length > 128) throw new Error('Пароль слишком длинный.');
+  return value;
+}
+
 export async function getTeacherSession() {
   requireSupabase();
   const { data, error } = await supabase.auth.getSession();
@@ -20,16 +33,52 @@ export async function getTeacherSession() {
 
 export function onTeacherAuthChange(callback) {
   if (!isSupabaseConfigured || !supabase) return () => undefined;
-  const { data } = supabase.auth.onAuthStateChange((_event, session) => callback(session));
+  const { data } = supabase.auth.onAuthStateChange((event, session) => callback(session, event));
   return () => data.subscription.unsubscribe();
+}
+
+export async function signUpTeacherWithPassword(email, password) {
+  requireSupabase();
+  const { data, error } = await supabase.auth.signUp({
+    email: normalizedEmail(email),
+    password: validatedPassword(password),
+    options: { emailRedirectTo: authRedirectUrl() },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function signInTeacherWithPassword(email, password) {
+  requireSupabase();
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email: normalizedEmail(email),
+    password: String(password ?? ''),
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function requestTeacherPasswordReset(email) {
+  requireSupabase();
+  const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail(email), {
+    redirectTo: authRedirectUrl(),
+  });
+  if (error) throw error;
+}
+
+export async function updateTeacherPassword(password) {
+  requireSupabase();
+  const { data, error } = await supabase.auth.updateUser({
+    password: validatedPassword(password),
+  });
+  if (error) throw error;
+  return data;
 }
 
 export async function sendTeacherMagicLink(email) {
   requireSupabase();
-  const normalized = String(email ?? '').trim().toLowerCase();
-  if (!normalized || !normalized.includes('@')) throw new Error('Введите корректную почту.');
   const { error } = await supabase.auth.signInWithOtp({
-    email: normalized,
+    email: normalizedEmail(email),
     options: {
       emailRedirectTo: authRedirectUrl(),
       shouldCreateUser: true,
@@ -101,6 +150,17 @@ export async function revokeTeacherMacAgent(agentId) {
   requireSupabase();
   const { data, error } = await supabase.rpc('revoke_teacher_mac_agent_v9', {
     p_agent_id: agentId,
+  });
+  if (error) throw error;
+  return Boolean(data);
+}
+
+export async function revokeTeacherMacAgentByToken(agentTokenHash) {
+  requireSupabase();
+  const tokenHash = String(agentTokenHash ?? '').trim();
+  if (!/^[A-Za-z0-9_-]{43}$/.test(tokenHash)) throw new Error('Повреждён локальный токен Mac.');
+  const { data, error } = await supabase.rpc('revoke_teacher_mac_agent_by_token_v10', {
+    p_token_hash: tokenHash,
   });
   if (error) throw error;
   return Boolean(data);

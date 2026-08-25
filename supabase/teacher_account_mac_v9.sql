@@ -26,8 +26,8 @@ create table if not exists public.teacher_mac_agents_v9 (
   paired_at timestamptz,
   last_seen_at timestamptz not null default now(),
   revoked_at timestamptz,
-  constraint teacher_mac_agents_v9_token_hash_format check (token_hash ~ '^[0-9a-f]{64}$'),
-  constraint teacher_mac_agents_v9_pairing_hash_format check (pairing_code_hash ~ '^[0-9a-f]{64}$')
+  constraint teacher_mac_agents_v9_token_hash_format check (token_hash ~ '^[A-Za-z0-9_-]{43}$'),
+  constraint teacher_mac_agents_v9_pairing_hash_format check (pairing_code_hash ~ '^[A-Za-z0-9_-]{43}$')
 );
 
 create index if not exists teacher_mac_agents_v9_user_idx
@@ -89,10 +89,10 @@ begin
   with supplied as (
     select distinct
       left(trim(entry->>'boardId'), 160) as board_id,
-      lower(trim(entry->>'ownerKeyHash')) as owner_key_hash
+      trim(entry->>'ownerKeyHash') as owner_key_hash
     from jsonb_array_elements(p_entries) entry
     where length(trim(entry->>'boardId')) between 1 and 160
-      and lower(trim(entry->>'ownerKeyHash')) ~ '^[0-9a-f]{64}$'
+      and trim(entry->>'ownerKeyHash') ~ '^[A-Za-z0-9_-]{43}$'
   ), updated as (
     update public.boards b
     set owner_user_id = v_user_id
@@ -123,9 +123,9 @@ declare
   v_agent public.teacher_mac_agents_v9%rowtype;
   v_realtime_key text;
 begin
-  p_token_hash := lower(trim(coalesce(p_token_hash, '')));
-  p_pairing_code_hash := lower(trim(coalesce(p_pairing_code_hash, '')));
-  if p_token_hash !~ '^[0-9a-f]{64}$' or p_pairing_code_hash !~ '^[0-9a-f]{64}$' then
+  p_token_hash := trim(coalesce(p_token_hash, ''));
+  p_pairing_code_hash := trim(coalesce(p_pairing_code_hash, ''));
+  if p_token_hash !~ '^[A-Za-z0-9_-]{43}$' or p_pairing_code_hash !~ '^[A-Za-z0-9_-]{43}$' then
     raise exception 'invalid_agent_credentials';
   end if;
 
@@ -176,8 +176,8 @@ begin
   if v_user_id is null then
     raise exception 'authentication_required' using errcode = '42501';
   end if;
-  p_pairing_code_hash := lower(trim(coalesce(p_pairing_code_hash, '')));
-  if p_pairing_code_hash !~ '^[0-9a-f]{64}$' then
+  p_pairing_code_hash := trim(coalesce(p_pairing_code_hash, ''));
+  if p_pairing_code_hash !~ '^[A-Za-z0-9_-]{43}$' then
     raise exception 'invalid_pairing_code';
   end if;
 
@@ -292,9 +292,9 @@ declare
   v_permission text;
   v_realtime_key text;
 begin
-  p_token_hash := lower(trim(coalesce(p_token_hash, '')));
-  p_board_key_hash := lower(trim(coalesce(p_board_key_hash, '')));
-  if p_token_hash !~ '^[0-9a-f]{64}$' or p_board_key_hash !~ '^[0-9a-f]{64}$' then
+  p_token_hash := trim(coalesce(p_token_hash, ''));
+  p_board_key_hash := trim(coalesce(p_board_key_hash, ''));
+  if p_token_hash !~ '^[A-Za-z0-9_-]{43}$' or p_board_key_hash !~ '^[A-Za-z0-9_-]{43}$' then
     return null;
   end if;
 

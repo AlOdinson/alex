@@ -1561,6 +1561,94 @@ button:disabled {
   margin-top: 14px;
 }
 
+.teacher-auth-shell { margin-top: 16px; }
+
+.teacher-auth-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: #eef2f7;
+}
+
+.teacher-auth-tabs button,
+.teacher-auth-links button,
+.text-button {
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.teacher-auth-tabs button {
+  padding: 8px 12px;
+  border-radius: 9px;
+  color: #475569;
+}
+
+.teacher-auth-tabs button.is-active {
+  background: #fff;
+  color: #1d4ed8;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+
+.teacher-password-auth { align-items: end; }
+.teacher-password-auth .field { min-width: min(220px, 100%); }
+.teacher-auth-links { margin-top: 10px; }
+.teacher-auth-links button,
+.text-button { padding: 2px 0; }
+
+.teacher-reset-form,
+.teacher-legacy-login form {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #dbe2ea;
+  border-radius: 12px;
+  color: #64748b;
+}
+
+.teacher-reset-form > span { flex: 1.2 1 280px; }
+.teacher-reset-form .field { flex: 1 1 240px; margin: 0; }
+
+.teacher-legacy-login {
+  margin-top: 14px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.teacher-account-session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.teacher-account-session-row .teacher-account-email { margin: 0; }
+
+.teacher-server-download {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 16px;
+  padding: 15px;
+  border: 1px solid #bfdbfe;
+  border-radius: 14px;
+  background: #eff6ff;
+}
+
+.teacher-server-download > div { display: grid; gap: 3px; }
+.teacher-server-download span { color: #475569; font-size: 13px; line-height: 1.4; }
+.teacher-server-download a { flex: 0 0 auto; text-decoration: none; }
+.teacher-download-hint { max-width: 260px; text-align: right; }
+
 .teacher-agent-list {
   display: grid;
   gap: 8px;
@@ -1597,6 +1685,15 @@ button:disabled {
   .teacher-pair-form .primary-button { width: 100%; }
   .teacher-agent-list > div { grid-template-columns: auto 1fr auto; }
   .teacher-agent-list small { grid-column: 2; }
+  .teacher-password-auth,
+  .teacher-reset-form,
+  .teacher-legacy-login form,
+  .teacher-server-download { align-items: stretch; flex-direction: column; }
+  .teacher-reset-form > span,
+  .teacher-reset-form .field { flex-basis: auto; width: 100%; }
+  .teacher-server-download a { width: 100%; text-align: center; }
+  .teacher-download-hint { max-width: none; text-align: left; }
+  .teacher-account-session-row { align-items: flex-start; flex-direction: column; }
 }
 
 .create-board-fields {

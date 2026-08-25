@@ -1,7 +1,0 @@
-package.json
-src/lib/realtime.js
-README.md
-INTEGRATION_0.9.4_RU.txt
-UPDATE_INSTRUCTIONS_0.9.4_RU.txt
-CHANGED_FILES_0.9.4.txt
-CHANGED_FILES.txt
