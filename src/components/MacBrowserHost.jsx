@@ -63,49 +63,59 @@ async function connectSignalChannel({
   });
 
   if (window.Ably?.Realtime) {
-    const client = new window.Ably.Realtime({
-      clientId,
-      useTokenAuth: true,
-      echoMessages: false,
-      authCallback: async (_params, callback) => {
-        try {
-          const { data, error } = await supabase.functions.invoke('ably-token', {
-            body: { boardId, boardKey, clientId },
-          });
-          if (error) throw error;
-          if (!data?.token) throw new Error('Сервер не вернул токен Ably');
-          callback(null, data);
-        } catch (error) {
-          callback(error, null);
-        }
-      },
-      disconnectedRetryTimeout: 5_000,
-      suspendedRetryTimeout: 15_000,
-    });
-    await new Promise((resolve, reject) => {
-      const timer = window.setTimeout(() => reject(new Error('Ably не подключился')), 12_000);
-      client.connection.once('connected', () => {
-        window.clearTimeout(timer);
-        resolve();
+    let client = null;
+    try {
+      client = new window.Ably.Realtime({
+        clientId,
+        useTokenAuth: true,
+        echoMessages: false,
+        authCallback: async (_params, callback) => {
+          try {
+            const { data, error } = await supabase.functions.invoke('ably-token', {
+              body: { boardId, boardKey, clientId },
+            });
+            if (error) throw error;
+            if (!data?.token) throw new Error('Сервер не вернул токен Ably');
+            callback(null, data);
+          } catch (error) {
+            callback(error, null);
+          }
+        },
+        disconnectedRetryTimeout: 5_000,
+        suspendedRetryTimeout: 15_000,
       });
-      client.connection.once('failed', (change) => {
-        window.clearTimeout(timer);
-        reject(change?.reason ?? new Error('Ably connection failed'));
+      await new Promise((resolve, reject) => {
+        const timer = window.setTimeout(() => reject(new Error('Ably не подключился')), 12_000);
+        client.connection.once('connected', () => {
+          window.clearTimeout(timer);
+          resolve();
+        });
+        client.connection.once('failed', (change) => {
+          window.clearTimeout(timer);
+          reject(change?.reason ?? new Error('Ably connection failed'));
+        });
       });
-    });
-    const channel = client.channels.get(topic);
-    await channel.subscribe((message) => {
-      if (message?.name === 'screen-share-signal') onSignal(message.data);
-    });
-    return {
-      async publish(signal) {
-        await channel.publish('screen-share-signal', publishPayload(signal));
-      },
-      async close() {
-        try { await channel.unsubscribe(); } catch { /* Best effort. */ }
-        client.close();
-      },
-    };
+      const channel = client.channels.get(topic);
+      await channel.subscribe((message) => {
+        if (message?.name === 'screen-share-signal') onSignal(message.data);
+      });
+      return {
+        transport: 'ably',
+        async publish(signal) {
+          await channel.publish('screen-share-signal', publishPayload(signal));
+        },
+        async close() {
+          try { await channel.unsubscribe(); } catch { /* Best effort. */ }
+          client.close();
+        },
+      };
+    } catch (error) {
+      // The ordinary board already falls back to Supabase when Ably token
+      // issuance is unavailable. The Mac agent must follow the same route or
+      // the two participants silently end up on different transports.
+      try { client?.close(); } catch { /* The failed client may already be closed. */ }
+      console.warn('Ably unavailable for Mac browser; using Supabase Realtime', error);
+    }
   }
 
   const channel = supabase.channel(topic, {
@@ -125,6 +135,7 @@ async function connectSignalChannel({
     });
   });
   return {
+    transport: 'supabase',
     publish(signal) {
       return channel.send({
         type: 'broadcast',
@@ -171,6 +182,7 @@ export default function MacBrowserHost({
     let browserState = normalizeRemoteBrowserState({});
     let controllerId = '';
     let controllerName = '';
+    let relayInfo = null;
     let drawBusy = false;
     let pendingFrame = null;
     const peers = new Map();
@@ -222,7 +234,10 @@ export default function MacBrowserHost({
       }
     };
 
-    const broadcastState = () => peers.forEach(sendStateToPeer);
+    const broadcastState = () => {
+      peers.forEach(sendStateToPeer);
+      sendBridge({ type: 'relay-state', state: stateForViewers() });
+    };
 
     const announceAvailability = () => publish('remote-browser-available', {
       sessionId: agentSessionId,
@@ -238,6 +253,8 @@ export default function MacBrowserHost({
         sourceMode: 'remote-browser',
         paused: false,
         remoteBrowserState: stateForViewers(),
+        relayUrl: relayInfo?.sessionId === activeSession.sessionId ? relayInfo.url : '',
+        relayToken: relayInfo?.sessionId === activeSession.sessionId ? relayInfo.token : '',
       }, activeSession).catch(() => undefined);
     };
 
@@ -250,6 +267,7 @@ export default function MacBrowserHost({
       const previous = activeSession;
       if (!previous) return;
       activeSession = null;
+      relayInfo = null;
       controllerId = '';
       controllerName = '';
       closeAllPeers();
@@ -262,8 +280,10 @@ export default function MacBrowserHost({
     const handleRemoteData = (viewerId, rawData) => {
       const entry = peers.get(viewerId);
       if (!entry) return;
-      let payload = null;
-      try { payload = JSON.parse(String(rawData ?? '')); } catch { return; }
+      let payload = rawData && typeof rawData === 'object' ? rawData : null;
+      if (!payload) {
+        try { payload = JSON.parse(String(rawData ?? '')); } catch { return; }
+      }
 
       if (payload?.type === 'control-request') {
         const mayTake = !controllerId
@@ -312,7 +332,10 @@ export default function MacBrowserHost({
       };
       peers.set(viewerId, entry);
       peer.addTrack(track, stream);
-      dataChannel.onopen = () => sendStateToPeer(entry);
+      dataChannel.onopen = () => {
+        sendStateToPeer(entry);
+        track?.requestFrame?.();
+      };
       dataChannel.onmessage = (event) => handleRemoteData(viewerId, event.data);
       peer.onicecandidate = (event) => {
         const candidate = serializableCandidate(event.candidate);
@@ -320,16 +343,17 @@ export default function MacBrowserHost({
         publish('ice', { targetId: viewerId, candidate }, activeSession).catch(() => undefined);
       };
       peer.onconnectionstatechange = () => {
+        if (peer.connectionState === 'connected') {
+          track?.requestFrame?.();
+          return;
+        }
         if (!['failed', 'closed', 'disconnected'].includes(peer.connectionState)) return;
         const current = peers.get(viewerId);
         if (current?.peer !== peer) return;
         closePeer(current);
-        peers.delete(viewerId);
-        if (controllerId === viewerId) {
-          controllerId = '';
-          controllerName = '';
-          broadcastState();
-        }
+        current.peer = null;
+        current.dataChannel = null;
+        current.pendingIce = [];
       };
 
       try {
@@ -364,7 +388,7 @@ export default function MacBrowserHost({
         };
         controllerId = signal.clientId;
         controllerName = signal.requestedByName || signal.name || 'Участник';
-        sendBridge({ type: 'start-session' });
+        sendBridge({ type: 'start-session', sessionId: activeSession.sessionId });
         updateStatus('Удалённый браузер работает', `Управляет: ${controllerName}`);
         await announceHost();
         await announceAvailability();
@@ -393,7 +417,7 @@ export default function MacBrowserHost({
       }
       if (signal.type === 'answer' && signal.description) {
         const entry = peers.get(signal.clientId);
-        if (!entry) return;
+        if (!entry?.peer) return;
         try {
           await entry.peer.setRemoteDescription(signal.description);
           const queued = entry.pendingIce.splice(0);
@@ -411,7 +435,7 @@ export default function MacBrowserHost({
       }
       if (signal.type === 'ice' && signal.candidate) {
         const entry = peers.get(signal.clientId);
-        if (!entry) return;
+        if (!entry?.peer) return;
         if (!entry.peer.remoteDescription) entry.pendingIce.push(signal.candidate);
         else {
           try { await entry.peer.addIceCandidate(signal.candidate); } catch { /* Ignore one candidate. */ }
@@ -484,6 +508,20 @@ export default function MacBrowserHost({
         if (payload?.type === 'state') {
           browserState = normalizeRemoteBrowserState(payload.state) ?? browserState;
           broadcastState();
+        } else if (payload?.type === 'relay-session') {
+          const relay = payload.relay;
+          const validUrl = String(relay?.url ?? '').startsWith('wss://');
+          const validToken = String(relay?.token ?? '').length >= 20;
+          if (validUrl && validToken && String(relay?.sessionId ?? '') === activeSession?.sessionId) {
+            relayInfo = {
+              url: String(relay.url),
+              token: String(relay.token),
+              sessionId: String(relay.sessionId),
+            };
+            announceHost();
+          }
+        } else if (payload?.type === 'relay-command') {
+          handleRemoteData(String(payload.viewerId ?? ''), payload.command);
         } else if (payload?.type === 'session-stopped' && activeSession) {
           stopSession(payload.reason || 'mac-stopped', true);
         }
@@ -518,6 +556,7 @@ export default function MacBrowserHost({
           drainSignals().catch(() => undefined);
         },
       });
+      sendBridge({ type: 'signal-transport', transport: signalChannel.transport });
       await announceAvailability();
       availabilityTimer = window.setInterval(announceAvailability, AGENT_HEARTBEAT_MS);
       hostTimer = window.setInterval(announceHost, HOST_HEARTBEAT_MS);

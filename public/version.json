@@ -1,9 +1,9 @@
 {
-  "version": "1.33.0",
-  "packageVersion": "1.33.0",
+  "version": "1.33.2",
+  "packageVersion": "1.33.2",
   "base": "1.32.0",
-  "release": "Adaptive local Mac remote browser",
+  "release": "Protected Mac relay fallback",
   "date": "2026-08-25",
-  "name": "local-mac-browser",
-  "label": "Alex Board 1.33.0"
+  "name": "protected-mac-relay-fallback",
+  "label": "Alex Board 1.33.2"
 }

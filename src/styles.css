@@ -6,7 +6,7 @@
   text-rendering: optimizeLegibility;
 }
 
-/* Alex Board 1.33.0 — isolated adaptive WebRTC screen and Mac browser sharing */
+/* Alex Board 1.33.2 — direct WebRTC with protected Mac relay fallback */
 .screen-share-panel {
   position: fixed;
   z-index: 1200;
@@ -116,7 +116,8 @@
   background: #020617;
 }
 
-.screen-share-video-wrap video {
+.screen-share-video-wrap video,
+.screen-share-video-wrap img {
   display: block;
   width: 100%;
   height: 100%;
@@ -129,7 +130,8 @@
   cursor: default;
 }
 
-.screen-share-video-wrap.is-remote-browser video {
+.screen-share-video-wrap.is-remote-browser video,
+.screen-share-video-wrap.is-remote-browser img {
   pointer-events: none;
   user-select: none;
   -webkit-user-drag: none;
