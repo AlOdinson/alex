@@ -10,37 +10,25 @@ import {
 
 export const SHAPE_CATEGORIES = [
   {
-    id: 'basic',
-    label: 'Базовые многоугольники',
+    id: '2d',
+    label: '2D фигуры',
     shapes: [
       ['square', 'Квадрат'],
       ['triangle', 'Треугольник'],
       ['right-triangle', 'Прямоугольный треугольник'],
       ['parallelogram', 'Параллелограмм'],
       ['diamond', 'Ромб'],
-    ],
-  },
-  {
-    id: 'regular',
-    label: 'Правильные многоугольники',
-    shapes: [
       ['pentagon', 'Пятиугольник'],
       ['hexagon', 'Шестиугольник'],
       ['octagon', 'Восьмиугольник'],
       ['star', 'Звезда'],
-    ],
-  },
-  {
-    id: 'rounded',
-    label: 'Скруглённые фигуры',
-    shapes: [
       ['circle', 'Круг'],
       ['semicircle', 'Полукруг'],
     ],
   },
   {
     id: 'solids',
-    label: 'Трёхмерные тела',
+    label: '3D тела',
     shapes: [
       ['wire-cube', 'Каркасный куб'],
       ['cylinder', 'Цилиндр'],
