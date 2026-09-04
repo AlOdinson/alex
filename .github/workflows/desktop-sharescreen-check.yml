@@ -14,4 +14,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm install --no-audit --no-fund
       - run: node scripts/test-desktop-sharescreen-button.mjs
+      - run: npm run test:screen-share
+      - run: node scripts/test-browser-button-visibility.mjs
+      - run: node scripts/test-bottom-tool-dock.mjs
+      - run: npm run build
