@@ -1,6 +1,7 @@
 import Home from './components/Home.jsx';
 import Board from './components/Board.jsx';
 import MacBrowserHost, { isMacBrowserHostMode } from './components/MacBrowserHost.jsx';
+import { LanguageProvider } from './components/LanguageProvider.jsx';
 
 function parseRoute() {
   const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
@@ -15,11 +16,19 @@ function parseRoute() {
 
 export default function App() {
   if (isMacBrowserHostMode() && new URLSearchParams(window.location.search).get('alexMacAccountHost') === '1') {
-    return <MacBrowserHost accountMode />;
+    return (
+      <LanguageProvider role="teacher">
+        <MacBrowserHost accountMode />
+      </LanguageProvider>
+    );
   }
   const route = parseRoute();
   if (route.name === 'board') {
     return <Board boardId={route.boardId} />;
   }
-  return <Home />;
+  return (
+    <LanguageProvider role="teacher">
+      <Home />
+    </LanguageProvider>
+  );
 }
