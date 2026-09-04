@@ -22,7 +22,7 @@ jobs:
       - name: Inventory Cyrillic UI source
         run: |
           echo '--- CYRILLIC SOURCE INVENTORY START ---'
-          grep -RInE '[А-Яа-яЁё]' src || true
+          node scripts/list-cyrillic.mjs
           echo '--- CYRILLIC SOURCE INVENTORY END ---'
       - name: i18n regression
         run: node scripts/test-i18n.mjs
