@@ -286,12 +286,12 @@ export function createShape(shapeId, options) {
     case 'octahedron': {
       const solid = lineStyle(options);
       const hidden = lineStyle(options, true);
-      const top = [0, -64];
-      const bottom = [0, 64];
-      const left = [-58, 0];
-      const right = [58, 0];
-      const front = [0, 22];
-      const back = [0, -22];
+      const top = [2, -64];
+      const bottom = [-2, 64];
+      const left = [-58, -6];
+      const right = [58, 6];
+      const front = [16, 22];
+      const back = [-16, -22];
       object = group([
         lineBetween(top, left, solid),
         lineBetween(top, front, solid),
