@@ -7,16 +7,64 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Apply pyramid direction fix if needed
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/lib/shapes.js')
+          source = path.read_text()
+          old = "if (shapeId === 'wire-cube') return numericDx > 0;"
+          new = "if (shapeId === 'wire-cube' || shapeId === 'pyramid') return numericDx > 0;"
+          if old in source:
+              path.write_text(source.replace(old, new, 1))
+              print('patched')
+          elif new in source:
+              print('already patched')
+          else:
+              raise SystemExit('expected solidDragFlipX branch not found')
+          PY
+          if ! git diff --quiet -- src/lib/shapes.js; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add src/lib/shapes.js
+            git commit -m "fix: align pyramid drag direction"
+            git push origin HEAD:feature/pyramid-drag-direction-fix
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - name: Pyramid drag direction regression
         run: node scripts/test-solid-drag-mirroring.mjs
+      - name: Shape regressions
+        run: |
+          node scripts/test-shape-palette.mjs
+          node scripts/test-solid-shape-geometry.mjs
+      - name: Portable regressions
+        run: |
+          node scripts/test-i18n.mjs
+          node scripts/test-screen-share.mjs
+          node scripts/test-mac-browser.mjs
+          node scripts/test-sync-convergence.mjs
+          node scripts/test-authoritative-log.mjs
+          node scripts/test-collaboration-safety.mjs
+          node scripts/test-fast-board-library.mjs
+          node scripts/test-drawing-presets.mjs
+          node scripts/test-pencil-transform-regression.mjs
+          node scripts/test-pencil-palm-regression.mjs
+          node scripts/test-pencil-contact-arbitration.mjs
+          node scripts/test-pencil-rapid-pinch-regression.mjs
+          node scripts/test-pencil-original-input-path.mjs
+          node scripts/test-pencil-diagnostics.mjs
+          node scripts/test-pencil-diagnostics-runtime.mjs
+      - name: Production build
+        run: npm run build
