@@ -14,4 +14,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm install --no-audit --no-fund
       - run: node scripts/test-desktop-shape-palette-scale.mjs
+      - run: node scripts/test-shape-palette.mjs
+      - run: node scripts/test-solid-shape-geometry.mjs
+      - run: node scripts/test-solid-drag-mirroring.mjs
+      - run: node scripts/test-bottom-tool-dock.mjs
+      - run: node scripts/test-i18n.mjs
+      - run: npm run build
