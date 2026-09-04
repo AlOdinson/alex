@@ -34,7 +34,7 @@ export default function ShapeIcon({ id }) {
     case 'sphere': return <Common><circle cx="32" cy="24" r="20" /><path d="M12 24c0 5 9 9 20 9s20-4 20-9" /><path strokeDasharray="3 3" d="M12 24c0-5 9-9 20-9s20 4 20 9" /><circle cx="32" cy="24" r="2.6" fill="currentColor" stroke="none" /></Common>;
     case 'tetrahedron': return <Common><path d="m32 4 24 38H8Z M32 4v28M8 42l24-10 24 10" /></Common>;
     case 'triangular-prism': return <Common><path d="M8 9v34l23-9ZM28 5v34l24-9ZM8 9l20-4M8 43l20-4M31 34l21-4" /></Common>;
-    case 'octahedron': return <Common><path d="M32 3L8 24M32 3L32 32M32 3L56 24M32 45L8 24M32 45L32 32M32 45L56 24M8 24L32 32L56 24" /><path strokeDasharray="3 3" d="M8 24L32 16L56 24M32 3L32 16M32 45L32 16" /></Common>;
+    case 'octahedron': return <Common><path d="M33 3L8 22M33 3L38 32M33 3L56 26M31 45L8 22M31 45L38 32M31 45L56 26M8 22L38 32L56 26" /><path strokeDasharray="3 3" d="M8 22L26 16L56 26M33 3L26 16M31 45L26 16" /></Common>;
     case 'pyramid-frustum': return <Common><path d="M22 6h21l6 7H17ZM8 42h46l5-7H13ZM22 6 8 42M43 6l11 36M49 13l10 22" /></Common>;
     case 'cone-frustum': return <Common><ellipse cx="32" cy="8" rx="11" ry="4" /><path d="m21 8-12 31c0 4 10 6 23 6s23-2 23-6L43 8" /><path strokeDasharray="3 3" d="M9 39c0-4 10-6 23-6s23 2 23 6" /></Common>;
     default: return <Common><rect x="12" y="8" width="40" height="32" /></Common>;
