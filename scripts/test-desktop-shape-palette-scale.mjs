@@ -27,13 +27,18 @@ assert(
 );
 
 assert(
-  source.includes("`translateY(-100%) scale(${placement.scale})`"),
+  source.includes("`scale(${placement.scale}) translateY(-100%)`"),
   'Above-anchor palette must preserve its anchor while applying desktop scale.',
 );
 
 assert(
   source.includes("`scale(${placement.scale})`"),
   'Below-anchor palette must apply the desktop scale.',
+);
+
+assert(
+  source.includes("transformOrigin: 'top left'"),
+  'Scaled palette must use a stable top-left transform origin.',
 );
 
 console.log('Desktop shape palette 70% scale regression passed.');
