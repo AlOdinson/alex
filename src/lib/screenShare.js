@@ -29,6 +29,7 @@ const SIGNAL_TYPES = new Set([
   'host-start',
   'host-stop',
   'host-paused',
+  'screen-layout',
   'viewer-ready',
   'viewer-leave',
   'viewer-rejected',
@@ -58,6 +59,47 @@ export function screenShareCapability(runtimeNavigator = globalThis.navigator) {
       : (iosLike
         ? 'iPhone и iPad не разрешают веб-странице захватывать другую вкладку. Для показа сайтов запустите Alex Browser Server на Mac.'
         : 'Этот браузер или устройство не поддерживает передачу экрана через веб-страницу.'),
+  };
+}
+
+export function screenSharePermissionCanHost(permission) {
+  return permission === 'owner' || permission === 'edit';
+}
+
+export function normalizeScreenShareBoardLayout(layout) {
+  if (!layout || typeof layout !== 'object') return null;
+  const left = Number(layout.left);
+  const top = Number(layout.top);
+  const width = Number(layout.width);
+  const height = Number(layout.height);
+  if (![left, top, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null;
+  return {
+    left: Math.max(-1_000_000, Math.min(1_000_000, left)),
+    top: Math.max(-1_000_000, Math.min(1_000_000, top)),
+    width: Math.max(80, Math.min(8_192, width)),
+    height: Math.max(45, Math.min(8_192, height)),
+  };
+}
+
+export function screenShareBoardLayoutForViewport({
+  centerX = 0,
+  centerY = 0,
+  viewportWidth = 1280,
+  viewportHeight = 720,
+  zoom = 1,
+} = {}) {
+  const safeCenterX = Number.isFinite(Number(centerX)) ? Number(centerX) : 0;
+  const safeCenterY = Number.isFinite(Number(centerY)) ? Number(centerY) : 0;
+  const safeZoom = Math.max(0.01, Math.abs(Number(zoom) || 1));
+  const sceneWidth = Math.max(1, Math.abs(Number(viewportWidth) || 1280) / safeZoom);
+  const sceneHeight = Math.max(1, Math.abs(Number(viewportHeight) || 720) / safeZoom);
+  const width = Math.max(240, Math.min(720, sceneWidth * 0.58, sceneHeight * 0.72 * (16 / 9)));
+  const height = width * (9 / 16);
+  return {
+    left: safeCenterX - width / 2,
+    top: safeCenterY - height / 2,
+    width,
+    height,
   };
 }
 
