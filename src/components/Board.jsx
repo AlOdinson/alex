@@ -7004,6 +7004,13 @@ function BoardWorkspace({
     if (!target || !canEditRef.current || applyingRemoteRef.current || applyingHistoryRef.current) {
       return Promise.resolve(false);
     }
+    // ShareScreen is a realtime-only media object, not a durable board object.
+    // It has no boardObjectId and therefore must never be frozen waiting for a
+    // Supabase object lease. Its transforms are synchronized through screen-layout.
+    if (isBoardScreenShareObject(target)) {
+      setSelectionLeaseInteraction(target, true);
+      return Promise.resolve(true);
+    }
     const ids = selectionObjectIds(target);
     if (!ids.length || flattenTarget(target).some((object) => object?.pendingImage)) {
       setSelectionLeaseInteraction(target, false);
