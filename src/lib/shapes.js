@@ -294,23 +294,11 @@ export function createShape(shapeId, options) {
     case 'sphere': {
       const solid = lineStyle(options);
       const hidden = lineStyle(options, true);
-      const centerDotRadius = Number(options.strokeWidth) / 2;
-      const centerDot = new Circle({
-        radius: centerDotRadius,
-        left: 0,
-        top: 0,
-        originX: 'center',
-        originY: 'center',
-        fill: options.stroke,
-        stroke: options.stroke,
-        strokeWidth: 0,
-        selectable: false,
-        evented: false,
-      });
+      const centerDot = new Path('M -0.000001 0 L 0.000001 0', solid);
       object = group([
         new Circle({ radius: 58, ...baseStyle(options) }),
-        new Path('M -56 5 A 56 20 0 0 0 56 5', solid),
-        new Path('M -56 5 A 56 20 0 0 1 56 5', hidden),
+        new Path('M -58 0 A 58 20 0 0 0 58 0', solid),
+        new Path('M -58 0 A 58 20 0 0 1 58 0', hidden),
         centerDot,
       ]);
       break;
