@@ -10,6 +10,20 @@ function sourceDimension(value, fallback) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
+function setDiagonalResizeControls(object) {
+  object?.setControlsVisibility?.({
+    mt: false,
+    mb: false,
+    ml: false,
+    mr: false,
+    mtr: false,
+    tl: true,
+    tr: true,
+    bl: true,
+    br: true,
+  });
+}
+
 export function isBoardScreenShareObject(object) {
   return Boolean(object?.transientScreenShare);
 }
@@ -19,13 +33,14 @@ export function applyScreenShareLayoutToFabricObject(object, layout) {
   if (!object || !normalized) return false;
   const sourceWidth = sourceDimension(object.width, SCREEN_SHARE_SOURCE_WIDTH);
   const sourceHeight = sourceDimension(object.height, SCREEN_SHARE_SOURCE_HEIGHT);
+  const uniformScale = normalized.width / sourceWidth;
   object.set?.({
     left: normalized.left + normalized.width / 2,
     top: normalized.top + normalized.height / 2,
     originX: 'center',
     originY: 'center',
-    scaleX: normalized.width / sourceWidth,
-    scaleY: normalized.height / sourceHeight,
+    scaleX: uniformScale,
+    scaleY: uniformScale,
     angle: 0,
     skewX: 0,
     skewY: 0,
@@ -40,8 +55,9 @@ export function screenShareLayoutFromFabricObject(object) {
   if (!object) return null;
   const sourceWidth = sourceDimension(object.width, SCREEN_SHARE_SOURCE_WIDTH);
   const sourceHeight = sourceDimension(object.height, SCREEN_SHARE_SOURCE_HEIGHT);
-  const width = sourceWidth * Math.abs(Number(object.scaleX ?? 1) || 1);
-  const height = sourceHeight * Math.abs(Number(object.scaleY ?? 1) || 1);
+  const uniformScale = sourceDimension(object.scaleX, 1);
+  const width = sourceWidth * uniformScale;
+  const height = sourceHeight * uniformScale;
   const centerX = Number(object.left ?? 0);
   const centerY = Number(object.top ?? 0);
   return normalizeScreenShareBoardLayout({
@@ -105,10 +121,12 @@ export function createBoardScreenShareMedia({
     lockSkewingX: true,
     lockSkewingY: true,
     lockScalingFlip: true,
+    cropX: 0,
+    cropY: 0,
     objectCaching: false,
     perPixelTargetFind: false,
   });
-  object.setControlsVisibility?.({ mtr: false });
+  setDiagonalResizeControls(object);
   applyScreenShareLayoutToFabricObject(
     object,
     layout ?? { left: -320, top: -180, width: 640, height: 360 },
@@ -118,6 +136,30 @@ export function createBoardScreenShareMedia({
   let frameCallbackId = null;
   let frameTimer = null;
   let currentStream = null;
+  let lastUniformScale = sourceDimension(object.scaleX, 1);
+
+  const rememberUniformScale = () => {
+    lastUniformScale = sourceDimension(object.scaleX, lastUniformScale || 1);
+  };
+
+  const enforceUniformScale = () => {
+    if (disposed) return;
+    const scaleX = sourceDimension(object.scaleX, lastUniformScale || 1);
+    const scaleY = sourceDimension(object.scaleY, lastUniformScale || 1);
+    if (Math.abs(scaleX - scaleY) < 1e-6) {
+      lastUniformScale = scaleX;
+      return;
+    }
+    const midpoint = (scaleX + scaleY) / 2;
+    const growing = midpoint >= lastUniformScale;
+    const uniformScale = growing
+      ? Math.max(scaleX, scaleY)
+      : Math.min(scaleX, scaleY);
+    object.set?.({ scaleX: uniformScale, scaleY: uniformScale });
+    lastUniformScale = uniformScale;
+    object.setCoords?.();
+  };
+  object.on?.('scaling', enforceUniformScale);
 
   const requestRender = () => {
     if (disposed) return;
@@ -153,7 +195,22 @@ export function createBoardScreenShareMedia({
 
   const showVideo = () => {
     if (disposed || !video || !currentStream) return;
+    const previousLayout = screenShareLayoutFromFabricObject(object)
+      ?? normalizeScreenShareBoardLayout(layout)
+      ?? { left: -320, top: -180, width: 640, height: 360 };
+    const sourceWidth = sourceDimension(video.videoWidth, SCREEN_SHARE_SOURCE_WIDTH);
+    const sourceHeight = sourceDimension(video.videoHeight, SCREEN_SHARE_SOURCE_HEIGHT);
+    video.width = sourceWidth;
+    video.height = sourceHeight;
     object.setElement?.(video);
+    object.set?.({
+      width: sourceWidth,
+      height: sourceHeight,
+      cropX: 0,
+      cropY: 0,
+    });
+    applyScreenShareLayoutToFabricObject(object, previousLayout);
+    rememberUniformScale();
     object.dirty = true;
     object.setCoords?.();
     requestRender();
@@ -171,6 +228,12 @@ export function createBoardScreenShareMedia({
       try { video.pause?.(); } catch { /* Ignore media teardown races. */ }
       try { video.srcObject = null; } catch { /* Some test DOMs expose readonly srcObject. */ }
       object.setElement?.(placeholder);
+      object.set?.({
+        width: SCREEN_SHARE_SOURCE_WIDTH,
+        height: SCREEN_SHARE_SOURCE_HEIGHT,
+        cropX: 0,
+        cropY: 0,
+      });
       requestRender();
       return;
     }
@@ -199,16 +262,21 @@ export function createBoardScreenShareMedia({
       flipX: false,
       flipY: false,
     });
-    object.setControlsVisibility?.({ mtr: false });
+    setDiagonalResizeControls(object);
     object.setCoords?.();
   };
 
-  const setLayout = (nextLayout) => applyScreenShareLayoutToFabricObject(object, nextLayout);
+  const setLayout = (nextLayout) => {
+    const applied = applyScreenShareLayoutToFabricObject(object, nextLayout);
+    if (applied) rememberUniformScale();
+    return applied;
+  };
   const getLayout = () => screenShareLayoutFromFabricObject(object);
 
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    object.off?.('scaling', enforceUniformScale);
     cancelFrameLoop();
     if (video) {
       video.onloadedmetadata = null;
