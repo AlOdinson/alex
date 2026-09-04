@@ -1,0 +1,17 @@
+name: Temporary Board Screen Share Check
+
+on:
+  push:
+    branches:
+      - feature/board-screen-share-object
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/test-screen-share.mjs
