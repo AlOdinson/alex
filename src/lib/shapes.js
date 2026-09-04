@@ -53,6 +53,71 @@ export const SHAPE_CATEGORIES = [
   },
 ];
 
+export const HORIZONTALLY_MIRRORED_SOLID_IDS = new Set([
+  'wire-cube',
+  'pyramid',
+  'tetrahedron',
+  'octahedron',
+]);
+
+export function solidDragScaleX(shapeId, scaleX, dragDx) {
+  const magnitude = Math.abs(Number(scaleX));
+  if (!Number.isFinite(magnitude)) return scaleX;
+  if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return magnitude;
+  const numericDx = Number(dragDx);
+  if (!Number.isFinite(numericDx) || numericDx >= 0) return magnitude;
+  return -magnitude;
+}
+
+function enableHorizontalDragMirror(object, shapeId) {
+  if (!object || !HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return object;
+
+  const originalSet = object.set;
+  let creationAnchorLeft = null;
+  let creationDraftActive = false;
+
+  Object.defineProperty(object, 'set', {
+    configurable: true,
+    writable: true,
+    value(key, value) {
+      if (key && typeof key === 'object' && !Array.isArray(key)) {
+        const attributes = { ...key };
+        const hasLeft = Object.prototype.hasOwnProperty.call(attributes, 'left');
+        const hasScaleX = Object.prototype.hasOwnProperty.call(attributes, 'scaleX');
+        const left = Number(attributes.left);
+
+        if (attributes.selectable === false
+          && creationAnchorLeft == null
+          && hasLeft
+          && Number.isFinite(left)) {
+          creationAnchorLeft = left;
+          creationDraftActive = true;
+        }
+
+        if (creationDraftActive
+          && creationAnchorLeft != null
+          && hasLeft
+          && hasScaleX
+          && Number.isFinite(left)) {
+          const dragDx = (left - creationAnchorLeft) * 2;
+          attributes.scaleX = solidDragScaleX(shapeId, attributes.scaleX, dragDx);
+        }
+
+        const result = originalSet.call(this, attributes);
+        if (attributes.selectable === true) {
+          creationDraftActive = false;
+          creationAnchorLeft = null;
+        }
+        return result;
+      }
+
+      return originalSet.call(this, key, value);
+    },
+  });
+
+  return object;
+}
+
 function baseStyle({ stroke, strokeWidth }) {
   return {
     stroke,
@@ -344,5 +409,5 @@ export function createShape(shapeId, options) {
     hasControls: true,
   });
   object.setCoords();
-  return object;
+  return enableHorizontalDragMirror(object, shapeId);
 }
