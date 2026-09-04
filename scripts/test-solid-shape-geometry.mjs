@@ -32,7 +32,8 @@ assert(wireCubeIcon.includes('M10 42L20 32M20 32L20 6M20 32L53 32'), 'Wireframe 
 
 const sphere = section(shapes, "case 'sphere':", "case 'tetrahedron':");
 assert(sphere.includes('centerDot'), 'Sphere must include a permanent center point.');
-assert(sphere.includes('fill: options.stroke'), 'Sphere center point must use the current stroke color.');
+assert(sphere.includes('const solid = lineStyle(options);'), 'Sphere center point must inherit the current stroke color, width, and uniform-stroke behavior.');
+assert(sphere.includes("const centerDot = new Path('M -0.000001 0 L 0.000001 0', solid);"), 'Sphere center point must use the shared solid stroke style.');
 
 const octahedron = section(shapes, "case 'octahedron':", "case 'pyramid-frustum':");
 for (const vertex of ['top', 'bottom', 'left', 'right', 'front', 'back']) {
