@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'ci: apply desktop ShareScreen implementation'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -23,9 +22,10 @@ jobs:
           toolbar = toolbar_path.read_text()
           old = """          {isOwner && screenShare && (\n            <NavigationActionButton\n              active={screenShare.isHosting}\n              disabled={screenShare.buttonDisabled}\n              title={screenShare.activeRemoteSession\n                ? 'На этой доске уже идёт демонстрация экрана'\n                : (screenShare.isHosting\n                  ? 'Остановить демонстрацию экрана'\n                  : 'Показать экран или вкладку участникам')}\n              onClick={screenShare.toggle}\n            >\n              {screenShare.isHosting ? 'Стоп экран' : 'Экран'}\n            </NavigationActionButton>\n          )}\n"""
           new = """          {isOwner && screenShare && (\n            <span className=\"desktop-screen-share\">\n              <NavigationActionButton\n                active={screenShare.isHosting}\n                disabled={screenShare.buttonDisabled}\n                title={screenShare.activeRemoteSession\n                  ? 'На этой доске уже идёт демонстрация экрана'\n                  : (screenShare.isHosting\n                    ? 'Остановить демонстрацию экрана'\n                    : 'Показать экран или вкладку участникам')}\n                onClick={screenShare.toggle}\n              >\n                {screenShare.isHosting ? 'Stop Share' : 'ShareScreen'}\n              </NavigationActionButton>\n            </span>\n          )}\n"""
-          if old not in toolbar:
-              raise SystemExit('Expected current screen-share toolbar block was not found.')
-          toolbar_path.write_text(toolbar.replace(old, new, 1))
+          if 'className="desktop-screen-share"' not in toolbar:
+              if old not in toolbar:
+                  raise SystemExit('Expected current screen-share toolbar block was not found.')
+              toolbar_path.write_text(toolbar.replace(old, new, 1))
 
           styles_path = Path('src/styles.css')
           styles = styles_path.read_text()
@@ -56,13 +56,16 @@ jobs:
           package = package_path.read_text()
           old_sync = '"test:sync": "node scripts/test-desktop-shape-palette-scale.mjs'
           new_sync = '"test:sync": "node scripts/test-desktop-sharescreen-button.mjs && node scripts/test-desktop-shape-palette-scale.mjs'
-          if old_sync in package:
+          if 'node scripts/test-desktop-sharescreen-button.mjs' not in package:
+              if old_sync not in package:
+                  raise SystemExit('Could not register desktop ShareScreen regression in test:sync.')
               package_path.write_text(package.replace(old_sync, new_sync, 1))
-          elif 'node scripts/test-desktop-sharescreen-button.mjs' not in package:
-              raise SystemExit('Could not register desktop ShareScreen regression in test:sync.')
           PY
-      - name: Commit implementation
+      - name: Commit implementation when changed
         run: |
+          if git diff --quiet -- src/components/Toolbar.jsx src/styles.css package.json; then
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/components/Toolbar.jsx src/styles.css package.json
