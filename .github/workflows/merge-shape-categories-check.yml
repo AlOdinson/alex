@@ -6,14 +6,132 @@ on:
       - feature/merge-shape-categories
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      - name: Apply category merge
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          shapes_path = Path('src/lib/shapes.js')
+          shapes = shapes_path.read_text()
+          old = """export const SHAPE_CATEGORIES = [
+  {
+    id: 'basic',
+    label: 'Базовые многоугольники',
+    shapes: [
+      ['square', 'Квадрат'],
+      ['triangle', 'Треугольник'],
+      ['right-triangle', 'Прямоугольный треугольник'],
+      ['parallelogram', 'Параллелограмм'],
+      ['diamond', 'Ромб'],
+    ],
+  },
+  {
+    id: 'regular',
+    label: 'Правильные многоугольники',
+    shapes: [
+      ['pentagon', 'Пятиугольник'],
+      ['hexagon', 'Шестиугольник'],
+      ['octagon', 'Восьмиугольник'],
+      ['star', 'Звезда'],
+    ],
+  },
+  {
+    id: 'rounded',
+    label: 'Скруглённые фигуры',
+    shapes: [
+      ['circle', 'Круг'],
+      ['semicircle', 'Полукруг'],
+    ],
+  },
+  {
+    id: 'solids',
+    label: 'Трёхмерные тела',
+    shapes: [
+      ['wire-cube', 'Каркасный куб'],
+      ['cylinder', 'Цилиндр'],
+      ['pyramid', 'Пирамида'],
+      ['cone', 'Конус'],
+      ['sphere', 'Сфера'],
+      ['tetrahedron', 'Тетраэдр'],
+      ['octahedron', 'Октаэдр'],
+    ],
+  },
+];"""
+          new = """export const SHAPE_CATEGORIES = [
+  {
+    id: '2d',
+    label: '2D фигуры',
+    shapes: [
+      ['square', 'Квадрат'],
+      ['triangle', 'Треугольник'],
+      ['right-triangle', 'Прямоугольный треугольник'],
+      ['parallelogram', 'Параллелограмм'],
+      ['diamond', 'Ромб'],
+      ['pentagon', 'Пятиугольник'],
+      ['hexagon', 'Шестиугольник'],
+      ['octagon', 'Восьмиугольник'],
+      ['star', 'Звезда'],
+      ['circle', 'Круг'],
+      ['semicircle', 'Полукруг'],
+    ],
+  },
+  {
+    id: 'solids',
+    label: '3D тела',
+    shapes: [
+      ['wire-cube', 'Каркасный куб'],
+      ['cylinder', 'Цилиндр'],
+      ['pyramid', 'Пирамида'],
+      ['cone', 'Конус'],
+      ['sphere', 'Сфера'],
+      ['tetrahedron', 'Тетраэдр'],
+      ['octahedron', 'Октаэдр'],
+    ],
+  },
+];"""
+          if old in shapes:
+              shapes = shapes.replace(old, new, 1)
+              shapes_path.write_text(shapes)
+          elif new not in shapes:
+              raise SystemExit('SHAPE_CATEGORIES marker not found')
+
+          i18n_path = Path('src/i18n.js')
+          i18n = i18n_path.read_text()
+          marker = "  'Картинка': 'Image',\n"
+          additions = "  '2D фигуры': '2D shapes',\n  '3D тела': '3D solids',\n"
+          if "'2D фигуры': '2D shapes'" not in i18n:
+              if marker not in i18n:
+                  raise SystemExit('i18n insertion marker not found')
+              i18n = i18n.replace(marker, marker + additions, 1)
+              i18n_path.write_text(i18n)
+          PY
+
       - run: npm install --no-audit --no-fund
       - run: node scripts/test-shape-palette.mjs
+      - run: node scripts/test-i18n.mjs
       - run: npm run build
+
+      - name: Commit implementation
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/lib/shapes.js src/i18n.js
+          git commit -m "ui: merge 2D shape categories"
+          git push origin HEAD:feature/merge-shape-categories
