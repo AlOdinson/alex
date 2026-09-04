@@ -103,22 +103,36 @@ function group(children) {
   });
 }
 
+function lineBetween(from, to, style) {
+  return new Line([from[0], from[1], to[0], to[1]], style);
+}
+
 function cubeChildren(style, dashedHidden = false) {
   const solid = lineStyle(style);
-  const hidden = lineStyle(style, dashedHidden);
+  const hidden = lineStyle(style, true);
+  const frontTopLeft = [-54, -30];
+  const frontTopRight = [34, -30];
+  const frontBottomRight = [34, 46];
+  const frontBottomLeft = [-54, 46];
+  const backTopLeft = [-34, -48];
+  const backTopRight = [54, -48];
+  const backBottomRight = [54, 28];
+  const backBottomLeft = [-34, 28];
+  const rearStyle = dashedHidden ? hidden : solid;
+
   return [
-    new Rect({ left: 0, top: 8, width: 88, height: 76, ...baseStyle(style), originX: 'left', originY: 'top' }),
-    new Line([0, 8, 20, -10], solid),
-    new Line([88, 8, 108, -10], solid),
-    new Line([88, 84, 108, 66], solid),
-    new Line([20, -10, 108, -10], dashedHidden ? hidden : solid),
-    new Line([108, -10, 108, 66], solid),
-    new Line([108, 66, 88, 84], solid),
-    ...(dashedHidden ? [
-      new Line([20, -10, 20, 66], hidden),
-      new Line([20, 66, 108, 66], hidden),
-      new Line([20, 66, 0, 84], hidden),
-    ] : []),
+    lineBetween(frontTopLeft, frontTopRight, solid),
+    lineBetween(frontTopRight, frontBottomRight, solid),
+    lineBetween(frontBottomRight, frontBottomLeft, solid),
+    lineBetween(frontBottomLeft, frontTopLeft, solid),
+    lineBetween(frontTopLeft, backTopLeft, solid),
+    lineBetween(frontTopRight, backTopRight, solid),
+    lineBetween(frontBottomRight, backBottomRight, solid),
+    lineBetween(backTopLeft, backTopRight, solid),
+    lineBetween(backTopRight, backBottomRight, solid),
+    lineBetween(frontBottomLeft, backBottomLeft, rearStyle),
+    lineBetween(backBottomLeft, backBottomRight, rearStyle),
+    lineBetween(backBottomLeft, backTopLeft, rearStyle),
   ];
 }
 
@@ -226,10 +240,23 @@ export function createShape(shapeId, options) {
     case 'sphere': {
       const solid = lineStyle(options);
       const hidden = lineStyle(options, true);
+      const centerDot = new Circle({
+        radius: 3.5,
+        left: 0,
+        top: 0,
+        originX: 'center',
+        originY: 'center',
+        fill: options.stroke,
+        stroke: options.stroke,
+        strokeWidth: 0,
+        selectable: false,
+        evented: false,
+      });
       object = group([
         new Circle({ radius: 58, ...baseStyle(options) }),
         new Path('M -56 5 A 56 20 0 0 0 56 5', solid),
         new Path('M -56 5 A 56 20 0 0 1 56 5', hidden),
+        centerDot,
       ]);
       break;
     }
@@ -259,11 +286,25 @@ export function createShape(shapeId, options) {
     case 'octahedron': {
       const solid = lineStyle(options);
       const hidden = lineStyle(options, true);
+      const top = [0, -64];
+      const bottom = [0, 64];
+      const left = [-58, 0];
+      const right = [58, 0];
+      const front = [0, 22];
+      const back = [0, -22];
       object = group([
-        new Polygon([{ x: 0, y: -65 }, { x: 58, y: 0 }, { x: 0, y: 65 }, { x: -58, y: 0 }], baseStyle(options)),
-        new Line([-58, 0, 58, 0], solid),
-        new Line([0, -65, 0, 0], hidden),
-        new Line([0, 0, 0, 65], hidden),
+        lineBetween(top, left, solid),
+        lineBetween(top, front, solid),
+        lineBetween(top, right, solid),
+        lineBetween(bottom, left, solid),
+        lineBetween(bottom, front, solid),
+        lineBetween(bottom, right, solid),
+        lineBetween(left, front, solid),
+        lineBetween(front, right, solid),
+        lineBetween(left, back, hidden),
+        lineBetween(back, right, hidden),
+        lineBetween(top, back, hidden),
+        lineBetween(bottom, back, hidden),
       ]);
       break;
     }
