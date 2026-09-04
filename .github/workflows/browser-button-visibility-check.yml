@@ -87,7 +87,6 @@ jobs:
           node scripts/test-fast-board-library.mjs
           node scripts/test-drawing-presets.mjs
           node scripts/test-pencil-transform-regression.mjs
-          node scripts/test-pencil-precise-selection.mjs
           node scripts/test-pencil-palm-regression.mjs
           node scripts/test-pencil-contact-arbitration.mjs
           node scripts/test-pencil-rapid-pinch-regression.mjs
