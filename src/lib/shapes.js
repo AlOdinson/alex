@@ -60,13 +60,10 @@ export const HORIZONTALLY_MIRRORED_SOLID_IDS = new Set([
   'octahedron',
 ]);
 
-export function solidDragScaleX(shapeId, scaleX, dragDx) {
-  const magnitude = Math.abs(Number(scaleX));
-  if (!Number.isFinite(magnitude)) return scaleX;
-  if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return magnitude;
+export function solidDragFlipX(shapeId, dragDx) {
+  if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
   const numericDx = Number(dragDx);
-  if (!Number.isFinite(numericDx) || numericDx >= 0) return magnitude;
-  return -magnitude;
+  return Number.isFinite(numericDx) && numericDx < 0;
 }
 
 function enableHorizontalDragMirror(object, shapeId) {
@@ -100,7 +97,9 @@ function enableHorizontalDragMirror(object, shapeId) {
           && hasScaleX
           && Number.isFinite(left)) {
           const dragDx = (left - creationAnchorLeft) * 2;
-          attributes.scaleX = solidDragScaleX(shapeId, attributes.scaleX, dragDx);
+          const scaleMagnitude = Math.abs(Number(attributes.scaleX));
+          if (Number.isFinite(scaleMagnitude)) attributes.scaleX = scaleMagnitude;
+          attributes.flipX = solidDragFlipX(shapeId, dragDx);
         }
 
         const result = originalSet.call(this, attributes);
