@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 
+// Covers both the non-scaling center point and the diameter-touching equator.
 const source = fs.readFileSync(new URL('../src/lib/shapes.js', import.meta.url), 'utf8');
 
 function assert(condition, message) {
