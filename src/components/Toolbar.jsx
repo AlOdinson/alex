@@ -430,7 +430,7 @@ export default function Toolbar({
               {screenShare.remoteBrowserActive && isOwner ? 'Стоп браузер' : 'Браузер'}
             </NavigationActionButton>
           )}
-          {isOwner && screenShare && (
+          {canEdit && screenShare && (
             <span className="desktop-screen-share">
               <NavigationActionButton
                 active={screenShare.isHosting}

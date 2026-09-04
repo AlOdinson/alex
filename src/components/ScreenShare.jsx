@@ -1225,6 +1225,8 @@ export function ScreenShareOverlay({ screenShare }) {
   } = screenShare;
 
   const remoteBrowser = sourceMode === 'remote-browser';
+  const boardScreenLivesOnCanvas = !remoteBrowser
+    && ['hosting', 'viewing', 'connecting'].includes(phase);
   const hasRemoteControl = remoteBrowser
     && Boolean(remoteBrowserState?.controllerId)
     && remoteBrowserState.controllerId === clientId;
@@ -1245,11 +1247,13 @@ export function ScreenShareOverlay({ screenShare }) {
   }, [stream, minimized]);
 
   if (phase === 'idle') return null;
+  if (boardScreenLivesOnCanvas) return null;
   const present = role === 'host';
   const simpleNotice = phase === 'unsupported'
     || phase === 'remote-unavailable'
     || phase === 'error'
-    || phase === 'requesting';
+    || phase === 'requesting'
+    || (!remoteBrowser && phase === 'paused');
   const title = remoteBrowser
     ? 'Браузер на Mac'
     : (present ? 'Ваш экран' : `Экран: ${hostName || 'учитель'}`);
