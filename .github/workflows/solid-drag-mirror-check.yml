@@ -41,6 +41,5 @@ jobs:
           node scripts/test-pencil-original-input-path.mjs
           node scripts/test-pencil-diagnostics.mjs
           node scripts/test-pencil-diagnostics-runtime.mjs
-          node scripts/benchmark-transform-hotpath.mjs
       - name: Production build
         run: npm run build
