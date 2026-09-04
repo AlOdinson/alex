@@ -20,3 +20,19 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Rotated octahedron regression
         run: node scripts/test-solid-shape-geometry.mjs
+      - name: Shape palette regression
+        run: node scripts/test-shape-palette.mjs
+      - name: Portable regressions
+        run: |
+          node scripts/test-i18n.mjs
+          node scripts/test-screen-share.mjs
+          node scripts/test-mac-browser.mjs
+          node scripts/test-teacher-account.mjs
+          node scripts/test-sync-convergence.mjs
+          node scripts/test-authoritative-log.mjs
+          node scripts/test-collaboration-safety.mjs
+          node scripts/test-fast-board-library.mjs
+          node scripts/test-drawing-presets.mjs
+          node scripts/test-pencil-transform-regression.mjs
+      - name: Production build
+        run: npm run build
