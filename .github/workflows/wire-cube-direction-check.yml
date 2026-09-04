@@ -1,0 +1,22 @@
+name: Wire Cube Direction Check
+
+on:
+  push:
+    branches:
+      - feature/wire-cube-drag-direction
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Wire cube drag direction regression
+        run: node scripts/test-solid-drag-mirroring.mjs
