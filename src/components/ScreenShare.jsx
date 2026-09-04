@@ -5,6 +5,7 @@ import { isSupabaseConfigured, supabase } from '../lib/supabase.js';
 import {
   MAX_SCREEN_SHARE_VIEWERS,
   normalizeRemoteBrowserState,
+  normalizeScreenShareBoardLayout,
   normalizeScreenShareSignal,
   preferredScreenShareSession,
   REMOTE_BROWSER_AGENT_TTL_MS,
@@ -15,6 +16,7 @@ import {
   SCREEN_SHARE_PROTOCOL,
   screenShareCapability,
   screenShareNetworkIsDegraded,
+  screenSharePermissionCanHost,
   screenShareProfileForActivity,
 } from '../lib/screenShare.js';
 
@@ -127,6 +129,7 @@ export function useAdaptiveScreenShare({
   boardKey,
   boardRealtimeKey,
   teacherAccountKey,
+  getInitialBoardLayout,
 }) {
   const capability = useMemo(() => screenShareCapability(), []);
   const [stream, setStream] = useState(null);
@@ -135,6 +138,8 @@ export function useAdaptiveScreenShare({
   const [view, setView] = useState({
     phase: 'idle',
     role: null,
+    sessionId: '',
+    boardLayout: null,
     hostName: '',
     message: '',
     profileId: 'idle',
@@ -339,6 +344,8 @@ export function useAdaptiveScreenShare({
       setView({
         phase: 'idle',
         role: null,
+        sessionId: '',
+        boardLayout: null,
         hostName: '',
         message: '',
         profileId: 'idle',
@@ -362,6 +369,8 @@ export function useAdaptiveScreenShare({
       setView({
         phase: 'idle',
         role: null,
+        sessionId: '',
+        boardLayout: null,
         hostName: '',
         message: '',
         profileId: 'idle',
@@ -380,6 +389,7 @@ export function useAdaptiveScreenShare({
       startedAt: session.startedAt,
       hostName: participantName,
       sourceMode: session.sourceMode ?? 'screen',
+      boardLayout: session.boardLayout ?? null,
       paused: Boolean(localStreamRef.current.getVideoTracks?.()[0]?.muted),
     }, session);
   }, [clientId, participantName, sendSignal]);
@@ -454,6 +464,7 @@ export function useAdaptiveScreenShare({
     const current = activeSessionRef.current;
     if (current?.sessionId === candidate.sessionId) {
       activeSessionRef.current = { ...current, ...candidate };
+      if (candidate.boardLayout) updateView({ boardLayout: candidate.boardLayout });
       if (viewerPeerRef.current?.peer?.connectionState !== 'connected') {
         connectViewerRelay(activeSessionRef.current);
       }
@@ -492,6 +503,8 @@ export function useAdaptiveScreenShare({
     updateView({
       phase: candidate.paused ? 'paused' : 'connecting',
       role: 'viewer',
+      sessionId: candidate.sessionId,
+      boardLayout: candidate.boardLayout ?? null,
       hostName: candidate.hostName || 'Учитель',
       message: candidate.paused
         ? 'Safari приостановил передачу, пока устройство ведущего находится в фоне.'
@@ -623,7 +636,15 @@ export function useAdaptiveScreenShare({
       ));
       return;
     }
-    if (HOST_SIGNAL_TYPES.has(signal.type) && signal.permission !== 'owner') return;
+    if (HOST_SIGNAL_TYPES.has(signal.type)) {
+      const currentSession = activeSessionRef.current;
+      const remoteBrowserHostSignal = signal.sourceMode === 'remote-browser'
+        || (currentSession?.sessionId === signal.sessionId && currentSession?.sourceMode === 'remote-browser');
+      if (remoteBrowserHostSignal
+        ? signal.permission !== 'owner'
+        : !screenSharePermissionCanHost(signal.permission)) return;
+    }
+    if (signal.type === 'screen-layout' && !screenSharePermissionCanHost(signal.permission)) return;
 
     if (signal.type === 'host-start') {
       await beginViewerSession({
@@ -633,6 +654,7 @@ export function useAdaptiveScreenShare({
         startedAt: Number(signal.startedAt ?? signal.timestamp),
         paused: Boolean(signal.paused),
         sourceMode: signal.sourceMode === 'remote-browser' ? 'remote-browser' : 'screen',
+        boardLayout: normalizeScreenShareBoardLayout(signal.boardLayout),
         remoteBrowserState: normalizeRemoteBrowserState(signal.remoteBrowserState),
         relayUrl: String(signal.relayUrl ?? ''),
         relayToken: String(signal.relayToken ?? ''),
@@ -642,6 +664,15 @@ export function useAdaptiveScreenShare({
 
     const session = activeSessionRef.current;
     if (!session || session.sessionId !== signal.sessionId) return;
+
+    if (signal.type === 'screen-layout') {
+      if (session.sourceMode !== 'screen') return;
+      const layout = normalizeScreenShareBoardLayout(signal.layout);
+      if (!layout) return;
+      activeSessionRef.current = { ...session, boardLayout: layout };
+      updateView({ boardLayout: layout });
+      return;
+    }
 
     if (signal.type === 'host-stop' && signal.clientId === session.hostId) {
       leaveViewerSession(false);
@@ -795,7 +826,7 @@ export function useAdaptiveScreenShare({
   }, [teacherAccountKey]);
 
   const start = useCallback(async () => {
-    if (!isOwner || startBusyRef.current) return;
+    if (!canEdit || startBusyRef.current) return;
     const current = activeSessionRef.current;
     if (current && current.hostId !== clientId) {
       updateView({
@@ -824,12 +855,15 @@ export function useAdaptiveScreenShare({
       const track = captured.getVideoTracks?.()[0];
       if (!track) throw new Error('capture-has-no-video');
 
+      const boardLayout = normalizeScreenShareBoardLayout(getInitialBoardLayout?.())
+        ?? { left: -320, top: -180, width: 640, height: 360 };
       const session = {
         sessionId: randomToken(18),
         hostId: clientId,
         hostName: participantName,
         startedAt: Date.now(),
         sourceMode: 'screen',
+        boardLayout,
       };
       activeSessionRef.current = session;
       localStreamRef.current = captured;
@@ -852,6 +886,8 @@ export function useAdaptiveScreenShare({
       updateView({
         phase: track.muted ? 'paused' : 'hosting',
         role: 'host',
+        sessionId: session.sessionId,
+        boardLayout: session.boardLayout,
         hostName: participantName,
         message: track.muted ? 'Передача временно приостановлена.' : '',
         profileId: 'active',
@@ -878,7 +914,7 @@ export function useAdaptiveScreenShare({
     } finally {
       startBusyRef.current = false;
     }
-  }, [announceHost, applyCurrentProfile, capability, clientId, isOwner, participantName, sendSignal, updateView]);
+  }, [announceHost, applyCurrentProfile, canEdit, capability, clientId, getInitialBoardLayout, participantName, sendSignal, updateView]);
 
   const startRemoteBrowser = useCallback(async () => {
     if (!canEdit || startBusyRef.current) return;
@@ -981,6 +1017,18 @@ export function useAdaptiveScreenShare({
       reason: 'owner-stopped',
     }, session);
   }, [isOwner, sendSignal]);
+
+  const updateBoardLayout = useCallback((nextLayout) => {
+    if (!canEdit) return false;
+    const session = activeSessionRef.current;
+    if (!session || session.sourceMode !== 'screen') return false;
+    const layout = normalizeScreenShareBoardLayout(nextLayout);
+    if (!layout) return false;
+    activeSessionRef.current = { ...session, boardLayout: layout };
+    updateView({ boardLayout: layout });
+    sendSignal('screen-layout', { layout }, session);
+    return true;
+  }, [canEdit, sendSignal, updateView]);
 
   const toggle = useCallback(() => {
     const session = activeSessionRef.current;
@@ -1115,6 +1163,8 @@ export function useAdaptiveScreenShare({
 
   return {
     ...view,
+    sessionId: view.sessionId,
+    boardLayout: view.boardLayout,
     stream,
     relayFrameUrl,
     minimized,
@@ -1126,6 +1176,7 @@ export function useAdaptiveScreenShare({
     stop: () => stopHosting('user', true),
     stopRemoteBrowser,
     toggle,
+    updateBoardLayout,
     dismiss,
     sendRemoteCommand,
     requestRemoteControl,
