@@ -5,6 +5,7 @@ import { SHAPE_CATEGORIES } from '../lib/shapes.js';
 
 const EDGE_GAP = 6;
 const DESKTOP_WIDTH = 470;
+const DESKTOP_SCALE = 0.7;
 
 function firstStylusTouch(event) {
   return [...Array.from(event?.changedTouches ?? []), ...Array.from(event?.touches ?? [])]
@@ -63,13 +64,19 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
       const rect = anchor.getBoundingClientRect();
       const compactTouchLayout = Number(navigator.maxTouchPoints ?? 0) > 0
         && (window.matchMedia?.('(pointer: coarse)')?.matches || viewportWidth <= 1180);
+      const paletteScale = compactTouchLayout ? 1 : DESKTOP_SCALE;
       const preferredWidth = compactTouchLayout ? 370 : DESKTOP_WIDTH;
       const minimumWidth = compactTouchLayout ? 230 : 250;
-      const width = Math.max(minimumWidth, Math.min(preferredWidth, viewportWidth - EDGE_GAP * 2));
+      const availableVisualWidth = Math.max(0, viewportWidth - EDGE_GAP * 2);
+      const width = Math.max(
+        minimumWidth,
+        Math.min(preferredWidth, availableVisualWidth / paletteScale),
+      );
+      const visualWidth = width * paletteScale;
       const preferredLeft = rect.left + viewportOffsetLeft - 76;
       const left = Math.min(
         Math.max(viewportOffsetLeft + EDGE_GAP, preferredLeft),
-        viewportOffsetLeft + viewportWidth - width - EDGE_GAP,
+        viewportOffsetLeft + viewportWidth - visualWidth - EDGE_GAP,
       );
       const anchorTop = rect.top + viewportOffsetTop;
       const anchorBottom = rect.bottom + viewportOffsetTop;
@@ -79,9 +86,9 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
       const availableBelow = viewportBottom - anchorBottom - EDGE_GAP - 8;
       const openAbove = availableAbove > availableBelow;
       const availableHeight = openAbove ? availableAbove : availableBelow;
-      const maxHeight = Math.max(140, Math.min(690, availableHeight));
+      const maxHeight = Math.max(140, Math.min(690, availableHeight / paletteScale));
       const top = openAbove ? anchorTop - 8 : anchorBottom + 8;
-      setPlacement({ left, top, width, maxHeight, openAbove });
+      setPlacement({ left, top, width, maxHeight, openAbove, scale: paletteScale });
     };
 
     updatePlacement();
@@ -113,8 +120,10 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
         width: placement.width,
         maxHeight: placement.maxHeight,
         '--shape-palette-max-height': `${placement.maxHeight}px`,
-        transform: placement.openAbove ? 'translateY(-100%)' : undefined,
-        transformOrigin: placement.openAbove ? 'bottom left' : 'top left',
+        transform: placement.openAbove
+          ? `scale(${placement.scale}) translateY(-100%)`
+          : `scale(${placement.scale})`,
+        transformOrigin: 'top left',
       }}
     >
       <div className="shape-palette-heading">
