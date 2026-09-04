@@ -20,3 +20,6 @@ jobs:
       - run: node scripts/test-board-screen-share-object.mjs
       - run: node scripts/test-board-screen-share-integration.mjs
       - run: node scripts/test-screen-share-board-ui.mjs
+      - run: node scripts/test-bottom-tool-dock.mjs
+      - run: node scripts/test-i18n.mjs
+      - run: npm run build
