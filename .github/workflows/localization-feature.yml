@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check:
@@ -19,6 +19,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm install
+      - name: Normalize dynamic translation fragments
+        run: node scripts/fix-i18n-fragments.mjs
       - name: Inventory Cyrillic UI source
         run: |
           echo '--- CYRILLIC SOURCE INVENTORY START ---'
@@ -38,3 +40,14 @@ jobs:
           node scripts/test-pencil-transform-regression.mjs
       - name: Production build
         run: npm run build
+      - name: Commit verified fragment normalization
+        run: |
+          if git diff --quiet -- src; then
+            echo 'No source normalization changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src
+          git commit -m 'fix: normalize RU EN dynamic fragments'
+          git push
