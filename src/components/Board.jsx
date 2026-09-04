@@ -54,6 +54,12 @@ import { forceExitGameParticipants } from '../lib/gameRealtime.js';
 import { randomToken } from '../lib/ids.js';
 import { getOwnedBoard, rememberOwnedBoard } from '../lib/boardLibrary.js';
 import { createShape } from '../lib/shapes.js';
+import { screenShareBoardLayoutForViewport } from '../lib/screenShare.js';
+import {
+  createBoardScreenShareMedia,
+  isBoardScreenShareObject,
+  screenShareLayoutFromFabricObject,
+} from '../lib/boardScreenShare.js';
 import {
   isRealtimeMutationCausallyStale,
   normalizeRealtimeBaseRevision,
@@ -157,6 +163,8 @@ FabricObject.customProperties = [
   'transientSelectionProxy',
   'selectionTransactionId',
   'selectionSourceIds',
+  'transientScreenShare',
+  'screenShareSessionId',
   'textPlaceholder',
 ];
 
@@ -1060,9 +1068,9 @@ function selectionUiObjects(canvas) {
   if (!canvas) return [];
   const active = canvas.getActiveObject();
   if (active?.transientSelectionProxy && typeof active.getObjects === 'function') {
-    return active.getObjects().filter((object) => !object.isEraserPath);
+    return active.getObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare);
   }
-  return canvas.getActiveObjects().filter((object) => !object.isEraserPath);
+  return canvas.getActiveObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare);
 }
 
 function safeFilename(value, fallback = 'alex-board') {
@@ -1932,6 +1940,9 @@ function BoardWorkspace({
   const rejectedPointerIdsRef = useRef(new Set());
   const suppressedTouchIdsRef = useRef(new Set());
   const viewSendRef = useRef({ lastSentAt: 0, timer: null, pending: false });
+  const boardScreenShareRef = useRef(null);
+  const screenShareRef = useRef(null);
+  const screenShareLayoutSendRef = useRef({ lastSentAt: 0, timer: null, pending: null });
   const lastTeacherViewRef = useRef(null);
   const autopilotRef = useRef(false);
   const autopilotAnimationRef = useRef({
@@ -1993,6 +2004,23 @@ function BoardWorkspace({
 
   const isOwner = permission === 'owner';
   const canEdit = permission === 'owner' || permission === 'edit';
+  const getInitialScreenShareBoardLayout = useCallback(() => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return null;
+    const viewportTransform = canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0];
+    const inverse = util.invertTransform(viewportTransform);
+    const center = util.transformPoint(
+      new Point(canvas.getWidth() / 2, canvas.getHeight() / 2),
+      inverse,
+    );
+    return screenShareBoardLayoutForViewport({
+      centerX: center.x,
+      centerY: center.y,
+      viewportWidth: canvas.getWidth(),
+      viewportHeight: canvas.getHeight(),
+      zoom: canvas.getZoom(),
+    });
+  }, []);
   const screenShare = useAdaptiveScreenShare({
     realtimeRef,
     users,
@@ -2004,8 +2032,93 @@ function BoardWorkspace({
     boardKey,
     boardRealtimeKey: initialAccess.realtimeKey,
     teacherAccountKey,
+    getInitialBoardLayout: getInitialScreenShareBoardLayout,
   });
+  screenShareRef.current = screenShare;
   screenShareSignalHandlerRef.current = screenShare.handleSignal;
+
+  const broadcastBoardScreenShareLayout = useCallback((target, immediate = false) => {
+    if (!isBoardScreenShareObject(target)) return;
+    const layout = screenShareLayoutFromFabricObject(target);
+    if (!layout) return;
+    const state = screenShareLayoutSendRef.current;
+    const send = (nextLayout) => {
+      state.lastSentAt = Date.now();
+      state.pending = null;
+      screenShareRef.current?.updateBoardLayout?.(nextLayout);
+    };
+    if (immediate) {
+      if (state.timer) window.clearTimeout(state.timer);
+      state.timer = null;
+      send(layout);
+      return;
+    }
+    const elapsed = Date.now() - state.lastSentAt;
+    if (elapsed >= LIVE_TRANSFORM_INTERVAL && !state.timer) {
+      send(layout);
+      return;
+    }
+    state.pending = layout;
+    if (state.timer) return;
+    state.timer = window.setTimeout(() => {
+      state.timer = null;
+      const pending = state.pending;
+      if (pending) send(pending);
+    }, Math.max(0, LIVE_TRANSFORM_INTERVAL - elapsed));
+  }, []);
+
+  useEffect(() => {
+    const canvas = fabricCanvasRef.current;
+    const active = Boolean(screenShare.sessionId && screenShare.sourceMode === 'screen');
+    let controller = boardScreenShareRef.current;
+
+    const removeController = () => {
+      controller = boardScreenShareRef.current;
+      if (!controller) return;
+      if (canvas?.getActiveObject?.() === controller.object) canvas.discardActiveObject?.();
+      if (controller.object?.canvas) controller.object.canvas.remove(controller.object);
+      controller.dispose();
+      boardScreenShareRef.current = null;
+    };
+
+    if (!active || !canvas) {
+      removeController();
+      canvas?.requestRenderAll?.();
+      return;
+    }
+
+    if (!controller || controller.object?.screenShareSessionId !== screenShare.sessionId) {
+      removeController();
+      controller = createBoardScreenShareMedia({
+        sessionId: screenShare.sessionId,
+        layout: screenShare.boardLayout,
+        canEdit,
+      });
+      boardScreenShareRef.current = controller;
+      canvas.add(controller.object);
+    }
+
+    controller.setInteractive(canEdit);
+    controller.setStream(screenShare.stream);
+    const locallyTransforming = canvas._currentTransform?.target === controller.object;
+    if (screenShare.boardLayout && !locallyTransforming) {
+      controller.setLayout(screenShare.boardLayout);
+    }
+    canvas.requestRenderAll();
+  }, [canEdit, screenShare.boardLayout, screenShare.sessionId, screenShare.sourceMode, screenShare.stream]);
+
+  useEffect(() => () => {
+    const sendState = screenShareLayoutSendRef.current;
+    if (sendState.timer) window.clearTimeout(sendState.timer);
+    sendState.timer = null;
+    sendState.pending = null;
+    const controller = boardScreenShareRef.current;
+    if (controller) {
+      if (controller.object?.canvas) controller.object.canvas.remove(controller.object);
+      controller.dispose();
+      boardScreenShareRef.current = null;
+    }
+  }, []);
   const compactKeyboardEnabled = useMemo(() => (
     typeof navigator !== 'undefined'
     && Number(navigator.maxTouchPoints ?? 0) > 0
@@ -3265,8 +3378,8 @@ function BoardWorkspace({
       : null;
     const selectionObjects = activeToolRef.current === 'select'
       ? (transaction?.proxy === active && typeof active.getObjects === 'function'
-        ? active.getObjects().filter((object) => !object.isEraserPath)
-        : (canvas?.getActiveObjects().filter((object) => !object.isEraserPath) ?? []))
+        ? active.getObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare)
+        : (canvas?.getActiveObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare) ?? []))
       : [];
     const selectionMode = activeToolRef.current === 'select' && selectionObjects.length > 0;
     if (!drawingMode && !selectionMode) return;
@@ -4171,7 +4284,7 @@ function BoardWorkspace({
 
     const active = canvas.getActiveObject();
     if (active?.transientSelectionProxy && typeof active.getObjects === 'function') {
-      const objects = active.getObjects().filter((object) => !object.isEraserPath);
+      const objects = active.getObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare);
       if (!objects.length) return;
       mutator(objects, canvas);
       const transaction = localSelectionTransactionRef.current;
@@ -4188,7 +4301,7 @@ function BoardWorkspace({
       updateSelectionStyleState();
       return;
     }
-    const objects = canvas.getActiveObjects().filter((object) => !object.isEraserPath);
+    const objects = canvas.getActiveObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare);
     if (!objects.length) return;
     const restoreActiveSelection = isActiveSelectionObject(active) && objects.length > 1;
     if (restoreActiveSelection) {
@@ -4336,7 +4449,7 @@ function BoardWorkspace({
       || typeof transaction.proxy.getObjects !== 'function') return [];
 
     const proxy = transaction.proxy;
-    const objects = proxy.getObjects().filter((object) => !object.isEraserPath);
+    const objects = proxy.getObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare);
     const changedObjects = objects.filter((object) => applySampledStyleToObject(object, sampled, { colorOnly }));
     if (!changedObjects.length) return [];
 
@@ -5518,7 +5631,7 @@ function BoardWorkspace({
 
             let targets = [];
             if (transactionProxy && typeof transactionProxy.getObjects === 'function') {
-              targets = transactionProxy.getObjects().filter((object) => !object.isEraserPath);
+              targets = transactionProxy.getObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare);
             } else {
               targets = objectIds
                 .map((id) => canvas.getObjects().find((object) => String(object.boardObjectId ?? '') === id))
@@ -6664,7 +6777,7 @@ function BoardWorkspace({
       schedulePersistence();
       return;
     }
-    const objects = canvas.getActiveObjects().filter((object) => !object.isEraserPath);
+    const objects = canvas.getActiveObjects().filter((object) => !object.isEraserPath && !object.transientScreenShare);
     if (!objects.length) return;
     if (isActiveSelectionObject(canvas.getActiveObject())) {
       canvas.discardActiveObject();
@@ -6689,7 +6802,7 @@ function BoardWorkspace({
     const canvas = fabricCanvasRef.current;
     if (!canvas || !isOwner) return;
     if (!window.confirm('Удалить все линии и штрихи с доски?')) return;
-    const objects = canvas.getObjects();
+    const objects = canvas.getObjects().filter((object) => !object.transientScreenShare);
     if (!objects.length) return;
     const records = getObjectRecords(objects);
     const ids = records.map((record) => record.object.boardObjectId).filter(Boolean);
@@ -9940,6 +10053,12 @@ function BoardWorkspace({
 
     canvas.on('before:transform', ({ transform, e: nativeEvent }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
+      if (isBoardScreenShareObject(transform.target)) {
+        modifiedBeforeRecordsRef.current = [];
+        currentTransformStartRef.current = null;
+        currentTransformMovedRef.current = false;
+        return;
+      }
       if (!ownsSelectionLease(transform.target)) {
         // Fabric can begin a drag in the same pointerdown that creates a selection.
         // Freeze that transform until Supabase grants the object lease; this closes the
@@ -9973,6 +10092,12 @@ function BoardWorkspace({
 
     const broadcastLiveTransform = ({ target }) => {
       if (!target || applyingRemoteRef.current || applyingHistoryRef.current) return;
+      if (isBoardScreenShareObject(target)) {
+        target.set({ angle: 0, skewX: 0, skewY: 0, flipX: false, flipY: false });
+        target.setCoords();
+        broadcastBoardScreenShareLayout(target, false);
+        return;
+      }
       // Pencil and touch deliberately share Fabric's normal render path. A previous
       // Pencil-only raster compositor replaced Fabric render methods and allocated three
       // retina canvases per drag, which accumulated GPU work in WebKit and could leave
@@ -9992,6 +10117,16 @@ function BoardWorkspace({
     canvas.on('object:modified', ({ target }) => {
       restoreTargetFindAfterTransform();
       if (applyingRemoteRef.current || applyingHistoryRef.current || !target) return;
+      if (isBoardScreenShareObject(target)) {
+        target.set({ angle: 0, skewX: 0, skewY: 0, flipX: false, flipY: false });
+        target.setCoords();
+        modifiedBeforeRecordsRef.current = [];
+        currentTransformStartRef.current = null;
+        currentTransformMovedRef.current = false;
+        broadcastBoardScreenShareLayout(target, true);
+        canvas.requestRenderAll();
+        return;
+      }
       if (target.transientSelectionProxy) {
         endLiveTransform(target);
         target.previewReceivedAt = Date.now();
@@ -10634,7 +10769,7 @@ function BoardWorkspace({
       const now = Date.now();
       const candidates = queryTransformSpatialObjects(selectionRect);
       const selected = candidates.filter((object) => {
-        if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || !object.selectable) return false;
+        if (object.isEraserPath || object.transientPreview || object.transientSelectionProxy || object.transientScreenShare || !object.selectable) return false;
         const lock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
         if (lock && Number(lock.expiresAt ?? 0) > now) return false;
         return objectFastIntersectsRect(object, selectionRect);
