@@ -18,7 +18,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm install
       - name: Inventory Cyrillic UI source
         run: |
           echo '--- CYRILLIC SOURCE INVENTORY START ---'
