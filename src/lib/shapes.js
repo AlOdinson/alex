@@ -64,7 +64,7 @@ export function solidDragFlipX(shapeId, dragDx) {
   if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
   const numericDx = Number(dragDx);
   if (!Number.isFinite(numericDx) || numericDx === 0) return false;
-  if (shapeId === 'wire-cube') return numericDx > 0;
+  if (shapeId === 'wire-cube' || shapeId === 'pyramid') return numericDx > 0;
   return numericDx < 0;
 }
 
