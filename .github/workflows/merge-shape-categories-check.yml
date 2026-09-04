@@ -1,0 +1,19 @@
+name: Merge Shape Categories Check
+
+on:
+  push:
+    branches:
+      - feature/merge-shape-categories
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: node scripts/test-shape-palette.mjs
+      - run: npm run build
