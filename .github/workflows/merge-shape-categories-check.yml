@@ -27,87 +27,47 @@ jobs:
 
           shapes_path = Path('src/lib/shapes.js')
           shapes = shapes_path.read_text()
-          old = """export const SHAPE_CATEGORIES = [
-  {
-    id: 'basic',
-    label: 'Базовые многоугольники',
-    shapes: [
-      ['square', 'Квадрат'],
-      ['triangle', 'Треугольник'],
-      ['right-triangle', 'Прямоугольный треугольник'],
-      ['parallelogram', 'Параллелограмм'],
-      ['diamond', 'Ромб'],
-    ],
-  },
-  {
-    id: 'regular',
-    label: 'Правильные многоугольники',
-    shapes: [
-      ['pentagon', 'Пятиугольник'],
-      ['hexagon', 'Шестиугольник'],
-      ['octagon', 'Восьмиугольник'],
-      ['star', 'Звезда'],
-    ],
-  },
-  {
-    id: 'rounded',
-    label: 'Скруглённые фигуры',
-    shapes: [
-      ['circle', 'Круг'],
-      ['semicircle', 'Полукруг'],
-    ],
-  },
-  {
-    id: 'solids',
-    label: 'Трёхмерные тела',
-    shapes: [
-      ['wire-cube', 'Каркасный куб'],
-      ['cylinder', 'Цилиндр'],
-      ['pyramid', 'Пирамида'],
-      ['cone', 'Конус'],
-      ['sphere', 'Сфера'],
-      ['tetrahedron', 'Тетраэдр'],
-      ['octahedron', 'Октаэдр'],
-    ],
-  },
-];"""
-          new = """export const SHAPE_CATEGORIES = [
-  {
-    id: '2d',
-    label: '2D фигуры',
-    shapes: [
-      ['square', 'Квадрат'],
-      ['triangle', 'Треугольник'],
-      ['right-triangle', 'Прямоугольный треугольник'],
-      ['parallelogram', 'Параллелограмм'],
-      ['diamond', 'Ромб'],
-      ['pentagon', 'Пятиугольник'],
-      ['hexagon', 'Шестиугольник'],
-      ['octagon', 'Восьмиугольник'],
-      ['star', 'Звезда'],
-      ['circle', 'Круг'],
-      ['semicircle', 'Полукруг'],
-    ],
-  },
-  {
-    id: 'solids',
-    label: '3D тела',
-    shapes: [
-      ['wire-cube', 'Каркасный куб'],
-      ['cylinder', 'Цилиндр'],
-      ['pyramid', 'Пирамида'],
-      ['cone', 'Конус'],
-      ['sphere', 'Сфера'],
-      ['tetrahedron', 'Тетраэдр'],
-      ['octahedron', 'Октаэдр'],
-    ],
-  },
-];"""
-          if old in shapes:
-              shapes = shapes.replace(old, new, 1)
+          start_marker = "export const SHAPE_CATEGORIES = ["
+          end_marker = "\n\nexport const HORIZONTALLY_MIRRORED_SOLID_IDS"
+          start = shapes.index(start_marker)
+          end = shapes.index(end_marker)
+          new = "\n".join([
+              "export const SHAPE_CATEGORIES = [",
+              "  {",
+              "    id: '2d',",
+              "    label: '2D фигуры',",
+              "    shapes: [",
+              "      ['square', 'Квадрат'],",
+              "      ['triangle', 'Треугольник'],",
+              "      ['right-triangle', 'Прямоугольный треугольник'],",
+              "      ['parallelogram', 'Параллелограмм'],",
+              "      ['diamond', 'Ромб'],",
+              "      ['pentagon', 'Пятиугольник'],",
+              "      ['hexagon', 'Шестиугольник'],",
+              "      ['octagon', 'Восьмиугольник'],",
+              "      ['star', 'Звезда'],",
+              "      ['circle', 'Круг'],",
+              "      ['semicircle', 'Полукруг'],",
+              "    ],",
+              "  },",
+              "  {",
+              "    id: 'solids',",
+              "    label: '3D тела',",
+              "    shapes: [",
+              "      ['wire-cube', 'Каркасный куб'],",
+              "      ['cylinder', 'Цилиндр'],",
+              "      ['pyramid', 'Пирамида'],",
+              "      ['cone', 'Конус'],",
+              "      ['sphere', 'Сфера'],",
+              "      ['tetrahedron', 'Тетраэдр'],",
+              "      ['octahedron', 'Октаэдр'],",
+              "    ],",
+              "  },",
+              "];",
+          ])
+          if shapes[start:end] != new:
+              shapes = shapes[:start] + new + shapes[end:]
               shapes_path.write_text(shapes)
-          elif new not in shapes:
-              raise SystemExit('SHAPE_CATEGORIES marker not found')
 
           i18n_path = Path('src/i18n.js')
           i18n = i18n_path.read_text()
@@ -127,7 +87,7 @@ jobs:
 
       - name: Commit implementation
         run: |
-          if git diff --quiet; then
+          if git diff --quiet -- src/lib/shapes.js src/i18n.js; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
