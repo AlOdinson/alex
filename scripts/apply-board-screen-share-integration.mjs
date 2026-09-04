@@ -9,17 +9,6 @@ function replaceOnce(before, after, label) {
   source = source.replace(before, after);
 }
 
-function patchSection(startMarker, endMarker, transform, label) {
-  const start = source.indexOf(startMarker);
-  if (start < 0) throw new Error(`Section start not found: ${label}`);
-  const end = source.indexOf(endMarker, start);
-  if (end < 0) throw new Error(`Section end not found: ${label}`);
-  const original = source.slice(start, end);
-  const next = transform(original);
-  if (next === original) throw new Error(`Section did not change: ${label}`);
-  source = `${source.slice(0, start)}${next}${source.slice(end)}`;
-}
-
 replaceOnce(
   `import { createShape } from '../lib/shapes.js';\n`,
   `import { createShape } from '../lib/shapes.js';\nimport { screenShareBoardLayoutForViewport } from '../lib/screenShare.js';\nimport {\n  createBoardScreenShareMedia,\n  isBoardScreenShareObject,\n  screenShareLayoutFromFabricObject,\n} from '../lib/boardScreenShare.js';\n`,
@@ -86,8 +75,6 @@ if (!source.includes('broadcastBoardScreenShareLayout(target, true);')) {
   );
 }
 
-// Any toolbar/clipboard/delete path based on active Fabric objects must ignore the
-// live media surface. It remains directly transformable on canvas, but never durable.
 source = source.replaceAll(
   `.filter((object) => !object.isEraserPath)`,
   `.filter((object) => !object.isEraserPath && !object.transientScreenShare)`,
@@ -98,19 +85,12 @@ source = source.replaceAll(
   `object.isEraserPath || object.transientPreview || object.transientSelectionProxy || object.transientScreenShare || !object.selectable`,
 );
 
-patchSection(
-  `  const clearBoard = useCallback`,
-  `  const addShape = useCallback`,
-  (section) => {
-    if (section.includes(`canvas.getObjects().filter((object) => !object.transientScreenShare)`)) return section;
-    const next = section.replace(
-      `const objects = canvas.getObjects();`,
-      `const objects = canvas.getObjects().filter((object) => !object.transientScreenShare);`,
-    );
-    if (next === section) throw new Error('clearBoard object list not found');
-    return next;
-  },
-  'clearBoard transient protection',
-);
+if (!source.includes(`const objects = canvas.getObjects().filter((object) => !object.transientScreenShare);`)) {
+  replaceOnce(
+    `  const clearBoard = useCallback(() => {\n    const canvas = fabricCanvasRef.current;\n    if (!canvas || !isOwner) return;\n    if (!window.confirm('Удалить все линии и штрихи с доски?')) return;\n    const objects = canvas.getObjects();`,
+    `  const clearBoard = useCallback(() => {\n    const canvas = fabricCanvasRef.current;\n    if (!canvas || !isOwner) return;\n    if (!window.confirm('Удалить все линии и штрихи с доски?')) return;\n    const objects = canvas.getObjects().filter((object) => !object.transientScreenShare);`,
+    'clearBoard transient protection',
+  );
+}
 
 fs.writeFileSync(path, source);
