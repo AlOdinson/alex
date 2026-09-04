@@ -431,18 +431,20 @@ export default function Toolbar({
             </NavigationActionButton>
           )}
           {isOwner && screenShare && (
-            <NavigationActionButton
-              active={screenShare.isHosting}
-              disabled={screenShare.buttonDisabled}
-              title={screenShare.activeRemoteSession
-                ? 'На этой доске уже идёт демонстрация экрана'
-                : (screenShare.isHosting
-                  ? 'Остановить демонстрацию экрана'
-                  : 'Показать экран или вкладку участникам')}
-              onClick={screenShare.toggle}
-            >
-              {screenShare.isHosting ? 'Стоп экран' : 'Экран'}
-            </NavigationActionButton>
+            <span className="desktop-screen-share">
+              <NavigationActionButton
+                active={screenShare.isHosting}
+                disabled={screenShare.buttonDisabled}
+                title={screenShare.activeRemoteSession
+                  ? 'На этой доске уже идёт демонстрация экрана'
+                  : (screenShare.isHosting
+                    ? 'Остановить демонстрацию экрана'
+                    : 'Показать экран или вкладку участникам')}
+                onClick={screenShare.toggle}
+              >
+                {screenShare.isHosting ? 'Stop Share' : 'ShareScreen'}
+              </NavigationActionButton>
+            </span>
           )}
         </div>
 

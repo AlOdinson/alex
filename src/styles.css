@@ -3469,3 +3469,21 @@ html.game-viewport-locked #root {
   .dock-tool-icon { width: 24px; height: 24px; }
   .dock-tool-label { max-width: 50px; font-size: 8.5px; }
 }
+
+/* Desktop-only entry point for the existing WebRTC screen-share flow. */
+.desktop-screen-share {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 760px) {
+  .desktop-screen-share {
+    display: none !important;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .desktop-screen-share {
+    display: none !important;
+  }
+}
