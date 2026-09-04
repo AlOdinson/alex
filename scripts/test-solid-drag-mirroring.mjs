@@ -8,6 +8,7 @@ function assert(condition, message) {
 }
 
 const {
+  createShape,
   HORIZONTALLY_MIRRORED_SOLID_IDS,
   SHAPE_CATEGORIES,
   solidDragScaleX,
@@ -29,11 +30,26 @@ for (const shapeId of expectedMirrored) {
   assert(solidDragScaleX(shapeId, 0.75, 40) === 0.75, `${shapeId} must face right for a rightward drag.`);
   assert(solidDragScaleX(shapeId, 0.75, -40) === -0.75, `${shapeId} must face left for a leftward drag.`);
   assert(solidDragScaleX(shapeId, -0.75, 40) === 0.75, `${shapeId} must normalize a rightward drag to positive scaleX.`);
+
+  const object = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
+  object.set({ left: 100, top: 100, scaleX: 0.01, scaleY: 0.01, selectable: false });
+  object.set({ left: 80, top: 110, scaleX: 0.5, scaleY: 0.5 });
+  assert(object.scaleX < 0, `${shapeId} live preview must mirror when the pointer crosses left of the creation point.`);
+  object.set({ left: 120, top: 110, scaleX: 0.5, scaleY: 0.5 });
+  assert(object.scaleX > 0, `${shapeId} live preview must face right again when the pointer crosses right of the creation point.`);
+  object.set({ selectable: true });
+  object.set({ left: 80, scaleX: 0.5 });
+  assert(object.scaleX > 0, `${shapeId} must stop auto-mirroring after creation is finalized.`);
 }
 
 for (const shapeId of excluded) {
   assert(solidDragScaleX(shapeId, 0.75, -40) === 0.75, `${shapeId} must not mirror for a leftward drag.`);
   assert(solidDragScaleX(shapeId, -0.75, -40) === 0.75, `${shapeId} must remain unmirrored even if a negative scale is supplied.`);
+
+  const object = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
+  object.set({ left: 100, top: 100, scaleX: 0.01, scaleY: 0.01, selectable: false });
+  object.set({ left: 80, top: 110, scaleX: 0.5, scaleY: 0.5 });
+  assert(object.scaleX > 0, `${shapeId} live preview must stay unmirrored for leftward drag.`);
 }
 
 assert(
