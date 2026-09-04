@@ -15,3 +15,4 @@ jobs:
         with:
           node-version: 22
       - run: node scripts/test-screen-share.mjs
+      - run: node scripts/test-screen-share-board-session.mjs
