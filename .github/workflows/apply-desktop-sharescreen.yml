@@ -1,0 +1,70 @@
+name: Apply Desktop ShareScreen
+
+on:
+  push:
+    branches:
+      - feature/desktop-sharescreen-button
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'ci: apply desktop ShareScreen implementation'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Apply desktop ShareScreen UI
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          toolbar_path = Path('src/components/Toolbar.jsx')
+          toolbar = toolbar_path.read_text()
+          old = """          {isOwner && screenShare && (\n            <NavigationActionButton\n              active={screenShare.isHosting}\n              disabled={screenShare.buttonDisabled}\n              title={screenShare.activeRemoteSession\n                ? 'На этой доске уже идёт демонстрация экрана'\n                : (screenShare.isHosting\n                  ? 'Остановить демонстрацию экрана'\n                  : 'Показать экран или вкладку участникам')}\n              onClick={screenShare.toggle}\n            >\n              {screenShare.isHosting ? 'Стоп экран' : 'Экран'}\n            </NavigationActionButton>\n          )}\n"""
+          new = """          {isOwner && screenShare && (\n            <span className=\"desktop-screen-share\">\n              <NavigationActionButton\n                active={screenShare.isHosting}\n                disabled={screenShare.buttonDisabled}\n                title={screenShare.activeRemoteSession\n                  ? 'На этой доске уже идёт демонстрация экрана'\n                  : (screenShare.isHosting\n                    ? 'Остановить демонстрацию экрана'\n                    : 'Показать экран или вкладку участникам')}\n                onClick={screenShare.toggle}\n              >\n                {screenShare.isHosting ? 'Stop Share' : 'ShareScreen'}\n              </NavigationActionButton>\n            </span>\n          )}\n"""
+          if old not in toolbar:
+              raise SystemExit('Expected current screen-share toolbar block was not found.')
+          toolbar_path.write_text(toolbar.replace(old, new, 1))
+
+          styles_path = Path('src/styles.css')
+          styles = styles_path.read_text()
+          css = """
+
+/* Desktop-only entry point for the existing WebRTC screen-share flow. */
+.desktop-screen-share {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+@media (max-width: 760px) {
+  .desktop-screen-share {
+    display: none !important;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .desktop-screen-share {
+    display: none !important;
+  }
+}
+"""
+          if '.desktop-screen-share {' not in styles:
+              styles_path.write_text(styles.rstrip() + css + '\n')
+
+          package_path = Path('package.json')
+          package = package_path.read_text()
+          old_sync = '"test:sync": "node scripts/test-desktop-shape-palette-scale.mjs'
+          new_sync = '"test:sync": "node scripts/test-desktop-sharescreen-button.mjs && node scripts/test-desktop-shape-palette-scale.mjs'
+          if old_sync in package:
+              package_path.write_text(package.replace(old_sync, new_sync, 1))
+          elif 'node scripts/test-desktop-sharescreen-button.mjs' not in package:
+              raise SystemExit('Could not register desktop ShareScreen regression in test:sync.')
+          PY
+      - name: Commit implementation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/components/Toolbar.jsx src/styles.css package.json
+          git commit -m "ui: add desktop ShareScreen button"
+          git push
