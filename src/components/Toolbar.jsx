@@ -9,11 +9,11 @@ import {
 } from '../lib/drawingPresets.js';
 
 const TOOLS = [
-  { id: 'select', label: 'Выделение', icon: '↖' },
-  { id: 'pencil', label: 'Карандаш', icon: '✎' },
-  { id: 'line', label: 'Прямая', icon: '╱' },
-  { id: 'eraser', label: 'Ластик', icon: '⌫' },
-  { id: 'text', label: 'Текст', icon: 'T' },
+  { id: 'select', label: 'Выделение' },
+  { id: 'pencil', label: 'Карандаш' },
+  { id: 'line', label: 'Прямая' },
+  { id: 'eraser', label: 'Ластик' },
+  { id: 'text', label: 'Текст' },
 ];
 
 
@@ -27,6 +27,65 @@ const FONTS = [
   ['Georgia', 'Georgia'],
   ['Verdana', 'Verdana'],
 ];
+
+
+function DockToolIcon({ id }) {
+  switch (id) {
+    case 'select':
+      return (
+        <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+          <path d="M5 3.5 21 14.7l-7.1 1.3 4.1 6.8-3.1 1.9-4.2-7-5.2 5Z" fill="#ede9fe" stroke="#5b21b6" strokeWidth="1.9" strokeLinejoin="round" />
+        </svg>
+      );
+    case 'pencil':
+      return (
+        <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+          <path d="m6.2 20.7 1.4-5.1L18.2 5a2.1 2.1 0 0 1 3 0l1.8 1.8a2.1 2.1 0 0 1 0 3L12.4 20.4l-5.2 1.4Z" fill="#fbbf24" stroke="#172554" strokeWidth="1.65" strokeLinejoin="round" />
+          <path d="m17.1 6.1 4.8 4.8" stroke="#fb7185" strokeWidth="2.2" strokeLinecap="round" />
+          <path d="m7.7 15.6 4.7 4.8" stroke="#172554" strokeWidth="1.45" />
+        </svg>
+      );
+    case 'line':
+      return (
+        <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+          <path d="M6 21.5 22 6.5" fill="none" stroke="#172554" strokeWidth="2.1" strokeLinecap="round" />
+          <circle cx="6" cy="21.5" r="2" fill="#818cf8" stroke="#172554" strokeWidth="1.15" />
+          <circle cx="22" cy="6.5" r="2" fill="#818cf8" stroke="#172554" strokeWidth="1.15" />
+        </svg>
+      );
+    case 'eraser':
+      return (
+        <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+          <path d="m7.2 17.8 8.9-9a2 2 0 0 1 2.9 0l3.2 3.2a2 2 0 0 1 0 2.9l-8.8 8.8H9.6l-2.4-2.5a2.4 2.4 0 0 1 0-3.4Z" fill="#f9a8d4" stroke="#172554" strokeWidth="1.65" strokeLinejoin="round" />
+          <path d="m12.3 12.7 5.8 5.8-5.2 5.2H9.5l-2.4-2.5a2.4 2.4 0 0 1 0-3.4Z" fill="#c4b5fd" />
+          <path d="m12.3 12.7 5.8 5.8" stroke="#172554" strokeWidth="1.55" />
+        </svg>
+      );
+    case 'text':
+      return (
+        <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+          <path d="M6 6.3h16M14 6.3v15.4M10.5 21.7h7" fill="none" stroke="#0f172a" strokeWidth="2.15" strokeLinecap="round" />
+        </svg>
+      );
+    case 'shape':
+      return (
+        <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+          <rect x="5" y="5" width="12" height="12" rx="1.7" fill="#ddd6fe" stroke="#3730a3" strokeWidth="1.6" />
+          <circle cx="18.5" cy="18.5" r="5.2" fill="#e0f2fe" stroke="#3730a3" strokeWidth="1.6" />
+        </svg>
+      );
+    case 'image':
+      return (
+        <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+          <rect x="4.5" y="5.2" width="19" height="17.6" rx="2.3" fill="#eff6ff" stroke="#1e3a8a" strokeWidth="1.6" />
+          <circle cx="18.9" cy="10" r="2" fill="#fbbf24" />
+          <path d="m6.8 19.8 5.1-5 3.3 3.1 2.1-2 4 3.9" fill="none" stroke="#2563eb" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
 
 
 function ExportIcon() {
@@ -313,70 +372,10 @@ export default function Toolbar({
   }, [shapesOpen, exportOpen]);
 
   return (
-    <header className="toolbar-shell">
+    <>
+      <header className="toolbar-shell">
       <div className="toolbar-primary-row">
         <a className="brand-button" href={import.meta.env.BASE_URL} aria-label="На главную">A</a>
-
-        <div className="tool-group main-tools" aria-label="Инструменты">
-          {TOOLS.map((item) => (
-            <IconButton
-              key={item.id}
-              title={item.label}
-              active={tool === item.id}
-              disabled={!canEdit}
-              onClick={() => {
-                setShapesOpen(false);
-                setTool(item.id);
-              }}
-            >
-              {item.icon}
-            </IconButton>
-          ))}
-
-          <div className="shape-anchor" ref={shapeAnchorRef}>
-            <IconButton
-              title="Фигуры"
-              active={tool === 'shape' || shapesOpen}
-              disabled={!canEdit}
-              onClick={() => {
-                setTool('shape');
-                setShapesOpen((value) => !value);
-              }}
-            >
-              ◇
-            </IconButton>
-            {shapesOpen && (
-              <ShapePalette
-                anchorRef={shapeAnchorRef}
-                onClose={() => setShapesOpen(false)}
-                onChoose={(shapeId) => {
-                  onAddShape(shapeId);
-                  setShapesOpen(false);
-                }}
-              />
-            )}
-          </div>
-
-          <label
-            className={`tool-button image-upload-button ${!canEdit ? 'disabled' : ''}`.trim()}
-            title="Добавить картинку"
-            aria-label="Добавить картинку"
-          >
-            <span aria-hidden="true">▧</span>
-            <input
-              className="image-file-input"
-              type="file"
-              accept="image/*,.heic,.heif"
-              multiple
-              disabled={!canEdit}
-              onChange={(event) => {
-                const files = [...(event.target.files ?? [])];
-                if (files.length) onAddImages(files);
-                event.target.value = '';
-              }}
-            />
-          </label>
-        </div>
 
         <div className="tool-group compact" aria-label="Отмена и возврат">
           <IconButton title="Отменить — Ctrl/Command + Z" disabled={!canEdit || !canUndo} onClick={onUndo} stylusActionPhase="end">↶</IconButton>
@@ -726,6 +725,79 @@ export default function Toolbar({
           {pendingCount > 0 && <strong>{pendingCount} в очереди</strong>}
         </div>
       </div>
-    </header>
+      </header>
+
+      <div className="board-tool-dock" aria-label="Инструменты">
+        {TOOLS.map((item) => (
+          <IconButton
+            key={item.id}
+            title={item.label}
+            active={tool === item.id}
+            disabled={!canEdit}
+            className="dock-tool-button"
+            onClick={() => {
+              setShapesOpen(false);
+              setTool(item.id);
+            }}
+          >
+            <span className="dock-tool-content">
+              <DockToolIcon id={item.id} />
+              <span className="dock-tool-label">{item.label}</span>
+            </span>
+          </IconButton>
+        ))}
+
+        <div className="shape-anchor dock-shape-anchor" ref={shapeAnchorRef}>
+          <IconButton
+            title="Фигуры"
+            active={tool === 'shape' || shapesOpen}
+            disabled={!canEdit}
+            className="dock-tool-button"
+            onClick={() => {
+              setTool('shape');
+              setShapesOpen((value) => !value);
+            }}
+          >
+            <span className="dock-tool-content">
+              <DockToolIcon id="shape" />
+              <span className="dock-tool-label">Фигуры</span>
+            </span>
+          </IconButton>
+          {shapesOpen && (
+            <ShapePalette
+              anchorRef={shapeAnchorRef}
+              onClose={() => setShapesOpen(false)}
+              onChoose={(shapeId) => {
+                onAddShape(shapeId);
+                setShapesOpen(false);
+              }}
+            />
+          )}
+        </div>
+
+        <label
+          className={`tool-button dock-tool-button image-upload-button ${!canEdit ? 'disabled' : ''}`.trim()}
+          title="Добавить картинку"
+          aria-label="Добавить картинку"
+        >
+          <span className="dock-tool-content" aria-hidden="true">
+            <DockToolIcon id="image" />
+            <span className="dock-tool-label">Картинка</span>
+          </span>
+          <input
+            className="image-file-input"
+            type="file"
+            accept="image/*,.heic,.heif"
+            multiple
+            disabled={!canEdit}
+            onChange={(event) => {
+              const files = [...(event.target.files ?? [])];
+              if (files.length) onAddImages(files);
+              event.target.value = '';
+            }}
+          />
+        </label>
+      </div>
+    </>
   );
 }

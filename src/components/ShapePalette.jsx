@@ -71,9 +71,17 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
         Math.max(viewportOffsetLeft + EDGE_GAP, preferredLeft),
         viewportOffsetLeft + viewportWidth - width - EDGE_GAP,
       );
-      const top = rect.bottom + viewportOffsetTop + 8;
-      const maxHeight = Math.max(180, viewportOffsetTop + viewportHeight - top - EDGE_GAP);
-      setPlacement({ left, top, width, maxHeight });
+      const anchorTop = rect.top + viewportOffsetTop;
+      const anchorBottom = rect.bottom + viewportOffsetTop;
+      const viewportTop = viewportOffsetTop;
+      const viewportBottom = viewportOffsetTop + viewportHeight;
+      const availableAbove = anchorTop - viewportTop - EDGE_GAP - 8;
+      const availableBelow = viewportBottom - anchorBottom - EDGE_GAP - 8;
+      const openAbove = availableAbove > availableBelow;
+      const availableHeight = openAbove ? availableAbove : availableBelow;
+      const maxHeight = Math.max(140, Math.min(690, availableHeight));
+      const top = openAbove ? anchorTop - 8 : anchorBottom + 8;
+      setPlacement({ left, top, width, maxHeight, openAbove });
     };
 
     updatePlacement();
@@ -105,6 +113,8 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
         width: placement.width,
         maxHeight: placement.maxHeight,
         '--shape-palette-max-height': `${placement.maxHeight}px`,
+        transform: placement.openAbove ? 'translateY(-100%)' : undefined,
+        transformOrigin: placement.openAbove ? 'bottom left' : 'top left',
       }}
     >
       <div className="shape-palette-heading">

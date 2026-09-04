@@ -159,6 +159,7 @@ const RAW_EN = new Map(Object.entries({
   'Инструменты': 'Tools',
   'Фигуры': 'Shapes',
   'Добавить картинку': 'Add image',
+  'Картинка': 'Image',
   'Отмена и возврат': 'Undo and redo',
   'Отменить — Ctrl/Command + Z': 'Undo — Ctrl/Command + Z',
   'Вернуть — Ctrl/Command + Shift + Z': 'Redo — Ctrl/Command + Shift + Z',

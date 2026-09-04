@@ -3355,3 +3355,117 @@ html.game-viewport-locked #root {
   width: 100%;
   margin-bottom: 4px;
 }
+
+
+/* Alex Board 1.35.0 — reference-style bottom tool dock */
+.board-tool-dock {
+  position: absolute;
+  z-index: 42;
+  left: 50%;
+  bottom: max(12px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+  max-width: calc(100vw - 24px);
+  padding: 7px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid rgba(226, 232, 240, 0.96);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  scrollbar-width: none;
+  touch-action: manipulation;
+}
+
+.board-tool-dock::-webkit-scrollbar { display: none; }
+
+.board-tool-dock .dock-tool-button {
+  flex: 0 0 62px;
+  width: 62px;
+  height: 58px;
+  padding: 0;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: #172554;
+  transition: background 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.board-tool-dock .dock-tool-button > span,
+.board-tool-dock .dock-tool-content {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.board-tool-dock .dock-tool-button:hover { background: #f5f3ff; }
+.board-tool-dock .dock-tool-button:active:not(:disabled) { transform: translateY(1px); }
+
+.board-tool-dock .dock-tool-button.active {
+  background: #ede9fe;
+  color: #5b21b6;
+  box-shadow: inset 0 0 0 1px rgba(124, 58, 237, 0.12);
+}
+
+.dock-tool-icon {
+  display: block;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 auto;
+}
+
+.dock-tool-label {
+  display: block;
+  max-width: 58px;
+  overflow: hidden;
+  color: #475569;
+  font-size: 9.5px;
+  font-weight: 650;
+  line-height: 1.05;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-tool-dock .dock-tool-button.active .dock-tool-label { color: #6d28d9; }
+.board-tool-dock .dock-shape-anchor { flex: 0 0 auto; }
+
+.board-tool-dock .image-upload-button {
+  position: relative;
+  display: flex;
+  cursor: pointer;
+}
+
+.board-tool-dock .image-upload-button.disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.board-tool-dock .image-file-input { display: none; }
+
+@media (max-width: 760px) {
+  .board-tool-dock {
+    bottom: max(8px, env(safe-area-inset-bottom));
+    max-width: calc(100vw - 12px);
+    padding: 5px;
+    border-radius: 15px;
+  }
+
+  .board-tool-dock .dock-tool-button {
+    flex-basis: 54px;
+    width: 54px;
+    height: 52px;
+    border-radius: 11px;
+  }
+
+  .dock-tool-icon { width: 24px; height: 24px; }
+  .dock-tool-label { max-width: 50px; font-size: 8.5px; }
+}
