@@ -5,7 +5,8 @@ import { SHAPE_CATEGORIES } from '../lib/shapes.js';
 
 const EDGE_GAP = 6;
 const DESKTOP_WIDTH = 470;
-const DESKTOP_SCALE = 0.7;
+const DESKTOP_SCALE = 0.77;
+const TOUCH_SCALE = 1.1;
 
 function firstStylusTouch(event) {
   return [...Array.from(event?.changedTouches ?? []), ...Array.from(event?.touches ?? [])]
@@ -64,7 +65,7 @@ export default function ShapePalette({ onChoose, onClose, anchorRef }) {
       const rect = anchor.getBoundingClientRect();
       const compactTouchLayout = Number(navigator.maxTouchPoints ?? 0) > 0
         && (window.matchMedia?.('(pointer: coarse)')?.matches || viewportWidth <= 1180);
-      const paletteScale = compactTouchLayout ? 1 : DESKTOP_SCALE;
+      const paletteScale = compactTouchLayout ? TOUCH_SCALE : DESKTOP_SCALE;
       const preferredWidth = compactTouchLayout ? 370 : DESKTOP_WIDTH;
       const minimumWidth = compactTouchLayout ? 230 : 250;
       const availableVisualWidth = Math.max(0, viewportWidth - EDGE_GAP * 2);
