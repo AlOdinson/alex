@@ -7,33 +7,38 @@ function assert(condition, message) {
 }
 
 assert(
-  source.includes('const DESKTOP_SCALE = 0.7;'),
-  'Desktop shape palette must use an explicit 0.7 scale (30% smaller).',
+  source.includes('const DESKTOP_SCALE = 0.77;'),
+  'Desktop shape palette must be 10% larger than the current 0.70 size (0.77).',
 );
 
 assert(
-  source.includes('const paletteScale = compactTouchLayout ? 1 : DESKTOP_SCALE;'),
-  'Touch/iPad shape palette must stay at 100% while desktop uses DESKTOP_SCALE.',
+  source.includes('const TOUCH_SCALE = 1.1;'),
+  'Touch/iPad shape palette must be 10% larger than the current 1.00 size (1.10).',
+);
+
+assert(
+  source.includes('const paletteScale = compactTouchLayout ? TOUCH_SCALE : DESKTOP_SCALE;'),
+  'Shape palette must use the enlarged scale for both desktop and touch layouts.',
 );
 
 assert(
   source.includes('const visualWidth = width * paletteScale;'),
-  'Desktop placement must clamp against the scaled visual width.',
+  'Palette placement must clamp against the scaled visual width.',
 );
 
 assert(
   source.includes('availableHeight / paletteScale'),
-  'Palette max-height calculation must account for desktop visual scaling.',
+  'Palette max-height calculation must account for visual scaling.',
 );
 
 assert(
   source.includes("`scale(${placement.scale}) translateY(-100%)`"),
-  'Above-anchor palette must preserve its anchor while applying desktop scale.',
+  'Above-anchor palette must preserve its anchor while applying scale.',
 );
 
 assert(
   source.includes("`scale(${placement.scale})`"),
-  'Below-anchor palette must apply the desktop scale.',
+  'Below-anchor palette must apply scale.',
 );
 
 assert(
@@ -41,4 +46,4 @@ assert(
   'Scaled palette must use a stable top-left transform origin.',
 );
 
-console.log('Desktop shape palette 70% scale regression passed.');
+console.log('Shape palette 10% larger in all layouts regression passed.');
