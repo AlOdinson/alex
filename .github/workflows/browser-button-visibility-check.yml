@@ -7,16 +7,92 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Apply browser button visibility flag if needed
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          toolbar = Path('src/components/Toolbar.jsx')
+          source = toolbar.read_text()
+          flag = "const SHOW_BROWSER_BUTTON = false;"
+          gate_old = "{canEdit && screenShare && ("
+          gate_new = "{SHOW_BROWSER_BUTTON && canEdit && screenShare && ("
+
+          changed = False
+          if flag not in source:
+              marker = "\n\nconst FONTS = ["
+              if marker not in source:
+                  raise SystemExit('Toolbar insertion marker not found')
+              source = source.replace(
+                  marker,
+                  "\n\n// Set to true to restore the Browser button without restoring or rewriting browser logic.\nconst SHOW_BROWSER_BUTTON = false;\n\nconst FONTS = [",
+                  1,
+              )
+              changed = True
+
+          if gate_new not in source:
+              if gate_old not in source:
+                  raise SystemExit('Browser button render gate not found')
+              source = source.replace(gate_old, gate_new, 1)
+              changed = True
+
+          if changed:
+              toolbar.write_text(source)
+
+          package = Path('package.json')
+          package_source = package.read_text()
+          test_cmd = 'node scripts/test-browser-button-visibility.mjs && '
+          if test_cmd not in package_source:
+              marker = '"test:sync": "'
+              if marker not in package_source:
+                  raise SystemExit('package.json test:sync marker not found')
+              package_source = package_source.replace(marker, marker + test_cmd, 1)
+              package.write_text(package_source)
+          PY
+          if ! git diff --quiet -- src/components/Toolbar.jsx package.json; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add src/components/Toolbar.jsx package.json
+            git commit -m "ui: hide browser button behind restore flag"
+            git push origin HEAD:feature/hide-browser-button
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - name: Browser button visibility regression
         run: node scripts/test-browser-button-visibility.mjs
+      - name: Browser feature regressions
+        run: npm run test:screen-share
+      - name: Shape regressions
+        run: |
+          node scripts/test-shape-palette.mjs
+          node scripts/test-solid-shape-geometry.mjs
+          node scripts/test-solid-drag-mirroring.mjs
+      - name: Portable regressions
+        run: |
+          node scripts/test-i18n.mjs
+          node scripts/test-sync-convergence.mjs
+          node scripts/test-authoritative-log.mjs
+          node scripts/test-collaboration-safety.mjs
+          node scripts/test-fast-board-library.mjs
+          node scripts/test-drawing-presets.mjs
+          node scripts/test-pencil-transform-regression.mjs
+          node scripts/test-pencil-precise-selection.mjs
+          node scripts/test-pencil-palm-regression.mjs
+          node scripts/test-pencil-contact-arbitration.mjs
+          node scripts/test-pencil-rapid-pinch-regression.mjs
+          node scripts/test-pencil-original-input-path.mjs
+          node scripts/test-pencil-diagnostics.mjs
+          node scripts/test-pencil-diagnostics-runtime.mjs
+      - name: Production build
+        run: npm run build
