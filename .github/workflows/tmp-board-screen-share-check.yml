@@ -18,3 +18,4 @@ jobs:
       - run: node scripts/test-screen-share.mjs
       - run: node scripts/test-screen-share-board-session.mjs
       - run: node scripts/test-board-screen-share-object.mjs
+      - run: node scripts/test-board-screen-share-integration.mjs
