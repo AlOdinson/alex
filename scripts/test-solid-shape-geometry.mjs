@@ -15,6 +15,12 @@ function section(source, start, end) {
   return source.slice(from, to);
 }
 
+function pointFrom(sectionSource, name) {
+  const match = sectionSource.match(new RegExp(`const ${name} = \\[(-?\\d+(?:\\.\\d+)?),\\s*(-?\\d+(?:\\.\\d+)?)\\];`));
+  assert(match, `Missing ${name} point coordinates.`);
+  return [Number(match[1]), Number(match[2])];
+}
+
 const cube = section(shapes, 'function cubeChildren', '\n}\n\nexport function createShape');
 assert(cube.includes('const frontTopLeft ='), 'Wireframe cube must define shared front/back vertices.');
 assert(cube.includes('const backBottomLeft ='), 'Wireframe cube must define all 8 shared vertices.');
@@ -34,6 +40,11 @@ for (const vertex of ['top', 'bottom', 'left', 'right', 'front', 'back']) {
 }
 assert(octahedron.includes('hidden'), 'Octahedron must include hidden/dashed rear edges for 3D depth.');
 assert((octahedron.match(/lineBetween\(/g) ?? []).length >= 12, 'Octahedron must render the 12 edges of a full octahedron.');
+const [frontX, frontY] = pointFrom(octahedron, 'front');
+const [backX, backY] = pointFrom(octahedron, 'back');
+assert(frontX !== 0 && backX !== 0, 'Octahedron front/back vertices must be horizontally offset from the center axis.');
+assert(Math.sign(frontX) === -Math.sign(backX), 'Octahedron front/back vertices must sit on opposite sides of the center axis.');
+assert(frontX !== backX && frontY !== backY, 'Octahedron front/back projections must not overlap.');
 
 const pyramidIcon = section(icons, "case 'pyramid':", "case 'cone':");
 assert(pyramidIcon.includes('M10 35L28 43L54 35L36 27Z'), 'Pyramid icon must show a projected square base.');
@@ -45,10 +56,8 @@ assert(sphereIcon.includes('fill="currentColor"'), 'Sphere icon must include a f
 assert(sphereIcon.includes('cx="32" cy="24"'), 'Sphere icon center point must be at the geometric center.');
 
 const octahedronIcon = section(icons, "case 'octahedron':", "case 'pyramid-frustum':");
-assert(octahedronIcon.includes('M32 3L8 24M32 3L32 32M32 3L56 24'), 'Octahedron icon must show the upper square pyramid.');
-assert(octahedronIcon.includes('M32 45L8 24M32 45L32 32M32 45L56 24'), 'Octahedron icon must show the lower square pyramid.');
-assert(octahedronIcon.includes('M8 24L32 32L56 24'), 'Octahedron icon must show the visible half of the equator square.');
-assert(octahedronIcon.includes('M8 24L32 16L56 24M32 3L32 16M32 45L32 16'), 'Octahedron icon must show rear equator/apex edges as hidden.');
+assert(!octahedronIcon.includes('M32 3L8 24M32 3L32 32M32 3L56 24'), 'Octahedron icon must not keep the old center-aligned front projection.');
+assert(!octahedronIcon.includes('M8 24L32 16L56 24M32 3L32 16M32 45L32 16'), 'Octahedron icon must not keep the old center-aligned rear projection.');
 assert(octahedronIcon.includes('strokeDasharray'), 'Octahedron icon must include hidden rear edges.');
 
 console.log('Solid shape geometry regression passed.');
