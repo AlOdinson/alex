@@ -1,0 +1,20 @@
+name: Sphere Center Dot Check
+
+on:
+  push:
+    branches:
+      - feature/sphere-center-dot-stroke-width
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: node scripts/test-sphere-center-dot-stroke-width.mjs
+      - run: node scripts/test-solid-shape-geometry.mjs
+      - run: npm run build
