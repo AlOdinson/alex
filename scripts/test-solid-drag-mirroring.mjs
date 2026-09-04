@@ -27,23 +27,39 @@ assert(
 );
 
 for (const shapeId of expectedMirrored) {
-  assert(solidDragFlipX(shapeId, 40) === false, `${shapeId} must face right for a rightward drag.`);
-  assert(solidDragFlipX(shapeId, -40) === true, `${shapeId} must face left for a leftward drag.`);
+  const isWireCube = shapeId === 'wire-cube';
+  const rightFlip = isWireCube;
+  const leftFlip = !isWireCube;
+
+  assert(solidDragFlipX(shapeId, 40) === rightFlip, `${shapeId} has the wrong orientation for a rightward drag.`);
+  assert(solidDragFlipX(shapeId, -40) === leftFlip, `${shapeId} has the wrong orientation for a leftward drag.`);
 
   const crossingObject = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
   crossingObject.set({ left: 100, top: 100, scaleX: 0.01, scaleY: 0.01, selectable: false });
   crossingObject.set({ left: 80, top: 110, scaleX: 0.5, scaleY: 0.5 });
-  assert(crossingObject.scaleX > 0 && crossingObject.flipX === true, `${shapeId} live preview must mirror left with positive scaleX + flipX.`);
+  assert(
+    crossingObject.scaleX > 0 && crossingObject.flipX === leftFlip,
+    `${shapeId} live preview has the wrong orientation for a leftward drag.`,
+  );
   crossingObject.set({ left: 120, top: 110, scaleX: 0.5, scaleY: 0.5 });
-  assert(crossingObject.scaleX > 0 && crossingObject.flipX === false, `${shapeId} live preview must face right again after crossing the creation point.`);
+  assert(
+    crossingObject.scaleX > 0 && crossingObject.flipX === rightFlip,
+    `${shapeId} live preview has the wrong orientation after crossing to the right of the creation point.`,
+  );
 
   const finalizedLeftObject = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
   finalizedLeftObject.set({ left: 100, top: 100, scaleX: 0.01, scaleY: 0.01, selectable: false });
   finalizedLeftObject.set({ left: 80, top: 110, scaleX: 0.5, scaleY: 0.5 });
   finalizedLeftObject.set({ selectable: true });
-  assert(finalizedLeftObject.flipX === true, `${shapeId} must preserve its left-facing mirror when creation is finalized.`);
+  assert(
+    finalizedLeftObject.flipX === leftFlip,
+    `${shapeId} must preserve its drag-selected orientation when creation is finalized.`,
+  );
   finalizedLeftObject.set({ left: 120, scaleX: 0.5 });
-  assert(finalizedLeftObject.flipX === true, `${shapeId} must stop auto-mirroring after creation is finalized.`);
+  assert(
+    finalizedLeftObject.flipX === leftFlip,
+    `${shapeId} must stop auto-mirroring after creation is finalized.`,
+  );
 }
 
 for (const shapeId of excluded) {
