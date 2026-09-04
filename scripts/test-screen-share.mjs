@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import {
   MAX_SCREEN_SHARE_VIEWERS,
+  normalizeScreenShareBoardLayout,
   normalizeScreenShareSignal,
   preferredScreenShareSession,
   SCREEN_SHARE_PROTOCOL,
+  screenShareBoardLayoutForViewport,
   screenShareCapability,
   screenShareNetworkIsDegraded,
+  screenSharePermissionCanHost,
   screenShareProfileForActivity,
 } from '../src/lib/screenShare.js';
 
@@ -31,9 +34,41 @@ assert.equal(screenShareCapability({
   mediaDevices: { getDisplayMedia() {} },
 }).supported, true);
 
+assert.equal(screenSharePermissionCanHost('owner'), true, 'the owner may present');
+assert.equal(screenSharePermissionCanHost('edit'), true, 'an editor may present');
+assert.equal(screenSharePermissionCanHost('view'), false, 'a view-only participant may not present');
+
+assert.deepEqual(
+  normalizeScreenShareBoardLayout({ left: 120, top: -40, width: 640, height: 360 }),
+  { left: 120, top: -40, width: 640, height: 360 },
+  'valid scene-space layout is preserved',
+);
+assert.equal(
+  normalizeScreenShareBoardLayout({ left: Number.NaN, top: 0, width: 640, height: 360 }),
+  null,
+  'non-finite placement is rejected',
+);
+assert.equal(
+  normalizeScreenShareBoardLayout({ left: 0, top: 0, width: 0, height: 360 }),
+  null,
+  'non-positive dimensions are rejected',
+);
+
+const viewportLayout = screenShareBoardLayoutForViewport({
+  centerX: 1000,
+  centerY: 500,
+  viewportWidth: 1200,
+  viewportHeight: 800,
+  zoom: 1,
+});
+assert.equal(Number((viewportLayout.width / viewportLayout.height).toFixed(6)), Number((16 / 9).toFixed(6)));
+assert.equal(viewportLayout.left + viewportLayout.width / 2, 1000, 'initial share is horizontally centered');
+assert.equal(viewportLayout.top + viewportLayout.height / 2, 500, 'initial share is vertically centered');
+assert.ok(viewportLayout.width <= 720, 'initial share does not dominate a desktop board');
+
 const first = { sessionId: 'first', hostId: 'teacher-b', startedAt: 100 };
 const second = { sessionId: 'second', hostId: 'teacher-a', startedAt: 101 };
-assert.equal(preferredScreenShareSession(first, second), first, 'the first session wins simultaneous owner starts');
+assert.equal(preferredScreenShareSession(first, second), first, 'the first session wins simultaneous starts');
 assert.equal(
   preferredScreenShareSession(
     { sessionId: 'z', hostId: 'teacher-z', startedAt: 100 },
@@ -74,6 +109,18 @@ const normalized = normalizeScreenShareSignal({
 });
 assert.equal(normalized.clientId, 'teacher');
 assert.equal(normalized.targetId, 'student');
+
+const normalizedLayoutSignal = normalizeScreenShareSignal({
+  protocol: SCREEN_SHARE_PROTOCOL,
+  type: 'screen-layout',
+  clientId: 'student-editor',
+  sessionId: 'session',
+  permission: 'edit',
+  layout: { left: 10, top: 20, width: 800, height: 450 },
+});
+assert.equal(normalizedLayoutSignal?.type, 'screen-layout', 'layout is a first-class screen-share signal');
+assert.equal(normalizedLayoutSignal?.permission, 'edit');
+
 assert.equal(normalizeScreenShareSignal({
   protocol: 'wrong-protocol',
   type: 'offer',
