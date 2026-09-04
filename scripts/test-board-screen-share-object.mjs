@@ -47,7 +47,7 @@ assert.match(source, /excludeFromExport:\s*true/, 'live screen must never be ser
 assert.match(source, /lockRotation:\s*true/, 'rotation must be locked');
 assert.match(source, /lockSkewingX:\s*true/, 'horizontal skew must be locked');
 assert.match(source, /lockSkewingY:\s*true/, 'vertical skew must be locked');
-assert.match(source, /setControlsVisibility\(\{[\s\S]*?mtr:\s*false/, 'rotation control must be hidden');
+assert.match(source, /setControlsVisibility(?:\?\.)?\(\{[\s\S]*?mtr:\s*false/, 'rotation control must be hidden');
 assert.match(source, /requestVideoFrameCallback|setInterval/, 'video frames must schedule Fabric rendering');
 assert.match(source, /setStream/, 'media controller must be able to attach the WebRTC MediaStream');
 assert.match(source, /dispose/, 'media controller must clean up video/frame resources');
