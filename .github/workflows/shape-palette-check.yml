@@ -1,0 +1,22 @@
+name: Shape Palette Check
+
+on:
+  push:
+    branches:
+      - feature/remove-extra-shapes
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Shape palette regression
+        run: node scripts/test-shape-palette.mjs
