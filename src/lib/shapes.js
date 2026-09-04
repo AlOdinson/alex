@@ -294,8 +294,9 @@ export function createShape(shapeId, options) {
     case 'sphere': {
       const solid = lineStyle(options);
       const hidden = lineStyle(options, true);
+      const centerDotRadius = Number(options.strokeWidth) / 2;
       const centerDot = new Circle({
-        radius: 3.5,
+        radius: centerDotRadius,
         left: 0,
         top: 0,
         originX: 'center',
