@@ -1,0 +1,22 @@
+name: Solid Shape Check
+
+on:
+  push:
+    branches:
+      - feature/fix-solid-geometry
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Solid shape geometry regression
+        run: node scripts/test-solid-shape-geometry.mjs
