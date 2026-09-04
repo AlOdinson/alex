@@ -17,6 +17,9 @@ const TOOLS = [
 ];
 
 
+// Set to true to restore the Browser button without restoring or rewriting browser logic.
+const SHOW_BROWSER_BUTTON = false;
+
 const FONTS = [
   ['Arial', 'Arial'],
   ['Helvetica', 'Helvetica'],
@@ -409,7 +412,7 @@ export default function Toolbar({
               Автопилот
             </NavigationActionButton>
           )}
-          {canEdit && screenShare && (
+          {SHOW_BROWSER_BUTTON && canEdit && screenShare && (
             <NavigationActionButton
               active={screenShare.remoteBrowserActive}
               disabled={screenShare.isHosting
