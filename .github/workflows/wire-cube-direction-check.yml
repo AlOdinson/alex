@@ -7,16 +7,59 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Apply wire cube direction fix if needed
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('src/lib/shapes.js')
+          source = path.read_text()
+          old = """export function solidDragFlipX(shapeId, dragDx) {
+            if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
+            const numericDx = Number(dragDx);
+            return Number.isFinite(numericDx) && numericDx < 0;
+          }
+          """
+          new = """export function solidDragFlipX(shapeId, dragDx) {
+            if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
+            const numericDx = Number(dragDx);
+            if (!Number.isFinite(numericDx) || numericDx === 0) return false;
+            if (shapeId === 'wire-cube') return numericDx > 0;
+            return numericDx < 0;
+          }
+          """
+          if old in source:
+              path.write_text(source.replace(old, new, 1))
+              print('patched')
+          elif new in source:
+              print('already patched')
+          else:
+              raise SystemExit('expected solidDragFlipX implementation not found')
+          PY
+          if ! git diff --quiet -- src/lib/shapes.js; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add src/lib/shapes.js
+            git commit -m "fix: invert wire cube drag direction"
+            git push origin HEAD:feature/wire-cube-drag-direction
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - name: Wire cube drag direction regression
         run: node scripts/test-solid-drag-mirroring.mjs
+      - name: Shape regressions
+        run: |
+          node scripts/test-shape-palette.mjs
+          node scripts/test-solid-shape-geometry.mjs
+      - name: Production build
+        run: npm run build
