@@ -1,0 +1,30 @@
+name: Localization Feature Checks
+
+on:
+  push:
+    branches:
+      - feature/ru-en-localization
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Inventory Cyrillic UI source
+        run: |
+          echo '--- CYRILLIC SOURCE INVENTORY START ---'
+          grep -RInE '[А-Яа-яЁё]' src || true
+          echo '--- CYRILLIC SOURCE INVENTORY END ---'
+      - name: i18n regression
+        run: node scripts/test-i18n.mjs
+      - name: Production build
+        run: npm run build
