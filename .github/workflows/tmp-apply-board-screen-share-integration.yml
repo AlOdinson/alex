@@ -1,0 +1,26 @@
+name: Temporary Apply Board Screen Share Integration
+
+on:
+  push:
+    branches:
+      - feature/board-screen-share-object
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/apply-board-screen-share-integration.mjs
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/components/Board.jsx
+          if git diff --cached --quiet; then exit 0; fi
+          git commit -m "feat: place live screen share on board"
+          git push
