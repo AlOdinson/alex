@@ -3308,3 +3308,50 @@ html.game-viewport-locked #root {
     height: 35px;
   }
 }
+
+/* RU/EN language switcher */
+.language-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgba(148, 163, 184, 0.45);
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.92);
+  white-space: nowrap;
+}
+
+.language-toggle button {
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: transparent;
+  color: #475569;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.language-toggle button.active {
+  background: #111827;
+  color: #fff;
+}
+
+.language-toggle-compact {
+  flex: 0 0 auto;
+}
+
+.language-toggle-compact button {
+  padding: 5px 7px;
+  font-size: 11px;
+}
+
+.home-language-row,
+.gate-language-row {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+  margin-bottom: 4px;
+}

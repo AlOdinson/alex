@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import DrawingPresets from './DrawingPresets.jsx';
+import LanguageToggle from './LanguageToggle.jsx';
 import ShapePalette from './ShapePalette.jsx';
 import {
   sliderStepToWidth,
@@ -711,6 +712,8 @@ export default function Toolbar({
             </select>
           </label>
         )}
+
+        <LanguageToggle compact />
 
         <div className={`toolbar-status sync-${syncTone}`} title={saveStatus}>
           <span className="sync-status-dot" />

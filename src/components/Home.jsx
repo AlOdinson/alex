@@ -18,6 +18,8 @@ import {
   updateOwnedBoard,
 } from '../lib/boardLibrary.js';
 import TeacherAccountPanel from './TeacherAccountPanel.jsx';
+import LanguageToggle from './LanguageToggle.jsx';
+import { useLanguage } from './LanguageProvider.jsx';
 
 function formatDate(value) {
   if (!value) return 'Ещё не использовалась';
@@ -33,7 +35,8 @@ function formatDate(value) {
 }
 
 export default function Home() {
-  const [title, setTitle] = useState('Новая доска');
+  const { language, t, ui, formatDate } = useLanguage();
+  const [title, setTitle] = useState(() => t('home.newBoard'));
   const [studentName, setStudentName] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
@@ -49,6 +52,14 @@ export default function Home() {
   const libraryRefreshRef = useRef(Promise.resolve());
   const autoPruneRunningRef = useRef(false);
   const autoPruneAttemptedRef = useRef(new Set());
+  const previousDefaultBoardTitleRef = useRef(t('home.newBoard'));
+
+  useEffect(() => {
+    const nextDefault = t('home.newBoard');
+    const previousDefault = previousDefaultBoardTitleRef.current;
+    setTitle((current) => (current === previousDefault ? nextDefault : current));
+    previousDefaultBoardTitleRef.current = nextDefault;
+  }, [language, t]);
 
   const refreshBoards = useCallback(async () => {
     const refreshSequence = refreshSequenceRef.current + 1;
@@ -174,7 +185,7 @@ export default function Home() {
   }
 
   async function handleRename(board) {
-    const nextTitle = window.prompt('Новое название доски', board.title ?? 'Новая доска');
+    const nextTitle = window.prompt('Новое название доски', board.title ?? t('home.newBoard'));
     if (nextTitle === null || !nextTitle.trim()) return;
     const nextStudent = window.prompt('Имя ученика', board.studentName ?? '');
     if (nextStudent === null) return;
@@ -192,7 +203,7 @@ export default function Home() {
 
   async function handleDuplicate(board) {
     if (duplicatingBoardId) return;
-    const nextTitle = window.prompt('Название копии', `${board.title ?? 'Доска'} — копия`);
+    const nextTitle = window.prompt('Название копии', `${board.title ?? t('home.newBoard')}${ui(' — копия')}`);
     if (nextTitle === null) return;
     setDuplicatingBoardId(board.boardId);
     setError('');
@@ -290,6 +301,7 @@ export default function Home() {
   return (
     <main className="home-page home-page-wide">
       <section className="home-card create-board-card">
+        <div className="home-language-row"><LanguageToggle /></div>
         <div className="brand-mark">A</div>
         <h1>Alex Board</h1>
         <p className="lead">
@@ -421,8 +433,8 @@ export default function Home() {
                 </label>
               )}
               <div className="board-card-main">
-                <h3>{board.title || 'Новая доска'}</h3>
-                <p className="board-student">{board.studentName || 'Ученик не указан'}</p>
+                <h3 data-i18n-skip>{board.title || t('home.newBoard')}</h3>
+                <p className="board-student">{board.studentName ? <span data-i18n-skip>{board.studentName}</span> : 'Ученик не указан'}</p>
                 <p className="board-updated">Последний урок: {formatDate(board.updatedAt)}</p>
                 {board.unavailable && <p className="error-text">Не удалось проверить эту доску</p>}
               </div>

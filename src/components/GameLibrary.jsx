@@ -649,7 +649,7 @@ export default function GameLibrary({
 
           <div className="game-player-title">
             <strong>{selectedGame.title}</strong>
-            <span>{participantName} · {boardTitle}</span>
+            <span><span data-i18n-skip>{participantName}</span> · <span data-i18n-skip>{boardTitle}</span></span>
           </div>
 
           <div className="game-room-summary">
@@ -742,7 +742,7 @@ export default function GameLibrary({
       <header className="game-library-header">
         <div className="game-library-header-copy">
           <h1>Игротека</h1>
-          <p>{participantName} · {boardTitle}</p>
+          <p><span data-i18n-skip>{participantName}</span> · <span data-i18n-skip>{boardTitle}</span></p>
         </div>
         <button type="button" className="game-exit-button" onClick={() => onExit()}>
           Вернуться на доску

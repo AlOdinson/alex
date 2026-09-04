@@ -17,6 +17,8 @@ import {
   util,
 } from 'fabric';
 import Toolbar from './Toolbar.jsx';
+import LanguageToggle from './LanguageToggle.jsx';
+import { LanguageProvider, useLanguage } from './LanguageProvider.jsx';
 import ShareDialog from './ShareDialog.jsx';
 import GameLibrary from './GameLibrary.jsx';
 import { ScreenShareOverlay, useAdaptiveScreenShare } from './ScreenShare.jsx';
@@ -891,14 +893,15 @@ function applySampledStyleToObject(object, sampled, { colorOnly = false } = {}) 
   return changed;
 }
 
-function NameGate({ title, onSubmit }) {
+function NameGate({ title, titleIsUserContent = false, onSubmit }) {
   const [name, setName] = useState('');
 
   return (
     <main className="gate-page">
       <section className="gate-card">
+        <div className="gate-language-row"><LanguageToggle /></div>
         <div className="brand-mark">A</div>
-        <h1>{title}</h1>
+        <h1 data-i18n-skip={titleIsUserContent ? '' : undefined}>{title}</h1>
         <p>Введите имя, которое увидит преподаватель.</p>
         <label className="field">
           <span>Ваше имя</span>
@@ -1611,17 +1614,18 @@ export default function Board({ boardId }) {
     }
   }, [boardId, boardKey]);
 
+  const pendingRole = rememberedOwnerKey ? 'teacher' : 'student';
   if (loading) {
-    return <AccessMessage title="Открываю доску">Загружаю сохранённое состояние…</AccessMessage>;
+    return <LanguageProvider role={pendingRole}><AccessMessage title="Открываю доску">Загружаю сохранённое состояние…</AccessMessage></LanguageProvider>;
   }
   if (error) {
-    return <AccessMessage title="Ошибка доступа">{error}</AccessMessage>;
+    return <LanguageProvider role={pendingRole}><AccessMessage title="Ошибка доступа">{error}</AccessMessage></LanguageProvider>;
   }
   if (!access) {
-    return <AccessMessage title="Доска не найдена">Ссылка неверна или доступ был отозван.</AccessMessage>;
+    return <LanguageProvider role={pendingRole}><AccessMessage title="Доска не найдена">Ссылка неверна или доступ был отозван.</AccessMessage></LanguageProvider>;
   }
   if (access.permission === 'closed') {
-    return <AccessMessage title="Доска закрыта">Преподаватель временно закрыл гостевой доступ.</AccessMessage>;
+    return <LanguageProvider role={pendingRole}><AccessMessage title="Доска закрыта">Преподаватель временно закрыл гостевой доступ.</AccessMessage></LanguageProvider>;
   }
 
   const isOwner = access.permission === 'owner';
@@ -1632,54 +1636,63 @@ export default function Board({ boardId }) {
 
   if (!resolvedName) {
     return (
-      <NameGate
-        title={isOwner ? 'Как показывать ваше имя на доске?' : access.title}
-        onSubmit={(name) => {
-          if (isOwner) localStorage.setItem('alex-board:owner-name', name);
-          else sessionStorage.setItem(`alex-board:name:${boardId}`, name);
-          setGuestName(name);
-        }}
-      />
+      <LanguageProvider role={isOwner ? 'teacher' : 'student'}>
+        <NameGate
+          title={isOwner ? 'Как показывать ваше имя на доске?' : access.title}
+          titleIsUserContent={!isOwner}
+          onSubmit={(name) => {
+            if (isOwner) localStorage.setItem('alex-board:owner-name', name);
+            else sessionStorage.setItem(`alex-board:name:${boardId}`, name);
+            setGuestName(name);
+          }}
+        />
+      </LanguageProvider>
     );
   }
 
   if (isMacBrowserHostMode()) {
     return (
-      <MacBrowserHost
-        boardId={boardId}
-        boardKey={boardKey}
-        realtimeKey={access.realtimeKey}
-        participantName={resolvedName}
-        permission={access.permission}
-      />
+      <LanguageProvider role={isOwner ? 'teacher' : 'student'}>
+        <MacBrowserHost
+          boardId={boardId}
+          boardKey={boardKey}
+          realtimeKey={access.realtimeKey}
+          participantName={resolvedName}
+          permission={access.permission}
+        />
+      </LanguageProvider>
     );
   }
 
   if (workspaceMode === 'games') {
     return (
-      <GameLibrary
-        boardId={boardId}
-        boardKey={boardKey}
-        realtimeKey={access.realtimeKey}
-        boardTitle={access.title}
-        participantName={resolvedName}
-        participantClientId={participantClientIdRef.current}
-        permission={access.permission}
-        onExit={returnToBoard}
-      />
+      <LanguageProvider role={isOwner ? 'teacher' : 'student'}>
+        <GameLibrary
+          boardId={boardId}
+          boardKey={boardKey}
+          realtimeKey={access.realtimeKey}
+          boardTitle={access.title}
+          participantName={resolvedName}
+          participantClientId={participantClientIdRef.current}
+          permission={access.permission}
+          onExit={returnToBoard}
+        />
+      </LanguageProvider>
     );
   }
 
   return (
-    <BoardWorkspace
-      boardId={boardId}
-      boardKey={boardKey}
-      initialAccess={access}
-      participantName={resolvedName}
-      participantClientId={participantClientIdRef.current}
-      onAccessChange={setAccess}
-      onOpenGameLibrary={() => setWorkspaceMode('games')}
-    />
+    <LanguageProvider role={isOwner ? 'teacher' : 'student'}>
+      <BoardWorkspace
+        boardId={boardId}
+        boardKey={boardKey}
+        initialAccess={access}
+        participantName={resolvedName}
+        participantClientId={participantClientIdRef.current}
+        onAccessChange={setAccess}
+        onOpenGameLibrary={() => setWorkspaceMode('games')}
+      />
+    </LanguageProvider>
   );
 }
 
@@ -1692,6 +1705,7 @@ function BoardWorkspace({
   onAccessChange,
   onOpenGameLibrary,
 }) {
+  const { ui } = useLanguage();
   const canvasElementRef = useRef(null);
   const canvasHostRef = useRef(null);
   const fabricCanvasRef = useRef(null);
@@ -13392,7 +13406,7 @@ function BoardWorkspace({
               style={{ left: cursor.position.left, top: cursor.position.top, '--participant-color': cursor.color }}
             >
               <span className="remote-cursor-arrow">➤</span>
-              <span className="remote-cursor-name">{cursor.name || 'Участник'}</span>
+              <span className="remote-cursor-name" data-i18n-skip>{cursor.name || ui('Участник')}</span>
             </div>
           ))}
           {lockOverlays.map((lock) => (
@@ -13401,7 +13415,7 @@ function BoardWorkspace({
               key={lock.overlayKey}
               style={{ left: lock.position.left, top: lock.position.top, '--participant-color': lock.color }}
             >
-              Редактирует {lock.name || 'участник'}
+              {ui('Редактирует')} <span data-i18n-skip>{lock.name || ui('участник')}</span>
             </div>
           ))}
         </div>
