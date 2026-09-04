@@ -20,6 +20,7 @@ assert(HORIZONTALLY_MIRRORED_SOLID_IDS instanceof Set, 'shapes.js must export HO
 const solids = SHAPE_CATEGORIES.find((category) => category.id === 'solids')?.shapes?.map(([id]) => id) ?? [];
 const excluded = new Set(['cylinder', 'cone', 'sphere']);
 const expectedMirrored = solids.filter((id) => !excluded.has(id));
+const rightwardFlipSolids = new Set(['wire-cube', 'pyramid']);
 
 assert(
   JSON.stringify([...HORIZONTALLY_MIRRORED_SOLID_IDS].sort()) === JSON.stringify([...expectedMirrored].sort()),
@@ -27,9 +28,8 @@ assert(
 );
 
 for (const shapeId of expectedMirrored) {
-  const isWireCube = shapeId === 'wire-cube';
-  const rightFlip = isWireCube;
-  const leftFlip = !isWireCube;
+  const rightFlip = rightwardFlipSolids.has(shapeId);
+  const leftFlip = !rightFlip;
 
   assert(solidDragFlipX(shapeId, 40) === rightFlip, `${shapeId} has the wrong orientation for a rightward drag.`);
   assert(solidDragFlipX(shapeId, -40) === leftFlip, `${shapeId} has the wrong orientation for a leftward drag.`);
