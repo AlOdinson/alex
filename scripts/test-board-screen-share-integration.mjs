@@ -16,8 +16,8 @@ has(/boardScreenShareRef\s*=\s*useRef/, 'Board must own a transient screen-share
 has(/screenShare\.sessionId[\s\S]*?createBoardScreenShareMedia/, 'Screen-share session lifecycle must create the board media object.');
 has(/screenShare\.stream[\s\S]*?setStream/, 'The existing WebRTC MediaStream must feed the Fabric object.');
 has(/screenShare\.boardLayout[\s\S]*?setLayout/, 'Incoming collaborative layout must move/resize the Fabric object.');
-has(/screenShare\.updateBoardLayout/, 'Fabric transforms must broadcast layout through the screen-share protocol.');
-has(/before:transform[\s\S]*?isBoardScreenShareObject\(target\)/, 'before:transform must short-circuit durable object leases for the live screen.');
+has(/screenShareRef\.current\?\.updateBoardLayout\?\.\(/, 'Fabric transforms must broadcast layout through the current screen-share hook.');
+has(/before:transform[\s\S]*?isBoardScreenShareObject\(transform\.target\)/, 'before:transform must short-circuit durable object leases for the live screen.');
 has(/broadcastLiveTransform[\s\S]*?isBoardScreenShareObject\(target\)/, 'live transforms must use the transient screen-layout channel.');
 has(/object:modified[\s\S]*?isBoardScreenShareObject\(target\)/, 'completed transforms must skip durable board history.');
 has(/transientScreenShare/, 'Board must explicitly recognize transient screen-share objects.');
