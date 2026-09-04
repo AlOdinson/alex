@@ -30,15 +30,20 @@ for (const shapeId of expectedMirrored) {
   assert(solidDragFlipX(shapeId, 40) === false, `${shapeId} must face right for a rightward drag.`);
   assert(solidDragFlipX(shapeId, -40) === true, `${shapeId} must face left for a leftward drag.`);
 
-  const object = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
-  object.set({ left: 100, top: 100, scaleX: 0.01, scaleY: 0.01, selectable: false });
-  object.set({ left: 80, top: 110, scaleX: 0.5, scaleY: 0.5 });
-  assert(object.scaleX > 0 && object.flipX === true, `${shapeId} live preview must mirror left with positive scaleX + flipX.`);
-  object.set({ left: 120, top: 110, scaleX: 0.5, scaleY: 0.5 });
-  assert(object.scaleX > 0 && object.flipX === false, `${shapeId} live preview must face right again after crossing the creation point.`);
-  object.set({ selectable: true });
-  object.set({ left: 80, scaleX: 0.5 });
-  assert(object.flipX === false, `${shapeId} must stop auto-mirroring after creation is finalized.`);
+  const crossingObject = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
+  crossingObject.set({ left: 100, top: 100, scaleX: 0.01, scaleY: 0.01, selectable: false });
+  crossingObject.set({ left: 80, top: 110, scaleX: 0.5, scaleY: 0.5 });
+  assert(crossingObject.scaleX > 0 && crossingObject.flipX === true, `${shapeId} live preview must mirror left with positive scaleX + flipX.`);
+  crossingObject.set({ left: 120, top: 110, scaleX: 0.5, scaleY: 0.5 });
+  assert(crossingObject.scaleX > 0 && crossingObject.flipX === false, `${shapeId} live preview must face right again after crossing the creation point.`);
+
+  const finalizedLeftObject = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
+  finalizedLeftObject.set({ left: 100, top: 100, scaleX: 0.01, scaleY: 0.01, selectable: false });
+  finalizedLeftObject.set({ left: 80, top: 110, scaleX: 0.5, scaleY: 0.5 });
+  finalizedLeftObject.set({ selectable: true });
+  assert(finalizedLeftObject.flipX === true, `${shapeId} must preserve its left-facing mirror when creation is finalized.`);
+  finalizedLeftObject.set({ left: 120, scaleX: 0.5 });
+  assert(finalizedLeftObject.flipX === true, `${shapeId} must stop auto-mirroring after creation is finalized.`);
 }
 
 for (const shapeId of excluded) {
