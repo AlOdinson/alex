@@ -63,7 +63,9 @@ export const HORIZONTALLY_MIRRORED_SOLID_IDS = new Set([
 export function solidDragFlipX(shapeId, dragDx) {
   if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
   const numericDx = Number(dragDx);
-  return Number.isFinite(numericDx) && numericDx < 0;
+  if (!Number.isFinite(numericDx) || numericDx === 0) return false;
+  if (shapeId === 'wire-cube') return numericDx > 0;
+  return numericDx < 0;
 }
 
 function enableHorizontalDragMirror(object, shapeId) {
