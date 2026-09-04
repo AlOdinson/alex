@@ -55,11 +55,46 @@ assert.match(boardSource, /!ownsSelectionLease\(transform\.target\)/);
 assert.match(boardSource, /refreshBoardObjectLocks\(/);
 assert.match(boardSource, /createConditionalRecordPatchOps\(sourceRecords, records/);
 
-const sqlSource = await readFile(new URL('../supabase/collaboration_safety_v8.sql', import.meta.url), 'utf8');
-assert.match(sqlSource, /create table if not exists public\.board_object_locks_v8/);
-assert.match(sqlSource, /l\.client_id <> coalesce\(p_client_id, ''\)/);
-assert.match(sqlSource, /'skipped_conflicts', v_skipped/);
-assert.match(sqlSource, /ifFields/);
-assert.match(sqlSource, /ifTransform/);
+const collaborationSqlSource = await readFile(
+  new URL('../supabase/collaboration_safety_v8.sql', import.meta.url),
+  'utf8',
+);
+const authoritativeSqlSource = await readFile(
+  new URL('../supabase/authoritative_log_v8.sql', import.meta.url),
+  'utf8',
+);
+assert.match(collaborationSqlSource, /create table if not exists public\.board_object_locks_v8/);
+assert.match(collaborationSqlSource, /l\.client_id <> coalesce\(p_client_id, ''\)/);
+assert.match(collaborationSqlSource, /'skipped_conflicts', v_skipped/);
+assert.match(collaborationSqlSource, /ifFields/);
+assert.match(collaborationSqlSource, /ifTransform/);
 
-console.log('Collaborative selection, conditional history, and image hydration safety tests passed.');
+const snapshotFunctionPattern = /create or replace function public\.save_board_snapshot_v8\([\s\S]*?\n\$\$;/g;
+const snapshotDefinitions = [
+  ['supabase/authoritative_log_v8.sql', authoritativeSqlSource],
+  ['supabase/collaboration_safety_v8.sql', collaborationSqlSource],
+].flatMap(([file, source]) => (
+  [...source.matchAll(snapshotFunctionPattern)].map((match) => ({ file, sql: match[0] }))
+));
+
+assert.equal(snapshotDefinitions.length, 2, 'Expected both v8 SQL files to define save_board_snapshot_v8');
+for (const { file, sql } of snapshotDefinitions) {
+  assert.match(
+    sql,
+    /Snapshot revision is not authoritative' using errcode = 'P0001'/,
+    `${file}: snapshot revision rejection must use application-level SQLSTATE P0001`,
+  );
+  assert.doesNotMatch(
+    sql,
+    /errcode\s*=\s*'40001'/,
+    `${file}: save_board_snapshot_v8 must not use serialization_failure SQLSTATE 40001`,
+  );
+}
+
+// 40001 remains valid for the distinct materialized-state concurrency failure.
+assert.match(
+  collaborationSqlSource,
+  /BOARD_V8_MATERIALIZED_STATE_BEHIND:[\s\S]*?using errcode = '40001'/,
+);
+
+console.log('Collaborative selection, conditional history, image hydration, and snapshot SQLSTATE safety tests passed.');

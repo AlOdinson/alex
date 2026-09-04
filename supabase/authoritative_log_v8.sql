@@ -657,7 +657,7 @@ begin
     raise exception 'Board is read-only' using errcode = '42501';
   end if;
   if p_client_revision < v_snapshot_revision or p_client_revision > v_current then
-    raise exception 'Snapshot revision is not authoritative' using errcode = '40001';
+    raise exception 'Snapshot revision is not authoritative' using errcode = 'P0001';
   end if;
 
   update public.boards
