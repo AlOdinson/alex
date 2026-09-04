@@ -21,6 +21,8 @@ jobs:
       - run: npm install
       - name: Apply localization integration
         run: node scripts/apply-localization-integration.mjs
+      - name: Apply extended localization coverage
+        run: node scripts/apply-i18n-coverage.mjs
       - name: Inventory Cyrillic UI source
         run: |
           echo '--- CYRILLIC SOURCE INVENTORY START ---'
@@ -28,8 +30,16 @@ jobs:
           echo '--- CYRILLIC SOURCE INVENTORY END ---'
       - name: i18n regression
         run: node scripts/test-i18n.mjs
-      - name: Existing sync regressions
-        run: npm run test:sync
+      - name: Portable existing regressions
+        run: |
+          node scripts/test-screen-share.mjs
+          node scripts/test-mac-browser.mjs
+          node scripts/test-sync-convergence.mjs
+          node scripts/test-authoritative-log.mjs
+          node scripts/test-collaboration-safety.mjs
+          node scripts/test-fast-board-library.mjs
+          node scripts/test-drawing-presets.mjs
+          node scripts/test-pencil-transform-regression.mjs
       - name: Production build
         run: npm run build
       - name: Commit verified localization integration
