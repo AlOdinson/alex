@@ -37,7 +37,7 @@ includes(
   'Active sessions must consume screen-layout collaboration signals.',
 );
 includes(
-  /sendSignal\('screen-layout',\s*\{\s*layout:/,
+  /sendSignal\('screen-layout',\s*\{\s*layout\s*\},\s*session\)/,
   'Editors must broadcast screen-layout changes through the existing screen-share channel.',
 );
 includes(
