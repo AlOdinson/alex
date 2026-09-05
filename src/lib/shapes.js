@@ -53,7 +53,7 @@ export const VERTICALLY_MIRRORED_SOLID_IDS = new Set(HORIZONTALLY_MIRRORED_SOLID
 const DIRECTIONAL_HIDDEN_CHILD_INDEXES = {
   'wire-cube': {
     down: [9, 10, 11],
-    up: [5, 7, 8],
+    up: [9, 10, 11],
   },
   pyramid: {
     down: [3, 4, 8],
@@ -84,6 +84,7 @@ export function solidDragFlipY(shapeId, dragDy) {
   if (!VERTICALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
   const numericDy = Number(dragDy);
   if (!Number.isFinite(numericDy) || numericDy === 0) return false;
+  if (shapeId === 'wire-cube') return false;
   return numericDy < 0;
 }
 
@@ -178,11 +179,17 @@ function enableDirectionalDragMirror(object, shapeId) {
           && Number.isFinite(top)) {
           const dragDx = (left - creationAnchorLeft) * 2;
           const dragDy = (top - creationAnchorTop) * 2;
+          const draggedUp = dragDy < 0;
           const scaleMagnitudeX = Math.abs(Number(attributes.scaleX));
           const scaleMagnitudeY = Math.abs(Number(attributes.scaleY));
           if (Number.isFinite(scaleMagnitudeX)) attributes.scaleX = scaleMagnitudeX;
           if (Number.isFinite(scaleMagnitudeY)) attributes.scaleY = scaleMagnitudeY;
-          if (mirrorsX) attributes.flipX = solidDragFlipX(shapeId, dragDx);
+          if (mirrorsX) {
+            const horizontalFlip = solidDragFlipX(shapeId, dragDx);
+            attributes.flipX = shapeId === 'wire-cube' && draggedUp
+              ? !horizontalFlip
+              : horizontalFlip;
+          }
           if (mirrorsY) {
             nextFlipY = solidDragFlipY(shapeId, dragDy);
             attributes.flipY = nextFlipY;
