@@ -70,6 +70,7 @@ const DIRECTIONAL_HIDDEN_CHILD_INDEXES = {
 };
 
 const HIDDEN_EDGE_DASH = [5, 5];
+const UPWARD_REAR_COMPOSITE_SOLID_IDS = new Set(['wire-cube', 'pyramid']);
 
 export function solidDragFlipX(shapeId, dragDx) {
   if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
@@ -91,11 +92,17 @@ function applyDirectionalHiddenEdges(object, shapeId, flippedUp) {
   if (!edgeIndexes || typeof object?.getObjects !== 'function') return;
 
   const hiddenIndexes = new Set(flippedUp ? edgeIndexes.up : edgeIndexes.down);
+  const compositeRearBehind = flippedUp && UPWARD_REAR_COMPOSITE_SOLID_IDS.has(shapeId);
   for (const [index, child] of object.getObjects().entries()) {
     const shouldBeHidden = hiddenIndexes.has(index);
     const isHidden = Array.isArray(child?.strokeDashArray) && child.strokeDashArray.length > 0;
-    if (shouldBeHidden === isHidden) continue;
-    child.set({ strokeDashArray: shouldBeHidden ? [...HIDDEN_EDGE_DASH] : null });
+    const globalCompositeOperation = compositeRearBehind && shouldBeHidden ? 'destination-over' : 'source-over';
+    const compositeChanged = child?.globalCompositeOperation !== globalCompositeOperation;
+    if (shouldBeHidden === isHidden && !compositeChanged) continue;
+    child.set({
+      strokeDashArray: shouldBeHidden ? [...HIDDEN_EDGE_DASH] : null,
+      globalCompositeOperation,
+    });
   }
   object.dirty = true;
 }

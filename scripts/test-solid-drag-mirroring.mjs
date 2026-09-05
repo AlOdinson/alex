@@ -22,6 +22,20 @@ function assertDashedEdges(object, expectedIndexes, message) {
   );
 }
 
+function assertUpwardHiddenEdgesCompositeBehind(object, shapeId) {
+  const children = typeof object?.getObjects === 'function' ? object.getObjects() : [];
+  const hiddenChildren = children.filter((child) => (
+    Array.isArray(child?.strokeDashArray) && child.strokeDashArray.length
+  ));
+  assert(hiddenChildren.length > 0, `${shapeId} must have hidden edges to composite behind.`);
+  for (const child of hiddenChildren) {
+    assert(
+      child.globalCompositeOperation === 'destination-over',
+      `${shapeId} upward hidden edges must render behind visible edges; got ${child.globalCompositeOperation}.`,
+    );
+  }
+}
+
 const {
   createShape,
   HORIZONTALLY_MIRRORED_SOLID_IDS,
@@ -44,6 +58,7 @@ assert(wireCubeLabel === 'Кубоид', 'wire-cube must be displayed as «Ку�
 const excluded = new Set(['cylinder', 'cone', 'sphere']);
 const expectedMirrored = solids.filter((id) => !excluded.has(id));
 const rightwardFlipSolids = new Set(['wire-cube', 'pyramid']);
+const upwardRearCompositeSolids = new Set(['wire-cube', 'pyramid']);
 const directionalDashExpectations = {
   'wire-cube': {
     down: [9, 10, 11],
@@ -121,6 +136,9 @@ for (const shapeId of expectedMirrored) {
     dashExpectation.up,
     `${shapeId} upward preview must keep only the intended rear/internal edges dashed.`,
   );
+  if (upwardRearCompositeSolids.has(shapeId)) {
+    assertUpwardHiddenEdgesCompositeBehind(crossingObject, shapeId);
+  }
 
   crossingObject.set({ left: 120, top: 80, scaleX: 0.5, scaleY: 0.5 });
   assert(
@@ -133,6 +151,9 @@ for (const shapeId of expectedMirrored) {
     dashExpectation.up,
     `${shapeId} upward preview must keep the intended rear/internal edges after crossing horizontally.`,
   );
+  if (upwardRearCompositeSolids.has(shapeId)) {
+    assertUpwardHiddenEdgesCompositeBehind(crossingObject, shapeId);
+  }
 
   const finalizedUpRightObject = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
   finalizedUpRightObject.set({ left: 100, top: 100, scaleX: 0.01, scaleY: 0.01, selectable: false });
@@ -147,6 +168,9 @@ for (const shapeId of expectedMirrored) {
     dashExpectation.up,
     `${shapeId} must preserve the upward hidden-edge set when creation is finalized.`,
   );
+  if (upwardRearCompositeSolids.has(shapeId)) {
+    assertUpwardHiddenEdgesCompositeBehind(finalizedUpRightObject, shapeId);
+  }
   finalizedUpRightObject.set({ left: 80, top: 120, scaleX: 0.5, scaleY: 0.5 });
   assert(
     finalizedUpRightObject.flipX === rightFlip && finalizedUpRightObject.flipY === true,
