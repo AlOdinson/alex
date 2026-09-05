@@ -10121,6 +10121,33 @@ function BoardWorkspace({
     canvas.on('object:rotating', broadcastLiveTransform);
     canvas.on('object:skewing', broadcastLiveTransform);
 
+    function finishBoardScreenSharePointerTransform(event) {
+      const transform = canvas._currentTransform;
+      if (!isBoardScreenShareObject(canvas._currentTransform?.target)) return false;
+      const target = transform.target;
+      try {
+        canvas.endCurrentTransform?.(event);
+      } catch {
+        // A lost native release must never leave this transient object attached.
+      }
+      if (canvas._currentTransform === transform) canvas._currentTransform = null;
+      try {
+        if (event?.pointerId != null && canvas.upperCanvasEl?.hasPointerCapture?.(event.pointerId)) {
+          canvas.upperCanvasEl.releasePointerCapture(event.pointerId);
+        }
+      } catch {
+        // Pointer capture may already have been released by the browser.
+      }
+      restoreTargetFindAfterTransform();
+      target.set({ angle: 0, skewX: 0, skewY: 0, flipX: false, flipY: false });
+      target.setCoords();
+      broadcastBoardScreenShareLayout(target, true);
+      canvas.requestRenderAll();
+      return true;
+    }
+    window.addEventListener('pointerup', finishBoardScreenSharePointerTransform);
+    window.addEventListener('pointercancel', finishBoardScreenSharePointerTransform);
+
     canvas.on('object:modified', ({ target }) => {
       restoreTargetFindAfterTransform();
       if (applyingRemoteRef.current || applyingHistoryRef.current || !target) return;
@@ -13209,6 +13236,8 @@ function BoardWorkspace({
       host.removeEventListener('dragenter', handleDragOver);
       host.removeEventListener('dragover', handleDragOver);
       host.removeEventListener('drop', handleDrop);
+      window.removeEventListener('pointerup', finishBoardScreenSharePointerTransform);
+      window.removeEventListener('pointercancel', finishBoardScreenSharePointerTransform);
       window.clearInterval(syncInterval);
       window.clearInterval(localLockRefreshInterval);
       window.clearInterval(pendingImageRetryInterval);
