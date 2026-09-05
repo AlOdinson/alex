@@ -1,0 +1,41 @@
+name: Apply hidden-edge stack fix
+
+on:
+  push:
+    branches:
+      - fix/solid-hidden-edge-stack
+    paths:
+      - .github/workflows/apply-hidden-edge-stack-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply patch
+        run: node scripts/apply-hidden-edge-stack-fix.mjs
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Verify disappearing/front-stack regression
+        run: node scripts/test-upward-hidden-edge-stack.mjs
+      - name: Verify directional solid regression
+        run: node scripts/test-solid-drag-mirroring.mjs
+      - name: Verify solid geometry
+        run: node scripts/test-solid-shape-geometry.mjs
+      - name: Build
+        run: npm run build
+      - name: Commit patch
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/lib/shapes.js scripts/test-solid-drag-mirroring.mjs
+          git commit -m "fix: keep hidden solid edges behind without compositing"
+          git push origin HEAD:fix/solid-hidden-edge-stack
