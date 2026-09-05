@@ -157,6 +157,7 @@ export function useAdaptiveScreenShare({
   const viewerRelayRef = useRef(null);
   const relayFrameUrlRef = useRef('');
   const pendingViewerIceRef = useRef([]);
+  const viewerStunRetryAttemptsRef = useRef(0);
   const hostPeersRef = useRef(new Map());
   const currentProfileRef = useRef(SCREEN_SHARE_PROFILES.idle);
   const networkDegradedRef = useRef(false);
@@ -362,6 +363,7 @@ export function useAdaptiveScreenShare({
     const session = activeSessionRef.current;
     if (!session || session.hostId === clientId) return;
     clearViewerPeer(announce);
+    viewerStunRetryAttemptsRef.current = 0;
     activeSessionRef.current = null;
     if (mountedRef.current) {
       setStream(null);
@@ -394,7 +396,7 @@ export function useAdaptiveScreenShare({
     }, session);
   }, [clientId, participantName, sendSignal]);
 
-  const createHostPeer = useCallback(async (viewerId) => {
+  const createHostPeer = useCallback(async (viewerId, { force = false } = {}) => {
     const session = activeSessionRef.current;
     const localStream = localStreamRef.current;
     if (!session || session.hostId !== clientId || !localStream) return;
@@ -402,9 +404,9 @@ export function useAdaptiveScreenShare({
     if (!safeViewerId || safeViewerId === clientId) return;
 
     const existing = hostPeersRef.current.get(safeViewerId);
-    if (existing?.creating) return;
-    if (existing?.peer?.connectionState === 'connected'
-      || existing?.peer?.connectionState === 'connecting') return;
+    if (!force && existing?.creating) return;
+    if (!force && (existing?.peer?.connectionState === 'connected'
+      || existing?.peer?.connectionState === 'connecting')) return;
     if (!existing && hostPeersRef.current.size >= MAX_SCREEN_SHARE_VIEWERS) {
       sendSignal('viewer-rejected', {
         targetId: safeViewerId,
@@ -412,7 +414,10 @@ export function useAdaptiveScreenShare({
       }, session);
       return;
     }
-    if (existing) closePeer(existing);
+    if (existing) {
+      closePeer(existing);
+      hostPeersRef.current.delete(safeViewerId);
+    }
 
     const peer = new RTCPeerConnection(rtcConfiguration());
     const entry = { peer, sender: null, pendingIce: [], creating: true };
@@ -465,7 +470,8 @@ export function useAdaptiveScreenShare({
     if (current?.sessionId === candidate.sessionId) {
       activeSessionRef.current = { ...current, ...candidate };
       if (candidate.boardLayout) updateView({ boardLayout: candidate.boardLayout });
-      if (viewerPeerRef.current?.peer?.connectionState !== 'connected') {
+      if (activeSessionRef.current.sourceMode === 'remote-browser'
+        && viewerPeerRef.current?.peer?.connectionState !== 'connected') {
         connectViewerRelay(activeSessionRef.current);
       }
       if (candidate.paused) {
@@ -498,6 +504,7 @@ export function useAdaptiveScreenShare({
 
     activeSessionRef.current = candidate;
     pendingViewerIceRef.current = [];
+    viewerStunRetryAttemptsRef.current = 0;
     setStream(null);
     setMinimized(false);
     updateView({
@@ -508,13 +515,15 @@ export function useAdaptiveScreenShare({
       hostName: candidate.hostName || 'Учитель',
       message: candidate.paused
         ? 'Safari приостановил передачу, пока устройство ведущего находится в фоне.'
-        : 'Проверяю прямой и резервный каналы…',
+        : (candidate.sourceMode === 'remote-browser'
+          ? 'Проверяю прямой и резервный каналы…'
+          : 'Устанавливаю прямое соединение…'),
       viewerCount: 0,
       networkDegraded: false,
       sourceMode: candidate.sourceMode === 'remote-browser' ? 'remote-browser' : 'screen',
       remoteBrowserState: candidate.remoteBrowserState ?? null,
     });
-    connectViewerRelay(candidate);
+    if (candidate.sourceMode === 'remote-browser') connectViewerRelay(candidate);
     await sendSignal('viewer-ready', { targetId: candidate.hostId }, candidate);
   }, [announceHost, clearViewerPeer, clientId, connectViewerRelay, sendSignal, stopHosting, stream, updateView, view.phase]);
 
@@ -566,12 +575,38 @@ export function useAdaptiveScreenShare({
     };
     peer.onconnectionstatechange = () => {
       if (peer.connectionState === 'connected') {
+        viewerStunRetryAttemptsRef.current = 0;
         if (entry.remoteStream) setStream(entry.remoteStream);
         clearViewerRelay();
         updateView({ phase: 'viewing', message: '' });
       }
       if (peer.connectionState === 'failed') {
         setStream(null);
+        if (session.sourceMode !== 'remote-browser') {
+          const attempt = viewerStunRetryAttemptsRef.current + 1;
+          viewerStunRetryAttemptsRef.current = attempt;
+          closePeer(entry);
+          if (viewerPeerRef.current === entry) viewerPeerRef.current = null;
+          pendingViewerIceRef.current = [];
+          if (attempt <= 2) {
+            updateView({
+              phase: 'connecting',
+              role: 'viewer',
+              message: `Повторно устанавливаю прямое соединение (${attempt}/2)…`,
+            });
+            sendSignal('viewer-ready', {
+              targetId: session.hostId,
+              restartIce: true,
+            }, session).catch(() => undefined);
+          } else {
+            updateView({
+              phase: 'error',
+              role: 'viewer',
+              message: 'Прямое соединение не установилось. Попробуйте обновить страницу или сменить сеть.',
+            });
+          }
+          return;
+        }
         const relayAvailable = connectViewerRelay(session);
         updateView(relayAvailable ? {
           phase: relayFrameUrlRef.current ? 'viewing' : 'connecting',
@@ -688,7 +723,7 @@ export function useAdaptiveScreenShare({
       return;
     }
     if (signal.type === 'viewer-ready' && session.hostId === clientId) {
-      await createHostPeer(signal.clientId);
+      await createHostPeer(signal.clientId, { force: Boolean(signal.restartIce) });
       return;
     }
     if (signal.type === 'viewer-leave' && session.hostId === clientId) {
