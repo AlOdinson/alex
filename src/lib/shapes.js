@@ -50,6 +50,27 @@ export const HORIZONTALLY_MIRRORED_SOLID_IDS = new Set([
 
 export const VERTICALLY_MIRRORED_SOLID_IDS = new Set(HORIZONTALLY_MIRRORED_SOLID_IDS);
 
+const DIRECTIONAL_HIDDEN_CHILD_INDEXES = {
+  'wire-cube': {
+    down: [9, 10, 11],
+    up: [4, 7, 11],
+  },
+  pyramid: {
+    down: [4],
+    up: [1],
+  },
+  tetrahedron: {
+    down: [2, 3],
+    up: [1, 2],
+  },
+  octahedron: {
+    down: [8, 9, 10, 11],
+    up: [1, 4, 6, 7],
+  },
+};
+
+const HIDDEN_EDGE_DASH = [5, 5];
+
 export function solidDragFlipX(shapeId, dragDx) {
   if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
   const numericDx = Number(dragDx);
@@ -63,6 +84,20 @@ export function solidDragFlipY(shapeId, dragDy) {
   const numericDy = Number(dragDy);
   if (!Number.isFinite(numericDy) || numericDy === 0) return false;
   return numericDy < 0;
+}
+
+function applyDirectionalHiddenEdges(object, shapeId, flippedUp) {
+  const edgeIndexes = DIRECTIONAL_HIDDEN_CHILD_INDEXES[shapeId];
+  if (!edgeIndexes || typeof object?.getObjects !== 'function') return;
+
+  const hiddenIndexes = new Set(flippedUp ? edgeIndexes.up : edgeIndexes.down);
+  for (const [index, child] of object.getObjects().entries()) {
+    const shouldBeHidden = hiddenIndexes.has(index);
+    const isHidden = Array.isArray(child?.strokeDashArray) && child.strokeDashArray.length > 0;
+    if (shouldBeHidden === isHidden) continue;
+    child.set({ strokeDashArray: shouldBeHidden ? [...HIDDEN_EDGE_DASH] : null });
+  }
+  object.dirty = true;
 }
 
 function enableDirectionalDragMirror(object, shapeId) {
@@ -87,6 +122,7 @@ function enableDirectionalDragMirror(object, shapeId) {
         const hasScaleY = Object.prototype.hasOwnProperty.call(attributes, 'scaleY');
         const left = Number(attributes.left);
         const top = Number(attributes.top);
+        let nextFlipY = null;
 
         if (attributes.selectable === false
           && creationAnchorLeft == null
@@ -116,10 +152,16 @@ function enableDirectionalDragMirror(object, shapeId) {
           if (Number.isFinite(scaleMagnitudeX)) attributes.scaleX = scaleMagnitudeX;
           if (Number.isFinite(scaleMagnitudeY)) attributes.scaleY = scaleMagnitudeY;
           if (mirrorsX) attributes.flipX = solidDragFlipX(shapeId, dragDx);
-          if (mirrorsY) attributes.flipY = solidDragFlipY(shapeId, dragDy);
+          if (mirrorsY) {
+            nextFlipY = solidDragFlipY(shapeId, dragDy);
+            attributes.flipY = nextFlipY;
+          }
         }
 
         const result = originalSet.call(this, attributes);
+        if (creationDraftActive && nextFlipY != null) {
+          applyDirectionalHiddenEdges(this, shapeId, nextFlipY);
+        }
         if (attributes.selectable === true) {
           creationDraftActive = false;
           creationAnchorLeft = null;
