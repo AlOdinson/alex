@@ -42,6 +42,12 @@ const SIGNAL_TYPES = new Set([
   'remote-browser-unavailable',
 ]);
 
+const DEFAULT_SCREEN_SHARE_STUN_URLS = Object.freeze([
+  'stun:stun.l.google.com:19302',
+  'stun:stun1.l.google.com:19302',
+  'stun:stun2.l.google.com:19302',
+]);
+
 export function screenShareCapability(runtimeNavigator = globalThis.navigator) {
   const mediaDevices = runtimeNavigator?.mediaDevices;
   const supported = typeof mediaDevices?.getDisplayMedia === 'function';
@@ -197,10 +203,19 @@ export function screenShareNetworkIsDegraded(stats) {
   return loss >= 0.08 || roundTripTime >= 0.35;
 }
 
-export function rtcConfiguration() {
+function configuredScreenShareStunUrls() {
   const configured = String(import.meta.env?.VITE_SCREEN_SHARE_STUN_URL ?? '').trim();
+  const urls = configured
+    .split(/[\s,;]+/)
+    .map((value) => value.trim())
+    .filter((value) => value.startsWith('stun:'));
+  return urls.length ? urls : [...DEFAULT_SCREEN_SHARE_STUN_URLS];
+}
+
+export function rtcConfiguration() {
   return {
-    iceServers: [{ urls: configured || 'stun:stun.l.google.com:19302' }],
+    iceServers: [{ urls: configuredScreenShareStunUrls() }],
+    iceCandidatePoolSize: 4,
     bundlePolicy: 'max-bundle',
   };
 }
