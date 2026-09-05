@@ -70,7 +70,7 @@ const DIRECTIONAL_HIDDEN_CHILD_INDEXES = {
 };
 
 const HIDDEN_EDGE_DASH = [5, 5];
-const UPWARD_REAR_COMPOSITE_SOLID_IDS = new Set(['wire-cube', 'pyramid']);
+const STACKED_REAR_SOLID_IDS = new Set(['wire-cube', 'pyramid']);
 
 export function solidDragFlipX(shapeId, dragDx) {
   if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
@@ -87,22 +87,41 @@ export function solidDragFlipY(shapeId, dragDy) {
   return numericDy < 0;
 }
 
+function stackCurrentHiddenEdgesBehind(object) {
+  const hiddenChildren = object.getObjects().filter((child) => (
+    Array.isArray(child?.strokeDashArray) && child.strokeDashArray.length > 0
+  ));
+  for (const child of [...hiddenChildren].reverse()) {
+    object.sendObjectToBack(child);
+  }
+
+  const fillOnlyChildren = object.getObjects().filter((child) => !child?.stroke && child?.fill);
+  for (const child of [...fillOnlyChildren].reverse()) {
+    object.sendObjectToBack(child);
+  }
+}
+
 function applyDirectionalHiddenEdges(object, shapeId, flippedUp) {
   const edgeIndexes = DIRECTIONAL_HIDDEN_CHILD_INDEXES[shapeId];
   if (!edgeIndexes || typeof object?.getObjects !== 'function') return;
 
+  if (STACKED_REAR_SOLID_IDS.has(shapeId)) {
+    for (const child of object.getObjects()) {
+      if (child?.globalCompositeOperation === 'destination-over') {
+        child.set({ globalCompositeOperation: 'source-over' });
+      }
+    }
+    stackCurrentHiddenEdgesBehind(object);
+    object.dirty = true;
+    return;
+  }
+
   const hiddenIndexes = new Set(flippedUp ? edgeIndexes.up : edgeIndexes.down);
-  const compositeRearBehind = flippedUp && UPWARD_REAR_COMPOSITE_SOLID_IDS.has(shapeId);
   for (const [index, child] of object.getObjects().entries()) {
     const shouldBeHidden = hiddenIndexes.has(index);
     const isHidden = Array.isArray(child?.strokeDashArray) && child.strokeDashArray.length > 0;
-    const globalCompositeOperation = compositeRearBehind && shouldBeHidden ? 'destination-over' : 'source-over';
-    const compositeChanged = child?.globalCompositeOperation !== globalCompositeOperation;
-    if (shouldBeHidden === isHidden && !compositeChanged) continue;
-    child.set({
-      strokeDashArray: shouldBeHidden ? [...HIDDEN_EDGE_DASH] : null,
-      globalCompositeOperation,
-    });
+    if (shouldBeHidden === isHidden) continue;
+    child.set({ strokeDashArray: shouldBeHidden ? [...HIDDEN_EDGE_DASH] : null });
   }
   object.dirty = true;
 }
