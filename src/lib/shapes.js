@@ -53,15 +53,15 @@ export const VERTICALLY_MIRRORED_SOLID_IDS = new Set(HORIZONTALLY_MIRRORED_SOLID
 const DIRECTIONAL_HIDDEN_CHILD_INDEXES = {
   'wire-cube': {
     down: [9, 10, 11],
-    up: [4, 7, 11],
+    up: [9, 10, 11],
   },
   pyramid: {
-    down: [4],
-    up: [1],
+    down: [3, 4, 8],
+    up: [3, 4, 8],
   },
   tetrahedron: {
-    down: [2, 3],
-    up: [1, 2],
+    down: [1, 2, 3],
+    up: [1, 2, 3],
   },
   octahedron: {
     down: [8, 9, 10, 11],
@@ -341,12 +341,24 @@ export function createShape(shapeId, options) {
     case 'pyramid': {
       const solid = lineStyle(options);
       const hidden = lineStyle(options, true);
+      const apex = [0, -62];
+      const baseFrontLeft = [-60, 43];
+      const baseFrontRight = [34, 43];
+      const baseBackRight = [58, 26];
+      const baseBackLeft = [-30, 26];
       object = group([
-        new Polygon([{ x: -60, y: 43 }, { x: 34, y: 43 }, { x: 58, y: 26 }, { x: -30, y: 26 }], baseStyle(options)),
-        new Line([0, -62, -60, 43], solid),
-        new Line([0, -62, 34, 43], solid),
-        new Line([0, -62, 58, 26], solid),
-        new Line([0, -62, -30, 26], hidden),
+        new Polygon(
+          [baseFrontLeft, baseFrontRight, baseBackRight, baseBackLeft].map(([x, y]) => ({ x, y })),
+          { ...baseStyle(options), stroke: null },
+        ),
+        lineBetween(baseFrontLeft, baseFrontRight, solid),
+        lineBetween(baseFrontRight, baseBackRight, solid),
+        lineBetween(baseBackRight, baseBackLeft, hidden),
+        lineBetween(baseBackLeft, baseFrontLeft, hidden),
+        lineBetween(apex, baseFrontLeft, solid),
+        lineBetween(apex, baseFrontRight, solid),
+        lineBetween(apex, baseBackRight, solid),
+        lineBetween(apex, baseBackLeft, hidden),
       ]);
       break;
     }
@@ -382,7 +394,7 @@ export function createShape(shapeId, options) {
       const rear = [-8, 7];
       object = group([
         new Polygon([topLeft, tip, bottomLeft].map(([x, y]) => ({ x, y })), baseStyle(options)),
-        lineBetween(topLeft, rear, solid),
+        lineBetween(topLeft, rear, hidden),
         lineBetween(rear, tip, hidden),
         lineBetween(rear, bottomLeft, hidden),
       ]);
