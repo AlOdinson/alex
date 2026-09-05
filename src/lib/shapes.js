@@ -30,7 +30,7 @@ export const SHAPE_CATEGORIES = [
     id: 'solids',
     label: '3D тела',
     shapes: [
-      ['wire-cube', 'Каркасный куб'],
+      ['wire-cube', 'Кубоид'],
       ['cylinder', 'Цилиндр'],
       ['pyramid', 'Пирамида'],
       ['cone', 'Конус'],
@@ -48,6 +48,8 @@ export const HORIZONTALLY_MIRRORED_SOLID_IDS = new Set([
   'octahedron',
 ]);
 
+export const VERTICALLY_MIRRORED_SOLID_IDS = new Set(HORIZONTALLY_MIRRORED_SOLID_IDS);
+
 export function solidDragFlipX(shapeId, dragDx) {
   if (!HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
   const numericDx = Number(dragDx);
@@ -56,11 +58,21 @@ export function solidDragFlipX(shapeId, dragDx) {
   return numericDx < 0;
 }
 
-function enableHorizontalDragMirror(object, shapeId) {
-  if (!object || !HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId)) return object;
+export function solidDragFlipY(shapeId, dragDy) {
+  if (!VERTICALLY_MIRRORED_SOLID_IDS.has(shapeId)) return false;
+  const numericDy = Number(dragDy);
+  if (!Number.isFinite(numericDy) || numericDy === 0) return false;
+  return numericDy < 0;
+}
+
+function enableDirectionalDragMirror(object, shapeId) {
+  const mirrorsX = HORIZONTALLY_MIRRORED_SOLID_IDS.has(shapeId);
+  const mirrorsY = VERTICALLY_MIRRORED_SOLID_IDS.has(shapeId);
+  if (!object || (!mirrorsX && !mirrorsY)) return object;
 
   const originalSet = object.set;
   let creationAnchorLeft = null;
+  let creationAnchorTop = null;
   let creationDraftActive = false;
 
   Object.defineProperty(object, 'set', {
@@ -70,32 +82,48 @@ function enableHorizontalDragMirror(object, shapeId) {
       if (key && typeof key === 'object' && !Array.isArray(key)) {
         const attributes = { ...key };
         const hasLeft = Object.prototype.hasOwnProperty.call(attributes, 'left');
+        const hasTop = Object.prototype.hasOwnProperty.call(attributes, 'top');
         const hasScaleX = Object.prototype.hasOwnProperty.call(attributes, 'scaleX');
+        const hasScaleY = Object.prototype.hasOwnProperty.call(attributes, 'scaleY');
         const left = Number(attributes.left);
+        const top = Number(attributes.top);
 
         if (attributes.selectable === false
           && creationAnchorLeft == null
+          && creationAnchorTop == null
           && hasLeft
-          && Number.isFinite(left)) {
+          && hasTop
+          && Number.isFinite(left)
+          && Number.isFinite(top)) {
           creationAnchorLeft = left;
+          creationAnchorTop = top;
           creationDraftActive = true;
         }
 
         if (creationDraftActive
           && creationAnchorLeft != null
+          && creationAnchorTop != null
           && hasLeft
+          && hasTop
           && hasScaleX
-          && Number.isFinite(left)) {
+          && hasScaleY
+          && Number.isFinite(left)
+          && Number.isFinite(top)) {
           const dragDx = (left - creationAnchorLeft) * 2;
-          const scaleMagnitude = Math.abs(Number(attributes.scaleX));
-          if (Number.isFinite(scaleMagnitude)) attributes.scaleX = scaleMagnitude;
-          attributes.flipX = solidDragFlipX(shapeId, dragDx);
+          const dragDy = (top - creationAnchorTop) * 2;
+          const scaleMagnitudeX = Math.abs(Number(attributes.scaleX));
+          const scaleMagnitudeY = Math.abs(Number(attributes.scaleY));
+          if (Number.isFinite(scaleMagnitudeX)) attributes.scaleX = scaleMagnitudeX;
+          if (Number.isFinite(scaleMagnitudeY)) attributes.scaleY = scaleMagnitudeY;
+          if (mirrorsX) attributes.flipX = solidDragFlipX(shapeId, dragDx);
+          if (mirrorsY) attributes.flipY = solidDragFlipY(shapeId, dragDy);
         }
 
         const result = originalSet.call(this, attributes);
         if (attributes.selectable === true) {
           creationDraftActive = false;
           creationAnchorLeft = null;
+          creationAnchorTop = null;
         }
         return result;
       }
@@ -306,11 +334,15 @@ export function createShape(shapeId, options) {
     case 'tetrahedron': {
       const solid = lineStyle(options);
       const hidden = lineStyle(options, true);
+      const topLeft = [-46, -50];
+      const bottomLeft = [-50, 44];
+      const tip = [60, 14];
+      const rear = [-8, 7];
       object = group([
-        new Polygon([{ x: 0, y: -62 }, { x: 58, y: 46 }, { x: -58, y: 46 }], baseStyle(options)),
-        new Line([0, -62, 0, 21], solid),
-        new Line([0, 21, 58, 46], hidden),
-        new Line([0, 21, -58, 46], hidden),
+        new Polygon([topLeft, tip, bottomLeft].map(([x, y]) => ({ x, y })), baseStyle(options)),
+        lineBetween(topLeft, rear, solid),
+        lineBetween(rear, tip, hidden),
+        lineBetween(rear, bottomLeft, hidden),
       ]);
       break;
     }
@@ -387,5 +419,5 @@ export function createShape(shapeId, options) {
     hasControls: true,
   });
   object.setCoords();
-  return enableHorizontalDragMirror(object, shapeId);
+  return enableDirectionalDragMirror(object, shapeId);
 }
