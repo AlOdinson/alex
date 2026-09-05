@@ -53,6 +53,14 @@ assert(
   'ShareScreen pointer release must terminate Fabric current transform explicitly.',
 );
 assert(
+  board.includes('canvas._currentTransform = null'),
+  'ShareScreen fallback release must clear Fabric transform ownership if Fabric leaves it behind.',
+);
+assert(
+  board.includes('releasePointerCapture(event.pointerId)'),
+  'ShareScreen fallback release must drop pointer capture when the browser still owns it.',
+);
+assert(
   /window\.removeEventListener\(['"]pointerup['"],\s*finishBoardScreenSharePointerTransform/.test(board)
     && /window\.removeEventListener\(['"]pointercancel['"],\s*finishBoardScreenSharePointerTransform/.test(board),
   'ShareScreen release listeners must be cleaned up.',
