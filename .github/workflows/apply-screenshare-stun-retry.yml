@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   patch:
-    if: github.event.head_commit.message == 'ci: apply STUN-only screen share retry'
+    if: "${{ github.event.head_commit.message == 'ci: fix STUN retry patch workflow' }}"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
