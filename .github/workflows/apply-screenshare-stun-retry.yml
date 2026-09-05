@@ -1,0 +1,87 @@
+name: Apply STUN-only screen share retry
+
+on:
+  push:
+    branches:
+      - fix/screenshare-stun-retry
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'ci: apply STUN-only screen share retry'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Patch ScreenShare
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/components/ScreenShare.jsx')
+          source = path.read_text()
+
+          replacements = [
+            (
+              "  const pendingViewerIceRef = useRef([]);\n  const hostPeersRef = useRef(new Map());",
+              "  const pendingViewerIceRef = useRef([]);\n  const viewerStunRetryAttemptsRef = useRef(0);\n  const hostPeersRef = useRef(new Map());",
+            ),
+            (
+              "  const createHostPeer = useCallback(async (viewerId) => {",
+              "  const createHostPeer = useCallback(async (viewerId, { force = false } = {}) => {",
+            ),
+            (
+              "    const existing = hostPeersRef.current.get(safeViewerId);\n    if (existing?.creating) return;\n    if (existing?.peer?.connectionState === 'connected'\n      || existing?.peer?.connectionState === 'connecting') return;",
+              "    const existing = hostPeersRef.current.get(safeViewerId);\n    if (!force && existing?.creating) return;\n    if (!force && (existing?.peer?.connectionState === 'connected'\n      || existing?.peer?.connectionState === 'connecting')) return;",
+            ),
+            (
+              "    if (existing) closePeer(existing);\n\n    const peer = new RTCPeerConnection(rtcConfiguration());",
+              "    if (existing) {\n      closePeer(existing);\n      hostPeersRef.current.delete(safeViewerId);\n    }\n\n    const peer = new RTCPeerConnection(rtcConfiguration());",
+            ),
+            (
+              "    clearViewerPeer(announce);\n    activeSessionRef.current = null;",
+              "    clearViewerPeer(announce);\n    viewerStunRetryAttemptsRef.current = 0;\n    activeSessionRef.current = null;",
+            ),
+            (
+              "      if (viewerPeerRef.current?.peer?.connectionState !== 'connected') {\n        connectViewerRelay(activeSessionRef.current);\n      }",
+              "      if (activeSessionRef.current.sourceMode === 'remote-browser'\n        && viewerPeerRef.current?.peer?.connectionState !== 'connected') {\n        connectViewerRelay(activeSessionRef.current);\n      }",
+            ),
+            (
+              "    activeSessionRef.current = candidate;\n    pendingViewerIceRef.current = [];",
+              "    activeSessionRef.current = candidate;\n    pendingViewerIceRef.current = [];\n    viewerStunRetryAttemptsRef.current = 0;",
+            ),
+            (
+              "      message: candidate.paused\n        ? 'Safari приостановил передачу, пока устройство ведущего находится в фоне.'\n        : 'Проверяю прямой и резервный каналы…',",
+              "      message: candidate.paused\n        ? 'Safari приостановил передачу, пока устройство ведущего находится в фоне.'\n        : (candidate.sourceMode === 'remote-browser'\n          ? 'Проверяю прямой и резервный каналы…'\n          : 'Устанавливаю прямое соединение…'),",
+            ),
+            (
+              "    connectViewerRelay(candidate);\n    await sendSignal('viewer-ready', { targetId: candidate.hostId }, candidate);",
+              "    if (candidate.sourceMode === 'remote-browser') connectViewerRelay(candidate);\n    await sendSignal('viewer-ready', { targetId: candidate.hostId }, candidate);",
+            ),
+            (
+              "      if (peer.connectionState === 'connected') {\n        if (entry.remoteStream) setStream(entry.remoteStream);\n        clearViewerRelay();\n        updateView({ phase: 'viewing', message: '' });\n      }\n      if (peer.connectionState === 'failed') {\n        setStream(null);\n        const relayAvailable = connectViewerRelay(session);\n        updateView(relayAvailable ? {\n          phase: relayFrameUrlRef.current ? 'viewing' : 'connecting',\n          message: relayFrameUrlRef.current ? '' : 'Прямой канал недоступен — подключаю резервный…',\n        } : {\n          phase: 'error',\n          role: 'viewer',\n          message: 'Прямое соединение не установилось, а резервный канал Mac недоступен.',\n        });\n      }",
+              "      if (peer.connectionState === 'connected') {\n        viewerStunRetryAttemptsRef.current = 0;\n        if (entry.remoteStream) setStream(entry.remoteStream);\n        clearViewerRelay();\n        updateView({ phase: 'viewing', message: '' });\n      }\n      if (peer.connectionState === 'failed') {\n        setStream(null);\n        if (session.sourceMode !== 'remote-browser') {\n          const attempt = viewerStunRetryAttemptsRef.current + 1;\n          viewerStunRetryAttemptsRef.current = attempt;\n          closePeer(entry);\n          if (viewerPeerRef.current === entry) viewerPeerRef.current = null;\n          pendingViewerIceRef.current = [];\n          if (attempt <= 2) {\n            updateView({\n              phase: 'connecting',\n              role: 'viewer',\n              message: `Повторно устанавливаю прямое соединение (${attempt}/2)…`,\n            });\n            sendSignal('viewer-ready', {\n              targetId: session.hostId,\n              restartIce: true,\n            }, session).catch(() => undefined);\n          } else {\n            updateView({\n              phase: 'error',\n              role: 'viewer',\n              message: 'Прямое соединение не установилось. Попробуйте обновить страницу или сменить сеть.',\n            });\n          }\n          return;\n        }\n        const relayAvailable = connectViewerRelay(session);\n        updateView(relayAvailable ? {\n          phase: relayFrameUrlRef.current ? 'viewing' : 'connecting',\n          message: relayFrameUrlRef.current ? '' : 'Прямой канал недоступен — подключаю резервный…',\n        } : {\n          phase: 'error',\n          role: 'viewer',\n          message: 'Прямое соединение не установилось, а резервный канал Mac недоступен.',\n        });\n      }",
+            ),
+            (
+              "    if (signal.type === 'viewer-ready' && session.hostId === clientId) {\n      await createHostPeer(signal.clientId);\n      return;\n    }",
+              "    if (signal.type === 'viewer-ready' && session.hostId === clientId) {\n      await createHostPeer(signal.clientId, { force: Boolean(signal.restartIce) });\n      return;\n    }",
+            ),
+          ]
+
+          for old, new in replacements:
+            count = source.count(old)
+            if count != 1:
+              raise SystemExit(f'Expected exactly one match, found {count}: {old[:90]!r}')
+            source = source.replace(old, new, 1)
+
+          path.write_text(source)
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "AlOdinson"
+          git config user.email "mail.alik.kamaletdinov@gmail.com"
+          git add src/components/ScreenShare.jsx
+          git commit -m "fix: retry STUN-only screen share connection"
+          git push origin HEAD:fix/screenshare-stun-retry
