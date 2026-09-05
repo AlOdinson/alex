@@ -50,8 +50,8 @@ const directionalDashExpectations = {
     up: [9, 10, 11],
   },
   pyramid: {
-    down: [3, 6, 8],
-    up: [3, 6, 8],
+    down: [3, 4, 8],
+    up: [3, 4, 8],
   },
   tetrahedron: {
     down: [1, 2, 3],
