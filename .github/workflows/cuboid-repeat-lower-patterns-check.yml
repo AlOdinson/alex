@@ -22,3 +22,9 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Verify cuboid pairing regression
         run: node scripts/test-upward-hidden-edge-stack.mjs
+      - name: Verify directional solids
+        run: node scripts/test-solid-drag-mirroring.mjs
+      - name: Verify solid geometry
+        run: node scripts/test-solid-shape-geometry.mjs
+      - name: Build
+        run: npm run build
