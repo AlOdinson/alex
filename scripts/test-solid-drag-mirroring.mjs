@@ -47,15 +47,15 @@ const rightwardFlipSolids = new Set(['wire-cube', 'pyramid']);
 const directionalDashExpectations = {
   'wire-cube': {
     down: [9, 10, 11],
-    up: [4, 7, 11],
+    up: [9, 10, 11],
   },
   pyramid: {
-    down: [4],
-    up: [1],
+    down: [3, 6, 8],
+    up: [3, 6, 8],
   },
   tetrahedron: {
-    down: [2, 3],
-    up: [1, 2],
+    down: [1, 2, 3],
+    up: [1, 2, 3],
   },
   octahedron: {
     down: [8, 9, 10, 11],
@@ -95,7 +95,7 @@ for (const shapeId of expectedMirrored) {
   assertDashedEdges(
     crossingObject,
     dashExpectation.down,
-    `${shapeId} downward preview must keep the existing rear edges hidden.`,
+    `${shapeId} downward preview must keep the intended rear/internal edges hidden.`,
   );
 
   crossingObject.set({ left: 120, top: 120, scaleX: 0.5, scaleY: 0.5 });
@@ -107,7 +107,7 @@ for (const shapeId of expectedMirrored) {
   assertDashedEdges(
     crossingObject,
     dashExpectation.down,
-    `${shapeId} downward preview must keep the same rear edges after crossing horizontally.`,
+    `${shapeId} downward preview must keep the same rear/internal edges after crossing horizontally.`,
   );
 
   crossingObject.set({ left: 80, top: 80, scaleX: 0.5, scaleY: 0.5 });
@@ -119,7 +119,7 @@ for (const shapeId of expectedMirrored) {
   assertDashedEdges(
     crossingObject,
     dashExpectation.up,
-    `${shapeId} upward preview must move the dashed style to the new rear edges.`,
+    `${shapeId} upward preview must keep only the intended rear/internal edges dashed.`,
   );
 
   crossingObject.set({ left: 120, top: 80, scaleX: 0.5, scaleY: 0.5 });
@@ -131,7 +131,7 @@ for (const shapeId of expectedMirrored) {
   assertDashedEdges(
     crossingObject,
     dashExpectation.up,
-    `${shapeId} upward preview must keep the new rear edges hidden after crossing horizontally.`,
+    `${shapeId} upward preview must keep the intended rear/internal edges after crossing horizontally.`,
   );
 
   const finalizedUpRightObject = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
