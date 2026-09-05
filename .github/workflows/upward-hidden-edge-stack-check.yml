@@ -20,5 +20,11 @@ jobs:
           node-version: 22
       - name: Install dependencies
         run: npm install --no-audit --no-fund
-      - name: Reproduce upward hidden-edge stack bug
+      - name: Verify disappearing/front-stack regression
         run: node scripts/test-upward-hidden-edge-stack.mjs
+      - name: Verify directional solid regression
+        run: node scripts/test-solid-drag-mirroring.mjs
+      - name: Verify solid geometry
+        run: node scripts/test-solid-shape-geometry.mjs
+      - name: Build
+        run: npm run build
