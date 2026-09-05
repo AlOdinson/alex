@@ -8,9 +8,13 @@ function isDashed(child) {
   return Array.isArray(child?.strokeDashArray) && child.strokeDashArray.length > 0;
 }
 
-function assertOriginalHiddenEdges(object, originalChildren, expectedOriginalIndexes, shapeId, phase) {
+function originalHiddenIndexes(object, originalChildren) {
   const hidden = new Set(object.getObjects().filter(isDashed));
-  const actualOriginalIndexes = originalChildren.flatMap((child, index) => hidden.has(child) ? [index] : []);
+  return originalChildren.flatMap((child, index) => hidden.has(child) ? [index] : []);
+}
+
+function assertOriginalHiddenEdges(object, originalChildren, expectedOriginalIndexes, shapeId, phase) {
+  const actualOriginalIndexes = originalHiddenIndexes(object, originalChildren);
   assert(
     JSON.stringify(actualOriginalIndexes) === JSON.stringify(expectedOriginalIndexes),
     `${shapeId} ${phase}: expected original hidden edges ${expectedOriginalIndexes.join(', ')}, got ${actualOriginalIndexes.join(', ')}.`,
@@ -48,31 +52,53 @@ function createDirectionalShape(shapeId, left, top) {
   return { object, originalChildren };
 }
 
+function patternSignature(object, originalChildren) {
+  return JSON.stringify({
+    flipX: Boolean(object.flipX),
+    flipY: Boolean(object.flipY),
+    hidden: originalHiddenIndexes(object, originalChildren),
+  });
+}
+
 const cuboidDirections = [
   { name: 'down-left', left: 80, top: 120, flipX: false, flipY: false, hidden: [9, 10, 11] },
   { name: 'down-right', left: 120, top: 120, flipX: true, flipY: false, hidden: [9, 10, 11] },
-  // User-required pairing: upper-left must use the hidden-edge pattern seen in lower-right,
-  // and upper-right must use the hidden-edge pattern seen in lower-left.
-  // With vertical mirroring this is the opposite source rear vertex: backTopRight => edges 5,7,8.
-  { name: 'up-left', left: 80, top: 80, flipX: false, flipY: true, hidden: [5, 7, 8] },
-  { name: 'up-right', left: 120, top: 80, flipX: true, flipY: true, hidden: [5, 7, 8] },
+  // The two lower cuboids are the source of truth. Up-left must literally repeat
+  // down-right, while up-right must literally repeat down-left.
+  { name: 'up-left', left: 80, top: 80, flipX: true, flipY: false, hidden: [9, 10, 11] },
+  { name: 'up-right', left: 120, top: 80, flipX: false, flipY: false, hidden: [9, 10, 11] },
 ];
 
+const cuboidPatterns = new Map();
 for (const direction of cuboidDirections) {
   const { object, originalChildren } = createDirectionalShape('wire-cube', direction.left, direction.top);
   assert(
     object.flipX === direction.flipX && object.flipY === direction.flipY,
-    `wire-cube ${direction.name}: wrong drag orientation.`,
+    `wire-cube ${direction.name}: wrong drag orientation; expected flipX=${direction.flipX}, flipY=${direction.flipY}, got flipX=${object.flipX}, flipY=${object.flipY}.`,
   );
   assertOriginalHiddenEdges(object, originalChildren, direction.hidden, 'wire-cube', `${direction.name} preview`);
   assertHiddenStackedBehind(object, 'wire-cube', `${direction.name} preview`);
+  cuboidPatterns.set(direction.name, patternSignature(object, originalChildren));
 
   object.set({ selectable: true });
   assertOriginalHiddenEdges(object, originalChildren, direction.hidden, 'wire-cube', `${direction.name} finalized`);
   assertHiddenStackedBehind(object, 'wire-cube', `${direction.name} finalized`);
+  assert(
+    patternSignature(object, originalChildren) === cuboidPatterns.get(direction.name),
+    `wire-cube ${direction.name}: finalization must preserve the preview pattern.`,
+  );
 }
 
-// Keep the existing pyramid regression unchanged in this cuboid-only fix.
+assert(
+  cuboidPatterns.get('up-left') === cuboidPatterns.get('down-right'),
+  'wire-cube up-left must be one-for-one identical to the down-right pattern.',
+);
+assert(
+  cuboidPatterns.get('up-right') === cuboidPatterns.get('down-left'),
+  'wire-cube up-right must be one-for-one identical to the down-left pattern.',
+);
+
+// Pyramid behavior is intentionally outside this cuboid-only correction.
 for (const direction of [
   { name: 'up-left', left: 80, top: 80 },
   { name: 'up-right', left: 120, top: 80 },
