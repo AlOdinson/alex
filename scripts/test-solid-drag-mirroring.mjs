@@ -7,6 +7,21 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function dashedChildIndexes(object) {
+  const children = typeof object?.getObjects === 'function' ? object.getObjects() : [];
+  return children.flatMap((child, index) => (
+    Array.isArray(child?.strokeDashArray) && child.strokeDashArray.length ? [index] : []
+  ));
+}
+
+function assertDashedEdges(object, expectedIndexes, message) {
+  const actualIndexes = dashedChildIndexes(object);
+  assert(
+    JSON.stringify(actualIndexes) === JSON.stringify(expectedIndexes),
+    `${message} Expected dashed child indexes ${expectedIndexes.join(', ')}, got ${actualIndexes.join(', ')}.`,
+  );
+}
+
 const {
   createShape,
   HORIZONTALLY_MIRRORED_SOLID_IDS,
@@ -29,6 +44,24 @@ assert(wireCubeLabel === 'Кубоид', 'wire-cube must be displayed as «Ку�
 const excluded = new Set(['cylinder', 'cone', 'sphere']);
 const expectedMirrored = solids.filter((id) => !excluded.has(id));
 const rightwardFlipSolids = new Set(['wire-cube', 'pyramid']);
+const directionalDashExpectations = {
+  'wire-cube': {
+    down: [9, 10, 11],
+    up: [4, 7, 11],
+  },
+  pyramid: {
+    down: [4],
+    up: [1],
+  },
+  tetrahedron: {
+    down: [2, 3],
+    up: [1, 2],
+  },
+  octahedron: {
+    down: [8, 9, 10, 11],
+    up: [1, 4, 6, 7],
+  },
+};
 
 assert(
   JSON.stringify([...HORIZONTALLY_MIRRORED_SOLID_IDS].sort()) === JSON.stringify([...expectedMirrored].sort()),
@@ -42,6 +75,8 @@ assert(
 for (const shapeId of expectedMirrored) {
   const rightFlip = rightwardFlipSolids.has(shapeId);
   const leftFlip = !rightFlip;
+  const dashExpectation = directionalDashExpectations[shapeId];
+  assert(dashExpectation, `${shapeId} must define directional hidden-edge expectations.`);
 
   assert(solidDragFlipX(shapeId, 40) === rightFlip, `${shapeId} has the wrong orientation for a rightward drag.`);
   assert(solidDragFlipX(shapeId, -40) === leftFlip, `${shapeId} has the wrong orientation for a leftward drag.`);
@@ -57,12 +92,22 @@ for (const shapeId of expectedMirrored) {
       && crossingObject.flipX === leftFlip && crossingObject.flipY === false,
     `${shapeId} live preview has the wrong down-left orientation.`,
   );
+  assertDashedEdges(
+    crossingObject,
+    dashExpectation.down,
+    `${shapeId} downward preview must keep the existing rear edges hidden.`,
+  );
 
   crossingObject.set({ left: 120, top: 120, scaleX: 0.5, scaleY: 0.5 });
   assert(
     crossingObject.scaleX > 0 && crossingObject.scaleY > 0
       && crossingObject.flipX === rightFlip && crossingObject.flipY === false,
     `${shapeId} live preview has the wrong down-right orientation.`,
+  );
+  assertDashedEdges(
+    crossingObject,
+    dashExpectation.down,
+    `${shapeId} downward preview must keep the same rear edges after crossing horizontally.`,
   );
 
   crossingObject.set({ left: 80, top: 80, scaleX: 0.5, scaleY: 0.5 });
@@ -71,12 +116,22 @@ for (const shapeId of expectedMirrored) {
       && crossingObject.flipX === leftFlip && crossingObject.flipY === true,
     `${shapeId} live preview has the wrong up-left orientation.`,
   );
+  assertDashedEdges(
+    crossingObject,
+    dashExpectation.up,
+    `${shapeId} upward preview must move the dashed style to the new rear edges.`,
+  );
 
   crossingObject.set({ left: 120, top: 80, scaleX: 0.5, scaleY: 0.5 });
   assert(
     crossingObject.scaleX > 0 && crossingObject.scaleY > 0
       && crossingObject.flipX === rightFlip && crossingObject.flipY === true,
     `${shapeId} live preview has the wrong up-right orientation.`,
+  );
+  assertDashedEdges(
+    crossingObject,
+    dashExpectation.up,
+    `${shapeId} upward preview must keep the new rear edges hidden after crossing horizontally.`,
   );
 
   const finalizedUpRightObject = createShape(shapeId, { stroke: '#111827', strokeWidth: 3 });
@@ -87,10 +142,20 @@ for (const shapeId of expectedMirrored) {
     finalizedUpRightObject.flipX === rightFlip && finalizedUpRightObject.flipY === true,
     `${shapeId} must preserve its drag-selected quadrant when creation is finalized.`,
   );
+  assertDashedEdges(
+    finalizedUpRightObject,
+    dashExpectation.up,
+    `${shapeId} must preserve the upward hidden-edge set when creation is finalized.`,
+  );
   finalizedUpRightObject.set({ left: 80, top: 120, scaleX: 0.5, scaleY: 0.5 });
   assert(
     finalizedUpRightObject.flipX === rightFlip && finalizedUpRightObject.flipY === true,
     `${shapeId} must stop auto-mirroring after creation is finalized.`,
+  );
+  assertDashedEdges(
+    finalizedUpRightObject,
+    dashExpectation.up,
+    `${shapeId} must stop changing hidden edges after creation is finalized.`,
   );
 }
 
