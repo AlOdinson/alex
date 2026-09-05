@@ -6,7 +6,7 @@ on:
       - fix/cuboid-upward-hidden-edges
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -18,8 +18,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Apply cuboid fix
-        run: node scripts/apply-cuboid-upward-hidden-edges-fix.mjs
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Verify cuboid upward hidden-edge pairing
@@ -30,10 +28,3 @@ jobs:
         run: node scripts/test-solid-shape-geometry.mjs
       - name: Build
         run: npm run build
-      - name: Commit production change
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/lib/shapes.js
-          git commit -m "fix: switch cuboid hidden edges for upward drags"
-          git push origin HEAD:fix/cuboid-upward-hidden-edges
