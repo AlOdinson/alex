@@ -22,3 +22,9 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Verify STUN-only recovery regression
         run: node scripts/test-screen-share-stun-retry.mjs
+      - name: Verify board screen-share integration
+        run: node scripts/test-board-screen-share-integration.mjs
+      - name: Verify board screen-share object
+        run: node scripts/test-board-screen-share-object.mjs
+      - name: Build
+        run: npm run build
