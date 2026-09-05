@@ -20,7 +20,13 @@ jobs:
           node-version: 22
       - name: Install dependencies
         run: npm install --no-audit --no-fund
-      - name: Run regression suite
-        run: npm run test:sync
+      - name: Verify shape palette
+        run: node scripts/test-shape-palette.mjs
+      - name: Verify solid geometry
+        run: node scripts/test-solid-shape-geometry.mjs
+      - name: Verify four-direction creation
+        run: node scripts/test-solid-drag-mirroring.mjs
+      - name: Verify localization
+        run: node scripts/test-i18n.mjs
       - name: Build
         run: npm run build
