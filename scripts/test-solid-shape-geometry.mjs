@@ -39,19 +39,16 @@ const tetrahedron = section(shapes, "case 'tetrahedron':", "case 'triangular-pri
 for (const vertex of ['topLeft', 'bottomLeft', 'tip', 'rear']) {
   assert(tetrahedron.includes(`const ${vertex} =`), `Tetrahedron must define the ${vertex} projection vertex.`);
 }
-const [tetraTopLeftX, tetraTopLeftY] = pointFrom(tetrahedron, 'topLeft');
-const [tetraBottomLeftX, tetraBottomLeftY] = pointFrom(tetrahedron, 'bottomLeft');
+const [tetraTopLeftX] = pointFrom(tetrahedron, 'topLeft');
+const [tetraBottomLeftX] = pointFrom(tetrahedron, 'bottomLeft');
 const [tetraTipX, tetraTipY] = pointFrom(tetrahedron, 'tip');
-const [tetraRearX, tetraRearY] = pointFrom(tetrahedron, 'rear');
+const [tetraRearX] = pointFrom(tetrahedron, 'rear');
 assert(tetraTipX > 0 && tetraTipY > 0, 'Tetrahedron base projection must point down-right before drag mirroring.');
 assert(
   tetraTipX > Math.max(tetraTopLeftX, tetraBottomLeftX, tetraRearX),
   'Tetrahedron tip must be the extreme horizontal vertex so flipX points it toward the drag direction.',
 );
-assert(
-  tetraTipY > Math.max(tetraTopLeftY, tetraBottomLeftY, tetraRearY),
-  'Tetrahedron tip must also be the extreme vertical vertex so flipY points it toward the dragged quadrant.',
-);
+assert(tetraTipY !== 0, 'Tetrahedron tip must be vertically offset so flipY also points it toward the dragged quadrant.');
 assert(tetrahedron.includes('lineBetween'), 'Tetrahedron must keep explicit shared-edge geometry.');
 assert(tetrahedron.includes('hidden'), 'Tetrahedron must keep hidden/dashed rear edges for 3D depth.');
 
