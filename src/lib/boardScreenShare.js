@@ -32,7 +32,6 @@ export function applyScreenShareLayoutToFabricObject(object, layout) {
   const normalized = normalizeScreenShareBoardLayout(layout);
   if (!object || !normalized) return false;
   const sourceWidth = sourceDimension(object.width, SCREEN_SHARE_SOURCE_WIDTH);
-  const sourceHeight = sourceDimension(object.height, SCREEN_SHARE_SOURCE_HEIGHT);
   const uniformScale = normalized.width / sourceWidth;
   object.set?.({
     left: normalized.left + normalized.width / 2,
@@ -86,14 +85,20 @@ function createPlaceholderCanvas() {
   return canvas;
 }
 
+function createFrameCanvas() {
+  if (typeof document === 'undefined') return null;
+  const frameCanvas = document.createElement('canvas');
+  frameCanvas.width = SCREEN_SHARE_SOURCE_WIDTH;
+  frameCanvas.height = SCREEN_SHARE_SOURCE_HEIGHT;
+  return frameCanvas;
+}
+
 function createVideoElement() {
   if (typeof document === 'undefined') return null;
   const video = document.createElement('video');
   video.autoplay = true;
   video.muted = true;
   video.playsInline = true;
-  video.width = SCREEN_SHARE_SOURCE_WIDTH;
-  video.height = SCREEN_SHARE_SOURCE_HEIGHT;
   video.setAttribute?.('playsinline', '');
   return video;
 }
@@ -104,9 +109,12 @@ export function createBoardScreenShareMedia({
   canEdit = false,
 } = {}) {
   const placeholder = createPlaceholderCanvas();
-  if (!placeholder) throw new Error('board-screen-share-requires-dom');
+  const frameCanvas = createFrameCanvas();
+  if (!placeholder || !frameCanvas) throw new Error('board-screen-share-requires-dom');
+  const frameContext = frameCanvas.getContext?.('2d');
+  frameContext?.drawImage?.(placeholder, 0, 0, frameCanvas.width, frameCanvas.height);
   const video = createVideoElement();
-  const object = new FabricImage(placeholder, {
+  const object = new FabricImage(frameCanvas, {
     originX: 'center',
     originY: 'center',
     objectKind: 'screen-share',
@@ -126,6 +134,7 @@ export function createBoardScreenShareMedia({
     objectCaching: false,
     perPixelTargetFind: false,
   });
+  object.setElement?.(frameCanvas);
   setDiagonalResizeControls(object);
   applyScreenShareLayoutToFabricObject(
     object,
@@ -167,6 +176,46 @@ export function createBoardScreenShareMedia({
     object.canvas?.requestRenderAll?.();
   };
 
+  const fitFrameCanvasToVideo = () => {
+    if (!video || !frameCanvas || disposed) return false;
+    const sourceWidth = sourceDimension(video.videoWidth, 0);
+    const sourceHeight = sourceDimension(video.videoHeight, 0);
+    if (!sourceWidth || !sourceHeight) return false;
+    if (frameCanvas.width === sourceWidth && frameCanvas.height === sourceHeight) return true;
+
+    const previousLayout = screenShareLayoutFromFabricObject(object)
+      ?? normalizeScreenShareBoardLayout(layout)
+      ?? { left: -320, top: -180, width: 640, height: 360 };
+    frameCanvas.width = sourceWidth;
+    frameCanvas.height = sourceHeight;
+    object.set?.({
+      width: sourceWidth,
+      height: sourceHeight,
+      cropX: 0,
+      cropY: 0,
+    });
+    applyScreenShareLayoutToFabricObject(object, previousLayout);
+    rememberUniformScale();
+    return true;
+  };
+
+  const drawVideoFrame = () => {
+    if (disposed || !video || !currentStream || !frameContext) return false;
+    if (!fitFrameCanvasToVideo()) return false;
+    const sourceWidth = frameCanvas.width;
+    const sourceHeight = frameCanvas.height;
+    try {
+      frameContext.clearRect(0, 0, sourceWidth, sourceHeight);
+      frameContext.drawImage(video, 0, 0, sourceWidth, sourceHeight);
+    } catch {
+      return false;
+    }
+    object.dirty = true;
+    object.setCoords?.();
+    requestRender();
+    return true;
+  };
+
   const cancelFrameLoop = () => {
     if (video && frameCallbackId != null && typeof video.cancelVideoFrameCallback === 'function') {
       try { video.cancelVideoFrameCallback(frameCallbackId); } catch { /* Already cancelled. */ }
@@ -184,37 +233,39 @@ export function createBoardScreenShareMedia({
     if (typeof video.requestVideoFrameCallback === 'function') {
       const onFrame = () => {
         if (disposed || !currentStream) return;
-        requestRender();
+        drawVideoFrame();
         frameCallbackId = video.requestVideoFrameCallback(onFrame);
       };
       frameCallbackId = video.requestVideoFrameCallback(onFrame);
       return;
     }
-    frameTimer = setInterval(requestRender, FALLBACK_FRAME_INTERVAL_MS);
+    frameTimer = setInterval(drawVideoFrame, FALLBACK_FRAME_INTERVAL_MS);
   };
 
   const showVideo = () => {
     if (disposed || !video || !currentStream) return;
+    drawVideoFrame();
+    startFrameLoop();
+  };
+
+  const showPlaceholder = () => {
     const previousLayout = screenShareLayoutFromFabricObject(object)
       ?? normalizeScreenShareBoardLayout(layout)
       ?? { left: -320, top: -180, width: 640, height: 360 };
-    const sourceWidth = sourceDimension(video.videoWidth, SCREEN_SHARE_SOURCE_WIDTH);
-    const sourceHeight = sourceDimension(video.videoHeight, SCREEN_SHARE_SOURCE_HEIGHT);
-    video.width = sourceWidth;
-    video.height = sourceHeight;
-    object.setElement?.(video);
+    frameCanvas.width = SCREEN_SHARE_SOURCE_WIDTH;
+    frameCanvas.height = SCREEN_SHARE_SOURCE_HEIGHT;
+    const context = frameCanvas.getContext?.('2d');
+    context?.clearRect?.(0, 0, frameCanvas.width, frameCanvas.height);
+    context?.drawImage?.(placeholder, 0, 0, frameCanvas.width, frameCanvas.height);
     object.set?.({
-      width: sourceWidth,
-      height: sourceHeight,
+      width: SCREEN_SHARE_SOURCE_WIDTH,
+      height: SCREEN_SHARE_SOURCE_HEIGHT,
       cropX: 0,
       cropY: 0,
     });
     applyScreenShareLayoutToFabricObject(object, previousLayout);
     rememberUniformScale();
-    object.dirty = true;
-    object.setCoords?.();
     requestRender();
-    startFrameLoop();
   };
 
   const setStream = (stream) => {
@@ -227,14 +278,7 @@ export function createBoardScreenShareMedia({
     if (!currentStream) {
       try { video.pause?.(); } catch { /* Ignore media teardown races. */ }
       try { video.srcObject = null; } catch { /* Some test DOMs expose readonly srcObject. */ }
-      object.setElement?.(placeholder);
-      object.set?.({
-        width: SCREEN_SHARE_SOURCE_WIDTH,
-        height: SCREEN_SHARE_SOURCE_HEIGHT,
-        cropX: 0,
-        cropY: 0,
-      });
-      requestRender();
+      showPlaceholder();
       return;
     }
     try { video.srcObject = currentStream; } catch { /* Browser will surface playback failure below. */ }
@@ -290,6 +334,7 @@ export function createBoardScreenShareMedia({
   return {
     object,
     video,
+    frameCanvas,
     setStream,
     setLayout,
     getLayout,
