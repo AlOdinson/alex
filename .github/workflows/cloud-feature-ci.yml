@@ -21,8 +21,16 @@ jobs:
         with:
           node-version: 22
 
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+
+      - name: Type-check Cloud Edge Function
+        run: deno check supabase/functions/cloudflare-realtime/index.ts
 
       - name: Cloud protocol regression
         run: node scripts/test-screen-share-cloud-protocol.mjs
