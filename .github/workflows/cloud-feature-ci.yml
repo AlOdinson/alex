@@ -22,7 +22,36 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm ci --no-audit --no-fund
+        run: npm install --no-audit --no-fund
 
       - name: Cloud protocol regression
         run: node scripts/test-screen-share-cloud-protocol.mjs
+
+      - name: Cloud backend security regression
+        run: node scripts/test-cloudflare-realtime-edge-function.mjs
+
+      - name: Cloud WebRTC transport regression
+        run: node scripts/test-cloudflare-screen-share-transport.mjs
+
+      - name: Cloud screen-share lifecycle regression
+        run: node scripts/test-screen-share-cloud-switch.mjs
+
+      - name: Board Cloud control regression
+        run: node scripts/test-board-screen-share-cloud-control.mjs
+
+      - name: Existing screen-share suite
+        run: npm run test:screen-share
+
+      - name: Existing screen-share focused regressions
+        run: |
+          node scripts/test-screen-share-stun-retry.mjs
+          node scripts/test-screen-share-board-session.mjs
+          node scripts/test-screen-share-board-ui.mjs
+          node scripts/test-board-screen-share-integration.mjs
+          node scripts/test-board-screen-share-object.mjs
+          node scripts/test-board-screen-share-resize-fit.mjs
+          node scripts/test-screenshare-full-frame-release.mjs
+          node scripts/test-desktop-sharescreen-button.mjs
+
+      - name: Production build
+        run: npm run build
