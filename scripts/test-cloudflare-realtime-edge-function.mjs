@@ -39,4 +39,15 @@ assert.match(
 assert.match(source, /force:\s*true/, 'track close should use forced teardown without final renegotiation');
 assert.match(source, /tracks:\s*\[\{\s*mid\s*\}\]/, 'close-track must target only a validated mid');
 
+assert.match(
+  source,
+  /callCloudflare\(appId, appSecret, "\/sessions\/new", "POST"\)/,
+  'Cloudflare sessions/new must be called without a JSON request body',
+);
+assert.doesNotMatch(
+  source,
+  /callCloudflare\(appId, appSecret, "\/sessions\/new", "POST", \{\}\)/,
+  'Cloudflare sessions/new rejects an empty JSON object with decoding_error',
+);
+
 console.log('Cloudflare Edge Function source tests passed');
