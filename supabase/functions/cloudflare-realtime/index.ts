@@ -30,6 +30,13 @@ type SessionLeasePayload = {
   exp: number;
 };
 
+type BoardAccessRpcError = { message?: string } | null;
+type BoardAccessRpcResult = { data: unknown; error: BoardAccessRpcError };
+type BoardAccessRpcClient = {
+  rpc(name: string, args: Record<string, unknown>): Promise<BoardAccessRpcResult>;
+};
+type BoardAccessRecord = { permission?: unknown };
+
 const BOARD_ID_PATTERN = /^[A-Za-z0-9_-]{6,128}$/;
 const BOARD_KEY_PATTERN = /^[A-Za-z0-9_-]{20,128}$/;
 const SCREEN_SESSION_PATTERN = /^[A-Za-z0-9_-]{6,128}$/;
@@ -237,15 +244,16 @@ export default {
       if (!OPERATIONS.has(operation)) return jsonError("Invalid operation", 400);
 
       const keyHash = await sha256(boardKey);
-      let accessData;
-      let accessError;
-      ({ data: accessData, error: accessError } = await ctx.supabase.rpc(
+      const boardAccessClient = ctx.supabase as unknown as BoardAccessRpcClient;
+      let accessData: unknown = null;
+      let accessError: BoardAccessRpcError = null;
+      ({ data: accessData, error: accessError } = await boardAccessClient.rpc(
         "get_board_access_v4",
         { p_id: boardId, p_key_hash: keyHash },
       ));
 
       if (accessError && /function .* does not exist/i.test(accessError.message ?? "")) {
-        ({ data: accessData, error: accessError } = await ctx.supabase.rpc(
+        ({ data: accessData, error: accessError } = await boardAccessClient.rpc(
           "get_board_access",
           { p_id: boardId, p_key_hash: keyHash },
         ));
@@ -255,7 +263,10 @@ export default {
         return jsonError("Could not verify board access", 500);
       }
 
-      const access = Array.isArray(accessData) ? accessData[0] : accessData;
+      const accessCandidate = Array.isArray(accessData) ? accessData[0] : accessData;
+      const access = accessCandidate && typeof accessCandidate === "object"
+        ? accessCandidate as BoardAccessRecord
+        : null;
       if (!access) return jsonError("Board access denied", 403);
       const permission = String(access.permission ?? "view");
       if (permission === "closed") return jsonError("Board access is closed", 403);
