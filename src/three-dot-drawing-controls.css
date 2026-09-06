@@ -102,16 +102,17 @@
   content: none !important;
 }
 
-/* Existing color input = center dot. Clicking it still opens the board's current
-   color palette; no replacement palette is introduced. */
+/* Existing color input = center dot. It is intentionally larger than the two side
+   dots and remains a fixed 21px on every device. Clicking it still opens the board's
+   current color palette; no replacement palette is introduced. */
 .floating-drawing-controls > .color-control {
   order: 2;
   position: relative !important;
-  flex: 0 0 var(--three-dot-size) !important;
-  width: var(--three-dot-size) !important;
-  min-width: var(--three-dot-size) !important;
-  height: var(--three-dot-size) !important;
-  min-height: var(--three-dot-size) !important;
+  flex: 0 0 21px !important;
+  width: 21px !important;
+  min-width: 21px !important;
+  height: 21px !important;
+  min-height: 21px !important;
   margin: 0 !important;
   padding: 0 !important;
   overflow: hidden !important;
@@ -124,8 +125,8 @@
 .floating-drawing-controls > .color-control input[type="color"] {
   position: absolute !important;
   inset: -5px !important;
-  width: 24px !important;
-  height: 24px !important;
+  width: 31px !important;
+  height: 31px !important;
   min-width: 0 !important;
   margin: 0 !important;
   padding: 0 !important;
