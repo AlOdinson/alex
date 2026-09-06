@@ -1,0 +1,4 @@
+/* Alex Board: object eraser is the only supported user-facing eraser mode. */
+.eraser-controls {
+  display: none !important;
+}
