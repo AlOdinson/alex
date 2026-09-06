@@ -9,7 +9,7 @@ const scaleCssUrl = new URL('../src/ipad-system-color-palette-scale.css', import
 
 assert.ok(fs.existsSync(paletteUrl), 'iPad system color palette behavior module must exist');
 assert.ok(fs.existsSync(cssUrl), 'iPad system color palette stylesheet must exist');
-assert.ok(fs.existsSync(scaleCssUrl), 'Palette 65% scale override stylesheet must exist');
+assert.ok(fs.existsSync(scaleCssUrl), 'Palette scale override stylesheet must exist');
 assert.match(main, /import ['\"]\.\/ipad-system-color-palette\.css['\"];/, 'System palette CSS must be loaded');
 assert.match(main, /import ['\"]\.\/ipad-system-color-palette-scale\.css['\"];/, 'Palette scale override must be loaded after the base palette CSS');
 assert.match(main, /import ['\"]\.\/ipad-system-color-palette\.js['\"];/, 'System palette behavior must be loaded');
@@ -31,7 +31,7 @@ assert.match(palette, /getBoundingClientRect/, 'Palette must position from the c
 assert.match(palette, /openAbove/, 'Palette must prefer opening above the center dot');
 assert.match(palette, /preventDefault\(\)/, 'The native browser color picker must be suppressed');
 assert.match(palette, /dispatchEvent/, 'Palette selections must flow through the existing controlled color input');
-assert.match(palette, /eyedropper-button/, 'Palette eyedropper must reuse the board eyedropper action');
+assert.doesNotMatch(palette, /ipad-system-eyedropper|eyedropper-button/, 'Color palette must not render or proxy an eyedropper control');
 assert.match(palette, /document\.body\.append/, 'Palette must render at document level above the board');
 
 const css = fs.readFileSync(cssUrl, 'utf8');
@@ -45,9 +45,9 @@ assert.match(css, /\.ipad-system-spectrum/, 'Palette stylesheet must define the 
 assert.match(css, /@media \(max-width:\s*760px\)/, 'Base palette must keep the existing mobile/tablet layout');
 
 const scaleCss = fs.readFileSync(scaleCssUrl, 'utf8');
-assert.match(scaleCss, /\.ipad-system-color-palette\.open-above\s*\{[\s\S]*?transform:\s*translateY\(-100%\) scale\(0\.65\) !important;/, 'Palette opening above must render at 65% of its previous visual size');
+assert.match(scaleCss, /\.ipad-system-color-palette\.open-above\s*\{[\s\S]*?transform:\s*translateY\(-100%\) scale\(0\.73125\) !important;/, 'Palette opening above must be 12.5% larger than the previous 65% scale');
 assert.match(scaleCss, /\.ipad-system-color-palette\.open-above\s*\{[\s\S]*?transform-origin:\s*bottom center;/, 'Scaled palette opening above must stay anchored to the center color dot');
-assert.match(scaleCss, /\.ipad-system-color-palette\.open-below\s*\{[\s\S]*?transform:\s*scale\(0\.65\) !important;/, 'Palette opening below must render at 65% of its previous visual size');
+assert.match(scaleCss, /\.ipad-system-color-palette\.open-below\s*\{[\s\S]*?transform:\s*scale\(0\.73125\) !important;/, 'Palette opening below must be 12.5% larger than the previous 65% scale');
 assert.match(scaleCss, /\.ipad-system-color-palette\.open-below\s*\{[\s\S]*?transform-origin:\s*top center;/, 'Scaled palette opening below must stay anchored to the center color dot');
 
 console.log('iPad system color palette regression passed.');
