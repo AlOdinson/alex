@@ -5,37 +5,12 @@ on:
     branches:
       - feature/automatic-board-capacity-cleanup
 
-permissions:
-  contents: write
-
 jobs:
   feature:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: feature/automatic-board-capacity-cleanup
-      - name: Apply one-time v8 duplication client switch
-        shell: bash
-        run: |
-          if grep -q "supabase.rpc('duplicate_board_v7'" src/lib/boardRepository.js; then
-            python - <<'PY'
-          from pathlib import Path
-          path = Path('src/lib/boardRepository.js')
-          text = path.read_text()
-          old = "supabase.rpc('duplicate_board_v7', duplicateArgs)"
-          new = "supabase.rpc('duplicate_board_v8', duplicateArgs)"
-          if text.count(old) != 1:
-              raise SystemExit(f'expected exactly one legacy duplicate RPC call, found {text.count(old)}')
-          path.write_text(text.replace(old, new))
-          PY
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add src/lib/boardRepository.js
-            git commit -m "feat: switch board duplication to v8"
-            git push origin HEAD:feature/automatic-board-capacity-cleanup
-          fi
       - uses: actions/setup-node@v4
         with:
           node-version: 22
