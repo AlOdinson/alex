@@ -11,7 +11,8 @@ assert.equal(
 const source = fs.readFileSync(functionPath, 'utf8');
 assert.match(source, /CLOUDFLARE_REALTIME_APP_ID/);
 assert.match(source, /CLOUDFLARE_REALTIME_APP_SECRET/);
-assert.match(source, /get_board_access_v4/);
+assert.match(source, /get_board_access_v8/);
+assert.doesNotMatch(source, /get_board_access_v4/);
 assert.match(source, /https:\/\/rtc\.live\.cloudflare\.com\/v1/);
 assert.match(source, /Authorization/);
 assert.match(source, /Bearer/);
