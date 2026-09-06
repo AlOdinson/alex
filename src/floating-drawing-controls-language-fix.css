@@ -1,0 +1,200 @@
+/* Language-independent overrides for the floating Pencil / Line / Shapes controls.
+   The board translator may change visible text and title attributes, so these selectors
+   intentionally depend only on the stable DOM order: eyedropper -> opacity -> width. */
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider {
+  --opacity-stop: 100%;
+  flex: 1.02 1 0;
+  grid-template-columns: auto minmax(90px, 1fr);
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"] {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 18px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  border-radius: 999px !important;
+  cursor: pointer;
+  background:
+    linear-gradient(90deg,
+      rgba(22, 132, 255, 0.20) 0%,
+      #1684ff var(--opacity-stop),
+      transparent var(--opacity-stop),
+      transparent 100%),
+    repeating-conic-gradient(#d8e0ea 0 25%, #f8fafc 0 50%) 0 50% / 9px 9px !important;
+  box-shadow: inset 0 0 0 1px rgba(203, 213, 225, 0.72) !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 10px !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]::-webkit-slider-thumb {
+  width: 15px !important;
+  height: 15px !important;
+  margin-top: -2.5px !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  border: 2px solid #ffffff !important;
+  border-radius: 50% !important;
+  background: #1684ff !important;
+  box-shadow: 0 0 0 2px #1684ff, 0 2px 5px rgba(15, 23, 42, 0.18) !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]::-moz-range-track {
+  height: 10px !important;
+  border: 0 !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]::-moz-range-thumb {
+  width: 13px !important;
+  height: 13px !important;
+  border: 2px solid #ffffff !important;
+  border-radius: 50% !important;
+  background: #1684ff !important;
+  box-shadow: 0 0 0 2px #1684ff !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider strong {
+  position: absolute !important;
+  z-index: 2;
+  top: -17px !important;
+  left: var(--opacity-stop) !important;
+  right: auto !important;
+  transform: translateX(-50%);
+  min-width: 34px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  background: #172033;
+  color: #ffffff !important;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18);
+  pointer-events: none;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider strong::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 8px;
+  height: 8px;
+  background: #172033;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider {
+  flex: 1 1 0;
+  grid-template-columns: auto minmax(145px, 1fr);
+  padding-left: 8px !important;
+  border-left: 1px solid #e2e8f0;
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"] {
+  width: 100% !important;
+  min-width: 0 !important;
+  height: 24px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  cursor: pointer;
+  border-radius: 0 !important;
+  background:
+    radial-gradient(circle at 0% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 9.09% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 18.18% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 27.27% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 36.36% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 45.45% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 54.55% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 63.64% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 72.73% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 81.82% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 90.91% 50%, #8a96a8 0 4px, transparent 4.5px),
+    radial-gradient(circle at 100% 50%, #8a96a8 0 4px, transparent 4.5px),
+    linear-gradient(90deg, #cbd5e1, #cbd5e1) center / 100% 1px no-repeat !important;
+  box-shadow: none !important;
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]:focus,
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]:focus-visible {
+  outline: 0 !important;
+  box-shadow: none !important;
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 24px !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]::-webkit-slider-thumb {
+  width: 12px !important;
+  height: 12px !important;
+  margin-top: 6px !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  border: 2px solid #ffffff !important;
+  border-radius: 50% !important;
+  background: #1684ff !important;
+  box-shadow: 0 0 0 2px rgba(22, 132, 255, 0.30), 0 1px 4px rgba(15, 23, 42, 0.16) !important;
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]::-moz-range-track {
+  height: 24px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]::-moz-range-thumb {
+  width: 8px !important;
+  height: 8px !important;
+  border: 2px solid #ffffff !important;
+  border-radius: 50% !important;
+  background: #1684ff !important;
+  box-shadow: 0 0 0 2px rgba(22, 132, 255, 0.30) !important;
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider strong {
+  display: none !important;
+}
+
+@media (max-width: 760px) {
+  .floating-drawing-controls > .eyedropper-button + .compact-slider {
+    grid-template-columns: auto minmax(76px, 1fr);
+  }
+
+  .floating-drawing-controls > .compact-slider + .compact-slider {
+    grid-template-columns: auto minmax(122px, 1fr);
+    padding-left: 6px !important;
+  }
+}
+
+@media (max-width: 460px) {
+  .floating-drawing-controls > .eyedropper-button + .compact-slider {
+    grid-template-columns: minmax(74px, 1fr);
+  }
+
+  .floating-drawing-controls > .compact-slider + .compact-slider {
+    grid-template-columns: minmax(116px, 1fr);
+  }
+}
