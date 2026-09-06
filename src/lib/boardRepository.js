@@ -941,7 +941,7 @@ export async function duplicateBoard(boardId, ownerKey, title = null) {
       p_new_share_key_hash: newShareHash,
       p_new_realtime_key: newRealtimeKey,
     };
-    const { data, error } = await supabase.rpc('duplicate_board_v7', duplicateArgs);
+    const { data, error } = await supabase.rpc('duplicate_board_v8', duplicateArgs);
     if (error) throw error;
     if (!data) throw new Error('Не удалось скопировать доску');
 
