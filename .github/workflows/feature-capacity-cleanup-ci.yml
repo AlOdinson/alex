@@ -15,6 +15,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --no-audit --no-fund
+      - run: node --version && npm --version
+      - run: npm install --no-audit --no-fund
       - run: npm run test:sync
       - run: npm run build
