@@ -15,6 +15,7 @@ import {
 import { isSupabaseConfigured, supabase } from '../lib/supabase.js';
 
 export const CLOUD_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-cloud-state';
+export const CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-cloud-state-request';
 export const CLOUD_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-cloud-toggle';
 
 const CLOUD_SIGNAL_EVENT = 'screen-share-cloud';
@@ -99,6 +100,34 @@ export function useCloudScreenShareFallback({
     if (!mountedRef.current) return;
     setCloudState((current) => ({ ...current, ...patch }));
   }, []);
+
+  const publishCloudState = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const visible = Boolean(
+      sessionId
+      && sourceMode === 'screen'
+      && role === 'host'
+      && hostId === clientId,
+    );
+    window.dispatchEvent(new CustomEvent(CLOUD_SCREEN_SHARE_STATE_EVENT, {
+      detail: {
+        sessionId,
+        visible,
+        transport: cloudState.transport,
+        cloudPhase: cloudState.cloudPhase,
+        cloudError: cloudState.cloudError,
+      },
+    }));
+  }, [
+    clientId,
+    cloudState.cloudError,
+    cloudState.cloudPhase,
+    cloudState.transport,
+    hostId,
+    role,
+    sessionId,
+    sourceMode,
+  ]);
 
   const clearCloudPublisher = useCallback(() => {
     const publisher = publisherRef.current;
@@ -271,8 +300,8 @@ export function useCloudScreenShareFallback({
     const current = sessionContextRef.current;
     const currentSessionId = String(current?.sessionId ?? '');
     if (!currentSessionId || signal.sessionId !== currentSessionId) return;
-    const sessionId = currentSessionId;
-    if (signal.sessionId !== sessionId) return;
+    const activeCloudSessionId = currentSessionId;
+    if (signal.sessionId !== activeCloudSessionId) return;
     if (current.sourceMode !== 'screen') return;
 
     if (signal.type === 'cloud-track') {
@@ -281,7 +310,7 @@ export function useCloudScreenShareFallback({
         || !screenSharePermissionCanHost(signal.permission)) return;
       const route = normalizeCloudScreenShareRoute(signal, {
         boardId: current.boardId,
-        screenShareSessionId: sessionId,
+        screenShareSessionId: activeCloudSessionId,
       });
       if (!route) return;
 
@@ -289,7 +318,7 @@ export function useCloudScreenShareFallback({
       if (existing?.publisherSessionId === route.publisherSessionId
         && existing?.trackName === route.trackName) {
         await sendCloudSignal('cloud-viewer-ready', {
-          sessionId,
+          sessionId: activeCloudSessionId,
           targetId: current.hostId,
         }).catch(() => undefined);
         return;
@@ -301,10 +330,10 @@ export function useCloudScreenShareFallback({
         const subscriber = await createCloudflareSubscriber({
           publisherSessionId: route.publisherSessionId,
           trackName: route.trackName,
-          api: cloudApi(sessionId),
+          api: cloudApi(activeCloudSessionId),
         });
         const latest = sessionContextRef.current;
-        if (latest?.sessionId !== sessionId
+        if (latest?.sessionId !== activeCloudSessionId
           || latest?.role !== 'viewer'
           || latest.hostId !== current.hostId) {
           await subscriber.close();
@@ -314,7 +343,7 @@ export function useCloudScreenShareFallback({
         if (mountedRef.current) setCloudStream(subscriber.stream);
         patchCloudState({ transport: 'cloud', cloudPhase: 'on', cloudError: '' });
         await sendCloudSignal('cloud-viewer-ready', {
-          sessionId,
+          sessionId: activeCloudSessionId,
           targetId: current.hostId,
         }).catch(() => undefined);
       } catch (error) {
@@ -405,24 +434,19 @@ export function useCloudScreenShareFallback({
   }, [announceCloudTrack, cloudState.cloudPhase, cloudState.transport, role]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return undefined;
-    const visible = Boolean(
-      sessionId
-      && sourceMode === 'screen'
-      && role === 'host'
-      && hostId === clientId,
-    );
-    window.dispatchEvent(new CustomEvent(CLOUD_SCREEN_SHARE_STATE_EVENT, {
-      detail: {
-        sessionId,
-        visible,
-        transport: cloudState.transport,
-        cloudPhase: cloudState.cloudPhase,
-        cloudError: cloudState.cloudError,
-      },
-    }));
+    publishCloudState();
     return undefined;
-  }, [clientId, cloudState, hostId, role, sessionId, sourceMode]);
+  }, [publishCloudState]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleStateRequest = (event) => {
+      if (String(event?.detail?.sessionId ?? '') !== String(sessionId ?? '')) return;
+      publishCloudState();
+    };
+    window.addEventListener(CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT, handleStateRequest);
+    return () => window.removeEventListener(CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT, handleStateRequest);
+  }, [publishCloudState, sessionId]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
