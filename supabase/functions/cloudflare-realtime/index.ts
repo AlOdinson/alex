@@ -180,18 +180,19 @@ async function callCloudflare(
   appSecret: string,
   path: string,
   method: "POST" | "PUT",
-  body: Record<string, unknown>,
+  body?: Record<string, unknown>,
 ) {
+  const hasBody = body !== undefined;
   const response = await fetch(
     `${CLOUDFLARE_API_BASE}/apps/${encodeURIComponent(appId)}${path}`,
     {
       method,
       headers: {
         Authorization: `Bearer ${appSecret}`,
-        "Content-Type": "application/json",
         Accept: "application/json",
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
       },
-      body: JSON.stringify(body),
+      body: hasBody ? JSON.stringify(body) : undefined,
     },
   );
 
@@ -284,7 +285,7 @@ export default {
       try {
         if (operation === "create-publisher-session") {
           if (!canPublish) return jsonError("Publisher permission required", 403);
-          const data = await callCloudflare(appId, appSecret, "/sessions/new", "POST", {});
+          const data = await callCloudflare(appId, appSecret, "/sessions/new", "POST");
           const sessionId = text(data.sessionId);
           if (!CLOUDFLARE_SESSION_PATTERN.test(sessionId)) {
             throw new Error("cloudflare-invalid-session");
@@ -302,7 +303,7 @@ export default {
         }
 
         if (operation === "create-viewer-session") {
-          const data = await callCloudflare(appId, appSecret, "/sessions/new", "POST", {});
+          const data = await callCloudflare(appId, appSecret, "/sessions/new", "POST");
           const sessionId = text(data.sessionId);
           if (!CLOUDFLARE_SESSION_PATTERN.test(sessionId)) {
             throw new Error("cloudflare-invalid-session");
