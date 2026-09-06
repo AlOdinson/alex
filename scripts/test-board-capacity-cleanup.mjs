@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 const repository = await readFile(new URL('../src/lib/boardRepository.js', import.meta.url), 'utf8');
 const duplicateSql = await readFile(new URL('../supabase/duplicate_board_v8.sql', import.meta.url), 'utf8').catch(() => '');
 const cleanupSql = await readFile(new URL('../supabase/board_capacity_cleanup_v1.sql', import.meta.url), 'utf8').catch(() => '');
+const edgeFunction = await readFile(new URL('../supabase/functions/board-capacity-cleanup/index.ts', import.meta.url), 'utf8').catch(() => '');
+const cronSql = await readFile(new URL('../supabase/board_capacity_cleanup_cron_v1.sql', import.meta.url), 'utf8').catch(() => '');
 
 assert.match(repository, /supabase\.rpc\('duplicate_board_v8'/);
 assert.doesNotMatch(repository, /supabase\.rpc\('duplicate_board_v7'/);
@@ -27,5 +29,21 @@ assert.doesNotMatch(cleanupSql, /vacuum\s+full/i);
 assert.doesNotMatch(cleanupSql, /truncate[\s\S]{0,80}cascade/i);
 assert.doesNotMatch(cleanupSql, /delete\s+from\s+auth\./i);
 assert.doesNotMatch(cleanupSql, /delete\s+from\s+storage\.objects/i);
+
+assert.match(edgeFunction, /x-board-cleanup-token/);
+assert.match(edgeFunction, /SUPABASE_SERVICE_ROLE_KEY/);
+assert.match(edgeFunction, /run_board_capacity_cleanup_v1/);
+assert.match(edgeFunction, /finish_board_capacity_cleanup_v1/);
+assert.match(edgeFunction, /storage\.from\(['"]board-assets['"]\)\.list/);
+assert.match(edgeFunction, /\.remove\(/);
+assert.doesNotMatch(edgeFunction, /storage\.objects/);
+
+assert.match(cronSql, /0 20 \* \* \*/);
+assert.match(cronSql, /20 20 \* \* \*/);
+assert.match(cronSql, /vault\.decrypted_secrets/);
+assert.match(cronSql, /net\.http_post/);
+assert.match(cronSql, /x-board-cleanup-token/);
+assert.match(cronSql, /VACUUM \(ANALYZE\)/i);
+assert.doesNotMatch(cronSql, /VACUUM FULL/i);
 
 console.log('Board capacity cleanup static safety tests passed.');
