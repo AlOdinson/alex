@@ -1,0 +1,28 @@
+name: Cloud Screen Share Feature CI
+
+on:
+  push:
+    branches:
+      - feature/cloudflare-screen-share-fallback
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Cloud protocol regression
+        run: node scripts/test-screen-share-cloud-protocol.mjs
