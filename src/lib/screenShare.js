@@ -36,6 +36,9 @@ const SIGNAL_TYPES = new Set([
   'offer',
   'answer',
   'ice',
+  'cloud-track',
+  'cloud-disable',
+  'cloud-viewer-ready',
   'remote-browser-available',
   'remote-browser-start',
   'remote-browser-stop',
@@ -47,6 +50,9 @@ const DEFAULT_SCREEN_SHARE_STUN_URLS = Object.freeze([
   'stun:stun1.l.google.com:19302',
   'stun:stun2.l.google.com:19302',
 ]);
+const CLOUD_ROUTE_ID_PATTERN = /^[A-Za-z0-9_-]{6,256}$/;
+const CLOUD_SCOPE_ID_PATTERN = /^[A-Za-z0-9_-]{6,128}$/;
+const CLOUD_TRACK_PATTERN = /^screen:([A-Za-z0-9_-]{6,128}):([A-Za-z0-9_-]{6,128})$/;
 
 export function screenShareCapability(runtimeNavigator = globalThis.navigator) {
   const mediaDevices = runtimeNavigator?.mediaDevices;
@@ -70,6 +76,32 @@ export function screenShareCapability(runtimeNavigator = globalThis.navigator) {
 
 export function screenSharePermissionCanHost(permission) {
   return permission === 'owner' || permission === 'edit';
+}
+
+export function screenShareCloudTrackName(boardId, screenShareSessionId) {
+  const board = String(boardId ?? '');
+  const session = String(screenShareSessionId ?? '');
+  if (!CLOUD_SCOPE_ID_PATTERN.test(board) || !CLOUD_SCOPE_ID_PATTERN.test(session)) return '';
+  return `screen:${board}:${session}`;
+}
+
+export function normalizeCloudScreenShareRoute(route, expectedScope = null) {
+  if (!route || typeof route !== 'object') return null;
+  const publisherSessionId = String(route.publisherSessionId ?? '');
+  const trackName = String(route.trackName ?? '');
+  if (!CLOUD_ROUTE_ID_PATTERN.test(publisherSessionId)) return null;
+  const trackMatch = CLOUD_TRACK_PATTERN.exec(trackName);
+  if (!trackMatch) return null;
+
+  if (expectedScope && typeof expectedScope === 'object') {
+    const expectedTrack = screenShareCloudTrackName(
+      expectedScope.boardId,
+      expectedScope.screenShareSessionId,
+    );
+    if (!expectedTrack || trackName !== expectedTrack) return null;
+  }
+
+  return { publisherSessionId, trackName };
 }
 
 export function normalizeScreenShareBoardLayout(layout) {
@@ -142,6 +174,20 @@ export function normalizeScreenShareSignal(payload) {
   const clientId = String(payload.clientId ?? '');
   const sessionId = String(payload.sessionId ?? '');
   if (!clientId || !sessionId) return null;
+
+  if (payload.type === 'cloud-track') {
+    const route = normalizeCloudScreenShareRoute(payload);
+    if (!route) return null;
+    return {
+      ...payload,
+      ...route,
+      clientId,
+      sessionId,
+      targetId: payload.targetId ? String(payload.targetId) : '',
+      permission: String(payload.permission ?? 'view'),
+      timestamp: Number(payload.timestamp ?? Date.now()),
+    };
+  }
 
   return {
     ...payload,
