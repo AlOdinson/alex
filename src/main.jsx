@@ -7,6 +7,7 @@ import './floating-drawing-controls.css';
 import './floating-drawing-controls-language-fix.css';
 import './three-dot-drawing-controls.css';
 import './ipad-system-color-palette.css';
+import './ipad-system-color-palette-scale.css';
 import './floating-drawing-controls-enhancer.js';
 import './ipad-system-color-palette.js';
 
