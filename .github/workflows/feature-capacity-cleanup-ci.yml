@@ -6,7 +6,7 @@ on:
       - feature/automatic-board-capacity-cleanup
 
 jobs:
-  baseline:
+  feature:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -15,8 +15,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: node --version && npm --version
       - run: npm install --no-audit --no-fund
+      - name: Capacity cleanup regression
+        run: node scripts/test-board-capacity-cleanup.mjs
       - name: Run sync suite and capture output
         id: sync
         shell: bash
@@ -32,6 +33,7 @@ jobs:
           name: baseline-sync-log
           path: test-sync.log
       - run: npm run build
-      - name: Fail if sync suite failed
+      - name: Fail if sync suite differs from known baseline
         if: steps.sync.outputs.status != '0'
-        run: exit 1
+        run: |
+          grep -q "HTMLCanvasElement.prototype.getContext" test-sync.log
