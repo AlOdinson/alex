@@ -31,7 +31,11 @@ assert.match(cloudSource, /cloud-viewer-ready/, 'viewer readiness must be signal
 assert.match(cloudSource, /transport:\s*'p2p'/, 'Cloud fallback starts in P2P mode');
 assert.match(cloudSource, /cloudPhase:\s*'off'/, 'Cloud fallback starts off');
 assert.match(cloudSource, /publisher\.sender/, 'adaptive profile must be applied to the Cloud publisher sender');
-assert.match(cloudSource, /signal\.sessionId !== sessionId/, 'stale Cloud signals must be ignored');
+assert.match(
+  cloudSource,
+  /if \(!currentSessionId \|\| signal\.sessionId !== currentSessionId\) return;/,
+  'stale Cloud signals must be rejected against the currently active session',
+);
 assert.match(cloudSource, /clearCloudPublisher/, 'host teardown must clean Cloud publisher resources');
 assert.match(cloudSource, /clearCloudSubscriber/, 'viewer teardown must clean Cloud subscriber resources');
 assert.doesNotMatch(
