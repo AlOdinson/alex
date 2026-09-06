@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 const repository = await readFile(new URL('../src/lib/boardRepository.js', import.meta.url), 'utf8');
 const duplicateSql = await readFile(new URL('../supabase/duplicate_board_v8.sql', import.meta.url), 'utf8').catch(() => '');
 const cleanupSql = await readFile(new URL('../supabase/board_capacity_cleanup_v1.sql', import.meta.url), 'utf8').catch(() => '');
+const cleanupHotfixSql = await readFile(new URL('../supabase/board_capacity_cleanup_v1_safe_delete_hotfix.sql', import.meta.url), 'utf8').catch(() => '');
 const edgeFunction = await readFile(new URL('../supabase/functions/board-capacity-cleanup/index.ts', import.meta.url), 'utf8').catch(() => '');
 const cronSql = await readFile(new URL('../supabase/board_capacity_cleanup_cron_v1.sql', import.meta.url), 'utf8').catch(() => '');
 
@@ -29,6 +30,11 @@ assert.doesNotMatch(cleanupSql, /vacuum\s+full/i);
 assert.doesNotMatch(cleanupSql, /truncate[\s\S]{0,80}cascade/i);
 assert.doesNotMatch(cleanupSql, /delete\s+from\s+auth\./i);
 assert.doesNotMatch(cleanupSql, /delete\s+from\s+storage\.objects/i);
+
+for (const table of ['board_actions','board_objects','board_snapshots','board_tombstones','board_import_chunks']) {
+  assert.match(cleanupHotfixSql, new RegExp(`delete from public\\.${table} where true`));
+}
+assert.match(cleanupHotfixSql, /pg_get_functiondef/);
 
 assert.match(edgeFunction, /x-board-cleanup-token/);
 assert.match(edgeFunction, /SUPABASE_SERVICE_ROLE_KEY/);
