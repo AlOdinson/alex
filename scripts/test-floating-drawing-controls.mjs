@@ -12,7 +12,8 @@ assert.ok(fs.existsSync(cssUrl), 'Three-dot drawing controls stylesheet must exi
 assert.match(toolbar, /import \{ createPortal \} from ['\"]react-dom['\"];/, 'Toolbar must keep rendering floating controls through a React portal');
 assert.match(toolbar, /\['pencil', 'line', 'shape'\]\.includes\(tool\)/, 'Pencil, Line and Shapes must trigger floating drawing controls');
 assert.match(toolbar, /floating-drawing-controls/, 'Existing floating control DOM must remain available');
-assert.match(toolbar, /<input\s+[\s\S]*?type=['\"]color['\"][\s\S]*?value=\{color\}/, 'Center dot must reuse the existing color input and therefore the existing palette');
+assert.match(toolbar, /<input\s+[\s\S]*?type=['\"]color['\"][\s\S]*?value=\{color\}/, 'Center dot must keep the existing controlled color input');
+assert.match(main, /ipad-color-palette/, 'The center color input must be enhanced by the rich palette module');
 assert.match(presets, /STROKE_WIDTH_STEPS = \[\s*1,\s*2,\s*3,\s*4,\s*5,\s*8,\s*10,\s*15,\s*20,\s*25,\s*50,\s*100,?\s*\]/, 'Drawing widths must keep the agreed 12 discrete values');
 
 assert.match(enhancer, /\.board-tool-dock \.dock-tool-button\.active/, 'Three-dot controls must anchor to the active Pencil, Line or Shapes dock button');
@@ -25,7 +26,7 @@ assert.doesNotMatch(enhancer, /title\^=/, 'Enhancer must not depend on translate
 const css = fs.readFileSync(cssUrl, 'utf8');
 assert.match(css, /\.floating-drawing-controls\s*\{[\s\S]*?background:\s*transparent\s*!important;/, 'Old white floating panel must be removed');
 assert.match(css, /\.floating-drawing-controls > \.eyedropper-button\s*\{[\s\S]*?display:\s*none\s*!important;/, 'Approved design must show only three dots');
-assert.match(css, /\.floating-drawing-controls > \.color-control\s*\{[\s\S]*?order:\s*2;/, 'Existing color input must become the center dot');
+assert.match(css, /\.floating-drawing-controls > \.color-control\s*\{[\s\S]*?order:\s*2;/, 'Center color control must remain the middle dot');
 assert.match(css, /\.floating-drawing-controls > \.eyedropper-button \+ \.compact-slider\s*\{[\s\S]*?order:\s*1;/, 'Opacity must be the left dot');
 assert.match(css, /\.floating-drawing-controls > \.compact-slider \+ \.compact-slider\s*\{[\s\S]*?order:\s*3;/, 'Width must be the right dot');
 assert.match(css, /\.floating-drawing-controls\.opacity-open[\s\S]*?right:\s*0/, 'Opacity scale must expand left from the left dot');
