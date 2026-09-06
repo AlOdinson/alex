@@ -14,6 +14,8 @@ assert.match(toolbar, /import \{ createPortal \} from ['\"]react-dom['\"];/, 'To
 assert.match(toolbar, /createPortal\([\s\S]*?floating-drawing-controls[\s\S]*?document\.body/, 'Floating drawing controls must be portaled to document.body');
 assert.match(toolbar, /\['pencil', 'line', 'shape'\]\.includes\(tool\)/, 'Pencil, Line and Shapes must trigger floating drawing controls');
 assert.match(presets, /STROKE_WIDTH_STEPS = \[\s*1,\s*2,\s*3,\s*4,\s*5,\s*8,\s*10,\s*15,\s*20,\s*25,\s*50,\s*100,?\s*\]/, 'Drawing widths must use the agreed 12 discrete values');
+assert.match(enhancer, /\.eyedropper-button \+ \.compact-slider/, 'Opacity enhancer must target the control structurally, independent of language');
+assert.doesNotMatch(enhancer, /title\^=/, 'Opacity enhancer must not depend on translated title text');
 assert.match(enhancer, /--opacity-stop/, 'Opacity enhancer must sync the visual fill and bubble position');
 
 const css = fs.readFileSync(cssUrl, 'utf8');
@@ -21,11 +23,12 @@ assert.match(css, /\.floating-drawing-controls\s*\{[\s\S]*?position:\s*fixed;/, 
 assert.match(css, /width:\s*min\(438px,\s*calc\(100vw - 24px\)\)/, 'Desktop floating controls must be slightly narrower than the bottom dock');
 assert.match(css, /\.floating-drawing-controls \.color-control[\s\S]*?width:\s*30px\s*!important;[\s\S]*?height:\s*30px\s*!important;/, 'Color circle must stay compact');
 assert.match(css, /eyedropper-button > span::before[\s\S]*?data:image\/svg\+xml/, 'Eyedropper must use the approved eyedropper pictogram');
-assert.match(css, /title\^=\"Прозрачность\"[\s\S]*?--opacity-stop[\s\S]*?repeating-conic-gradient/, 'Opacity control must use checkerboard transparency with dynamic fill');
-assert.match(css, /title\^=\"Толщина\"[\s\S]*?linear-gradient\(90deg, #cbd5e1, #cbd5e1\)/, 'Width dots must be connected with a light line');
+assert.match(css, /\.eyedropper-button \+ \.compact-slider[\s\S]*?--opacity-stop[\s\S]*?repeating-conic-gradient/, 'Opacity control must use checkerboard transparency with dynamic fill');
+assert.match(css, /\.compact-slider \+ \.compact-slider[\s\S]*?linear-gradient\(90deg, #cbd5e1, #cbd5e1\)/, 'Width dots must be connected with a light line');
+assert.doesNotMatch(css, /title\^=/, 'Floating control styling must not depend on translated title text');
 const dotStops = css.match(/radial-gradient\(circle at [^,]+,\s*#8a96a8 0 4px/g) ?? [];
 assert.equal(dotStops.length, 12, 'Width track must render exactly 12 equal-size dots');
-assert.match(css, /title\^=\"Толщина\"[\s\S]*?strong\s*\{\s*display:\s*none\s*!important;/, 'Width numbers must not be displayed');
+assert.match(css, /\.compact-slider \+ \.compact-slider[\s\S]*?strong\s*\{\s*display:\s*none\s*!important;/, 'Width numbers must not be displayed');
 assert.match(css, /bottom:\s*calc\(max\(12px,\s*env\(safe-area-inset-bottom\)\) \+ 82px\)/, 'Floating controls must sit directly above the dock');
 assert.doesNotMatch(css, /\.board-page:has\(/, 'Floating controls must not depend on CSS :has relocation');
 console.log('Floating drawing controls regression passed.');
