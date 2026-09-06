@@ -1,5 +1,17 @@
 /* Float the existing drawing controls above the reference-style bottom dock.
    No control logic is duplicated: Pencil, Line, and Shapes keep using Toolbar.jsx. */
+
+/* toolbar-shell uses backdrop-filter in the main board chrome. That property creates a
+   containing block for fixed descendants, which made the floating drawing controls
+   position themselves against the top toolbar instead of the viewport. Release that
+   containing block only while one of the floating-control tools is active. */
+.board-page:has(.board-tool-dock > .dock-tool-button:nth-child(2).active) .toolbar-shell,
+.board-page:has(.board-tool-dock > .dock-tool-button:nth-child(3).active) .toolbar-shell,
+.board-page:has(.board-tool-dock > .dock-shape-anchor .dock-tool-button.active) .toolbar-shell {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
 .board-page:has(.board-tool-dock > .dock-tool-button:nth-child(2).active)
   .toolbar-secondary-row > .drawing-controls:not(.selected-style-controls),
 .board-page:has(.board-tool-dock > .dock-tool-button:nth-child(3).active)
