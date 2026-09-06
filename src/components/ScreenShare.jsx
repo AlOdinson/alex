@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { randomToken } from '../lib/ids.js';
 import { sha256 } from '../lib/ids.js';
 import { isSupabaseConfigured, supabase } from '../lib/supabase.js';
+import { useCloudScreenShareFallback } from './useCloudScreenShareFallback.js';
 import {
   MAX_SCREEN_SHARE_VIEWERS,
   normalizeRemoteBrowserState,
@@ -118,7 +119,7 @@ async function peerNetworkSample(peer) {
   return { fractionLost, roundTripTime };
 }
 
-export function useAdaptiveScreenShare({
+function useAdaptiveScreenShareBase({
   realtimeRef,
   users,
   isOwner,
@@ -1199,6 +1200,7 @@ export function useAdaptiveScreenShare({
   return {
     ...view,
     sessionId: view.sessionId,
+    hostId: String(activeSessionRef.current?.hostId ?? ''),
     boardLayout: view.boardLayout,
     stream,
     relayFrameUrl,
@@ -1227,6 +1229,40 @@ export function useAdaptiveScreenShare({
     isOwner,
     buttonDisabled: view.phase === 'requesting' || activeRemoteSession,
     profileLabel: SCREEN_SHARE_PROFILES[view.profileId]?.label ?? SCREEN_SHARE_PROFILES.idle.label,
+  };
+}
+
+export function useAdaptiveScreenShare(options) {
+  const base = useAdaptiveScreenShareBase(options);
+  const cloud = useCloudScreenShareFallback({
+    boardId: options.boardId,
+    boardKey: options.boardKey,
+    boardRealtimeKey: options.boardRealtimeKey,
+    clientId: options.clientId,
+    participantName: options.participantName,
+    isOwner: options.isOwner,
+    canEdit: options.canEdit,
+    sessionId: base.sessionId,
+    hostId: base.hostId,
+    role: base.role,
+    sourceMode: base.sourceMode,
+    p2pStream: base.stream,
+    profileId: base.profileId,
+    networkDegraded: base.networkDegraded,
+  });
+  const cloudViewing = cloud.transport === 'cloud'
+    && base.role === 'viewer'
+    && Boolean(cloud.stream);
+  return {
+    ...base,
+    stream: cloud.stream,
+    phase: cloudViewing ? 'viewing' : base.phase,
+    message: cloudViewing ? '' : base.message,
+    transport: cloud.transport,
+    cloudPhase: cloud.cloudPhase,
+    cloudError: cloud.cloudError,
+    cloudViewerCount: cloud.cloudViewerCount,
+    setCloudEnabled: cloud.setCloudEnabled,
   };
 }
 

@@ -4,6 +4,12 @@ import { normalizeScreenShareBoardLayout } from './screenShare.js';
 const SCREEN_SHARE_SOURCE_WIDTH = 1280;
 const SCREEN_SHARE_SOURCE_HEIGHT = 720;
 const FALLBACK_FRAME_INTERVAL_MS = 66;
+const CLOUD_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-cloud-state';
+const CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-cloud-state-request';
+const CLOUD_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-cloud-toggle';
+const CLOUD_BUTTON_WIDTH = 88;
+const CLOUD_BUTTON_HEIGHT = 24;
+const CLOUD_BUTTON_MARGIN = 8;
 
 function sourceDimension(value, fallback) {
   const numeric = Math.abs(Number(value));
@@ -22,6 +28,37 @@ function setDiagonalResizeControls(object) {
     bl: true,
     br: true,
   });
+}
+
+function cloudControlLabel(state) {
+  if (state?.cloudPhase === 'connecting' || state?.cloudPhase === 'disconnecting') return 'Cloud …';
+  if (state?.cloudPhase === 'error') return 'Cloud ⚠';
+  if (state?.transport === 'cloud' && state?.cloudPhase === 'on') return 'Cloud ☑';
+  return 'Cloud ☐';
+}
+
+function normalizedCloudControlState(detail, sessionId) {
+  if (!detail || String(detail.sessionId ?? '') !== String(sessionId ?? '')) return null;
+  return {
+    visible: Boolean(detail.visible),
+    transport: detail.transport === 'cloud' ? 'cloud' : 'p2p',
+    cloudPhase: ['off', 'connecting', 'on', 'disconnecting', 'error'].includes(detail.cloudPhase)
+      ? detail.cloudPhase
+      : 'off',
+    cloudError: String(detail.cloudError ?? ''),
+  };
+}
+
+function viewportPoint(point, viewportTransform) {
+  const [a, b, c, d, e, f] = Array.isArray(viewportTransform)
+    ? viewportTransform.map(Number)
+    : [1, 0, 0, 1, 0, 0];
+  const x = Number(point?.x ?? 0);
+  const y = Number(point?.y ?? 0);
+  return {
+    x: a * x + c * y + e,
+    y: b * x + d * y + f,
+  };
 }
 
 export function isBoardScreenShareObject(object) {
@@ -108,6 +145,7 @@ export function createBoardScreenShareMedia({
   layout = null,
   canEdit = false,
 } = {}) {
+  const safeSessionId = String(sessionId ?? '');
   const placeholder = createPlaceholderCanvas();
   const frameCanvas = createFrameCanvas();
   if (!placeholder || !frameCanvas) throw new Error('board-screen-share-requires-dom');
@@ -119,7 +157,7 @@ export function createBoardScreenShareMedia({
     originY: 'center',
     objectKind: 'screen-share',
     transientScreenShare: true,
-    screenShareSessionId: String(sessionId ?? ''),
+    screenShareSessionId: safeSessionId,
     excludeFromExport: true,
     selectable: Boolean(canEdit),
     evented: Boolean(canEdit),
@@ -146,6 +184,14 @@ export function createBoardScreenShareMedia({
   let frameTimer = null;
   let currentStream = null;
   let lastUniformScale = sourceDimension(object.scaleX, 1);
+  let cloudState = {
+    visible: false,
+    transport: 'p2p',
+    cloudPhase: 'off',
+    cloudError: '',
+  };
+  let cloudButton = null;
+  let cloudCanvas = null;
 
   const rememberUniformScale = () => {
     lastUniformScale = sourceDimension(object.scaleX, lastUniformScale || 1);
@@ -175,6 +221,149 @@ export function createBoardScreenShareMedia({
     object.dirty = true;
     object.canvas?.requestRenderAll?.();
   };
+
+  const positionCloudButton = () => {
+    if (disposed || !cloudButton || !cloudState.visible) return;
+    const canvas = object.canvas;
+    const upperCanvas = canvas?.upperCanvasEl;
+    const host = upperCanvas?.parentElement;
+    if (!canvas || !upperCanvas || !host) return;
+
+    const coords = object.getCoords?.();
+    const topRight = coords?.[1] ?? object.aCoords?.tr;
+    if (!topRight) return;
+    const viewport = viewportPoint(topRight, canvas.viewportTransform);
+    const canvasRect = upperCanvas.getBoundingClientRect?.();
+    const hostRect = host.getBoundingClientRect?.();
+    if (!canvasRect || !hostRect) return;
+
+    const logicalWidth = Math.max(1, Number(canvas.getWidth?.() ?? canvasRect.width ?? 1));
+    const logicalHeight = Math.max(1, Number(canvas.getHeight?.() ?? canvasRect.height ?? 1));
+    const cssScaleX = Number(canvasRect.width ?? logicalWidth) / logicalWidth;
+    const cssScaleY = Number(canvasRect.height ?? logicalHeight) / logicalHeight;
+    const left = Number(canvasRect.left ?? 0) - Number(hostRect.left ?? 0)
+      + viewport.x * cssScaleX - CLOUD_BUTTON_WIDTH - CLOUD_BUTTON_MARGIN;
+    const top = Number(canvasRect.top ?? 0) - Number(hostRect.top ?? 0)
+      + viewport.y * cssScaleY + CLOUD_BUTTON_MARGIN;
+
+    cloudButton.style.left = `${Math.round(left)}px`;
+    cloudButton.style.top = `${Math.round(top)}px`;
+  };
+
+  const ensureCloudButton = () => {
+    if (disposed || typeof document === 'undefined') return null;
+    const canvas = object.canvas;
+    const upperCanvas = canvas?.upperCanvasEl;
+    const host = upperCanvas?.parentElement;
+    if (!canvas || !upperCanvas || !host) return null;
+
+    if (!cloudButton) {
+      cloudButton = document.createElement('button');
+      cloudButton.type = 'button';
+      cloudButton.className = 'screen-share-cloud-toggle';
+      cloudButton.style.position = 'absolute';
+      cloudButton.style.width = `${CLOUD_BUTTON_WIDTH}px`;
+      cloudButton.style.height = `${CLOUD_BUTTON_HEIGHT}px`;
+      cloudButton.style.padding = '0 8px';
+      cloudButton.style.borderRadius = '7px';
+      cloudButton.style.border = '1px solid rgba(255,255,255,0.5)';
+      cloudButton.style.background = 'rgba(15,23,42,0.88)';
+      cloudButton.style.color = '#fff';
+      cloudButton.style.font = '600 11px system-ui, sans-serif';
+      cloudButton.style.lineHeight = `${CLOUD_BUTTON_HEIGHT}px`;
+      cloudButton.style.textAlign = 'center';
+      cloudButton.style.whiteSpace = 'nowrap';
+      cloudButton.style.boxSizing = 'border-box';
+      cloudButton.style.zIndex = '40';
+      cloudButton.style.cursor = 'pointer';
+      cloudButton.style.userSelect = 'none';
+      cloudButton.style.webkitUserSelect = 'none';
+      cloudButton.style.touchAction = 'manipulation';
+      cloudButton.setAttribute('aria-label', 'Переключить демонстрацию через Cloudflare');
+      cloudButton.addEventListener('pointerdown', (event) => event.stopPropagation());
+      cloudButton.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (disposed || !cloudState.visible) return;
+        if (cloudState.cloudPhase === 'connecting' || cloudState.cloudPhase === 'disconnecting') return;
+        const enabled = !(cloudState.transport === 'cloud' && cloudState.cloudPhase === 'on');
+        window.dispatchEvent(new CustomEvent(CLOUD_SCREEN_SHARE_TOGGLE_EVENT, {
+          detail: { sessionId: safeSessionId, enabled },
+        }));
+      });
+    }
+    if (cloudButton.parentElement !== host) host.appendChild(cloudButton);
+    return cloudButton;
+  };
+
+  const syncCloudButton = () => {
+    if (disposed) return;
+    if (!cloudState.visible) {
+      if (cloudButton) cloudButton.style.display = 'none';
+      return;
+    }
+    const button = ensureCloudButton();
+    if (!button) return;
+    const busy = cloudState.cloudPhase === 'connecting' || cloudState.cloudPhase === 'disconnecting';
+    button.style.display = 'block';
+    button.textContent = cloudControlLabel(cloudState);
+    button.disabled = busy;
+    button.style.opacity = busy ? '0.72' : '1';
+    button.style.cursor = busy ? 'wait' : 'pointer';
+    button.style.borderColor = cloudState.cloudPhase === 'error'
+      ? 'rgba(248,113,113,0.95)'
+      : (cloudState.transport === 'cloud' && cloudState.cloudPhase === 'on'
+        ? 'rgba(134,239,172,0.95)'
+        : 'rgba(255,255,255,0.5)');
+    button.title = cloudState.cloudError || (
+      cloudState.transport === 'cloud'
+        ? 'Выключить Cloudflare relay и снова использовать P2P'
+        : 'Передавать демонстрацию через Cloudflare relay'
+    );
+    button.setAttribute('aria-pressed', cloudState.transport === 'cloud' ? 'true' : 'false');
+    button.dataset.cloudPhase = cloudState.cloudPhase;
+    positionCloudButton();
+  };
+
+  const handleCloudState = (event) => {
+    const nextState = normalizedCloudControlState(event?.detail, safeSessionId);
+    if (!nextState) return;
+    cloudState = nextState;
+    syncCloudButton();
+  };
+
+  const requestCloudState = () => {
+    if (typeof window === 'undefined' || !safeSessionId) return;
+    window.dispatchEvent(new CustomEvent(CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT, {
+      detail: { sessionId: safeSessionId },
+    }));
+  };
+
+  const attachCloudOverlay = () => {
+    if (disposed) return;
+    const canvas = object.canvas;
+    if (!canvas) return;
+    if (cloudCanvas !== canvas) {
+      cloudCanvas?.off?.('after:render', positionCloudButton);
+      cloudCanvas = canvas;
+      cloudCanvas.on?.('after:render', positionCloudButton);
+    }
+    syncCloudButton();
+    requestCloudState();
+  };
+
+  const detachCloudOverlay = () => {
+    cloudCanvas?.off?.('after:render', positionCloudButton);
+    cloudCanvas = null;
+    cloudButton?.remove();
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener(CLOUD_SCREEN_SHARE_STATE_EVENT, handleCloudState);
+    window.addEventListener('resize', positionCloudButton, { passive: true });
+  }
+  object.on?.('added', attachCloudOverlay);
+  object.on?.('removed', detachCloudOverlay);
 
   const fitFrameCanvasToVideo = () => {
     if (!video || !frameCanvas || disposed) return false;
@@ -321,6 +510,15 @@ export function createBoardScreenShareMedia({
     if (disposed) return;
     disposed = true;
     object.off?.('scaling', enforceUniformScale);
+    object.off?.('added', attachCloudOverlay);
+    object.off?.('removed', detachCloudOverlay);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener(CLOUD_SCREEN_SHARE_STATE_EVENT, handleCloudState);
+      window.removeEventListener('resize', positionCloudButton);
+    }
+    detachCloudOverlay();
+    cloudButton?.remove();
+    cloudButton = null;
     cancelFrameLoop();
     if (video) {
       video.onloadedmetadata = null;

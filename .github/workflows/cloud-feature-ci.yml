@@ -1,0 +1,68 @@
+name: Cloud Screen Share Feature CI
+
+on:
+  push:
+    branches:
+      - feature/cloudflare-screen-share-fallback
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Type-check Cloud Edge Function
+        run: deno check --node-modules-dir=auto supabase/functions/cloudflare-realtime/index.ts
+
+      - name: Cloud protocol regression
+        run: node scripts/test-screen-share-cloud-protocol.mjs
+
+      - name: Cloud backend security regression
+        run: node scripts/test-cloudflare-realtime-edge-function.mjs
+
+      - name: Cloud WebRTC transport regression
+        run: node scripts/test-cloudflare-screen-share-transport.mjs
+
+      - name: Cloud screen-share lifecycle regression
+        run: node scripts/test-screen-share-cloud-switch.mjs
+
+      - name: Board Cloud control regression
+        run: node scripts/test-board-screen-share-cloud-control.mjs
+
+      - name: Existing screen-share suite
+        run: npm run test:screen-share
+
+      - name: Existing screen-share focused regressions
+        run: |
+          node scripts/test-screen-share-stun-retry.mjs
+          node scripts/test-screen-share-board-session.mjs
+          node scripts/test-screen-share-board-ui.mjs
+          node scripts/test-board-screen-share-integration.mjs
+          node scripts/test-board-screen-share-object.mjs
+          node scripts/test-board-screen-share-resize-fit.mjs
+          node scripts/test-screenshare-full-frame-release.mjs
+          node scripts/test-desktop-sharescreen-button.mjs
+
+      - name: Production build
+        run: npm run build
