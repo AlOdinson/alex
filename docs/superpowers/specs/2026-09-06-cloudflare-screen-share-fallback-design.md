@@ -2,100 +2,68 @@
 
 ## Goal
 
-Add a host-controlled `Cloud` transport switch to the existing normal screen-share object. Normal screen sharing continues to use the current direct WebRTC P2P path by default. When the host enables `Cloud`, the already-captured screen track is published through Cloudflare Realtime SFU and viewers switch to the Cloudflare-routed track without asking the host to choose the screen again. Disabling `Cloud` restores the existing P2P path and then tears down the Cloudflare media sessions.
+Add a host-controlled `Cloud` transport switch to the existing normal screen-share object. Normal screen sharing continues to use the current direct WebRTC P2P path by default. When the host enables `Cloud`, the already-captured screen track is published through Cloudflare Realtime SFU and viewers switch their displayed media to the Cloudflare-routed track without asking the host to choose the screen again. Disabling `Cloud` switches viewers back to the still-live P2P path and tears down Cloudflare media resources.
 
-This change applies only to normal `sourceMode: 'screen'`. The existing remote-browser path is out of scope.
+This applies only to normal `sourceMode: 'screen'`. The existing remote-browser path is out of scope.
 
 ## Confirmed UX
 
 - Starting screen share behaves exactly as today: `getDisplayMedia()` runs once and P2P WebRTC is the initial transport.
 - The live board-native screen object shows a compact host-only control in its upper-right corner: `Cloud ☐`.
-- Viewers do not see or control the checkbox.
-- Clicking `Cloud ☐` enters a short connecting state (`Cloud …`) while the existing P2P stream remains active.
-- Cloud mode becomes active as soon as the host Cloudflare publisher is successfully connected and its routing identifiers are announced. Viewer acknowledgements are diagnostic only and never block activation.
-- On success the control becomes `Cloud ☑`; the same captured `MediaStreamTrack` is routed through Cloudflare Realtime SFU.
+- Viewers do not see or control the switch.
+- Clicking `Cloud ☐` shows `Cloud …` while the existing P2P stream remains active.
+- Cloud mode becomes active as soon as the host Cloudflare publisher is connected and its routing identifiers are announced; viewer acknowledgements are diagnostic only.
+- On success the control becomes `Cloud ☑`; the exact existing capture `MediaStreamTrack` is also routed through Cloudflare Realtime SFU.
 - No second screen picker is shown and capture is not restarted.
-- If Cloud setup fails, the checkbox returns to off, the P2P session remains untouched, and the host receives a small non-blocking error/status indication.
-- Clicking `Cloud ☑` to disable Cloud first resumes/rebuilds the existing P2P viewer connections, then closes the Cloudflare media sessions. The host remains on the same capture track throughout.
-- If P2P is still impossible for a viewer after Cloud is disabled, that viewer may lose the picture again; this is expected and does not stop the host capture.
-- Stopping screen share closes both P2P and any Cloudflare resources.
+- If Cloud setup fails, the control shows an error state and P2P remains untouched.
+- While Cloud is enabled, the P2P peer connections remain warm in the background. This intentionally uses some duplicate upstream bandwidth in exchange for an immediate and reliable return path.
+- Clicking `Cloud ☑` to disable Cloud broadcasts `cloud-disable`; viewers immediately prefer their already-live P2P stream and Cloudflare peers are then closed.
+- If a viewer's P2P connection independently failed while Cloud was active, removing the Cloud check may remove that viewer's picture again; this is expected and does not stop host capture.
+- Stopping screen share closes both P2P and Cloudflare resources.
 
-## Architecture
+## Existing P2P baseline
 
-### Existing P2P path remains the baseline
-
-The current screen-share flow remains authoritative for capture and board rendering:
+The existing capture/render boundaries remain authoritative:
 
 1. `navigator.mediaDevices.getDisplayMedia()` captures one video track.
-2. The host normally creates one P2P `RTCPeerConnection` per viewer.
+2. The host creates the existing P2P `RTCPeerConnection` per viewer.
 3. A viewer receives a `MediaStream` through WebRTC.
-4. `src/lib/boardScreenShare.js` renders that stream into the transient Fabric screen-share object.
+4. `src/lib/boardScreenShare.js` renders the selected stream into the transient Fabric screen-share object.
 
-Cloud mode adds a second media transport but does not duplicate capture or change Fabric persistence/lifecycle rules.
+Cloud mode adds another transport but does not duplicate capture and does not change persistence, history, export, geometry, or session arbitration.
 
-### Cloudflare transport module
+## Cloudflare transport
 
-Add `src/lib/cloudflareScreenShare.js`.
+`src/lib/cloudflareScreenShare.js` owns the Cloudflare WebRTC transport. It creates host/viewer Cloudflare peer connections, publishes the existing capture track as send-only, subscribes viewers to the host track, completes SDP negotiation through the backend proxy, exposes the viewer `MediaStream`, and never contains the Cloudflare App Secret.
 
-Responsibilities:
+Cloudflare peers use `stun:stun.cloudflare.com:3478`. Existing P2P peers keep their existing Google STUN configuration.
 
-- create and close the host Cloudflare `RTCPeerConnection`;
-- publish the existing screen `MediaStreamTrack` as a send-only local track;
-- create and close a viewer Cloudflare `RTCPeerConnection`;
-- subscribe to the host's published track using the host Cloudflare session/track identifiers;
-- complete Cloudflare SDP negotiation through the backend proxy;
-- expose connection state and a viewer `MediaStream` to `useAdaptiveScreenShare`;
-- never contain the Cloudflare App Secret.
+## Backend credential boundary
 
-The module uses `stun:stun.cloudflare.com:3478` for Cloudflare peer connections, matching Cloudflare's official SFU examples. Existing Google STUN configuration remains unchanged for P2P.
-
-### Backend credential boundary
-
-Cloudflare Realtime App ID and App Secret must not be shipped in Vite/browser code. Add one Supabase Edge Function with slug `cloudflare-realtime` and keep a version-controlled source copy under `supabase/functions/cloudflare-realtime/index.ts`.
-
-The function is a narrow board-authorized proxy for the Cloudflare Realtime SFU HTTPS API. It stores these environment secrets:
+Cloudflare Realtime App ID and App Secret must never be shipped in Vite/browser code. The Supabase Edge Function `cloudflare-realtime`, version-controlled at `supabase/functions/cloudflare-realtime/index.ts`, is the only component that reads:
 
 - `CLOUDFLARE_REALTIME_APP_ID`
 - `CLOUDFLARE_REALTIME_APP_SECRET`
 
-The function accepts the existing board credentials (`boardId`, `boardKey`) and verifies access using the same pattern as the deployed `ably-token` function:
-
-1. validate input shapes;
-2. SHA-256 the board key;
-3. call `get_board_access_v4(p_id, p_key_hash)`, using the existing legacy `get_board_access` fallback only when the v4 RPC is absent;
-4. reject closed or invalid board access;
-5. enforce operation-specific permission;
-6. verify the operation is bound to a server-issued Cloud session lease where applicable;
-7. perform only the requested Cloudflare session/track operation;
-8. return `Cache-Control: no-store` and never return the Cloudflare secret.
+The function validates `boardId`, `boardKey`, and `screenShareSessionId`; SHA-256 hashes the board key; calls `get_board_access_v4` with the existing `get_board_access` compatibility fallback; rejects closed/invalid board access; enforces operation-specific permissions; verifies signed Cloud session leases; builds only fixed Cloudflare API requests; and returns `Cache-Control: no-store` without exposing the secret.
 
 Permission rules:
 
-- `owner` or `edit`: may create/publish/renegotiate/close a host publisher session/track and may create/renegotiate a viewer subscription;
-- `view`: may create/renegotiate a viewer subscription only;
+- `owner` or `edit`: may create/publish/close a host publisher session and may also create a viewer subscription.
+- `view`: may create, subscribe, renegotiate, and close only its own leased viewer session.
 - `closed` or missing access: denied.
 
-The browser calls this Edge Function with the existing Supabase publishable client. The Edge Function keeps `verify_jwt: false` because board access is explicitly authenticated by possession of the board key, matching the deployed `ably-token` model. No service-role or Cloudflare secret is exposed to the browser.
+The function uses explicit board-key authorization and is deployed with `verify_jwt: false`, matching the existing publishable-key Edge Function model used by the project.
 
-### Server-issued Cloud session leases
+## Server-issued session leases
 
-Cloudflare warns that session/track identifiers must be protected from unauthorized mutation. The Edge Function therefore does not trust a browser-supplied `sessionId` by itself.
+A Cloudflare `sessionId` is not sufficient authorization. Every created publisher/viewer session receives an opaque `sessionLease` signed server-side with HMAC-SHA-256. The signed payload binds board ID, screen-share session ID, Cloudflare session ID, role (`publisher` or `viewer`), and expiry (maximum two hours).
 
-Every `create-publisher-session` or `create-viewer-session` response returns:
+Every post-creation mutation verifies the lease signature, expiry, board/session binding, Cloudflare session ID, and role. The publisher lease is never broadcast to viewers. A viewer receives only the publisher session ID and expected track name needed to request that remote source into the viewer's own leased session.
 
-- Cloudflare `sessionId`;
-- opaque signed `sessionLease` generated server-side;
-- lease role (`publisher` or `viewer`) encoded inside the signed payload;
-- board ID + screen-share session ID encoded inside the signed payload;
-- expiry timestamp (maximum two hours).
+## Fixed backend operations
 
-The lease payload is base64url JSON signed with HMAC-SHA-256 using a server-only key derived from `CLOUDFLARE_REALTIME_APP_SECRET`. Subsequent `publish-track`, `subscribe-track`, `renegotiate-viewer`, and `close-track` operations must present the lease. The Edge Function verifies signature, expiry, board ID, screen-share session ID, role, and Cloudflare session ID before constructing any Cloudflare mutation request.
-
-A viewer receives the publisher `sessionId` through board signaling so it can identify the remote source, but never receives the publisher's signed lease. Thus a viewer can request the expected board-scoped remote track into its own leased viewer session but cannot publish into, renegotiate, or close the publisher session.
-
-### Narrow backend operations
-
-The first version exposes a fixed operation enum rather than a generic proxy:
+The browser can request only this enum:
 
 - `create-publisher-session`;
 - `publish-track`;
@@ -104,181 +72,167 @@ The first version exposes a fixed operation enum rather than a generic proxy:
 - `renegotiate-viewer`;
 - `close-track`.
 
-The server constructs every Cloudflare API path itself and validates session IDs, signed session leases, track names, SDP type/length, and operation permissions. The client cannot provide an arbitrary URL or HTTP method.
+The server constructs paths under `https://rtc.live.cloudflare.com/v1/apps/{appId}` itself. It does not accept arbitrary URLs or HTTP methods. Teardown uses Cloudflare `PUT /tracks/close` with `{ tracks: [{ mid }], force: true }`, then closes the local peer.
 
-For teardown, `close-track` uses Cloudflare `PUT /tracks/close` with `{ tracks: [{ mid }], force: true }`. Using `force: true` stops the media flow without requiring a final browser renegotiation; the local `RTCPeerConnection` is then closed immediately.
+## Cloud signaling
 
-### Cloud transport signaling
+A dedicated Supabase Realtime broadcast channel carries only application routing state, never media or secrets. Supported Cloud signals are:
 
-The existing screen-share signaling channel continues to carry application state. Add these signal types:
-
-- `cloud-track` — host publishes the Cloudflare publisher session ID and track name for the active screen-share session;
+- `cloud-track` — host announces publisher session ID + expected track name for the active screen-share session;
 - `cloud-disable` — host announces return to P2P;
-- `cloud-viewer-ready` — viewer reports successful Cloud subscription for host diagnostics only.
+- `cloud-viewer-ready` — viewer reports a successful Cloud subscription for diagnostics.
 
-No separate `cloud-enable` signal is needed: the presence of a valid `cloud-track` for the currently accepted screen-share `sessionId` is the authoritative Cloud-on announcement.
+The host repeats the current `cloud-track` announcement periodically so a late/reconnecting viewer can subscribe. Stale signals whose `sessionId` does not match the currently accepted screen-share session are ignored.
 
-The Cloudflare App Secret and signed leases are never sent in signaling. Only publisher session ID and expected track name are shared within the current board signaling context.
-
-### Host enable flow
+## Host enable flow
 
 When the host clicks `Cloud`:
 
-1. Keep all existing P2P peer connections alive.
-2. Create a Cloudflare publisher session through the Edge Function and retain its publisher lease only on the host.
-3. Create a Cloudflare host `RTCPeerConnection` and attach the existing captured video track using a send-only transceiver.
-4. Create/set the SDP offer locally and proxy the publish request to Cloudflare with the publisher lease.
-5. Apply Cloudflare's SDP answer to the host peer.
-6. Obtain the published track identifier from the Cloudflare response.
-7. Broadcast `cloud-track` for the active screen-share `sessionId` without the publisher lease.
-8. Set host UI to `Cloud ☑` immediately after successful publisher negotiation/announcement; viewer-ready acknowledgements update diagnostics only.
-9. Viewers create Cloudflare subscriber sessions and switch their displayed media source when their Cloud track arrives.
-10. Close each viewer's redundant P2P peer two seconds after that viewer reports successful Cloud media, avoiding duplicate upstream longer than needed while keeping transition continuity.
+1. Keep all P2P peer connections alive.
+2. Create a leased Cloudflare publisher session through the Edge Function.
+3. Create the Cloudflare host `RTCPeerConnection` and attach the exact existing capture video track with a send-only transceiver.
+4. Create/set the local offer, wait for ICE gathering, and send the gathered SDP to the backend `publish-track` operation.
+5. Apply Cloudflare's SDP answer.
+6. Broadcast `cloud-track` with publisher session ID + track name only.
+7. Set host UI to `Cloud ☑` after publisher negotiation succeeds.
+8. Viewers create their leased Cloudflare subscriber sessions and switch displayed media only after the Cloud video track arrives.
+9. `cloud-viewer-ready` updates diagnostics only.
+10. Keep P2P peers warm for the entire Cloud interval; do not close them on viewer readiness.
 
-If any host-side step before track publication fails, Cloud mode is aborted, partial Cloud resources are cleaned up, and P2P continues unchanged.
+If any host-side Cloud setup step fails, clean up partial Cloud resources and leave P2P unchanged.
 
-### Viewer Cloud flow
+## Viewer Cloud flow
 
-On `cloud-track` for the currently accepted screen-share session:
+On a valid `cloud-track` for the current session:
 
-1. Create a Cloudflare viewer session through the Edge Function and retain its viewer lease locally.
-2. Create a receive-capable Cloudflare `RTCPeerConnection`.
-3. Request the host's track by publisher session ID + expected track name into the viewer's leased session.
-4. Apply Cloudflare's SDP offer/answer sequence, including `/renegotiate` when `requiresImmediateRenegotiation` is true, presenting the viewer lease.
+1. Create a leased Cloudflare viewer session.
+2. Create a receive-capable Cloudflare peer.
+3. Request the expected host track by publisher session ID + track name.
+4. Apply Cloudflare's offer/answer sequence and `/renegotiate` when required.
 5. Build a `MediaStream` from the received video track.
-6. Replace only the media source passed to the existing board screen-share controller.
-7. Send `cloud-viewer-ready` to the host for status/cleanup accounting.
+6. Replace only the displayed media source; keep the existing P2P peer alive in the background.
+7. Send `cloud-viewer-ready` for diagnostics.
 
-The Fabric object, its layout, selection behavior, transient flags, export exclusion, and collaboration geometry remain unchanged.
+If Cloud subscription fails, the viewer continues to display/use P2P when available. The Fabric object and all of its collaboration/persistence rules remain unchanged.
 
-### Disable Cloud / return to P2P
+## Disable Cloud / return to P2P
 
-When the host clears the checkbox:
+When the host clears the switch:
 
-1. Broadcast `cloud-disable` while keeping Cloudflare media temporarily alive.
-2. Re-announce the normal host P2P session immediately instead of waiting for the periodic host announcement.
-3. Viewers recreate/re-negotiate their normal P2P peer connection using the existing capture track.
-4. Each viewer switches the board media source back to P2P as soon as a P2P video track arrives.
-5. Keep Cloud media alive for up to three seconds as a transition grace period, then close Cloud viewer peer connections and the host published track through their own leases.
-6. Set UI back to `Cloud ☐` after teardown is requested; failure to restore P2P for one viewer does not re-enable Cloud automatically.
-
-The host may immediately enable Cloud again if a viewer still cannot receive P2P.
+1. Set Cloud state to disconnecting and broadcast `cloud-disable` while Cloud media is still alive.
+2. Viewers immediately select their already-live P2P stream; no new screen capture and normally no new P2P negotiation is required.
+3. After a short handback grace period, close viewer Cloud subscriptions and the host Cloud publisher through their own signed leases.
+4. Return the host UI to `Cloud ☐`.
+5. If an individual P2P peer died independently during Cloud mode, that viewer may have no picture after Cloud is disabled; the host may re-enable Cloud without restarting capture.
 
 ## Media quality
 
-Cloud mode reuses the existing capture and activity profiles rather than defining a second quality model:
+Cloud reuses the existing capture/activity policy rather than defining a second quality model:
 
 - capture ideal: 1280x720;
 - capture maximum: 1920x1080;
 - capture frame rate ideal 10, maximum 15;
-- idle profile: up to 2 FPS / 280 kbps;
-- active profile: up to 10 FPS / 850 kbps;
-- motion profile: up to 15 FPS / 1.25 Mbps;
-- degraded host uplink profile: current reduced frame rate, bitrate multiplier and resolution downscale behavior.
+- idle: up to 2 FPS / 280 kbps;
+- active: up to 10 FPS / 850 kbps;
+- motion: up to 15 FPS / 1.25 Mbps;
+- degraded host uplink: existing reduced frame rate, bitrate multiplier, and resolution downscale behavior.
 
-`applySenderProfile` applies to the active Cloudflare publisher sender as well as P2P senders during transition. In Cloud mode, host-side stats measure the host-to-Cloudflare leg rather than every viewer's downstream leg; Cloudflare/WebRTC handles downstream congestion separately. The UI must not claim that host stats represent a specific viewer's Cloud downstream quality.
+The current profile is applied to both the Cloud publisher sender and the warm P2P senders while Cloud is active. Host Cloud stats describe the host-to-Cloudflare leg, not an individual viewer's downstream quality.
 
 ## State model
 
-Extend screen-share view/session state with transport state rather than overloading `sourceMode`:
+Cloud state is separate from capture source:
 
 - `transport: 'p2p' | 'cloud'`;
 - `cloudPhase: 'off' | 'connecting' | 'on' | 'disconnecting' | 'error'`;
-- `cloudPublisherSessionId` and `cloudTrackName` only while Cloud is active.
+- `cloudError` for host-visible failure state.
 
-`sourceMode` remains `screen` because the capture source has not changed.
-
-Session arbitration remains unchanged: there is still exactly one normal screen-share host per board. Cloud mode belongs to that existing screen-share session and cannot create a competing share.
+`sourceMode` remains `screen`. There is still exactly one normal screen-share session per board.
 
 ## UI placement
 
-The requested `Cloud` checkbox belongs visually to the screen-share object, not the global toolbar. Implement the host-only control as a small DOM overlay anchored to the transient Fabric object's upper-right screen-space corner. The overlay follows object move/resize and viewport zoom/pan but is not serialized into Fabric.
+The primary switch is a real accessible DOM button overlaid on the transient Fabric screen-share object. It is anchored to the object's upper-right screen-space corner and repositions on Fabric render/viewport changes. It is not a Fabric object and therefore cannot be serialized, copied, exported, persisted, or entered into undo/redo.
 
 Requirements:
 
 - host only;
-- label `Cloud` plus checkbox/status mark;
+- `Cloud ☐`, `Cloud …`, `Cloud ☑`, `Cloud ⚠` states;
 - compact and unobtrusive;
-- `Cloud ☐`, `Cloud …`, `Cloud ☑`, and an error indication are visually distinguishable;
-- clickable without selecting/moving the Fabric object;
-- hidden immediately when screen share ends;
-- no board persistence/history/export effects;
-- accessible label and keyboard activation.
+- pointer interaction does not select/move the Fabric object;
+- follows object movement/resizing and board zoom/pan;
+- hidden and removed immediately when the screen-share controller is disposed;
+- keyboard-accessible button semantics.
 
-The existing floating screen-share panel may repeat Cloud status text during connection/error states, but the primary switch remains attached to the board object.
+A state-request/replay event handles React/Fabric effect ordering so an overlay created after the first Cloud state publication still receives the current state.
 
 ## Error handling
 
-- Cloudflare backend unavailable or unconfigured: remain on P2P and show a host-only Cloud error.
-- Cloudflare publisher negotiation fails: clean up partial Cloud resources and remain on P2P.
-- One viewer fails Cloud subscription: successful viewers remain on Cloud; the failed viewer can continue on P2P until its Cloud attempt is retried or the host disables Cloud.
-- Viewer joins late while Cloud mode is active: repeated `host-start` plus current `cloud-track` routing announcement lets the new viewer subscribe directly to Cloud.
-- Viewer reconnects: stale Cloud viewer peer/session is discarded and a fresh viewer session is created.
-- Host stops capture/browser ends track: both P2P and Cloud resources are cleaned up, then `host-stop` follows existing semantics.
-- Stale Cloud signals from an older screen-share `sessionId` are ignored.
-- Invalid/expired session lease: reject the Cloud operation, clean up local partial state, and preserve P2P when possible.
-- A Cloud cleanup request failure is logged but does not resurrect or block local screen-share shutdown.
+- Backend unavailable/unconfigured: remain on P2P and show Cloud error.
+- Publisher negotiation failure: clean partial Cloud state and remain on P2P.
+- One viewer subscription failure: successful viewers stay on Cloud and failed viewer keeps P2P when available.
+- Late/reconnecting viewer: periodic `cloud-track` announcement allows a fresh subscription.
+- Host stop/browser-ended capture/session arbitration: appropriate Cloud and P2P resources are cleaned up.
+- Invalid, expired, or mismatched session lease: backend rejects the mutation.
+- Stale Cloud signal from an older screen-share session: ignored.
+- Cleanup request failure is logged but does not block local shutdown.
 
 ## Security invariants
 
-- Cloudflare App Secret exists only in Supabase Edge Function secrets.
-- The frontend never receives or stores the App Secret.
-- The backend does not expose a generic Cloudflare proxy.
-- Every backend operation verifies current board access using `boardId + boardKey` before touching Cloudflare.
-- Every Cloudflare session mutation after creation requires a valid server-signed session lease bound to the same board, screen-share session, Cloudflare session, role, and expiry.
-- Publisher-mutating backend operations require `owner` or `edit` permission; `view` may subscribe only into its own leased viewer session.
-- Publisher leases are never broadcast to viewers.
-- Cloud host lifecycle signals retain the existing `owner`/`edit` host authorization rules.
-- Viewer routing identifiers are accepted only for the currently preferred screen-share session.
-- No Cloudflare state becomes a durable board object or snapshot field.
+- App Secret exists only in Supabase Edge Function secrets.
+- Frontend never receives/stores App Secret or publisher lease.
+- Backend is not a generic Cloudflare proxy.
+- Every backend operation verifies current board access.
+- Every post-creation Cloudflare session mutation requires a valid signed lease bound to board, screen-share session, Cloudflare session, role, and expiry.
+- Publisher mutations additionally require `owner` or `edit` permission.
+- Viewer routing identifiers are accepted only for the current preferred screen-share session.
+- No Cloudflare state becomes durable board state.
 
-## Expected code scope
+## Code scope
 
-Primary files:
+Primary implementation files:
 
-- `src/components/ScreenShare.jsx` — Cloud lifecycle/state, P2P/Cloud transition, and media-source switching.
-- `src/lib/screenShare.js` — Cloud signal normalization/state helpers.
-- `src/lib/cloudflareScreenShare.js` — focused Cloudflare WebRTC client transport.
-- `src/components/Board.jsx` and the existing board screen-share integration point — host-only overlay anchor/state plumbing.
-- existing board/screen-share CSS — compact `Cloud` overlay styling.
-- `supabase/functions/cloudflare-realtime/index.ts` — version-controlled Edge Function source matching the deployed function.
-- screen-share regression scripts under `scripts/`.
+- `src/components/ScreenShare.jsx` — composes the existing P2P hook with Cloud fallback state.
+- `src/components/useCloudScreenShareFallback.js` — Cloud lifecycle, signaling, stream selection, and manual toggle handling.
+- `src/lib/screenShare.js` — Cloud signal validation/route helpers.
+- `src/lib/cloudflareScreenShare.js` — focused Cloudflare WebRTC transport.
+- `src/lib/boardScreenShare.js` — host-only ephemeral `Cloud` overlay anchored to the Fabric object.
+- `supabase/functions/cloudflare-realtime/index.ts` — narrow backend proxy/lease authority.
+- regression scripts under `scripts/`.
 
-Avoid unrelated board, persistence, drawing, remote-browser, or general realtime refactors.
+Avoid unrelated drawing, persistence, board schema, remote-browser, game, or general realtime refactors.
 
-## Tests
+## Verification requirements
 
-Add regression coverage for at least:
+Deterministic coverage includes:
 
-1. P2P remains default and existing screen share starts without Cloudflare calls.
-2. Host-only `Cloud` control visibility and non-host invisibility.
-3. Enabling Cloud reuses the existing capture track; `getDisplayMedia()` is not called again.
-4. Cloud publisher negotiation uses the backend proxy and no frontend Cloudflare secret exists.
-5. `view` permission cannot invoke publisher-mutating backend operations.
-6. Invalid/expired/mismatched signed session leases cannot mutate Cloudflare sessions.
-7. Viewer Cloud subscription yields a `MediaStream` that replaces the displayed media source.
-8. Cloud enable failure preserves the current P2P stream.
-9. A viewer that has not established Cloud keeps its P2P peer during transition.
-10. Disabling Cloud initiates P2P restoration before Cloud teardown.
-11. Stopping share always tears down Cloud publisher/viewer resources.
-12. Stale Cloud signals from a previous session are ignored.
-13. Late viewer can join an already-active Cloud share.
-14. Existing board-native screen object layout/persistence/export tests continue to pass.
-15. Existing remote-browser tests continue to pass unchanged.
+1. P2P remains default and no Cloud call happens until manually enabled.
+2. Host-only Cloud control and non-host invisibility.
+3. Enabling Cloud reuses the exact capture track; no second `getDisplayMedia()`.
+4. App Secret never appears in frontend code.
+5. View permission cannot mutate publisher sessions.
+6. Signed lease requirements protect session mutation.
+7. Viewer Cloud MediaStream replaces only the displayed stream.
+8. Cloud failure preserves P2P.
+9. P2P remains warm while Cloud is active.
+10. Disabling Cloud returns display to P2P before Cloud teardown.
+11. Stop/session replacement cleans Cloud resources.
+12. Stale Cloud signals are rejected.
+13. Late viewers can subscribe from repeated announcements.
+14. Existing board-screen-share persistence/export/layout tests remain green.
+15. Existing P2P and remote-browser screen-share tests remain green.
+16. Edge Function passes Deno type-check and frontend passes production Vite build.
 
-Run the existing `npm run test:screen-share`, relevant board-screen-share scripts, the new Cloud tests, and `npm run build`. A live Cloudflare end-to-end verification requiring production Realtime App credentials must be reported separately from deterministic local tests; no live success is claimed until credentials are configured and the live path is actually exercised.
+Live Cloudflare E2E is a separate deployment check and must not be claimed until real Realtime App credentials are configured and the host/viewer flow is exercised.
 
 ## Deployment prerequisites
 
-Before Cloud mode can work in production, the Cloudflare account must have a Realtime SFU Application with an App ID and App Secret. The connected Supabase project must then receive those two values as Edge Function secrets. These are deployment configuration, not frontend environment variables.
-
-Until those secrets exist, the feature fails closed: ordinary P2P screen share continues to work, while attempting `Cloud` reports that Cloud relay is not configured.
+Production Cloud mode requires one Cloudflare Realtime SFU Application and its App ID/App Secret stored only as Supabase Edge Function secrets. The Edge Function may be deployed before secrets exist; in that state it fails closed for Cloud requests while ordinary P2P remains usable.
 
 ## Non-goals
 
-- Replacing all screen sharing with Cloudflare by default.
+- Replacing P2P with Cloudflare by default.
 - Sending screen video through Ably or Supabase Realtime.
 - Adding audio capture.
 - Changing remote-browser relay behavior.
-- Persisting screen-share media or Cloudflare identifiers in board snapshots.
-- Building a general video meeting/conferencing subsystem.
+- Persisting screen-share media/Cloud identifiers in board snapshots.
+- Building a general video-meeting subsystem.
