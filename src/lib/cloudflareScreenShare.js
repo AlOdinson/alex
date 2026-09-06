@@ -172,6 +172,7 @@ export async function createCloudflarePublisher({
   RTCPeerConnectionImpl = globalThis.RTCPeerConnection,
   iceGatherTimeoutMs = ICE_GATHER_TIMEOUT_MS,
 }) {
+  void iceGatherTimeoutMs;
   if (!track) throw new Error('A capture track is required');
   if (!api?.createPublisherSession || !api?.publishTrack) {
     throw new Error('Cloud publisher API is unavailable');
@@ -192,16 +193,15 @@ export async function createCloudflarePublisher({
     const transceiver = peer.addTransceiver(track, { direction: 'sendonly' });
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
-    await waitForIceGatheringComplete(peer, iceGatherTimeoutMs);
     mid = requireText(transceiver?.mid, 'publisher track mid');
-    const localDescription = serializableDescription(peer.localDescription);
-    if (!localDescription?.sdp) throw new Error('Cloud publisher has no local SDP');
+    const offerDescription = serializableDescription(offer);
+    if (!offerDescription?.sdp) throw new Error('Cloud publisher has no local SDP offer');
 
     const response = await api.publishTrack({
       sessionId,
       sessionLease,
       mid,
-      sdp: localDescription.sdp,
+      sdp: offerDescription.sdp,
     });
     await peer.setRemoteDescription(validateCloudAnswer(response));
     mid = firstTrackMid(response, mid) || mid;
@@ -243,6 +243,7 @@ export async function createCloudflareSubscriber({
   iceGatherTimeoutMs = ICE_GATHER_TIMEOUT_MS,
   trackTimeoutMs = VIDEO_TRACK_TIMEOUT_MS,
 }) {
+  void iceGatherTimeoutMs;
   if (!api?.createViewerSession || !api?.subscribeTrack || !api?.renegotiateViewer) {
     throw new Error('Cloud subscriber API is unavailable');
   }
@@ -271,15 +272,14 @@ export async function createCloudflareSubscriber({
     await peer.setRemoteDescription(offer);
     const answer = await peer.createAnswer();
     await peer.setLocalDescription(answer);
-    await waitForIceGatheringComplete(peer, iceGatherTimeoutMs);
-    const localDescription = serializableDescription(peer.localDescription);
-    if (!localDescription?.sdp) throw new Error('Cloud subscriber has no local SDP answer');
+    const answerDescription = serializableDescription(answer);
+    if (!answerDescription?.sdp) throw new Error('Cloud subscriber has no local SDP answer');
 
     if (response?.requiresImmediateRenegotiation !== false) {
       await api.renegotiateViewer({
         sessionId,
         sessionLease,
-        sdp: localDescription.sdp,
+        sdp: answerDescription.sdp,
       });
     }
 
