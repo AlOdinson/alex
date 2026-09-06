@@ -1,9 +1,21 @@
 import assert from 'node:assert/strict';
-import {
+
+let transportModule = null;
+try {
+  transportModule = await import('../src/lib/cloudflareScreenShare.js');
+} catch (error) {
+  assert.fail(`Cloudflare screen-share transport module is missing: ${error?.code ?? error?.message ?? error}`);
+}
+
+const {
   createCloudflarePublisher,
   createCloudflareScreenShareApi,
   createCloudflareSubscriber,
-} from '../src/lib/cloudflareScreenShare.js';
+} = transportModule;
+
+assert.equal(typeof createCloudflarePublisher, 'function');
+assert.equal(typeof createCloudflareScreenShareApi, 'function');
+assert.equal(typeof createCloudflareSubscriber, 'function');
 
 class FakePublisherPeer {
   static instances = [];
