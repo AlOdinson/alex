@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import DrawingPresets from './DrawingPresets.jsx';
 import LanguageToggle from './LanguageToggle.jsx';
 import ShapePalette from './ShapePalette.jsx';
@@ -352,6 +353,7 @@ export default function Toolbar({
   const exportAnchorRef = useRef(null);
 
   const showDrawingSettings = ['pencil', 'line', 'shape', 'text'].includes(tool);
+  const showFloatingDrawingSettings = ['pencil', 'line', 'shape'].includes(tool);
   const showWidth = ['pencil', 'line', 'shape'].includes(tool);
   const showTextSettings = tool === 'text';
   const showEraserSettings = tool === 'eraser';
@@ -506,7 +508,7 @@ export default function Toolbar({
           onApply={onApplyDrawingPreset}
         />
 
-        {showDrawingSettings && (
+        {showTextSettings && (
           <div className="tool-group drawing-controls">
             <label className="color-control" title="Цвет">
               <span className="sr-only">Цвет</span>
@@ -517,19 +519,6 @@ export default function Toolbar({
                 onChange={(event) => setColor(event.target.value)}
               />
             </label>
-
-            {['pencil', 'line', 'shape'].includes(tool) && (
-              <IconButton
-                title="Пипетка — скопировать параметры объекта или цвет пикселя картинки"
-                active={eyedropperActive}
-                disabled={!canEdit}
-                onClick={onToggleEyedropper}
-                className="eyedropper-button"
-                stylusActionPhase="end"
-              >
-                ⌾
-              </IconButton>
-            )}
 
             <label className="compact-slider" title={`Прозрачность: ${Math.round(opacity * 100)}%`}>
               <span>Прозр.</span>
@@ -545,44 +534,24 @@ export default function Toolbar({
               <strong>{Math.round(opacity * 100)}%</strong>
             </label>
 
-            {showWidth && (
-              <label className="compact-slider" title={`Толщина: ${width}px`}>
-                <span>Толщ.</span>
-                <input
-                  type="range"
-                  min="1"
-                  max={STROKE_WIDTH_STEPS.length}
-                  step="1"
-                  value={widthToSliderStep(width)}
-                  disabled={!canEdit}
-                  onChange={(event) => setWidth(sliderStepToWidth(event.target.value))}
-                />
-                <strong>{width}px</strong>
-              </label>
-            )}
-
-            {showTextSettings && (
-              <>
-                <label className="mini-select" title="Шрифт">
-                  <span className="sr-only">Шрифт</span>
-                  <select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}>
-                    {FONTS.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-                  </select>
-                </label>
-                <label className="compact-slider font-size-slider" title={`Размер текста: ${fontSize}px`}>
-                  <span>Размер</span>
-                  <input
-                    type="range"
-                    min="12"
-                    max="96"
-                    step="1"
-                    value={fontSize}
-                    onChange={(event) => setFontSize(Number(event.target.value))}
-                  />
-                  <strong>{fontSize}</strong>
-                </label>
-              </>
-            )}
+            <label className="mini-select" title="Шрифт">
+              <span className="sr-only">Шрифт</span>
+              <select value={fontFamily} onChange={(event) => setFontFamily(event.target.value)}>
+                {FONTS.map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+              </select>
+            </label>
+            <label className="compact-slider font-size-slider" title={`Размер текста: ${fontSize}px`}>
+              <span>Размер</span>
+              <input
+                type="range"
+                min="12"
+                max="96"
+                step="1"
+                value={fontSize}
+                onChange={(event) => setFontSize(Number(event.target.value))}
+              />
+              <strong>{fontSize}</strong>
+            </label>
           </div>
         )}
 
@@ -728,6 +697,63 @@ export default function Toolbar({
         </div>
       </div>
       </header>
+
+      {showFloatingDrawingSettings
+        && !(tool === 'shape' && shapesOpen)
+        && typeof document !== 'undefined'
+        && createPortal(
+          <div className="tool-group drawing-controls floating-drawing-controls" aria-label="Параметры рисования">
+            <label className="color-control" title="Цвет">
+              <span className="sr-only">Цвет</span>
+              <input
+                type="color"
+                value={color}
+                disabled={!canEdit}
+                onChange={(event) => setColor(event.target.value)}
+              />
+            </label>
+
+            <IconButton
+              title="Пипетка — скопировать параметры объекта или цвет пикселя картинки"
+              active={eyedropperActive}
+              disabled={!canEdit}
+              onClick={onToggleEyedropper}
+              className="eyedropper-button"
+              stylusActionPhase="end"
+            >
+              ⌾
+            </IconButton>
+
+            <label className="compact-slider" title={`Прозрачность: ${Math.round(opacity * 100)}%`}>
+              <span>Прозр.</span>
+              <input
+                type="range"
+                min="0.05"
+                max="1"
+                step="0.05"
+                value={opacity}
+                disabled={!canEdit}
+                onChange={(event) => setOpacity(Number(event.target.value))}
+              />
+              <strong>{Math.round(opacity * 100)}%</strong>
+            </label>
+
+            <label className="compact-slider" title={`Толщина: ${width}px`}>
+              <span>Толщ.</span>
+              <input
+                type="range"
+                min="1"
+                max={STROKE_WIDTH_STEPS.length}
+                step="1"
+                value={widthToSliderStep(width)}
+                disabled={!canEdit}
+                onChange={(event) => setWidth(sliderStepToWidth(event.target.value))}
+              />
+              <strong>{width}px</strong>
+            </label>
+          </div>,
+          document.body,
+        )}
 
       <div className="board-tool-dock" aria-label="Инструменты">
         {TOOLS.map((item) => (
