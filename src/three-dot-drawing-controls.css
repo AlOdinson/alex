@@ -1,0 +1,257 @@
+/* Approved compact drawing controls for Pencil / Line / Shapes.
+   The existing React controls stay intact; this stylesheet turns them into three dots:
+   opacity on the left, current color in the middle, width on the right. */
+
+.floating-drawing-controls {
+  --three-dot-size: 14px;
+  --three-dot-gap: 18px;
+  --three-dot-scale-width: 154px;
+  position: fixed !important;
+  z-index: 61 !important;
+  left: var(--drawing-controls-x, 50%) !important;
+  top: var(--drawing-controls-y, calc(100vh - 96px)) !important;
+  bottom: auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  min-height: 0 !important;
+  height: var(--three-dot-size) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: var(--three-dot-gap) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  overflow: visible !important;
+  transform: translate(-50%, -100%) !important;
+  color: #172554;
+}
+
+/* The approved design has exactly three visible controls. The existing eyedropper
+   behavior elsewhere on the board is untouched; it is simply not a fourth dot here. */
+.floating-drawing-controls > .eyedropper-button {
+  display: none !important;
+}
+
+/* Shared geometry for the two side dots. */
+.floating-drawing-controls > .eyedropper-button + .compact-slider,
+.floating-drawing-controls > .compact-slider + .compact-slider {
+  position: relative !important;
+  flex: 0 0 var(--three-dot-size) !important;
+  width: var(--three-dot-size) !important;
+  min-width: var(--three-dot-size) !important;
+  max-width: var(--three-dot-size) !important;
+  height: var(--three-dot-size) !important;
+  min-height: var(--three-dot-size) !important;
+  display: block !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  overflow: visible !important;
+  color: #172554;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider {
+  order: 1;
+}
+
+.floating-drawing-controls > .compact-slider + .compact-slider {
+  order: 3;
+}
+
+.floating-drawing-controls .compact-slider > span {
+  display: none !important;
+}
+
+/* 100% and 3px stay immediately above their dots. */
+.floating-drawing-controls .compact-slider > strong {
+  position: absolute !important;
+  z-index: 4 !important;
+  display: block !important;
+  top: -23px !important;
+  left: 50% !important;
+  right: auto !important;
+  min-width: 38px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: translateX(-50%) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: #172554 !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  line-height: 14px !important;
+  text-align: center !important;
+  pointer-events: none !important;
+}
+
+.floating-drawing-controls .compact-slider > strong::after {
+  display: none !important;
+  content: none !important;
+}
+
+/* Existing color input = center dot. Clicking it still opens the board's current
+   color palette; no replacement palette is introduced. */
+.floating-drawing-controls > .color-control {
+  order: 2;
+  position: relative !important;
+  flex: 0 0 var(--three-dot-size) !important;
+  width: var(--three-dot-size) !important;
+  min-width: var(--three-dot-size) !important;
+  height: var(--three-dot-size) !important;
+  min-height: var(--three-dot-size) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  border: 2px solid #ffffff !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  box-shadow: 0 0 0 1.5px #60a5fa, 0 1px 4px rgba(15, 23, 42, 0.16) !important;
+}
+
+.floating-drawing-controls > .color-control input[type="color"] {
+  position: absolute !important;
+  inset: -5px !important;
+  width: 24px !important;
+  height: 24px !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 50% !important;
+  background: transparent !important;
+  cursor: pointer !important;
+}
+
+.floating-drawing-controls > .color-control input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0 !important;
+}
+
+.floating-drawing-controls > .color-control input[type="color"]::-webkit-color-swatch {
+  border: 0 !important;
+  border-radius: 50% !important;
+}
+
+/* The range itself is the side dot. When closed its track collapses to the dot.
+   On first press the enhancer adds opacity-open / width-open; the same native range
+   then expands directly outward, so there is no popup card or detached slider. */
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"],
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"] {
+  position: absolute !important;
+  top: 50% !important;
+  width: var(--three-dot-size) !important;
+  min-width: 0 !important;
+  height: var(--three-dot-size) !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  outline: 0 !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+  cursor: pointer !important;
+  transition: width 150ms ease !important;
+}
+
+/* Opacity is anchored by its RIGHT edge, therefore expansion can only travel left. */
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"] {
+  right: 0 !important;
+  left: auto !important;
+  transform: translateY(-50%) !important;
+  background: linear-gradient(
+    90deg,
+    #64748b 0%,
+    #64748b var(--opacity-stop, 100%),
+    #cbd5e1 var(--opacity-stop, 100%),
+    #cbd5e1 100%
+  ) center / 100% 1px no-repeat !important;
+}
+
+.floating-drawing-controls.opacity-open > .eyedropper-button + .compact-slider input[type="range"] {
+  width: var(--three-dot-scale-width) !important;
+  right: 0 !important;
+}
+
+/* Width is anchored by its LEFT edge, therefore expansion can only travel right. */
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"] {
+  left: 0 !important;
+  right: auto !important;
+  transform: translateY(-50%) !important;
+  background: linear-gradient(90deg, #64748b, #64748b) center / 100% 1px no-repeat !important;
+}
+
+.floating-drawing-controls.width-open > .compact-slider + .compact-slider input[type="range"] {
+  width: var(--three-dot-scale-width) !important;
+  left: 0 !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]::-webkit-slider-runnable-track,
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: var(--three-dot-size) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]::-webkit-slider-thumb,
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]::-webkit-slider-thumb {
+  width: 11px !important;
+  height: 11px !important;
+  margin-top: 1.5px !important;
+  appearance: none !important;
+  -webkit-appearance: none !important;
+  border: 2px solid #64748b !important;
+  border-radius: 50% !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.9) !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]:hover::-webkit-slider-thumb,
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]:hover::-webkit-slider-thumb,
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]:focus::-webkit-slider-thumb,
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]:focus::-webkit-slider-thumb {
+  border-color: #2563eb !important;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14) !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]::-moz-range-track,
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]::-moz-range-track {
+  height: 1px !important;
+  border: 0 !important;
+  background: #64748b !important;
+}
+
+.floating-drawing-controls > .eyedropper-button + .compact-slider input[type="range"]::-moz-range-thumb,
+.floating-drawing-controls > .compact-slider + .compact-slider input[type="range"]::-moz-range-thumb {
+  width: 9px !important;
+  height: 9px !important;
+  border: 2px solid #64748b !important;
+  border-radius: 50% !important;
+  background: #ffffff !important;
+  box-shadow: none !important;
+}
+
+@media (max-width: 760px) {
+  .floating-drawing-controls {
+    --three-dot-size: 15px;
+    --three-dot-gap: 17px;
+    --three-dot-scale-width: min(132px, 31vw);
+  }
+
+  .floating-drawing-controls .compact-slider > strong {
+    top: -22px !important;
+    font-size: 10px !important;
+  }
+}
