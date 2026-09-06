@@ -2,7 +2,16 @@ const DRAWING_PRESETS_KEY = 'alex-board:drawing-presets:v1';
 
 export const DRAWING_PRESET_COUNT = 3;
 export const STROKE_WIDTH_STEPS = [
-  ...Array.from({ length: 24 }, (_, index) => index + 1),
+  1,
+  2,
+  3,
+  4,
+  5,
+  8,
+  10,
+  15,
+  20,
+  25,
   50,
   100,
 ];
