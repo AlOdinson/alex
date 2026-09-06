@@ -1,21 +1,22 @@
 /* Pencil / Line / Shapes settings are rendered through a React portal into document.body.
-   Keeping the panel outside toolbar-shell makes desktop and mobile positioning identical. */
+   This panel intentionally mirrors the bottom dock while remaining slightly narrower. */
 .floating-drawing-controls {
   position: fixed;
   z-index: 41;
   left: 50%;
   bottom: calc(max(12px, env(safe-area-inset-bottom)) + 82px);
-  width: min(468px, calc(100vw - 24px));
+  width: min(440px, calc(100vw - 24px));
   min-height: 54px;
+  box-sizing: border-box;
   margin: 0;
-  padding: 7px 10px;
+  padding: 7px 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 9px;
   border: 1px solid rgba(226, 232, 240, 0.96);
   border-radius: 18px;
-  background: rgba(255, 255, 255, 0.97);
+  background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
   transform: translateX(-50%);
   backdrop-filter: blur(14px);
@@ -23,72 +24,294 @@
   color: #172554;
 }
 
-.floating-drawing-controls .color-control,
-.floating-drawing-controls .eyedropper-button {
-  flex: 0 0 34px;
+/* Circular color control, matching the round control in the approved mockup. */
+.floating-drawing-controls .color-control {
+  position: relative;
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: 0 0 0 1px rgba(203, 213, 225, 0.92), 0 2px 7px rgba(15, 23, 42, 0.10);
 }
 
-.floating-drawing-controls .tool-button {
-  width: 32px;
-  height: 32px;
+.floating-drawing-controls .color-control input[type="color"] {
+  position: absolute;
+  inset: -5px;
+  width: 48px;
+  height: 48px;
   padding: 0;
-  border: 1px solid #dbe2ea;
-  border-radius: 8px;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.floating-drawing-controls .color-control input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.floating-drawing-controls .color-control input[type="color"]::-webkit-color-swatch {
+  border: 0;
+  border-radius: 50%;
+}
+
+/* Eyedropper is the second round compact control. */
+.floating-drawing-controls .eyedropper-button {
+  flex: 0 0 38px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 50%;
   background: #ffffff;
   color: #172554;
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1;
+  box-shadow: 0 2px 7px rgba(15, 23, 42, 0.08);
 }
 
-.floating-drawing-controls .tool-button.active {
-  border-color: #93c5fd;
-  background: #eff6ff;
-  color: #1d4ed8;
+.floating-drawing-controls .eyedropper-button.active {
+  border-color: #c4b5fd;
+  background: #ede9fe;
+  color: #5b21b6;
 }
 
-.floating-drawing-controls .tool-button > span {
+.floating-drawing-controls .eyedropper-button > span {
   display: grid;
   width: 100%;
   height: 100%;
   place-items: center;
 }
 
+/* The two setting groups are compact and separated visually, like the reference image. */
 .floating-drawing-controls .compact-slider {
-  flex: 1 1 0;
+  position: relative;
   min-width: 0;
-  grid-template-columns: auto minmax(58px, 1fr) 38px;
-  padding: 0 3px;
+  min-height: 38px;
+  display: grid;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: #475569;
+  font-size: 10px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.floating-drawing-controls .compact-slider > span {
+  color: #334155;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+/* OPACITY — checkerboard transparency track, blue thumb and dark value bubble. */
+.floating-drawing-controls label[title^="Прозрачность"] {
+  flex: 1.08 1 0;
+  grid-template-columns: auto minmax(92px, 1fr);
+}
+
+.floating-drawing-controls label[title^="Прозрачность"] input[type="range"] {
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background:
+    repeating-conic-gradient(#d8e0ea 0 25%, #f8fafc 0 50%) 0 50% / 10px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.floating-drawing-controls label[title^="Прозрачность"] input[type="range"]::-webkit-slider-runnable-track {
+  height: 10px;
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  border-radius: 999px;
+  background:
+    repeating-conic-gradient(#d8e0ea 0 25%, #f8fafc 0 50%) 0 50% / 10px 10px;
+}
+
+.floating-drawing-controls label[title^="Прозрачность"] input[type="range"]::-webkit-slider-thumb {
+  width: 15px;
+  height: 15px;
+  margin-top: -3.5px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #1684ff;
+  box-shadow: 0 0 0 2px #1684ff, 0 2px 5px rgba(15, 23, 42, 0.18);
+}
+
+.floating-drawing-controls label[title^="Прозрачность"] input[type="range"]::-moz-range-track {
+  height: 10px;
+  border: 1px solid rgba(203, 213, 225, 0.78);
+  border-radius: 999px;
+  background:
+    repeating-conic-gradient(#d8e0ea 0 25%, #f8fafc 0 50%) 0 50% / 10px 10px;
+}
+
+.floating-drawing-controls label[title^="Прозрачность"] input[type="range"]::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #1684ff;
+  box-shadow: 0 0 0 2px #1684ff;
+}
+
+.floating-drawing-controls label[title^="Прозрачность"] strong {
+  position: absolute;
+  z-index: 2;
+  top: -18px;
+  right: 10px;
+  min-width: 34px;
+  padding: 4px 6px;
+  border-radius: 7px;
+  background: #172033;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18);
+}
+
+.floating-drawing-controls label[title^="Прозрачность"] strong::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 8px;
+  height: 8px;
+  background: #172033;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+/* WIDTH — exactly 12 equal dots connected by one light line.
+   The range has 12 steps because STROKE_WIDTH_STEPS contains 12 agreed values. */
+.floating-drawing-controls label[title^="Толщина"] {
+  flex: 1 1 0;
+  grid-template-columns: auto minmax(150px, 1fr);
+  padding-left: 9px;
+  border-left: 1px solid #e2e8f0;
+}
+
+.floating-drawing-controls label[title^="Толщина"] input[type="range"] {
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 0% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 9.09% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 18.18% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 27.27% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 36.36% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 45.45% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 54.55% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 63.64% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 72.73% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 81.82% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 90.91% 50%, #8a96a8 0 4.5px, transparent 5px),
+    radial-gradient(circle at 100% 50%, #8a96a8 0 4.5px, transparent 5px),
+    linear-gradient(90deg, #cbd5e1, #cbd5e1) center / 100% 1px no-repeat;
+}
+
+.floating-drawing-controls label[title^="Толщина"] input[type="range"]::-webkit-slider-runnable-track {
+  height: 24px;
+  border: 0;
+  background: transparent;
+}
+
+.floating-drawing-controls label[title^="Толщина"] input[type="range"]::-webkit-slider-thumb {
+  width: 13px;
+  height: 13px;
+  margin-top: 5.5px;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #1684ff;
+  box-shadow: 0 0 0 2px rgba(22, 132, 255, 0.34), 0 1px 4px rgba(15, 23, 42, 0.16);
+}
+
+.floating-drawing-controls label[title^="Толщина"] input[type="range"]::-moz-range-track {
+  height: 24px;
+  border: 0;
+  background: transparent;
+}
+
+.floating-drawing-controls label[title^="Толщина"] input[type="range"]::-moz-range-thumb {
+  width: 9px;
+  height: 9px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #1684ff;
+  box-shadow: 0 0 0 2px rgba(22, 132, 255, 0.34);
+}
+
+/* Width numbers are intentionally hidden; only the 12 dots communicate the choices. */
+.floating-drawing-controls label[title^="Толщина"] strong {
+  display: none;
 }
 
 @media (max-width: 760px) {
   .floating-drawing-controls {
     bottom: calc(max(8px, env(safe-area-inset-bottom)) + 70px);
-    width: min(408px, calc(100vw - 12px));
+    width: min(400px, calc(100vw - 12px));
     min-height: 50px;
-    padding: 5px 7px;
-    gap: 4px;
+    padding: 5px 9px;
+    gap: 6px;
     border-radius: 15px;
   }
 
-  .floating-drawing-controls .tool-button {
-    width: 29px;
-    height: 29px;
-    font-size: 15px;
+  .floating-drawing-controls .color-control,
+  .floating-drawing-controls .eyedropper-button {
+    flex-basis: 34px;
+    width: 34px;
+    height: 34px;
   }
 
   .floating-drawing-controls .compact-slider {
-    grid-template-columns: auto minmax(44px, 1fr) 32px;
-    gap: 3px;
+    gap: 4px;
     font-size: 9px;
+  }
+
+  .floating-drawing-controls .compact-slider > span {
+    font-size: 9px;
+  }
+
+  .floating-drawing-controls label[title^="Толщина"] {
+    grid-template-columns: auto minmax(125px, 1fr);
+    padding-left: 6px;
+  }
+
+  .floating-drawing-controls label[title^="Прозрачность"] {
+    grid-template-columns: auto minmax(78px, 1fr);
   }
 }
 
 @media (max-width: 460px) {
+  .floating-drawing-controls {
+    width: min(380px, calc(100vw - 10px));
+    gap: 5px;
+  }
+
   .floating-drawing-controls .compact-slider > span {
     display: none;
   }
 
-  .floating-drawing-controls .compact-slider {
-    grid-template-columns: minmax(42px, 1fr) 30px;
+  .floating-drawing-controls label[title^="Прозрачность"] {
+    grid-template-columns: minmax(76px, 1fr);
+  }
+
+  .floating-drawing-controls label[title^="Толщина"] {
+    grid-template-columns: minmax(118px, 1fr);
   }
 }
