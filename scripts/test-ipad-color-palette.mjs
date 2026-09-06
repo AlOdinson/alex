@@ -30,6 +30,10 @@ assert.match(palette, /preventDefault\(\)/, 'The native browser color picker mus
 assert.match(palette, /dispatchEvent/, 'Palette selections must flow through the existing controlled color input');
 assert.match(palette, /eyedropper-button/, 'Palette eyedropper must reuse the board eyedropper action');
 assert.match(palette, /document\.body\.append/, 'Palette must render at document level above the board');
+assert.match(palette, /const PALETTE_SCALE = 0\.65;/, 'Palette must be reduced to 65% of its previous size on every device');
+assert.match(palette, /const PALETTE_WIDTH = Math\.round\(390 \* PALETTE_SCALE\);/, 'Palette width must use the 65% scale');
+assert.match(palette, /const PALETTE_MIN_WIDTH = Math\.round\(300 \* PALETTE_SCALE\);/, 'Small viewport minimum width must also use the 65% scale');
+assert.match(palette, /const PALETTE_GAP = Math\.round\(14 \* PALETTE_SCALE\);/, 'Palette anchor gap must shrink with the palette');
 
 const css = fs.readFileSync(cssUrl, 'utf8');
 assert.match(css, /\.ipad-system-color-palette/, 'Palette stylesheet must define the system popover shell');
@@ -39,5 +43,9 @@ assert.match(css, /\.ipad-system-preview/, 'Palette stylesheet must define the l
 assert.match(css, /\.ipad-system-quick-colors/, 'Palette stylesheet must define the quick colors row');
 assert.match(css, /\.ipad-system-tabs/, 'Palette stylesheet must define the three segmented tabs');
 assert.match(css, /\.ipad-system-spectrum/, 'Palette stylesheet must define the spectrum surface');
+assert.match(css, /\.ipad-system-color-palette\s*\{[\s\S]*?padding:\s*10px 12px 12px;/, 'Desktop palette padding must be reduced by about 35%');
+assert.match(css, /\.ipad-system-preview\s*\{[\s\S]*?width:\s*51px;[\s\S]*?height:\s*51px;/, 'Desktop current-color preview must shrink with the palette');
+assert.match(css, /@media \(max-width:\s*760px\)[\s\S]*?\.ipad-system-color-palette\s*\{[\s\S]*?padding:\s*9px 10px 10px;/, 'Mobile/tablet palette padding must also be reduced by about 35%');
+assert.match(css, /@media \(max-width:\s*760px\)[\s\S]*?\.ipad-system-preview\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px;/, 'Mobile/tablet current-color preview must also shrink by about 35%');
 
 console.log('iPad system color palette regression passed.');
