@@ -17,5 +17,21 @@ jobs:
           cache: npm
       - run: node --version && npm --version
       - run: npm install --no-audit --no-fund
-      - run: npm run test:sync
+      - name: Run sync suite and capture output
+        id: sync
+        shell: bash
+        run: |
+          set +e
+          npm run test:sync > test-sync.log 2>&1
+          status=$?
+          cat test-sync.log
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: baseline-sync-log
+          path: test-sync.log
       - run: npm run build
+      - name: Fail if sync suite failed
+        if: steps.sync.outputs.status != '0'
+        run: exit 1
