@@ -12,8 +12,8 @@ assert.ok(fs.existsSync(cssUrl), 'Three-dot drawing controls stylesheet must exi
 assert.match(toolbar, /import \{ createPortal \} from ['\"]react-dom['\"];/, 'Toolbar must keep rendering floating controls through a React portal');
 assert.match(toolbar, /\['pencil', 'line', 'shape'\]\.includes\(tool\)/, 'Pencil, Line and Shapes must trigger floating drawing controls');
 assert.match(toolbar, /floating-drawing-controls/, 'Existing floating control DOM must remain available');
-assert.match(toolbar, /ColorPalettePopover/, 'Center dot must open the approved rich color palette');
-assert.match(toolbar, /colorAnchorRef/, 'Center dot must expose an anchor for palette placement');
+assert.match(toolbar, /<input\s+[\s\S]*?type=['\"]color['\"][\s\S]*?value=\{color\}/, 'Center dot must keep the existing controlled color input');
+assert.match(main, /ipad-color-palette/, 'The center color input must be enhanced by the rich palette module');
 assert.match(presets, /STROKE_WIDTH_STEPS = \[\s*1,\s*2,\s*3,\s*4,\s*5,\s*8,\s*10,\s*15,\s*20,\s*25,\s*50,\s*100,?\s*\]/, 'Drawing widths must keep the agreed 12 discrete values');
 
 assert.match(enhancer, /\.board-tool-dock \.dock-tool-button\.active/, 'Three-dot controls must anchor to the active Pencil, Line or Shapes dock button');
