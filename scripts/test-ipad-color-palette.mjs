@@ -31,7 +31,6 @@ assert.match(palette, /getBoundingClientRect/, 'Palette must position from the c
 assert.match(palette, /openAbove/, 'Palette must prefer opening above the center dot');
 assert.match(palette, /preventDefault\(\)/, 'The native browser color picker must be suppressed');
 assert.match(palette, /dispatchEvent/, 'Palette selections must flow through the existing controlled color input');
-assert.doesNotMatch(palette, /ipad-system-eyedropper|eyedropper-button/, 'Color palette must not render or proxy an eyedropper control');
 assert.match(palette, /document\.body\.append/, 'Palette must render at document level above the board');
 
 const css = fs.readFileSync(cssUrl, 'utf8');
@@ -49,5 +48,6 @@ assert.match(scaleCss, /\.ipad-system-color-palette\.open-above\s*\{[\s\S]*?tran
 assert.match(scaleCss, /\.ipad-system-color-palette\.open-above\s*\{[\s\S]*?transform-origin:\s*bottom center;/, 'Scaled palette opening above must stay anchored to the center color dot');
 assert.match(scaleCss, /\.ipad-system-color-palette\.open-below\s*\{[\s\S]*?transform:\s*scale\(0\.73125\) !important;/, 'Palette opening below must be 12.5% larger than the previous 65% scale');
 assert.match(scaleCss, /\.ipad-system-color-palette\.open-below\s*\{[\s\S]*?transform-origin:\s*top center;/, 'Scaled palette opening below must stay anchored to the center color dot');
+assert.match(scaleCss, /\.ipad-system-eyedropper\s*\{[\s\S]*?visibility:\s*hidden !important;[\s\S]*?pointer-events:\s*none !important;/, 'Palette eyedropper must be hidden and non-interactive on every device');
 
 console.log('iPad system color palette regression passed.');
