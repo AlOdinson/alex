@@ -30,6 +30,6 @@ assert.match(css, /\.floating-drawing-controls > \.eyedropper-button \+ \.compac
 assert.match(css, /\.floating-drawing-controls > \.compact-slider \+ \.compact-slider\s*\{[\s\S]*?order:\s*3;/, 'Width must be the right dot');
 assert.match(css, /\.floating-drawing-controls\.opacity-open[\s\S]*?right:\s*0/, 'Opacity scale must expand left from the left dot');
 assert.match(css, /\.floating-drawing-controls\.width-open[\s\S]*?left:\s*0/, 'Width scale must expand right from the right dot');
-assert.match(css, /\.floating-drawing-controls \.compact-slider > strong/, 'Opacity and width values must be visible above the side dots');
+assert.match(css, /\.floating-drawing-controls > \.eyedropper-button \+ \.compact-slider > strong,[\s\S]*?\.floating-drawing-controls > \.compact-slider \+ \.compact-slider > strong/, 'Opacity and width values must be visible above the side dots with selectors strong enough to beat legacy rules');
 assert.match(css, /@media \(max-width:\s*760px\)/, 'Three-dot controls must keep a compact mobile layout');
 console.log('Three-dot floating drawing controls regression passed.');
