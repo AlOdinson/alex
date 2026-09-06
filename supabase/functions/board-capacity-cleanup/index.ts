@@ -1,6 +1,5 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.110.8';
 
-const BUCKET = 'board-assets';
 const PAGE_SIZE = 100;
 const REMOVE_BATCH = 100;
 
@@ -54,7 +53,7 @@ Deno.serve(async (request: Request) => {
   const removePrefix = async (boardId: string) => {
     for (;;) {
       const { data: files, error: listError } = await supabase.storage
-        .from(BUCKET).list(boardId, {
+        .from('board-assets').list(boardId, {
           limit: PAGE_SIZE,
           offset: 0,
           sortBy: { column: 'name', order: 'asc' },
@@ -74,7 +73,7 @@ Deno.serve(async (request: Request) => {
           Number(entry?.metadata?.size ?? 0),
         ]),
       );
-      const { error: removeError } = await supabase.storage.from(BUCKET).remove(paths);
+      const { error: removeError } = await supabase.storage.from('board-assets').remove(paths);
       if (removeError) throw removeError;
       removedObjects += paths.length;
       removedBytes += paths.reduce((sum, path) => sum + Math.max(0, sizeByPath.get(path) ?? 0), 0);
@@ -100,7 +99,7 @@ Deno.serve(async (request: Request) => {
 
     for (let offset = 0; ; offset += PAGE_SIZE) {
       const { data: roots, error: rootsError } = await supabase.storage
-        .from(BUCKET).list('', {
+        .from('board-assets').list('', {
           limit: PAGE_SIZE,
           offset,
           sortBy: { column: 'name', order: 'asc' },
