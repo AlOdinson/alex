@@ -246,19 +246,10 @@ export default {
 
       const keyHash = await sha256(boardKey);
       const boardAccessClient = ctx.supabase as unknown as BoardAccessRpcClient;
-      let accessData: unknown = null;
-      let accessError: BoardAccessRpcError = null;
-      ({ data: accessData, error: accessError } = await boardAccessClient.rpc(
-        "get_board_access_v4",
+      const { data: accessData, error: accessError } = await boardAccessClient.rpc(
+        "get_board_access_v8",
         { p_id: boardId, p_key_hash: keyHash },
-      ));
-
-      if (accessError && /function .* does not exist/i.test(accessError.message ?? "")) {
-        ({ data: accessData, error: accessError } = await boardAccessClient.rpc(
-          "get_board_access",
-          { p_id: boardId, p_key_hash: keyHash },
-        ));
-      }
+      );
       if (accessError) {
         console.error("Cloudflare board access check failed", accessError);
         return jsonError("Could not verify board access", 500);
