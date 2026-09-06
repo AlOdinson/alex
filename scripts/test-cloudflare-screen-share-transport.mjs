@@ -22,7 +22,7 @@ class FakePublisherPeer {
 
   constructor(configuration) {
     this.configuration = configuration;
-    this.iceGatheringState = 'complete';
+    this.iceGatheringState = 'gathering';
     this.connectionState = 'new';
     this.localDescription = null;
     this.remoteDescription = null;
@@ -68,7 +68,7 @@ class FakeSubscriberPeer {
 
   constructor(configuration) {
     this.configuration = configuration;
-    this.iceGatheringState = 'complete';
+    this.iceGatheringState = 'gathering';
     this.localDescription = null;
     this.remoteDescription = null;
     this.closed = false;
@@ -127,6 +127,7 @@ const publisher = await createCloudflarePublisher({
   trackName: 'screen:boardABC:sessionXYZ',
   api: publisherApi,
   RTCPeerConnectionImpl: FakePublisherPeer,
+  iceGatherTimeoutMs: 250,
 });
 
 const publisherPeer = FakePublisherPeer.instances.at(-1);
@@ -136,7 +137,11 @@ assert.deepEqual(publisherCalls.slice(0, 2).map((entry) => Array.isArray(entry) 
   'createPublisherSession',
   'publishTrack',
 ]);
-assert.equal(publisherCalls[1][1].sdp, 'publisher-offer-with-ice', 'publisher sends gathered local SDP');
+assert.equal(
+  publisherCalls[1][1].sdp,
+  'publisher-offer-before-ice',
+  'publisher sends the original offer without waiting for ICE gathering',
+);
 assert.equal(publisherCalls[1][1].mid, '0');
 assert.deepEqual(publisherPeer.remoteDescription, { type: 'answer', sdp: 'cloudflare-answer' });
 assert.equal(publisher.sender, publisherPeer.sender);
@@ -185,6 +190,7 @@ const subscriber = await createCloudflareSubscriber({
   trackName: 'screen:boardABC:sessionXYZ',
   api: subscriberApi,
   RTCPeerConnectionImpl: FakeSubscriberPeer,
+  iceGatherTimeoutMs: 250,
 });
 
 const subscriberPeer = FakeSubscriberPeer.instances.at(-1);
@@ -193,7 +199,11 @@ assert.deepEqual(
   ['createViewerSession', 'subscribeTrack', 'renegotiateViewer'],
 );
 assert.equal(subscriberCalls[1][1].publisherSessionId, 'publisher_123456');
-assert.equal(subscriberCalls[2][1].sdp, 'viewer-answer-with-ice');
+assert.equal(
+  subscriberCalls[2][1].sdp,
+  'viewer-answer-before-ice',
+  'viewer sends the original answer without waiting for ICE gathering',
+);
 assert.deepEqual(subscriberPeer.remoteDescription, { type: 'offer', sdp: 'cloudflare-viewer-offer' });
 assert.equal(subscriber.stream.id, 'cloud-stream');
 assert.equal(subscriber.mid, '7');
