@@ -64,5 +64,10 @@ jobs:
           node scripts/test-screenshare-full-frame-release.mjs
           node scripts/test-desktop-sharescreen-button.mjs
 
+      - name: Drawing palette regression
+        run: |
+          node scripts/test-floating-drawing-controls.mjs
+          node scripts/test-ipad-color-palette.mjs
+
       - name: Production build
         run: npm run build
