@@ -1,0 +1,9 @@
+.ipad-system-color-palette.open-above {
+  transform: translateY(-100%) scale(0.65) !important;
+  transform-origin: bottom center;
+}
+
+.ipad-system-color-palette.open-below {
+  transform: scale(0.65) !important;
+  transform-origin: top center;
+}
