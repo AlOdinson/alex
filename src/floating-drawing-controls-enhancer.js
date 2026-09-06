@@ -1,5 +1,7 @@
+const OPACITY_SELECTOR = '.floating-drawing-controls > .eyedropper-button + .compact-slider';
+
 function syncFloatingOpacity(root = document) {
-  const labels = root.querySelectorAll?.('.floating-drawing-controls label[title^="Прозрачность"]') ?? [];
+  const labels = root.querySelectorAll?.(OPACITY_SELECTOR) ?? [];
   labels.forEach((label) => {
     const input = label.querySelector('input[type="range"]');
     if (!input) return;
@@ -12,7 +14,7 @@ function syncFloatingOpacity(root = document) {
 function handleInput(event) {
   const input = event.target;
   if (!(input instanceof HTMLInputElement) || input.type !== 'range') return;
-  const label = input.closest('.floating-drawing-controls label[title^="Прозрачность"]');
+  const label = input.closest(OPACITY_SELECTOR);
   if (!label) return;
   syncFloatingOpacity(label.parentElement ?? document);
 }
