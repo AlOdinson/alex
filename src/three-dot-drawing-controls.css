@@ -70,8 +70,10 @@
   display: none !important;
 }
 
-/* 100% and 3px stay immediately above their dots. */
-.floating-drawing-controls .compact-slider > strong {
+/* 100% and 3px stay immediately above their dots. These structural selectors are
+   intentionally stronger than the legacy language-independent rules loaded earlier. */
+.floating-drawing-controls > .eyedropper-button + .compact-slider > strong,
+.floating-drawing-controls > .compact-slider + .compact-slider > strong {
   position: absolute !important;
   z-index: 4 !important;
   display: block !important;
@@ -94,7 +96,8 @@
   pointer-events: none !important;
 }
 
-.floating-drawing-controls .compact-slider > strong::after {
+.floating-drawing-controls > .eyedropper-button + .compact-slider > strong::after,
+.floating-drawing-controls > .compact-slider + .compact-slider > strong::after {
   display: none !important;
   content: none !important;
 }
@@ -250,7 +253,8 @@
     --three-dot-scale-width: min(132px, 31vw);
   }
 
-  .floating-drawing-controls .compact-slider > strong {
+  .floating-drawing-controls > .eyedropper-button + .compact-slider > strong,
+  .floating-drawing-controls > .compact-slider + .compact-slider > strong {
     top: -22px !important;
     font-size: 10px !important;
   }
