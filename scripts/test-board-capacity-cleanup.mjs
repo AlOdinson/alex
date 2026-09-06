@@ -34,8 +34,8 @@ assert.match(edgeFunction, /x-board-cleanup-token/);
 assert.match(edgeFunction, /SUPABASE_SERVICE_ROLE_KEY/);
 assert.match(edgeFunction, /run_board_capacity_cleanup_v1/);
 assert.match(edgeFunction, /finish_board_capacity_cleanup_v1/);
-assert.match(edgeFunction, /storage\.from\(['"]board-assets['"]\)\.list/);
-assert.match(edgeFunction, /\.remove\(/);
+assert.match(edgeFunction, /storage[\s\S]{0,40}\.from\(['"]board-assets['"]\)[\s\S]{0,20}\.list/);
+assert.match(edgeFunction, /\.from\(['"]board-assets['"]\)\.remove\(/);
 assert.doesNotMatch(edgeFunction, /storage\.objects/);
 
 assert.match(cronSql, /0 20 \* \* \*/);
