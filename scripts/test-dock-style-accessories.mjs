@@ -25,10 +25,13 @@ assert.match(css, /:root\s*\{[\s\S]*?--dock-style-tile:\s*28px/);
 assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?position:\s*fixed/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?position:\s*fixed[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*repeat\(2,/);
 assert.match(css, /\.dock-style-right-accessories\[hidden\][\s\S]*?display:\s*none/);
-assert.match(css, /\.dock-style-eyedropper-button,[\s\S]*?\.dock-style-preset-button\s*\{[\s\S]*?border:\s*0\s*!important/);
-assert.match(css, /\.dock-style-preset-button:nth-child\(2\)[\s\S]*?grid-column:\s*2[\s\S]*?grid-row:\s*1/);
-assert.match(css, /\.dock-style-preset-button:nth-child\(3\)[\s\S]*?grid-column:\s*1[\s\S]*?grid-row:\s*2/);
-assert.match(css, /\.dock-style-preset-button:nth-child\(4\)[\s\S]*?grid-column:\s*2[\s\S]*?grid-row:\s*2/);
+assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?border-radius:\s*0\s*!important/);
+assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?overflow:\s*visible\s*!important/);
+assert.match(css, /\.dock-style-eyedropper-button,[\s\S]*?\.dock-style-preset-button\s*\{[\s\S]*?border:\s*0\s*!important[\s\S]*?border-radius:\s*0\s*!important/);
+assert.match(css, /\.dock-style-eyedropper-button\s*\{[\s\S]*?border-radius:\s*0\s*!important/);
+assert.match(css, /\.dock-style-preset-button:nth-child\(2\)[\s\S]*?grid-column:\s*2[\s\S]*?grid-row:\s*1[\s\S]*?border-radius:\s*0\s*!important/);
+assert.match(css, /\.dock-style-preset-button:nth-child\(3\)[\s\S]*?grid-column:\s*1[\s\S]*?grid-row:\s*2[\s\S]*?border-radius:\s*0\s*!important/);
+assert.match(css, /\.dock-style-preset-button:nth-child\(4\)[\s\S]*?grid-column:\s*2[\s\S]*?grid-row:\s*2[\s\S]*?border-radius:\s*0\s*!important/);
 
 // Width is plain text on the tile: no pill/badge, with automatic black/white contrast.
 assert.match(enhancerSource, /function presetLabelColor/);
@@ -43,7 +46,15 @@ assert.match(enhancerSource, /function createEyedropperIcon/);
 assert.match(enhancerSource, /dock-style-eyedropper-icon/);
 assert.match(css, /\.dock-style-eyedropper-icon\s*\{/);
 
+// A gear sits just outside the top-right of the four tiles and opens the existing preset editor.
+assert.match(enhancerSource, /function createPresetsGearIcon/);
+assert.match(enhancerSource, /dock-style-presets-gear/);
+assert.match(enhancerSource, /function openPresetEditorPanel/);
+assert.match(enhancerSource, /document\.querySelector\('\.drawing-presets-gear'\)/);
+assert.match(enhancerSource, /data\.dockStyleAction\s*=\s*'edit-presets'/);
+assert.match(css, /\.dock-style-presets-gear\s*\{[\s\S]*?position:\s*absolute\s*!important[\s\S]*?left:\s*calc\(100% \+ [^)]+\)\s*!important[\s\S]*?top:/);
+
 assert.match(css, /\.selection-floating-proxy\s*\{/);
 assert.match(css, /\.selected-style-controls\.dock-selection-source\s*\{[\s\S]*?display:\s*none/);
 
-console.log('Bottom dock history, clean preset tiles, contrast labels, eyedropper icon, and selection controls contract passed.');
+console.log('Bottom dock history, square preset tiles, edit gear, contrast labels, eyedropper icon, and selection controls contract passed.');
