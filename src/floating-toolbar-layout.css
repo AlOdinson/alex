@@ -1,6 +1,10 @@
 /* Floating utility layout: keep existing React controls/handlers, change only placement. */
 .toolbar-shell {
   display: contents !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
 
 .toolbar-primary-row,
