@@ -47,8 +47,9 @@ assert.match(layoutCss, /\.toolbar-secondary-row \.object-actions > :nth-child\(
 
 // The old full-width white toolbar chrome is gone; its two rows float at the upper right.
 assert.match(layoutCss, /\.toolbar-shell\s*\{[\s\S]*?background:\s*transparent\s*!important[\s\S]*?box-shadow:\s*none\s*!important[\s\S]*?backdrop-filter:\s*none\s*!important/);
-assert.match(layoutCss, /\.toolbar-primary-row\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?top:[\s\S]*?right:[\s\S]*?width:\s*auto\s*!important[\s\S]*?background:\s*transparent\s*!important/);
-assert.match(layoutCss, /\.toolbar-secondary-row\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?top:[\s\S]*?right:[\s\S]*?width:\s*auto\s*!important[\s\S]*?background:\s*transparent\s*!important/);
+assert.match(layoutCss, /\.toolbar-primary-row,\s*\.toolbar-secondary-row\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?width:\s*auto\s*!important[\s\S]*?background:\s*transparent\s*!important/);
+assert.match(layoutCss, /\.toolbar-primary-row\s*\{[\s\S]*?top:[\s\S]*?right:[\s\S]*?max-width:/);
+assert.match(layoutCss, /\.toolbar-secondary-row\s*\{[\s\S]*?top:[\s\S]*?right:[\s\S]*?max-width:/);
 assert.match(layoutCss, /\.toolbar-primary-row \.toolbar-spacer\s*\{[\s\S]*?display:\s*none\s*!important/);
 assert.match(layoutCss, /\.toolbar-primary-row \.brand-button\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?left:/);
 assert.match(layoutCss, /\.toolbar-status\s*\{[\s\S]*?margin-left:\s*0\s*!important/);
