@@ -39,6 +39,7 @@ assert.match(historyCss, /\.dock-history-icon\s*\{[\s\S]*?width:\s*24px\s*!impor
 // Preset tiles should read as one clean, palette-like 2x2 block beside the dock.
 assert.match(css, /:root\s*\{[\s\S]*?--dock-style-tile:\s*28px/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?position:\s*fixed[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*repeat\(2,/);
+assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?width:\s*calc\(var\(--dock-style-tile\) \* 2 \+ 2px\)\s*!important[\s\S]*?height:\s*calc\(var\(--dock-style-tile\) \* 2 \+ 2px\)\s*!important[\s\S]*?gap:\s*2px\s*!important/);
 assert.match(css, /\.dock-style-right-accessories\[hidden\][\s\S]*?display:\s*none/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?border-radius:\s*0\s*!important/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?overflow:\s*visible\s*!important/);
@@ -72,4 +73,4 @@ assert.match(css, /\.dock-style-presets-gear\s*\{[\s\S]*?position:\s*absolute\s*
 assert.match(css, /\.selection-floating-proxy\s*\{/);
 assert.match(css, /\.selected-style-controls\.dock-selection-source\s*\{[\s\S]*?display:\s*none/);
 
-console.log('Minimal circular history arrows, square preset tiles, edit gear, contrast labels, eyedropper icon, and selection controls contract passed.');
+console.log('Minimal circular history arrows, square preset tiles with 2px spacing, edit gear, contrast labels, eyedropper icon, and selection controls contract passed.');
