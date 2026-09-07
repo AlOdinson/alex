@@ -73,12 +73,12 @@
   z-index: 188 !important;
   left: min(calc(100vw - 88px), calc(var(--dock-style-right, 50vw) + 8px)) !important;
   top: var(--dock-style-accessory-top, calc(100vh - 58px)) !important;
-  width: calc(var(--dock-style-tile) * 2) !important;
-  height: calc(var(--dock-style-tile) * 2) !important;
+  width: calc(var(--dock-style-tile) * 2 + 2px) !important;
+  height: calc(var(--dock-style-tile) * 2 + 2px) !important;
   display: grid !important;
   grid-template-columns: repeat(2, var(--dock-style-tile)) !important;
   grid-template-rows: repeat(2, var(--dock-style-tile)) !important;
-  gap: 0 !important;
+  gap: 2px !important;
   margin: 0 !important;
   padding: 0 !important;
   border: 0 !important;
