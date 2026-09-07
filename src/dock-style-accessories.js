@@ -4,6 +4,7 @@ const SELECT_TOOL_LABEL = 'Выделение';
 const STROKE_WIDTH_STEPS = [1, 2, 3, 4, 5, 8, 10, 15, 20, 25, 50, 100];
 
 let syncFrame = 0;
+let suppressAccessoryClickUntil = 0;
 
 function activeDockButton() {
   return document.querySelector('.board-tool-dock .dock-tool-button.active');
@@ -184,7 +185,7 @@ function syncHistoryButtons(shell) {
   proxies.forEach((proxy, index) => {
     const source = sourceButtons[index] ?? null;
     proxy.disabled = !source || source.disabled;
-    if (source?.title) {
+    if (source?.title && proxy.title !== source.title) {
       proxy.title = source.title;
       proxy.setAttribute('aria-label', source.title);
     }
@@ -242,10 +243,13 @@ function syncRightAccessories(shell, accessoriesVisible, selectionActive) {
     button.classList.toggle('empty', !preset);
     button.classList.toggle('active', !selectionActive && Boolean(source?.classList.contains('active')));
     button.disabled = !accessoriesVisible;
-    button.title = preset
+    const nextTitle = preset
       ? `Пресет ${index + 1}: ${Math.round((Number(preset.opacity) || 1) * 100)}%, ${Math.round(width)}px`
       : `Пресет ${index + 1} пуст — нажмите для настройки`;
-    button.setAttribute('aria-label', button.title);
+    if (button.title !== nextTitle) {
+      button.title = nextTitle;
+      button.setAttribute('aria-label', nextTitle);
+    }
   });
 }
 
@@ -273,26 +277,29 @@ function scheduleSync() {
   syncFrame = requestAnimationFrame(syncState);
 }
 
-function handleAccessoryClick(event) {
-  const historyButton = event.target?.closest?.('.dock-history-button');
-  if (historyButton instanceof HTMLButtonElement) {
+function accessoryTarget(target) {
+  return target?.closest?.('.dock-history-button, .dock-style-eyedropper-button, .dock-style-preset-button') ?? null;
+}
+
+function activateAccessoryTarget(target) {
+  if (!(target instanceof HTMLButtonElement) || target.disabled) return;
+
+  if (target.classList.contains('dock-history-button')) {
     const sourceButtons = historySourceButtons();
-    const index = historyButton.dataset.dockHistoryAction === 'redo' ? 1 : 0;
+    const index = target.dataset.dockHistoryAction === 'redo' ? 1 : 0;
     const source = sourceButtons[index];
     if (source instanceof HTMLButtonElement && !source.disabled) source.click();
     return;
   }
 
-  const eyedropper = event.target?.closest?.('.dock-style-eyedropper-button');
-  if (eyedropper instanceof HTMLButtonElement) {
+  if (target.classList.contains('dock-style-eyedropper-button')) {
     clickActiveEyedropper();
     scheduleSync();
     return;
   }
 
-  const presetButton = event.target?.closest?.('.dock-style-preset-button');
-  if (!(presetButton instanceof HTMLButtonElement)) return;
-  const index = Number(presetButton.dataset.presetIndex);
+  if (!target.classList.contains('dock-style-preset-button')) return;
+  const index = Number(target.dataset.presetIndex);
   if (!Number.isInteger(index) || index < 0 || index > 2) return;
   const preset = readPresets()[index] ?? null;
 
@@ -307,6 +314,30 @@ function handleAccessoryClick(event) {
     if (source instanceof HTMLButtonElement && !source.disabled) source.click();
   }
   scheduleSync();
+}
+
+function handleAccessoryClick(event) {
+  const target = accessoryTarget(event.target);
+  if (!target) return;
+  if (performance.now() < suppressAccessoryClickUntil) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
+  activateAccessoryTarget(target);
+}
+
+function handleAccessoryTouchEnd(event) {
+  const stylus = [...Array.from(event?.changedTouches ?? []), ...Array.from(event?.touches ?? [])]
+    .find((touch) => String(touch?.touchType ?? '').toLowerCase() === 'stylus');
+  if (!stylus) return;
+  const target = accessoryTarget(event.target);
+  if (!target) return;
+  if (event.cancelable) event.preventDefault();
+  event.stopPropagation();
+  suppressAccessoryClickUntil = performance.now() + 900;
+  activateAccessoryTarget(target);
+  target.blur();
 }
 
 function handlePresetEditorShortcut(event) {
@@ -327,10 +358,11 @@ if (typeof document !== 'undefined') {
     childList: true,
     subtree: true,
     attributes: true,
-    attributeFilter: ['class', 'disabled', 'title', 'aria-pressed'],
+    attributeFilter: ['class', 'disabled', 'aria-pressed'],
   });
 
   document.addEventListener('click', handleAccessoryClick, true);
+  document.addEventListener('touchend', handleAccessoryTouchEnd, { passive: false, capture: true });
   document.addEventListener('contextmenu', handlePresetEditorShortcut, true);
   document.addEventListener('dblclick', handlePresetEditorShortcut, true);
   window.addEventListener('storage', scheduleSync);
