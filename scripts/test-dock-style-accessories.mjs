@@ -10,9 +10,10 @@ const css = await readFile(new URL('../src/dock-style-accessories.css', import.m
 
 assert.match(mainSource, /import '\.\/dock-style-accessories\.css';/);
 assert.match(mainSource, /import '\.\/dock-style-accessories\.js';/);
+assert.match(mainSource, /import '\.\/dock-history-icons\.css';/);
+assert.match(mainSource, /import '\.\/dock-history-icons\.js';/);
 assert.match(mainSource, /import '\.\/dock-style-presets-gear\.js';/);
 assert.match(mainSource, /import '\.\/floating-toolbar-layout\.css';/);
-assert.doesNotMatch(mainSource, /dock-history-icons/);
 
 assert.match(enhancerSource, /alex-board:drawing-presets:v1/);
 assert.match(enhancerSource, /drawingSourceRoot/);
@@ -35,9 +36,9 @@ assert.match(toolbarSource, /<LanguageToggle compact \/>/);
 assert.match(toolbarSource, /className={`toolbar-status sync-\$\{syncTone\}`}/);
 assert.match(toolbarSource, /className="toolbar-end-actions"/);
 
-// Undo/redo disappear from the screen, but Board keyboard shortcuts remain untouched.
-assert.match(layoutCss, /\.toolbar-primary-row \[aria-label="Отмена и возврат"\]\s*\{[\s\S]*?display:\s*none\s*!important/);
-assert.match(layoutCss, /\.dock-history-accessories\s*\{[\s\S]*?display:\s*none\s*!important/);
+// The upper React undo/redo pair stays hidden, while the approved dock pair is visible.
+assert.match(layoutCss, /\[aria-label="Отмена и возврат"\]\s*\{[\s\S]*?display:\s*none\s*!important/);
+assert.doesNotMatch(layoutCss, /\.dock-history-accessories\s*\{[\s\S]*?display:\s*none\s*!important/);
 
 // Permanent left-center edit column and selection-only object column.
 assert.match(layoutCss, /\.toolbar-secondary-row \.edit-actions\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?left:[\s\S]*?top:\s*50%\s*!important[\s\S]*?flex-direction:\s*column\s*!important/);
@@ -91,4 +92,4 @@ assert.match(css, /\.dock-style-presets-gear\s*\{[\s\S]*?position:\s*absolute\s*
 assert.match(css, /\.selection-floating-proxy\s*\{/);
 assert.match(css, /\.selected-style-controls\.dock-selection-source\s*\{[\s\S]*?display:\s*none/);
 
-console.log('Floating left actions, top-right utility rows/status, hidden on-screen history, and the approved preset block contract passed.');
+console.log('Floating actions, hidden upper history, visible dock history, and the approved preset block contract passed.');
