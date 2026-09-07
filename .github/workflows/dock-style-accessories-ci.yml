@@ -1,0 +1,22 @@
+name: Dock Style Accessories CI
+
+on:
+  push:
+    branches:
+      - feature/dock-style-accessories
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run dock accessory regression
+        run: node scripts/test-dock-style-accessories.mjs
