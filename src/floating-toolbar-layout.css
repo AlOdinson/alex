@@ -55,12 +55,9 @@
   display: none !important;
 }
 
-/* Remove both visible undo/redo surfaces. Keyboard history remains in Board. */
-.toolbar-primary-row [aria-label="Отмена и возврат"] {
-  display: none !important;
-}
-
-.dock-history-accessories {
+/* The legacy React undo/redo pair stays mounted for handlers but never renders
+   in the upper toolbar. The visible history controls live beside the bottom dock. */
+[aria-label="Отмена и возврат"] {
   display: none !important;
 }
 
