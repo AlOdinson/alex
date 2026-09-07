@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const css = await readFile(new URL('../src/floating-toolbar-layout.css', import.meta.url), 'utf8');
 const mainSource = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
+const toolbarSource = await readFile(new URL('../src/components/Toolbar.jsx', import.meta.url), 'utf8');
 const i18nSource = await readFile(new URL('../src/i18n.js', import.meta.url), 'utf8');
 const historyCss = await readFile(new URL('../src/dock-history-icons.css', import.meta.url), 'utf8');
 const historyJs = await readFile(new URL('../src/dock-history-icons.js', import.meta.url), 'utf8');
@@ -21,8 +22,11 @@ assert.match(css, /\.toolbar-primary-row,\s*\n\.toolbar-secondary-row\s*\{[^}]*p
 assert.match(css, /\.toolbar-primary-row\s*\{[^}]*right:\s*max\(10px,\s*env\(safe-area-inset-right\)\)\s*!important/);
 assert.match(css, /\.toolbar-secondary-row\s*\.edit-actions\s*\{[^}]*top:\s*50%\s*!important/);
 
-// The status must participate in the right-side row instead of staying absolutely
-// positioned by the legacy desktop toolbar CSS.
+// Background + language stay on one utility row; sync/edit/save status is a dedicated
+// second row immediately below them on every viewport instead of sitting to their right.
+assert.match(toolbarSource, /className="secondary-utility-stack"[\s\S]*?className="secondary-utility-row"[\s\S]*?className="background-control"[\s\S]*?<LanguageToggle compact \/>[\s\S]*?className={`toolbar-status sync-\$\{syncTone\}`}/);
+assert.match(css, /\.toolbar-secondary-row \.secondary-utility-stack\s*\{[^}]*display:\s*flex\s*!important[^}]*flex-direction:\s*column\s*!important[^}]*align-items:\s*flex-end\s*!important/);
+assert.match(css, /\.toolbar-secondary-row \.secondary-utility-row\s*\{[^}]*display:\s*flex\s*!important[^}]*align-items:\s*center\s*!important/);
 assert.match(css, /(?:^|\n)\.toolbar-status\s*\{[^}]*position:\s*static\s*!important/);
 
 // Undo/redo belong beside the bottom dock on every viewport. i18n rewrites the legacy
@@ -41,4 +45,4 @@ assert.match(historyCss, /\.dock-history-button\s*\{[^}]*border:\s*0\s*!importan
 assert.match(historyCss, /\.dock-history-icon\s*\{[^}]*stroke-width:\s*1\.9\s*!important[^}]*stroke-linecap:\s*round\s*!important/);
 assert.match(historyCss, /@media \(max-width:\s*760px\)[\s\S]*?\.dock-history-accessories\s*\{[^}]*left:\s*max\(4px,\s*calc\(var\(--dock-style-left,\s*50vw\)\s*-\s*70px\)\)\s*!important/);
 
-console.log('Floating toolbar and dock history placement regression passed.');
+console.log('Floating toolbar, stacked status row, and dock history placement regression passed.');
