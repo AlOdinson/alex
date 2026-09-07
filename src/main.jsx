@@ -12,6 +12,8 @@ import './floating-drawing-controls-enhancer.js';
 import './ipad-system-color-palette.js';
 import './dock-style-accessories.css';
 import './dock-style-accessories.js';
+import './dock-history-icons.css';
+import './dock-history-icons.js';
 import './dock-style-presets-gear.js';
 import './floating-toolbar-layout.css';
 

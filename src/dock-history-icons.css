@@ -52,6 +52,7 @@
 
 @media (max-width: 760px) {
   .dock-history-accessories {
+    left: max(4px, calc(var(--dock-style-left, 50vw) - 70px)) !important;
     gap: 10px !important;
   }
 
