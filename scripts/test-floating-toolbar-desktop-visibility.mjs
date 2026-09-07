@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 
 const css = await readFile(new URL('../src/floating-toolbar-layout.css', import.meta.url), 'utf8');
 const mainSource = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
-const toolbarSource = await readFile(new URL('../src/components/Toolbar.jsx', import.meta.url), 'utf8');
 const historyCss = await readFile(new URL('../src/dock-history-icons.css', import.meta.url), 'utf8');
 const historyJs = await readFile(new URL('../src/dock-history-icons.js', import.meta.url), 'utf8');
 const shellBlock = css.match(/\.toolbar-shell\s*\{([^}]*)\}/)?.[1] ?? '';
@@ -25,12 +24,12 @@ assert.match(css, /\.toolbar-secondary-row\s*\.edit-actions\s*\{[^}]*top:\s*50%\
 // positioned by the legacy desktop toolbar CSS.
 assert.match(css, /(?:^|\n)\.toolbar-status\s*\{[^}]*position:\s*static\s*!important/);
 
-// Undo/redo belong beside the bottom dock on every viewport. The legacy React pair
-// must not be rendered at all, so mobile/iPad CSS can never make it reappear.
+// Undo/redo belong beside the bottom dock on every viewport. The upper React pair
+// is still mounted for compatibility, but its suppression must outrank legacy mobile
+// !important display rules so iPad/phone cannot make it reappear.
 assert.match(mainSource, /import '\.\/dock-history-icons\.css';/);
 assert.match(mainSource, /import '\.\/dock-history-icons\.js';/);
-assert.doesNotMatch(toolbarSource, /aria-label="Отмена и возврат"/);
-assert.doesNotMatch(toolbarSource, />↶<\/IconButton>[\s\S]*?>↷<\/IconButton>/);
+assert.match(css, /#root\s+\.toolbar-shell\s+\.toolbar-primary-row\s*>\s*\.tool-group\.compact\[aria-label="Отмена и возврат"\]\s*\{[^}]*display:\s*none\s*!important/);
 assert.doesNotMatch(css, /\.dock-history-accessories\s*\{[^}]*display:\s*none\s*!important/);
 
 // Keep the approved thin circular SVG treatment instead of text glyph buttons.
