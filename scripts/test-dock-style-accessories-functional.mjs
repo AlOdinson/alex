@@ -5,9 +5,11 @@ const enhancerSource = await readFile(new URL('../src/dock-style-accessories.js'
 const css = await readFile(new URL('../src/dock-style-accessories.css', import.meta.url), 'utf8');
 
 assert.match(enhancerSource, /function dispatchHistoryShortcut/);
+assert.match(enhancerSource, /new KeyboardEvent\('keydown'/);
+assert.match(enhancerSource, /metaKey:\s*true/);
 assert.match(enhancerSource, /function drawingSourceRoot/);
 assert.match(enhancerSource, /function selectionSourceRoot/);
-assert.match(enhancerSource, /right\.hidden\s*=\s*!accessoriesVisible/);
+assert.match(enhancerSource, /function syncRightAccessories\(shell, accessoriesVisible,[\s\S]*?shell\.hidden\s*=\s*!accessoriesVisible/);
 assert.match(enhancerSource, /function ensureSelectionFloatingProxy/);
 assert.match(enhancerSource, /selection-floating-proxy/);
 assert.match(enhancerSource, /syncSelectionFloatingProxy/);
