@@ -23,6 +23,9 @@ assert.match(enhancerSource, /ensureAccessoryShells/);
 assert.match(enhancerSource, /dock-style-right-accessories/);
 assert.match(enhancerSource, /dock-history-source/);
 assert.match(enhancerSource, /clickActiveEyedropper/);
+assert.match(enhancerSource, /handleAccessoryTouchEnd/);
+assert.match(enhancerSource, /touchType/);
+assert.match(enhancerSource, /suppressAccessoryClickUntil/);
 
 assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?position:\s*fixed/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?position:\s*fixed[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*repeat\(2,/);
@@ -35,4 +38,4 @@ assert.match(css, /\.dock-history-source\s*\{[\s\S]*?display:\s*none/);
 assert.match(css, /body:not\(\.dock-style-drawing-active\):not\(\.dock-style-selection-active\)[\s\S]*?\.dock-style-right-accessories[\s\S]*?display:\s*none/);
 assert.match(css, /\.dock-style-selection-active[\s\S]*?\.selection-floating-controls/);
 
-console.log('Bottom dock history, eyedropper, preset-grid, and selection-style accessory contract passed.');
+console.log('Bottom dock history, eyedropper, preset-grid, selection-style, and stylus activation contract passed.');
