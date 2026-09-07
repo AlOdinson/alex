@@ -20,14 +20,30 @@ assert.match(enhancerSource, /handleAccessoryTouchEnd/);
 assert.match(enhancerSource, /touchType/);
 assert.match(enhancerSource, /function syncRightAccessories\(shell, accessoriesVisible,[\s\S]*?shell\.hidden\s*=\s*!accessoriesVisible/);
 
+// Preset tiles should read as one clean, palette-like 2x2 block beside the dock.
+assert.match(css, /:root\s*\{[\s\S]*?--dock-style-tile:\s*28px/);
 assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?position:\s*fixed/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?position:\s*fixed[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*repeat\(2,/);
 assert.match(css, /\.dock-style-right-accessories\[hidden\][\s\S]*?display:\s*none/);
+assert.match(css, /\.dock-style-eyedropper-button,[\s\S]*?\.dock-style-preset-button\s*\{[\s\S]*?border:\s*0\s*!important/);
 assert.match(css, /\.dock-style-preset-button:nth-child\(2\)[\s\S]*?grid-column:\s*2[\s\S]*?grid-row:\s*1/);
 assert.match(css, /\.dock-style-preset-button:nth-child\(3\)[\s\S]*?grid-column:\s*1[\s\S]*?grid-row:\s*2/);
 assert.match(css, /\.dock-style-preset-button:nth-child\(4\)[\s\S]*?grid-column:\s*2[\s\S]*?grid-row:\s*2/);
-assert.match(css, /\.dock-style-preset-button::after\s*\{[\s\S]*?content:\s*attr\(data-preset-width\)/);
+
+// Width is plain text on the tile: no pill/badge, with automatic black/white contrast.
+assert.match(enhancerSource, /function presetLabelColor/);
+assert.match(enhancerSource, /--preset-label-color/);
+assert.match(css, /\.dock-style-preset-button::after\s*\{[\s\S]*?content:\s*attr\(data-preset-width\)[\s\S]*?color:\s*var\(--preset-label-color/);
+assert.doesNotMatch(css, /\.dock-style-preset-button::after\s*\{[\s\S]*?background:\s*rgba\(/);
+assert.doesNotMatch(css, /\.dock-style-preset-button::after\s*\{[\s\S]*?border-radius:\s*999px/);
+assert.match(css, /\.dock-style-preset-button::after\s*\{[\s\S]*?text-shadow:\s*none/);
+
+// The right-side pipette uses a real minimal SVG icon instead of a text glyph.
+assert.match(enhancerSource, /function createEyedropperIcon/);
+assert.match(enhancerSource, /dock-style-eyedropper-icon/);
+assert.match(css, /\.dock-style-eyedropper-icon\s*\{/);
+
 assert.match(css, /\.selection-floating-proxy\s*\{/);
 assert.match(css, /\.selected-style-controls\.dock-selection-source\s*\{[\s\S]*?display:\s*none/);
 
-console.log('Bottom dock history, right-side preset grid, and selection three-dot controls contract passed.');
+console.log('Bottom dock history, clean preset tiles, contrast labels, eyedropper icon, and selection controls contract passed.');
