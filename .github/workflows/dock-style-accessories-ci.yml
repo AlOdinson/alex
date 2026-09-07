@@ -26,3 +26,11 @@ jobs:
         run: |
           node scripts/test-dock-style-accessories.mjs
           node scripts/test-dock-style-accessories-functional.mjs
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Existing drawing palette regressions
+        run: |
+          node scripts/test-floating-drawing-controls.mjs
+          node scripts/test-ipad-color-palette.mjs
+      - name: Production build
+        run: npm run build
