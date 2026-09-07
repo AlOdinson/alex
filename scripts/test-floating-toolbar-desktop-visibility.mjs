@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const css = await readFile(new URL('../src/floating-toolbar-layout.css', import.meta.url), 'utf8');
 const mainSource = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
+const i18nSource = await readFile(new URL('../src/i18n.js', import.meta.url), 'utf8');
 const historyCss = await readFile(new URL('../src/dock-history-icons.css', import.meta.url), 'utf8');
 const historyJs = await readFile(new URL('../src/dock-history-icons.js', import.meta.url), 'utf8');
 const shellBlock = css.match(/\.toolbar-shell\s*\{([^}]*)\}/)?.[1] ?? '';
@@ -24,12 +25,13 @@ assert.match(css, /\.toolbar-secondary-row\s*\.edit-actions\s*\{[^}]*top:\s*50%\
 // positioned by the legacy desktop toolbar CSS.
 assert.match(css, /(?:^|\n)\.toolbar-status\s*\{[^}]*position:\s*static\s*!important/);
 
-// Undo/redo belong beside the bottom dock on every viewport. The upper React pair
-// is still mounted for compatibility, but its suppression must outrank legacy mobile
-// !important display rules so iPad/phone cannot make it reappear.
+// Undo/redo belong beside the bottom dock on every viewport. i18n rewrites the legacy
+// upper group's aria-label in English, so hiding it by translated text is unsafe.
 assert.match(mainSource, /import '\.\/dock-history-icons\.css';/);
 assert.match(mainSource, /import '\.\/dock-history-icons\.js';/);
-assert.match(css, /#root\s+\.toolbar-shell\s+\.toolbar-primary-row\s*>\s*\.tool-group\.compact\[aria-label="Отмена и возврат"\]\s*\{[^}]*display:\s*none\s*!important/);
+assert.match(i18nSource, /'Отмена и возврат':\s*'Undo and redo'/);
+assert.match(css, /#root\s+\.toolbar-shell\s+\.toolbar-primary-row\s*>\s*\.brand-button\s*\+\s*\.tool-group\.compact\s*\{[^}]*display:\s*none\s*!important/);
+assert.doesNotMatch(css, /\[aria-label="Отмена и возврат"\]/);
 assert.doesNotMatch(css, /\.dock-history-accessories\s*\{[^}]*display:\s*none\s*!important/);
 
 // Keep the approved thin circular SVG treatment instead of text glyph buttons.

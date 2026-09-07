@@ -36,8 +36,9 @@ assert.match(toolbarSource, /<LanguageToggle compact \/>/);
 assert.match(toolbarSource, /className={`toolbar-status sync-\$\{syncTone\}`}/);
 assert.match(toolbarSource, /className="toolbar-end-actions"/);
 
-// The upper React undo/redo pair stays hidden, while the approved dock pair is visible.
-assert.match(layoutCss, /\[aria-label="Отмена и возврат"\]\s*\{[\s\S]*?display:\s*none\s*!important/);
+// The upper React undo/redo pair stays hidden by its stable DOM position, while the approved dock pair is visible.
+assert.match(layoutCss, /#root\s+\.toolbar-shell\s+\.toolbar-primary-row\s*>\s*\.brand-button\s*\+\s*\.tool-group\.compact\s*\{[\s\S]*?display:\s*none\s*!important/);
+assert.doesNotMatch(layoutCss, /\[aria-label="Отмена и возврат"\]/);
 assert.doesNotMatch(layoutCss, /\.dock-history-accessories\s*\{[\s\S]*?display:\s*none\s*!important/);
 
 // Permanent left-center edit column and selection-only object column.

@@ -55,10 +55,10 @@
   display: none !important;
 }
 
-/* The legacy React undo/redo pair stays mounted for handlers but never renders
-   in the upper toolbar. This selector intentionally outranks legacy mobile
-   !important display rules. The visible history controls live beside the bottom dock. */
-#root .toolbar-shell .toolbar-primary-row > .tool-group.compact[aria-label="Отмена и возврат"] {
+/* The legacy React undo/redo pair is always the compact group immediately after
+   the Home button. Hide it structurally so RU/EN localization cannot revive it by
+   changing aria-label text. The visible history controls live beside the bottom dock. */
+#root .toolbar-shell .toolbar-primary-row > .brand-button + .tool-group.compact {
   display: none !important;
 }
 
