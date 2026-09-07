@@ -24,11 +24,12 @@ assert.match(css, /\.toolbar-secondary-row\s*\.edit-actions\s*\{[^}]*top:\s*50%\
 // positioned by the legacy desktop toolbar CSS.
 assert.match(css, /(?:^|\n)\.toolbar-status\s*\{[^}]*position:\s*static\s*!important/);
 
-// Undo/redo belong beside the bottom dock on every viewport. The legacy React pair
-// must never appear in the upper toolbar, including mobile.
+// Undo/redo belong beside the bottom dock on every viewport. The upper React pair
+// is still mounted for compatibility, but its suppression must outrank legacy mobile
+// !important display rules so iPad/phone cannot make it reappear.
 assert.match(mainSource, /import '\.\/dock-history-icons\.css';/);
 assert.match(mainSource, /import '\.\/dock-history-icons\.js';/);
-assert.match(css, /\[aria-label="Отмена и возврат"\]\s*\{[^}]*display:\s*none\s*!important/);
+assert.match(css, /#root\s+\.toolbar-shell\s+\.toolbar-primary-row\s*>\s*\.tool-group\.compact\[aria-label="Отмена и возврат"\]\s*\{[^}]*display:\s*none\s*!important/);
 assert.doesNotMatch(css, /\.dock-history-accessories\s*\{[^}]*display:\s*none\s*!important/);
 
 // Keep the approved thin circular SVG treatment instead of text glyph buttons.
@@ -38,4 +39,4 @@ assert.match(historyCss, /\.dock-history-button\s*\{[^}]*border:\s*0\s*!importan
 assert.match(historyCss, /\.dock-history-icon\s*\{[^}]*stroke-width:\s*1\.9\s*!important[^}]*stroke-linecap:\s*round\s*!important/);
 assert.match(historyCss, /@media \(max-width:\s*760px\)[\s\S]*?\.dock-history-accessories\s*\{[^}]*left:\s*max\(4px,\s*calc\(var\(--dock-style-left,\s*50vw\)\s*-\s*70px\)\)\s*!important/);
 
-console.log('Desktop floating toolbar and dock history placement regression passed.');
+console.log('Floating toolbar and dock history placement regression passed.');
