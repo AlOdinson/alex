@@ -22,9 +22,17 @@ assert.match(enhancerSource, /handleAccessoryTouchEnd/);
 assert.match(enhancerSource, /touchType/);
 assert.match(enhancerSource, /function syncRightAccessories\(shell, accessoriesVisible,[\s\S]*?shell\.hidden\s*=\s*!accessoriesVisible/);
 
+// Undo/redo use minimal circular SVG arrows with no visible button chrome.
+assert.match(enhancerSource, /function createHistoryIcon\(kind\)/);
+assert.match(enhancerSource, /dock-history-icon/);
+assert.match(enhancerSource, /createHistoryIcon\('undo'\)/);
+assert.match(enhancerSource, /createHistoryIcon\('redo'\)/);
+assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?gap:\s*12px\s*!important/);
+assert.match(css, /\.dock-history-button\s*\{[\s\S]*?border:\s*0\s*!important[\s\S]*?border-radius:\s*0\s*!important[\s\S]*?background:\s*transparent\s*!important[\s\S]*?box-shadow:\s*none\s*!important/);
+assert.match(css, /\.dock-history-icon\s*\{[\s\S]*?width:\s*24px\s*!important[\s\S]*?height:\s*24px\s*!important[\s\S]*?fill:\s*none\s*!important[\s\S]*?stroke:\s*#2f4778\s*!important/);
+
 // Preset tiles should read as one clean, palette-like 2x2 block beside the dock.
 assert.match(css, /:root\s*\{[\s\S]*?--dock-style-tile:\s*28px/);
-assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?position:\s*fixed/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?position:\s*fixed[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*repeat\(2,/);
 assert.match(css, /\.dock-style-right-accessories\[hidden\][\s\S]*?display:\s*none/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?border-radius:\s*0\s*!important/);
@@ -59,4 +67,4 @@ assert.match(css, /\.dock-style-presets-gear\s*\{[\s\S]*?position:\s*absolute\s*
 assert.match(css, /\.selection-floating-proxy\s*\{/);
 assert.match(css, /\.selected-style-controls\.dock-selection-source\s*\{[\s\S]*?display:\s*none/);
 
-console.log('Bottom dock history, square preset tiles, edit gear, contrast labels, eyedropper icon, and selection controls contract passed.');
+console.log('Minimal circular history arrows, square preset tiles, edit gear, contrast labels, eyedropper icon, and selection controls contract passed.');
