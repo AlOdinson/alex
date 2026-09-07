@@ -23,6 +23,29 @@ function rgbaFromPreset(preset) {
   return `rgba(${red}, ${green}, ${blue}, ${opacity})`;
 }
 
+function presetLabelColor(preset) {
+  const color = String(preset?.color ?? '').toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(color)) return '#111111';
+
+  const opacity = Math.max(0.05, Math.min(1, Number(preset?.opacity) || 1));
+  const channels = [
+    Number.parseInt(color.slice(1, 3), 16),
+    Number.parseInt(color.slice(3, 5), 16),
+    Number.parseInt(color.slice(5, 7), 16),
+  ].map((channel) => Math.round(channel * opacity + 255 * (1 - opacity)) / 255);
+
+  const toLinear = (channel) => (
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4
+  );
+  const [red, green, blue] = channels.map(toLinear);
+  const luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+  const blackContrast = (luminance + 0.05) / 0.05;
+  const whiteContrast = 1.05 / (luminance + 0.05);
+  return whiteContrast >= blackContrast ? '#ffffff' : '#111111';
+}
+
 function nearestWidthStep(width) {
   const numeric = Number(width);
   let bestIndex = 0;
@@ -55,6 +78,24 @@ function createAccessoryButton(className, label, text) {
   button.title = label;
   button.textContent = text;
   return button;
+}
+
+function createEyedropperIcon() {
+  const namespace = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(namespace, 'svg');
+  svg.classList.add('dock-style-eyedropper-icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+
+  const bulb = document.createElementNS(namespace, 'path');
+  bulb.setAttribute('d', 'M15.5 5.5 18.5 8.5');
+  const stem = document.createElementNS(namespace, 'path');
+  stem.setAttribute('d', 'm17.8 4.2 2 2a2.2 2.2 0 0 1 0 3.1l-9.7 9.7-4.1 1 1-4.1 9.7-9.7a2.2 2.2 0 0 1 3.1 0');
+  const tip = document.createElementNS(namespace, 'path');
+  tip.setAttribute('d', 'M8 16 11 19');
+  svg.append(bulb, stem, tip);
+  return svg;
 }
 
 function createProxySlider(kind, min, max, step, initialValue, initialLabel) {
@@ -140,7 +181,8 @@ function ensureAccessoryShells() {
     right.setAttribute('aria-label', 'Пипетка и сохранённые параметры рисования');
     right.hidden = true;
 
-    const eyedropper = createAccessoryButton('dock-style-eyedropper-button', 'Пипетка', '⌾');
+    const eyedropper = createAccessoryButton('dock-style-eyedropper-button', 'Пипетка', '');
+    eyedropper.append(createEyedropperIcon());
     eyedropper.dataset.dockStyleAction = 'eyedropper';
     right.append(eyedropper);
 
@@ -219,7 +261,7 @@ function syncDockMetrics() {
   if (!dock) return false;
   const rect = dock.getBoundingClientRect();
   if (!rect.width || !rect.height) return false;
-  const blockSize = window.matchMedia?.('(max-width: 760px)')?.matches ? 40 : 42;
+  const blockSize = 56;
   const root = document.documentElement;
   root.style.setProperty('--dock-style-left', `${rect.left}px`);
   root.style.setProperty('--dock-style-right', `${rect.right}px`);
@@ -316,6 +358,9 @@ function syncRightAccessories(shell, accessoriesVisible, selectionRoot, drawingR
     if (empty) empty.hidden = Boolean(preset);
     if (Number.isFinite(width)) button.setAttribute('data-preset-width', String(Math.round(width)));
     else button.removeAttribute('data-preset-width');
+
+    if (preset) button.style.setProperty('--preset-label-color', presetLabelColor(preset));
+    else button.style.removeProperty('--preset-label-color');
 
     button.classList.toggle('empty', !preset);
     button.classList.toggle('active', !selectionRoot && Boolean(source?.classList.contains('active')));
