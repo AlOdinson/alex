@@ -4,11 +4,15 @@ import { readFile } from 'node:fs/promises';
 const mainSource = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
 const enhancerSource = await readFile(new URL('../src/dock-style-accessories.js', import.meta.url), 'utf8');
 const gearSource = await readFile(new URL('../src/dock-style-presets-gear.js', import.meta.url), 'utf8');
+const historySource = await readFile(new URL('../src/dock-history-icons.js', import.meta.url), 'utf8');
+const historyCss = await readFile(new URL('../src/dock-history-icons.css', import.meta.url), 'utf8');
 const css = await readFile(new URL('../src/dock-style-accessories.css', import.meta.url), 'utf8');
 
 assert.match(mainSource, /import '\.\/dock-style-accessories\.css';/);
 assert.match(mainSource, /import '\.\/dock-style-accessories\.js';/);
 assert.match(mainSource, /import '\.\/dock-style-presets-gear\.js';/);
+assert.match(mainSource, /import '\.\/dock-history-icons\.css';/);
+assert.match(mainSource, /import '\.\/dock-history-icons\.js';/);
 
 assert.match(enhancerSource, /alex-board:drawing-presets:v1/);
 assert.match(enhancerSource, /dispatchHistoryShortcut/);
@@ -23,13 +27,14 @@ assert.match(enhancerSource, /touchType/);
 assert.match(enhancerSource, /function syncRightAccessories\(shell, accessoriesVisible,[\s\S]*?shell\.hidden\s*=\s*!accessoriesVisible/);
 
 // Undo/redo use minimal circular SVG arrows with no visible button chrome.
-assert.match(enhancerSource, /function createHistoryIcon\(kind\)/);
-assert.match(enhancerSource, /dock-history-icon/);
-assert.match(enhancerSource, /createHistoryIcon\('undo'\)/);
-assert.match(enhancerSource, /createHistoryIcon\('redo'\)/);
-assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?gap:\s*12px\s*!important/);
-assert.match(css, /\.dock-history-button\s*\{[\s\S]*?border:\s*0\s*!important[\s\S]*?border-radius:\s*0\s*!important[\s\S]*?background:\s*transparent\s*!important[\s\S]*?box-shadow:\s*none\s*!important/);
-assert.match(css, /\.dock-history-icon\s*\{[\s\S]*?width:\s*24px\s*!important[\s\S]*?height:\s*24px\s*!important[\s\S]*?fill:\s*none\s*!important[\s\S]*?stroke:\s*#2f4778\s*!important/);
+assert.match(historySource, /function createHistoryIcon\(kind\)/);
+assert.match(historySource, /dock-history-icon/);
+assert.match(historySource, /installHistoryIcons/);
+assert.match(historySource, /dock-history-undo/);
+assert.match(historySource, /dock-history-redo/);
+assert.match(historyCss, /\.dock-history-accessories\s*\{[\s\S]*?gap:\s*12px\s*!important/);
+assert.match(historyCss, /\.dock-history-button\s*\{[\s\S]*?border:\s*0\s*!important[\s\S]*?border-radius:\s*0\s*!important[\s\S]*?background:\s*transparent\s*!important[\s\S]*?box-shadow:\s*none\s*!important/);
+assert.match(historyCss, /\.dock-history-icon\s*\{[\s\S]*?width:\s*24px\s*!important[\s\S]*?height:\s*24px\s*!important[\s\S]*?fill:\s*none\s*!important[\s\S]*?stroke:\s*#2f4778\s*!important/);
 
 // Preset tiles should read as one clean, palette-like 2x2 block beside the dock.
 assert.match(css, /:root\s*\{[\s\S]*?--dock-style-tile:\s*28px/);
