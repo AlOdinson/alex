@@ -15,7 +15,6 @@ assert.match(shellBlock, /(?:^|\n)\s*pointer-events:\s*none/);
 
 // The status must participate in the right-side row instead of staying absolutely
 // positioned by the legacy desktop toolbar CSS.
-const statusBlock = css.match(/\.toolbar-status\s*\{([^}]*)\}/)?.[1] ?? '';
-assert.match(statusBlock, /(?:^|\n)\s*position:\s*static\s*!important/);
+assert.match(css, /(?:^|\n)\.toolbar-status\s*\{[^}]*position:\s*static\s*!important/);
 
 console.log('Desktop floating toolbar visibility regression passed.');
