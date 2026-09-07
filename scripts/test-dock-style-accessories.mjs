@@ -18,7 +18,7 @@ assert.match(enhancerSource, /applyPresetToSelection/);
 assert.match(enhancerSource, /data-preset-width/);
 assert.match(enhancerSource, /handleAccessoryTouchEnd/);
 assert.match(enhancerSource, /touchType/);
-assert.match(enhancerSource, /right\.hidden\s*=\s*!accessoriesVisible/);
+assert.match(enhancerSource, /function syncRightAccessories\(shell, accessoriesVisible,[\s\S]*?shell\.hidden\s*=\s*!accessoriesVisible/);
 
 assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?position:\s*fixed/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?position:\s*fixed[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*repeat\(2,/);
