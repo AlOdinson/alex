@@ -3,10 +3,12 @@ import { readFile } from 'node:fs/promises';
 
 const mainSource = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
 const enhancerSource = await readFile(new URL('../src/dock-style-accessories.js', import.meta.url), 'utf8');
+const gearSource = await readFile(new URL('../src/dock-style-presets-gear.js', import.meta.url), 'utf8');
 const css = await readFile(new URL('../src/dock-style-accessories.css', import.meta.url), 'utf8');
 
 assert.match(mainSource, /import '\.\/dock-style-accessories\.css';/);
 assert.match(mainSource, /import '\.\/dock-style-accessories\.js';/);
+assert.match(mainSource, /import '\.\/dock-style-presets-gear\.js';/);
 
 assert.match(enhancerSource, /alex-board:drawing-presets:v1/);
 assert.match(enhancerSource, /dispatchHistoryShortcut/);
@@ -47,11 +49,11 @@ assert.match(enhancerSource, /dock-style-eyedropper-icon/);
 assert.match(css, /\.dock-style-eyedropper-icon\s*\{/);
 
 // A gear sits just outside the top-right of the four tiles and opens the existing preset editor.
-assert.match(enhancerSource, /function createPresetsGearIcon/);
-assert.match(enhancerSource, /dock-style-presets-gear/);
-assert.match(enhancerSource, /function openPresetEditorPanel/);
-assert.match(enhancerSource, /document\.querySelector\('\.drawing-presets-gear'\)/);
-assert.match(enhancerSource, /data\.dockStyleAction\s*=\s*'edit-presets'/);
+assert.match(gearSource, /function createPresetsGearIcon/);
+assert.match(gearSource, /dock-style-presets-gear/);
+assert.match(gearSource, /function openPresetEditorPanel/);
+assert.match(gearSource, /document\.querySelector\('\.drawing-presets-gear'\)/);
+assert.match(gearSource, /dataset\.dockStyleAction\s*=\s*'edit-presets'/);
 assert.match(css, /\.dock-style-presets-gear\s*\{[\s\S]*?position:\s*absolute\s*!important[\s\S]*?left:\s*calc\(100% \+ [^)]+\)\s*!important[\s\S]*?top:/);
 
 assert.match(css, /\.selection-floating-proxy\s*\{/);
