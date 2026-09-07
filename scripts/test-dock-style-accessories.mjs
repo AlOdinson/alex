@@ -2,20 +2,19 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 const mainSource = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
+const toolbarSource = await readFile(new URL('../src/components/Toolbar.jsx', import.meta.url), 'utf8');
+const layoutCss = await readFile(new URL('../src/floating-toolbar-layout.css', import.meta.url), 'utf8').catch(() => '');
 const enhancerSource = await readFile(new URL('../src/dock-style-accessories.js', import.meta.url), 'utf8');
 const gearSource = await readFile(new URL('../src/dock-style-presets-gear.js', import.meta.url), 'utf8');
-const historySource = await readFile(new URL('../src/dock-history-icons.js', import.meta.url), 'utf8');
-const historyCss = await readFile(new URL('../src/dock-history-icons.css', import.meta.url), 'utf8');
 const css = await readFile(new URL('../src/dock-style-accessories.css', import.meta.url), 'utf8');
 
 assert.match(mainSource, /import '\.\/dock-style-accessories\.css';/);
 assert.match(mainSource, /import '\.\/dock-style-accessories\.js';/);
 assert.match(mainSource, /import '\.\/dock-style-presets-gear\.js';/);
-assert.match(mainSource, /import '\.\/dock-history-icons\.css';/);
-assert.match(mainSource, /import '\.\/dock-history-icons\.js';/);
+assert.match(mainSource, /import '\.\/floating-toolbar-layout\.css';/);
+assert.doesNotMatch(mainSource, /dock-history-icons/);
 
 assert.match(enhancerSource, /alex-board:drawing-presets:v1/);
-assert.match(enhancerSource, /dispatchHistoryShortcut/);
 assert.match(enhancerSource, /drawingSourceRoot/);
 assert.match(enhancerSource, /selectionSourceRoot/);
 assert.match(enhancerSource, /ensureSelectionFloatingProxy/);
@@ -26,17 +25,36 @@ assert.match(enhancerSource, /handleAccessoryTouchEnd/);
 assert.match(enhancerSource, /touchType/);
 assert.match(enhancerSource, /function syncRightAccessories\(shell, accessoriesVisible,[\s\S]*?shell\.hidden\s*=\s*!accessoriesVisible/);
 
-// Undo/redo use minimal circular SVG arrows with no visible button chrome.
-assert.match(historySource, /function createHistoryIcon\(kind\)/);
-assert.match(historySource, /dock-history-icon/);
-assert.match(historySource, /installHistoryIcons/);
-assert.match(historySource, /dock-history-undo/);
-assert.match(historySource, /dock-history-redo/);
-assert.match(historyCss, /\.dock-history-accessories\s*\{[\s\S]*?gap:\s*12px\s*!important/);
-assert.match(historyCss, /\.dock-history-button\s*\{[\s\S]*?border:\s*0\s*!important[\s\S]*?border-radius:\s*0\s*!important[\s\S]*?background:\s*transparent\s*!important[\s\S]*?box-shadow:\s*none\s*!important/);
-assert.match(historyCss, /\.dock-history-icon\s*\{[\s\S]*?width:\s*24px\s*!important[\s\S]*?height:\s*24px\s*!important[\s\S]*?fill:\s*none\s*!important[\s\S]*?stroke:\s*#2f4778\s*!important/);
+// Existing React controls stay intact; layout is changed without replacing their handlers.
+assert.match(toolbarSource, /className="tool-group compact edit-actions"/);
+assert.match(toolbarSource, /selectedCount > 0[\s\S]*?className="tool-group compact object-actions"/);
+assert.match(toolbarSource, /className="tool-group compact zoom-group"/);
+assert.match(toolbarSource, /className="tool-group compact navigation-actions"/);
+assert.match(toolbarSource, /className="background-control"/);
+assert.match(toolbarSource, /<LanguageToggle compact \/>/);
+assert.match(toolbarSource, /className={`toolbar-status sync-\$\{syncTone\}`}/);
+assert.match(toolbarSource, /className="toolbar-end-actions"/);
 
-// Preset tiles should read as one clean, palette-like 2x2 block beside the dock.
+// Undo/redo disappear from the screen, but Board keyboard shortcuts remain untouched.
+assert.match(layoutCss, /\.toolbar-primary-row \[aria-label="Отмена и возврат"\]\s*\{[\s\S]*?display:\s*none\s*!important/);
+assert.match(layoutCss, /\.dock-history-accessories\s*\{[\s\S]*?display:\s*none\s*!important/);
+
+// Permanent left-center edit column and selection-only object column.
+assert.match(layoutCss, /\.toolbar-secondary-row \.edit-actions\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?left:[\s\S]*?top:\s*50%\s*!important[\s\S]*?flex-direction:\s*column\s*!important/);
+assert.match(layoutCss, /\.toolbar-secondary-row \.object-actions\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?left:[\s\S]*?top:\s*50%\s*!important[\s\S]*?flex-direction:\s*column\s*!important/);
+assert.match(layoutCss, /\.toolbar-secondary-row \.object-actions > :nth-child\(2\)\s*\{\s*order:\s*1\s*;?\s*\}/);
+assert.match(layoutCss, /\.toolbar-secondary-row \.object-actions > :nth-child\(1\)\s*\{\s*order:\s*2\s*;?\s*\}/);
+
+// The old full-width white toolbar chrome is gone; its two rows float at the upper right.
+assert.match(layoutCss, /\.toolbar-shell\s*\{[\s\S]*?background:\s*transparent\s*!important[\s\S]*?box-shadow:\s*none\s*!important[\s\S]*?backdrop-filter:\s*none\s*!important/);
+assert.match(layoutCss, /\.toolbar-primary-row,\s*\.toolbar-secondary-row\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?width:\s*auto\s*!important[\s\S]*?background:\s*transparent\s*!important/);
+assert.match(layoutCss, /\.toolbar-primary-row\s*\{[\s\S]*?top:[\s\S]*?right:[\s\S]*?max-width:/);
+assert.match(layoutCss, /\.toolbar-secondary-row\s*\{[\s\S]*?top:[\s\S]*?right:[\s\S]*?max-width:/);
+assert.match(layoutCss, /\.toolbar-primary-row \.toolbar-spacer\s*\{[\s\S]*?display:\s*none\s*!important/);
+assert.match(layoutCss, /\.toolbar-primary-row \.brand-button\s*\{[\s\S]*?position:\s*fixed\s*!important[\s\S]*?left:/);
+assert.match(layoutCss, /\.toolbar-status\s*\{[\s\S]*?margin-left:\s*0\s*!important/);
+
+// Preset tiles remain the approved 2x2 block beside the bottom dock.
 assert.match(css, /:root\s*\{[\s\S]*?--dock-style-tile:\s*28px/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?position:\s*fixed[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*repeat\(2,/);
 assert.match(css, /\.dock-style-right-accessories\s*\{[\s\S]*?width:\s*calc\(var\(--dock-style-tile\) \* 2 \+ 2px\)\s*!important[\s\S]*?height:\s*calc\(var\(--dock-style-tile\) \* 2 \+ 2px\)\s*!important[\s\S]*?gap:\s*2px\s*!important/);
@@ -73,4 +91,4 @@ assert.match(css, /\.dock-style-presets-gear\s*\{[\s\S]*?position:\s*absolute\s*
 assert.match(css, /\.selection-floating-proxy\s*\{/);
 assert.match(css, /\.selected-style-controls\.dock-selection-source\s*\{[\s\S]*?display:\s*none/);
 
-console.log('Minimal circular history arrows, square preset tiles with 2px spacing, edit gear, contrast labels, eyedropper icon, and selection controls contract passed.');
+console.log('Floating left actions, top-right utility rows/status, hidden on-screen history, and the approved preset block contract passed.');

@@ -1,0 +1,200 @@
+/* Floating utility layout: keep existing React controls/handlers, change only placement. */
+.toolbar-shell {
+  position: static !important;
+  z-index: auto !important;
+  top: auto !important;
+  left: auto !important;
+  right: auto !important;
+  width: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  flex: 0 0 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  overflow: visible !important;
+  pointer-events: none;
+}
+
+.toolbar-primary-row,
+.toolbar-secondary-row {
+  position: fixed !important;
+  z-index: 190 !important;
+  left: auto !important;
+  width: auto !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+  pointer-events: auto;
+}
+
+.toolbar-primary-row {
+  top: max(10px, env(safe-area-inset-top)) !important;
+  right: max(10px, env(safe-area-inset-right)) !important;
+  max-width: calc(100vw - 72px) !important;
+}
+
+.toolbar-secondary-row {
+  top: max(56px, calc(env(safe-area-inset-top) + 56px)) !important;
+  right: max(10px, env(safe-area-inset-right)) !important;
+  max-width: calc(100vw - 20px) !important;
+}
+
+/* Home remains available as its own small floating control. */
+.toolbar-primary-row .brand-button {
+  position: fixed !important;
+  z-index: 194 !important;
+  top: max(10px, env(safe-area-inset-top)) !important;
+  left: max(10px, env(safe-area-inset-left)) !important;
+  margin: 0 !important;
+}
+
+.toolbar-primary-row .toolbar-spacer {
+  display: none !important;
+}
+
+/* Remove both visible undo/redo surfaces. Keyboard history remains in Board. */
+.toolbar-primary-row [aria-label="Отмена и возврат"] {
+  display: none !important;
+}
+
+.dock-history-accessories {
+  display: none !important;
+}
+
+/* Permanent edit controls: copy / paste / delete / clear. */
+.toolbar-secondary-row .edit-actions {
+  position: fixed !important;
+  z-index: 192 !important;
+  left: max(10px, env(safe-area-inset-left)) !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  gap: 4px !important;
+  margin: 0 !important;
+  padding: 4px !important;
+}
+
+/* Selection-only layer/rotate/flip controls, just to the right of edit actions. */
+.toolbar-secondary-row .object-actions {
+  position: fixed !important;
+  z-index: 192 !important;
+  left: max(56px, calc(env(safe-area-inset-left) + 56px)) !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  gap: 4px !important;
+  margin: 0 !important;
+  padding: 4px !important;
+}
+
+/* Requested visual order: layer forward, layer backward, 90/90, horizontal, vertical. */
+.toolbar-secondary-row .object-actions > :nth-child(2) { order: 1; }
+.toolbar-secondary-row .object-actions > :nth-child(1) { order: 2; }
+.toolbar-secondary-row .object-actions > :nth-child(3) { order: 3; }
+.toolbar-secondary-row .object-actions > :nth-child(4) { order: 4; }
+.toolbar-secondary-row .object-actions > :nth-child(5) { order: 5; }
+.toolbar-secondary-row .object-actions > :nth-child(6) { order: 6; }
+
+.toolbar-secondary-row .edit-actions .tool-button,
+.toolbar-secondary-row .object-actions .tool-button {
+  flex: 0 0 auto !important;
+}
+
+/* Right-side utility rows stay compact and independent, with no shared white strip. */
+.toolbar-primary-row .zoom-group,
+.toolbar-primary-row .navigation-actions,
+.toolbar-primary-row .presence-summary,
+.toolbar-primary-row .toolbar-end-actions,
+.toolbar-secondary-row .background-control,
+.toolbar-secondary-row .language-toggle,
+.toolbar-secondary-row .toolbar-status {
+  flex: 0 0 auto !important;
+}
+
+.toolbar-primary-row .toolbar-end-actions {
+  position: static !important;
+  inset: auto !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.toolbar-status {
+  margin-left: 0 !important;
+  max-width: min(44vw, 430px) !important;
+  padding: 7px 10px !important;
+  border: 1px solid rgba(203, 213, 225, 0.86) !important;
+  border-radius: 10px !important;
+  background: rgba(255, 255, 255, 0.9) !important;
+  box-shadow: 0 5px 16px rgba(15, 23, 42, 0.08) !important;
+}
+
+/* Keep contextual text/eraser controls available without recreating a full-width bar. */
+.toolbar-secondary-row > .drawing-controls,
+.toolbar-secondary-row > .eraser-controls {
+  flex: 0 0 auto !important;
+}
+
+@media (max-width: 760px) {
+  .toolbar-primary-row {
+    top: max(8px, env(safe-area-inset-top)) !important;
+    right: max(8px, env(safe-area-inset-right)) !important;
+    left: max(48px, calc(env(safe-area-inset-left) + 48px)) !important;
+    max-width: none !important;
+    gap: 4px !important;
+    padding: 0 !important;
+  }
+
+  .toolbar-secondary-row {
+    top: max(94px, calc(env(safe-area-inset-top) + 94px)) !important;
+    right: max(8px, env(safe-area-inset-right)) !important;
+    left: max(8px, env(safe-area-inset-left)) !important;
+    max-width: none !important;
+    gap: 4px !important;
+    padding: 0 !important;
+  }
+
+  .toolbar-primary-row .brand-button {
+    top: max(8px, env(safe-area-inset-top)) !important;
+    left: max(8px, env(safe-area-inset-left)) !important;
+  }
+
+  .toolbar-secondary-row .edit-actions {
+    left: max(6px, env(safe-area-inset-left)) !important;
+  }
+
+  .toolbar-secondary-row .object-actions {
+    left: max(46px, calc(env(safe-area-inset-left) + 46px)) !important;
+  }
+
+  .toolbar-status {
+    max-width: min(72vw, 360px) !important;
+  }
+
+  .toolbar-primary-row .toolbar-end-actions {
+    position: static !important;
+    top: auto !important;
+    right: auto !important;
+  }
+}
