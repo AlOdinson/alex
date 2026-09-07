@@ -11,7 +11,9 @@ import './ipad-system-color-palette-scale.css';
 import './floating-drawing-controls-enhancer.js';
 import './ipad-system-color-palette.js';
 import './dock-style-accessories.css';
+import './dock-history-icons.css';
 import './dock-style-accessories.js';
+import './dock-history-icons.js';
 import './dock-style-presets-gear.js';
 
 createRoot(document.getElementById('root')).render(<App />);
