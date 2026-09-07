@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 
 const css = await readFile(new URL('../src/floating-toolbar-layout.css', import.meta.url), 'utf8');
 const mainSource = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
+const toolbarSource = await readFile(new URL('../src/components/Toolbar.jsx', import.meta.url), 'utf8');
 const historyCss = await readFile(new URL('../src/dock-history-icons.css', import.meta.url), 'utf8');
 const historyJs = await readFile(new URL('../src/dock-history-icons.js', import.meta.url), 'utf8');
 const shellBlock = css.match(/\.toolbar-shell\s*\{([^}]*)\}/)?.[1] ?? '';
@@ -25,10 +26,11 @@ assert.match(css, /\.toolbar-secondary-row\s*\.edit-actions\s*\{[^}]*top:\s*50%\
 assert.match(css, /(?:^|\n)\.toolbar-status\s*\{[^}]*position:\s*static\s*!important/);
 
 // Undo/redo belong beside the bottom dock on every viewport. The legacy React pair
-// must never appear in the upper toolbar, including mobile.
+// must not be rendered at all, so mobile/iPad CSS can never make it reappear.
 assert.match(mainSource, /import '\.\/dock-history-icons\.css';/);
 assert.match(mainSource, /import '\.\/dock-history-icons\.js';/);
-assert.match(css, /\[aria-label="Отмена и возврат"\]\s*\{[^}]*display:\s*none\s*!important/);
+assert.doesNotMatch(toolbarSource, /aria-label="Отмена и возврат"/);
+assert.doesNotMatch(toolbarSource, />↶<\/IconButton>[\s\S]*?>↷<\/IconButton>/);
 assert.doesNotMatch(css, /\.dock-history-accessories\s*\{[^}]*display:\s*none\s*!important/);
 
 // Keep the approved thin circular SVG treatment instead of text glyph buttons.
@@ -38,4 +40,4 @@ assert.match(historyCss, /\.dock-history-button\s*\{[^}]*border:\s*0\s*!importan
 assert.match(historyCss, /\.dock-history-icon\s*\{[^}]*stroke-width:\s*1\.9\s*!important[^}]*stroke-linecap:\s*round\s*!important/);
 assert.match(historyCss, /@media \(max-width:\s*760px\)[\s\S]*?\.dock-history-accessories\s*\{[^}]*left:\s*max\(4px,\s*calc\(var\(--dock-style-left,\s*50vw\)\s*-\s*70px\)\)\s*!important/);
 
-console.log('Desktop floating toolbar and dock history placement regression passed.');
+console.log('Floating toolbar and dock history placement regression passed.');
