@@ -1,5 +1,5 @@
 :root {
-  --dock-style-tile: 21px;
+  --dock-style-tile: 28px;
 }
 
 /* Undo/redo are relocated visually to the bottom dock. The real board history path
@@ -71,7 +71,7 @@
 .dock-style-right-accessories {
   position: fixed !important;
   z-index: 188 !important;
-  left: min(calc(100vw - 48px), calc(var(--dock-style-right, 50vw) + 8px)) !important;
+  left: min(calc(100vw - 62px), calc(var(--dock-style-right, 50vw) + 8px)) !important;
   top: var(--dock-style-accessory-top, calc(100vh - 58px)) !important;
   width: calc(var(--dock-style-tile) * 2) !important;
   height: calc(var(--dock-style-tile) * 2) !important;
@@ -82,8 +82,8 @@
   margin: 0 !important;
   padding: 0 !important;
   border: 0 !important;
-  border-radius: 8px !important;
-  background: transparent !important;
+  border-radius: 10px !important;
+  background: #ffffff !important;
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16) !important;
   overflow: hidden !important;
 }
@@ -102,7 +102,7 @@
   margin: 0 !important;
   padding: 0 !important;
   overflow: hidden !important;
-  border: 1px solid rgba(15, 23, 42, 0.24) !important;
+  border: 0 !important;
   border-radius: 0 !important;
   background: #ffffff !important;
   color: #334155 !important;
@@ -115,27 +115,40 @@
   grid-row: 1 !important;
   display: grid !important;
   place-items: center !important;
-  border-radius: 8px 0 0 0 !important;
-  font-size: 12px !important;
+  border-radius: 10px 0 0 0 !important;
+  background: #f8fafc !important;
+  color: #334155 !important;
   line-height: 1 !important;
+}
+
+.dock-style-eyedropper-icon {
+  width: 17px !important;
+  height: 17px !important;
+  display: block !important;
+  fill: none !important;
+  stroke: currentColor !important;
+  stroke-width: 1.8 !important;
+  stroke-linecap: round !important;
+  stroke-linejoin: round !important;
+  pointer-events: none !important;
 }
 
 .dock-style-preset-button:nth-child(2) {
   grid-column: 2 !important;
   grid-row: 1 !important;
-  border-radius: 0 8px 0 0 !important;
+  border-radius: 0 10px 0 0 !important;
 }
 
 .dock-style-preset-button:nth-child(3) {
   grid-column: 1 !important;
   grid-row: 2 !important;
-  border-radius: 0 0 0 8px !important;
+  border-radius: 0 0 0 10px !important;
 }
 
 .dock-style-preset-button:nth-child(4) {
   grid-column: 2 !important;
   grid-row: 2 !important;
-  border-radius: 0 0 8px 0 !important;
+  border-radius: 0 0 10px 0 !important;
 }
 
 .dock-style-preset-fill {
@@ -151,8 +164,8 @@
   display: grid !important;
   place-items: center !important;
   color: #64748b !important;
-  font-size: 12px !important;
-  font-weight: 800 !important;
+  font-size: 15px !important;
+  font-weight: 700 !important;
   pointer-events: none !important;
 }
 
@@ -167,19 +180,16 @@
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  min-width: 13px;
-  height: 13px;
-  padding: 0 2px;
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.62);
-  color: #ffffff;
-  font-size: 8px;
-  font-weight: 850;
+  display: block;
+  padding: 0;
+  background: transparent;
+  color: var(--preset-label-color, #111111);
+  font-size: 12px;
+  font-weight: 800;
   line-height: 1;
+  letter-spacing: -0.02em;
   pointer-events: none;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.28);
+  text-shadow: none;
 }
 
 .dock-style-preset-button:not([data-preset-width])::after {
@@ -187,7 +197,7 @@
 }
 
 .dock-style-preset-button.active {
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.92), inset 0 0 0 3px rgba(37, 99, 235, 0.84) !important;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.9), inset 0 0 0 3px rgba(37, 99, 235, 0.8) !important;
 }
 
 .dock-style-eyedropper-button.active {
@@ -217,7 +227,7 @@
 
 @media (max-width: 760px) {
   :root {
-    --dock-style-tile: 20px;
+    --dock-style-tile: 28px;
   }
 
   .dock-history-accessories {
