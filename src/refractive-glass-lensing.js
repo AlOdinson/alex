@@ -150,12 +150,20 @@ function resolveOuterRadiusCss(target, targetRect) {
   return clamp(parsed, 0, fallback);
 }
 
-export function computeInnerContourRadiusCss({ outerRadiusCss, innerWidthCss, innerHeightCss }) {
-  if (!Number.isFinite(outerRadiusCss) || !Number.isFinite(innerWidthCss) || !Number.isFinite(innerHeightCss)) return 0;
+export function computeParallelInsetRadiusCss({ outerRadiusCss, insetCss, innerWidthCss, innerHeightCss }) {
+  if (
+    !Number.isFinite(outerRadiusCss)
+    || !Number.isFinite(insetCss)
+    || !Number.isFinite(innerWidthCss)
+    || !Number.isFinite(innerHeightCss)
+  ) return 0;
   if (innerWidthCss <= 0 || innerHeightCss <= 0) return 0;
-  // Preserve the same visual curve as the outer plate. Only clamp when the inset
-  // opening is physically too small to hold that radius (e.g. the undo/redo capsule).
-  return Math.max(0, Math.min(outerRadiusCss, innerWidthCss / 2, innerHeightCss / 2));
+
+  // A constant-width inward offset of a rounded rectangle keeps the same corner
+  // center and reduces its radius by exactly the inset. Clamping is only a safety
+  // guard for physically tiny openings, matching the browser's rounded-rect rules.
+  const parallelRadiusCss = Math.max(0, outerRadiusCss - insetCss);
+  return Math.max(0, Math.min(parallelRadiusCss, innerWidthCss / 2, innerHeightCss / 2));
 }
 
 function traceRoundedRect(context, x, y, width, height, radius) {
@@ -306,8 +314,9 @@ function renderContourSample(source, target, config) {
   const innerHeight = pixelHeight - thicknessPx * 2;
   if (innerWidth > 0 && innerHeight > 0) {
     const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
-    const innerRadiusCss = computeInnerContourRadiusCss({
+    const innerRadiusCss = computeParallelInsetRadiusCss({
       outerRadiusCss,
+      insetCss: config.thicknessCss,
       innerWidthCss: innerWidth / sampleDpr,
       innerHeightCss: innerHeight / sampleDpr,
     });
@@ -351,8 +360,9 @@ function renderSurfaceSample(source, target, config) {
   const pixelHeight = Math.max(1, Math.round(cssHeight * sampleDpr));
   const canvas = ensureSurfaceCanvas(target, config.className);
   const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
-  const innerRadiusCss = computeInnerContourRadiusCss({
+  const innerRadiusCss = computeParallelInsetRadiusCss({
     outerRadiusCss,
+    insetCss: config.insetCss,
     innerWidthCss: cssWidth,
     innerHeightCss: cssHeight,
   });
