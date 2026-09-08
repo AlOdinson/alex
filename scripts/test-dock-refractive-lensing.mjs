@@ -71,6 +71,8 @@ assert.match(runtimeSource, /className:\s*'refractive-surface-sample--dock'[\s\S
 assert.match(runtimeSource, /className:\s*'refractive-surface-sample--history'[\s\S]*insetCss:\s*7/, 'History surface sample must start exactly inside the 7px contour instead of bleeding underneath it');
 assert.match(runtimeSource, /scale\(1,\s*-1\)/, 'Top and bottom contour sections must mirror the board vertically');
 assert.match(runtimeSource, /scale\(-1,\s*1\)/, 'Left and right contour sections must mirror the board horizontally');
+assert.match(runtimeSource, /globalCompositeOperation\s*=\s*['"]destination-in['"]/, 'Outer contour must be masked by Canvas geometry rather than relying only on CSS border-radius rasterization');
+assert.match(runtimeSource, /traceRoundedRect\(context,\s*0,\s*0,\s*pixelWidth,\s*pixelHeight,\s*outerRadiusPx\)/, 'Outer contour must use the same Canvas rounded-rect path system as the inner contour');
 assert.match(runtimeSource, /globalCompositeOperation\s*=\s*['"]destination-out['"]/, 'Contour renderer must cut out the center so the edge has uniform thickness around the full perimeter');
 assert.match(runtimeSource, /roundRect\(/, 'Contour renderer must preserve the rounded inner contour rather than only drawing top and bottom strips');
 assert.match(runtimeSource, /outerRadiusCss\s*-\s*insetCss/, 'Exact parallel rounded-rect inset must reduce the corner radius by the same physical inset');
