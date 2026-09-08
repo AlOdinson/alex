@@ -6,43 +6,38 @@ const historyCss = await readFile(new URL('../src/dock-history-icons.css', impor
 const mobileCss = await readFile(new URL('../src/mobile-premium-glass-fallback.css', import.meta.url), 'utf8');
 const mainEntry = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
 
-const touchMarker = '@media (hover: none), (pointer: coarse), (any-pointer: coarse)';
-const accessoryTouchStart = accessoryCss.indexOf(touchMarker);
-const accessoryMobileStart = accessoryCss.indexOf('@media (max-width: 760px)', accessoryTouchStart);
-const accessoryTouchBlock = accessoryCss.slice(accessoryTouchStart, accessoryMobileStart === -1 ? undefined : accessoryMobileStart);
-
-const historyTouchStart = historyCss.indexOf(touchMarker);
-const historyMobileStart = historyCss.indexOf('@media (max-width: 760px)', historyTouchStart);
-const historyTouchBlock = historyCss.slice(historyTouchStart, historyMobileStart === -1 ? undefined : historyMobileStart);
-
-assert.ok(accessoryTouchStart >= 0, 'Accessory CSS must keep a touch interaction block');
-assert.ok(historyTouchStart >= 0, 'History CSS must keep a touch interaction block');
-
-assert.doesNotMatch(accessoryTouchBlock, /\.board-tool-dock\s*\{/, 'Touch devices must inherit the exact desktop dock material instead of overriding it');
-assert.doesNotMatch(accessoryTouchBlock, /\.dock-style-eyedropper-button,\s*\.dock-style-preset-button\s*\{/, 'Touch devices must inherit the exact desktop glass-tile body material');
-assert.doesNotMatch(historyTouchBlock, /\.dock-history-accessories\s*\{/, 'Touch devices must inherit the exact desktop undo/redo glass capsule material');
-
-assert.doesNotMatch(mobileCss, /\.board-tool-dock\s*\{/, 'Last-loaded mobile fallback must not replace the desktop dock material');
-assert.doesNotMatch(mobileCss, /\.dock-history-accessories\s*\{/, 'Last-loaded mobile fallback must not replace the desktop history material');
-assert.doesNotMatch(mobileCss, /\.dock-style-eyedropper-button/, 'Last-loaded mobile fallback must not replace the desktop right-tile material');
-assert.doesNotMatch(mobileCss, /\.dock-style-preset-button/, 'Last-loaded mobile fallback must not replace the desktop preset-tile material');
-assert.doesNotMatch(mobileCss, /\.dock-style-preset-fill/, 'Last-loaded mobile fallback must not change preset color opacity on mobile');
-
 const desktopDock = accessoryCss.match(/\.board-tool-dock\s*\{([\s\S]*?)\}/)?.[1] ?? '';
-assert.match(desktopDock, /rgba\(255, 255, 255, 0\.46\)/, 'Shared dock material must keep the desktop translucent white-glass base');
-assert.match(desktopDock, /backdrop-filter:\s*blur\(22px\)/, 'Shared dock material must keep desktop matte blur');
-
 const desktopHistory = historyCss.match(/\.dock-history-accessories\s*\{([\s\S]*?)\}/)?.[1] ?? '';
-assert.match(desktopHistory, /rgba\(255, 255, 255, 0\.34\)/, 'Shared history capsule must keep the desktop translucent glass body');
-assert.match(desktopHistory, /backdrop-filter:\s*blur\(24px\)/, 'Shared history capsule must keep desktop premium blur');
-
 const desktopTiles = accessoryCss.match(/\.dock-style-eyedropper-button,\s*\.dock-style-preset-button\s*\{([\s\S]*?)\}/)?.[1] ?? '';
-assert.match(desktopTiles, /rgba\(255, 255, 255, 0\.24\)/, 'Shared right tiles must keep the desktop transparent glass body');
-assert.match(desktopTiles, /inset 0 1px 0 rgba\(255, 255, 255, 0\.82\)/, 'Shared right tiles must keep desktop convex/specular depth');
+
+assert.match(desktopDock, /rgba\(255, 255, 255, 0\.46\)/, 'Desktop dock must keep the translucent white-glass base');
+assert.match(desktopDock, /backdrop-filter:\s*blur\(22px\)/, 'Desktop dock must keep its matte blur');
+assert.match(desktopHistory, /rgba\(255, 255, 255, 0\.34\)/, 'Desktop history capsule must keep its translucent body');
+assert.match(desktopHistory, /backdrop-filter:\s*blur\(24px\)/, 'Desktop history capsule must keep premium blur');
+assert.match(desktopTiles, /rgba\(255, 255, 255, 0\.24\)/, 'Desktop right tiles must keep their transparent glass body');
+assert.match(desktopTiles, /inset 0 1px 0 rgba\(255, 255, 255, 0\.82\)/, 'Desktop right tiles must keep their convex/specular depth');
+
+assert.match(mobileCss, /@supports \(-webkit-touch-callout:\s*none\)/, 'iPad/iPhone parity must not depend on pointer reporting');
+assert.match(mobileCss, /@media \(max-width:\s*900px\)/, 'Phone parity must cover narrow non-iOS mobile browsers');
+
+const count = (needle) => mobileCss.split(needle).length - 1;
+assert.ok(count('rgba(255, 255, 255, 0.46)') >= 2, 'iOS and phone dock overrides must reuse the exact desktop glass opacity');
+assert.ok(count('blur(22px) saturate(175%) brightness(106%) contrast(101%)') >= 4, 'Mobile dock must reuse the exact desktop matte filter in both WebKit and phone paths');
+assert.ok(count('rgba(255, 255, 255, 0.34)') >= 2, 'iOS and phone history capsule must reuse the exact desktop body opacity');
+assert.ok(count('blur(24px) saturate(190%) brightness(105%) contrast(102%)') >= 4, 'Mobile history capsule must reuse the exact desktop premium filter');
+assert.ok(count('rgba(255, 255, 255, 0.24)') >= 2, 'iOS and phone right tiles must reuse the exact desktop transparent tile body');
+assert.ok(count('blur(18px) saturate(190%) brightness(104%) contrast(102%)') >= 4, 'Mobile right tiles must reuse the exact desktop glass filter');
+assert.ok(count('opacity: 0.82') >= 2, 'Mobile tiles must reuse the desktop static specular opacity');
+
+assert.doesNotMatch(mobileCss, /background-color:\s*rgba\(255, 255, 255, 0\.18\)/, 'Mobile must not add the old opaque white backing under the dock gradients');
+assert.doesNotMatch(mobileCss, /background-color:\s*rgba\(240, 248, 255, 0\.10\)/, 'Mobile must not add a separate history backing color');
+assert.doesNotMatch(mobileCss, /background-color:\s*rgba\(239, 247, 255, 0\.05\)/, 'Mobile must not add a separate right-tile backing color');
+assert.doesNotMatch(mobileCss, /\.dock-style-preset-fill\s*\{/, 'Mobile must not alter preset color opacity; preset fill must behave exactly like desktop');
+assert.doesNotMatch(mobileCss, /opacity:\s*0\.68/, 'Mobile must not flatten preset colors with a special opacity layer');
 
 assert.ok(
   mainEntry.lastIndexOf("import './refractive-glass-lensing.css';") > mainEntry.lastIndexOf("import './mobile-premium-glass-fallback.css';"),
-  'Working refractive edge layer must continue loading after the mobile compatibility file'
+  'Working mirrored refractive edge must continue loading after material parity overrides'
 );
 
 console.log('Mobile glass parity regression passed.');
