@@ -2,6 +2,8 @@ export const LENS_REFRESH_MS = 120;
 const IDLE_REFRESH_MS = 500;
 const MAX_CONTOUR_DPR = 2;
 const MAX_SURFACE_DPR = 1.5;
+const CONTINUOUS_RING_BASE_ALPHA = 0.72;
+const MIRRORED_EDGE_ALPHA = 0.52;
 
 const CONTOUR_CONFIGS = [
   {
@@ -96,6 +98,36 @@ export function computeSurfaceSourceRect({
   return { sx, sy, sw, sh };
 }
 
+// A rounded rectangle offset inward by a constant distance keeps each corner arc
+// concentric with the outer arc. Therefore x/y move by inset and radius decreases
+// by the same inset. This is the exact parallel curve, not a visual approximation.
+export function computeParallelInsetRoundedRect({ width, height, radius, inset }) {
+  if (![width, height, radius, inset].every(Number.isFinite)) return null;
+  if (width <= 0 || height <= 0 || inset < 0) return null;
+
+  const safeRadius = clamp(radius, 0, Math.min(width, height) / 2);
+  const safeInset = clamp(inset, 0, Math.min(width, height) / 2);
+  const innerWidth = Math.max(0, width - safeInset * 2);
+  const innerHeight = Math.max(0, height - safeInset * 2);
+  const innerRadius = clamp(safeRadius - safeInset, 0, Math.min(innerWidth, innerHeight) / 2);
+
+  return {
+    x: safeInset,
+    y: safeInset,
+    width: innerWidth,
+    height: innerHeight,
+    radius: innerRadius,
+  };
+}
+
+// Compatibility helper retained for focused callers. insetCss must be supplied for
+// a true parallel offset; a zero inset simply returns the clamped outer radius.
+export function computeInnerContourRadiusCss({ outerRadiusCss, insetCss = 0, innerWidthCss, innerHeightCss }) {
+  if (![outerRadiusCss, insetCss, innerWidthCss, innerHeightCss].every(Number.isFinite)) return 0;
+  if (innerWidthCss <= 0 || innerHeightCss <= 0) return 0;
+  return clamp(outerRadiusCss - insetCss, 0, Math.min(innerWidthCss, innerHeightCss) / 2);
+}
+
 function findBoardCanvas() {
   if (typeof document === 'undefined') return null;
   const preferred = document.querySelector('.canvas-host .lower-canvas');
@@ -150,14 +182,6 @@ function resolveOuterRadiusCss(target, targetRect) {
   return clamp(parsed, 0, fallback);
 }
 
-export function computeInnerContourRadiusCss({ outerRadiusCss, innerWidthCss, innerHeightCss }) {
-  if (!Number.isFinite(outerRadiusCss) || !Number.isFinite(innerWidthCss) || !Number.isFinite(innerHeightCss)) return 0;
-  if (innerWidthCss <= 0 || innerHeightCss <= 0) return 0;
-  // Preserve the same visual curve as the outer plate. Only clamp when the inset
-  // opening is physically too small to hold that radius (e.g. the undo/redo capsule).
-  return Math.max(0, Math.min(outerRadiusCss, innerWidthCss / 2, innerHeightCss / 2));
-}
-
 function traceRoundedRect(context, x, y, width, height, radius) {
   const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
   if (typeof context.roundRect === 'function') {
@@ -174,6 +198,44 @@ function traceRoundedRect(context, x, y, width, height, radius) {
   context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
   context.lineTo(x, y + safeRadius);
   context.quadraticCurveTo(x, y, x + safeRadius, y);
+}
+
+function maskToExactParallelRing(context, pixelWidth, pixelHeight, sampleDpr, outerRadiusCss, insetCss) {
+  const geometry = computeParallelInsetRoundedRect({
+    width: pixelWidth / sampleDpr,
+    height: pixelHeight / sampleDpr,
+    radius: outerRadiusCss,
+    inset: insetCss,
+  });
+  if (!geometry) return null;
+
+  const outerRadiusPx = outerRadiusCss * sampleDpr;
+  context.save();
+  context.globalCompositeOperation = 'destination-in';
+  context.beginPath();
+  traceRoundedRect(context, 0, 0, pixelWidth, pixelHeight, outerRadiusPx);
+  context.closePath();
+  context.fill();
+  context.restore();
+
+  if (geometry.width > 0 && geometry.height > 0) {
+    context.save();
+    context.globalCompositeOperation = 'destination-out';
+    context.beginPath();
+    traceRoundedRect(
+      context,
+      geometry.x * sampleDpr,
+      geometry.y * sampleDpr,
+      geometry.width * sampleDpr,
+      geometry.height * sampleDpr,
+      geometry.radius * sampleDpr,
+    );
+    context.closePath();
+    context.fill();
+    context.restore();
+  }
+
+  return geometry;
 }
 
 function renderContourSample(source, target, config) {
@@ -221,7 +283,30 @@ function renderContourSample(source, target, config) {
   const sourceDepthX = Math.max(1, Math.min(sample.sw, Math.round(config.thicknessCss * 2 * sourceScaleX)));
   const sourceDepthY = Math.max(1, Math.min(sample.sh, Math.round(config.thicknessCss * 2 * sourceScaleY)));
 
+  // Strong continuous sampled base: unlike the old 14% fallback, this fills the
+  // curved corner crescents with the same optical material as the straight sides.
+  // The final exact rounded-ring mask is applied after the mirrored passes.
   context.save();
+  context.globalAlpha = CONTINUOUS_RING_BASE_ALPHA;
+  const opticalExpand = thicknessPx * 0.12;
+  context.drawImage(
+    source,
+    sample.sx,
+    sample.sy,
+    sample.sw,
+    sample.sh,
+    -opticalExpand,
+    -opticalExpand,
+    pixelWidth + opticalExpand * 2,
+    pixelHeight + opticalExpand * 2,
+  );
+  context.restore();
+
+  // Retain the mirror-like edge behavior the user already approved, but make it
+  // an optical overlay instead of the shape-defining layer. This prevents four
+  // rectangular strips from visually overriding the rounded inner contour.
+  context.save();
+  context.globalAlpha = MIRRORED_EDGE_ALPHA;
   context.translate(0, thicknessPx);
   context.scale(1, -1);
   context.drawImage(
@@ -238,6 +323,7 @@ function renderContourSample(source, target, config) {
   context.restore();
 
   context.save();
+  context.globalAlpha = MIRRORED_EDGE_ALPHA;
   context.translate(0, pixelHeight);
   context.scale(1, -1);
   context.drawImage(
@@ -254,7 +340,7 @@ function renderContourSample(source, target, config) {
   context.restore();
 
   context.save();
-  context.globalAlpha = 0.92;
+  context.globalAlpha = MIRRORED_EDGE_ALPHA;
   context.translate(thicknessPx, 0);
   context.scale(-1, 1);
   context.drawImage(
@@ -271,7 +357,7 @@ function renderContourSample(source, target, config) {
   context.restore();
 
   context.save();
-  context.globalAlpha = 0.92;
+  context.globalAlpha = MIRRORED_EDGE_ALPHA;
   context.translate(pixelWidth, 0);
   context.scale(-1, 1);
   context.drawImage(
@@ -287,39 +373,15 @@ function renderContourSample(source, target, config) {
   );
   context.restore();
 
-  context.save();
-  context.globalAlpha = 0.14;
-  context.drawImage(
-    source,
-    sample.sx,
-    sample.sy,
-    sample.sw,
-    sample.sh,
-    -thicknessPx * 0.18,
-    -thicknessPx * 0.18,
-    pixelWidth + thicknessPx * 0.36,
-    pixelHeight + thicknessPx * 0.36,
+  const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
+  maskToExactParallelRing(
+    context,
+    pixelWidth,
+    pixelHeight,
+    sampleDpr,
+    outerRadiusCss,
+    config.thicknessCss,
   );
-  context.restore();
-
-  const innerWidth = pixelWidth - thicknessPx * 2;
-  const innerHeight = pixelHeight - thicknessPx * 2;
-  if (innerWidth > 0 && innerHeight > 0) {
-    const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
-    const innerRadiusCss = computeInnerContourRadiusCss({
-      outerRadiusCss,
-      innerWidthCss: innerWidth / sampleDpr,
-      innerHeightCss: innerHeight / sampleDpr,
-    });
-    const innerRadiusPx = innerRadiusCss * sampleDpr;
-    context.save();
-    context.globalCompositeOperation = 'destination-out';
-    context.beginPath();
-    traceRoundedRect(context, thicknessPx, thicknessPx, innerWidth, innerHeight, innerRadiusPx);
-    context.closePath();
-    context.fill();
-    context.restore();
-  }
 
   return true;
 }
@@ -344,23 +406,27 @@ function renderSurfaceSample(source, target, config) {
   });
   if (!sample) return false;
 
-  const cssWidth = Math.max(1, targetRect.width - config.insetCss * 2);
-  const cssHeight = Math.max(1, targetRect.height - config.insetCss * 2);
+  const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
+  const geometry = computeParallelInsetRoundedRect({
+    width: targetRect.width,
+    height: targetRect.height,
+    radius: outerRadiusCss,
+    inset: config.insetCss,
+  });
+  if (!geometry || geometry.width <= 0 || geometry.height <= 0) return false;
+
+  const cssWidth = geometry.width;
+  const cssHeight = geometry.height;
+  const innerRadiusCss = geometry.radius;
   const sampleDpr = Math.min(MAX_SURFACE_DPR, Math.max(1, Number(window.devicePixelRatio) || 1));
   const pixelWidth = Math.max(1, Math.round(cssWidth * sampleDpr));
   const pixelHeight = Math.max(1, Math.round(cssHeight * sampleDpr));
   const canvas = ensureSurfaceCanvas(target, config.className);
-  const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
-  const innerRadiusCss = computeInnerContourRadiusCss({
-    outerRadiusCss,
-    innerWidthCss: cssWidth,
-    innerHeightCss: cssHeight,
-  });
 
   if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
   if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-  canvas.style.left = `${config.insetCss}px`;
-  canvas.style.top = `${config.insetCss}px`;
+  canvas.style.left = `${geometry.x}px`;
+  canvas.style.top = `${geometry.y}px`;
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
   canvas.style.borderRadius = `${innerRadiusCss}px`;
