@@ -84,7 +84,7 @@
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16) !important;
+  box-shadow: none !important;
   overflow: visible !important;
 }
 
@@ -99,15 +99,47 @@
   min-width: var(--dock-style-tile) !important;
   height: var(--dock-style-tile) !important;
   min-height: var(--dock-style-tile) !important;
+  box-sizing: border-box !important;
   margin: 0 !important;
   padding: 0 !important;
   overflow: hidden !important;
-  border: 0 !important;
-  border-radius: 0 !important;
-  background: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.74) !important;
+  border-radius: 9px !important;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.28)) !important;
   color: #334155 !important;
-  box-shadow: none !important;
+  box-shadow:
+    0 7px 16px rgba(15, 23, 42, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.2) !important;
+  backdrop-filter: blur(15px) saturate(180%) contrast(104%) !important;
+  -webkit-backdrop-filter: blur(15px) saturate(180%) contrast(104%) !important;
+  isolation: isolate !important;
   opacity: 1 !important;
+}
+
+.dock-style-eyedropper-button::before,
+.dock-style-preset-button::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  z-index: 1;
+  border-radius: 7px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.08) 50%, transparent 74%);
+  pointer-events: none;
+}
+
+.dock-style-eyedropper-button:hover:not(:disabled),
+.dock-style-preset-button:hover:not(:disabled) {
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.36)) !important;
+  box-shadow:
+    0 9px 18px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.96),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.24) !important;
+}
+
+.dock-style-eyedropper-button:active:not(:disabled),
+.dock-style-preset-button:active:not(:disabled) {
+  transform: scale(0.96) !important;
 }
 
 .dock-style-eyedropper-button {
@@ -115,13 +147,14 @@
   grid-row: 1 !important;
   display: grid !important;
   place-items: center !important;
-  border-radius: 0 !important;
-  background: #f8fafc !important;
+  border-radius: 9px !important;
   color: #334155 !important;
   line-height: 1 !important;
 }
 
 .dock-style-eyedropper-icon {
+  position: relative !important;
+  z-index: 2 !important;
   width: 17px !important;
   height: 17px !important;
   display: block !important;
@@ -136,31 +169,35 @@
 .dock-style-preset-button:nth-child(2) {
   grid-column: 2 !important;
   grid-row: 1 !important;
-  border-radius: 0 !important;
+  border-radius: 9px !important;
 }
 
 .dock-style-preset-button:nth-child(3) {
   grid-column: 1 !important;
   grid-row: 2 !important;
-  border-radius: 0 !important;
+  border-radius: 9px !important;
 }
 
 .dock-style-preset-button:nth-child(4) {
   grid-column: 2 !important;
   grid-row: 2 !important;
-  border-radius: 0 !important;
+  border-radius: 9px !important;
 }
 
 .dock-style-preset-fill {
   position: absolute !important;
-  inset: 0 !important;
+  inset: 3px !important;
+  z-index: 0 !important;
   display: block !important;
+  border-radius: 6px !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42) !important;
   pointer-events: none !important;
 }
 
 .dock-style-preset-empty {
   position: absolute !important;
   inset: 0 !important;
+  z-index: 2 !important;
   display: grid !important;
   place-items: center !important;
   color: #64748b !important;
@@ -197,13 +234,20 @@
 }
 
 .dock-style-preset-button.active {
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.9), inset 0 0 0 3px rgba(37, 99, 235, 0.8) !important;
+  box-shadow:
+    0 7px 16px rgba(15, 23, 42, 0.14),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.88),
+    inset 0 0 0 3px rgba(37, 99, 235, 0.78),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94) !important;
 }
 
 .dock-style-eyedropper-button.active {
-  background: #ede9fe !important;
+  background: linear-gradient(145deg, rgba(237, 233, 254, 0.78), rgba(221, 214, 254, 0.42)) !important;
   color: #6d28d9 !important;
-  box-shadow: inset 0 0 0 1px rgba(109, 40, 217, 0.36) !important;
+  box-shadow:
+    0 7px 16px rgba(76, 29, 149, 0.12),
+    inset 0 0 0 1px rgba(109, 40, 217, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
 }
 
 /* Preset editor shortcut: floats just outside the four square cells. */
