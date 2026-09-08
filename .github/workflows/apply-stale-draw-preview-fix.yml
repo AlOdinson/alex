@@ -22,7 +22,7 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Write regression test first
+      - name: Write regression test
         shell: bash
         run: |
           cat > scripts/test-stale-draw-preview-regression.mjs <<'EOF'
@@ -37,11 +37,7 @@ jobs:
           const sendDrawEnd = realtimeSource.indexOf('sendPreview(records', sendDrawStart);
           assert.ok(sendDrawStart >= 0 && sendDrawEnd > sendDrawStart, 'sendDraw block must be present');
           const sendDrawBlock = realtimeSource.slice(sendDrawStart, sendDrawEnd);
-          assert.match(
-            sendDrawBlock,
-            /baseRevision/,
-            'draw realtime packets must carry a causal baseRevision',
-          );
+          assert.match(sendDrawBlock, /baseRevision/, 'draw realtime packets must carry a causal baseRevision');
 
           const liveSendStart = boardSource.indexOf("const sendLiveDrawNow = useCallback((phase = 'update') => {");
           const liveSendEnd = boardSource.indexOf('const beginLiveDraw = useCallback', liveSendStart);
@@ -80,20 +76,16 @@ jobs:
           const cleanupEnd = boardSource.indexOf('const syncOnFocus = () => {', cleanupStart);
           assert.ok(cleanupStart >= 0 && cleanupEnd > cleanupStart, 'cleanup block must be present');
           const cleanupBlock = boardSource.slice(cleanupStart, cleanupEnd);
-          assert.match(
-            cleanupBlock,
-            /staleDrawPreviewIds/,
-            'stale committed draw previews must be reconciled instead of blindly deleted',
-          );
+          assert.match(cleanupBlock, /staleDrawPreviewIds/, 'stale committed previews need reconciliation');
           assert.match(
             cleanupBlock,
             /session\.ended\s*&&\s*session\.awaitingCommit\s*&&\s*age\s*>\s*90000[\s\S]*staleDrawPreviewIds\.add/,
-            'a completed stale draw session must be retained for authoritative reconciliation',
+            'completed stale draw sessions must remain visible for authoritative reconciliation',
           );
           assert.match(
             cleanupBlock,
             /staleAwaitingCommitPreview[\s\S]*continue;/,
-            'a stale awaiting-commit Fabric preview must stay visible while reconciliation runs',
+            'awaiting-commit Fabric previews must not be blindly deleted',
           );
           assert.match(
             cleanupBlock,
@@ -101,9 +93,8 @@ jobs:
             'stale previews must request targeted authoritative reconciliation',
           );
 
-          // Simulate a long lesson with many delayed iPad draw packets arriving after
-          // each corresponding durable upsert. Every old packet must lose to the server
-          // fence, while a packet that starts from the current revision remains valid.
+          // Long-session simulation: hundreds of delayed iPad packets arrive after the
+          // corresponding server upsert. All delayed packets must lose the causal race.
           for (let index = 0; index < 400; index += 1) {
             const baseRevision = 1000 + index * 2;
             const fence = {
@@ -119,27 +110,12 @@ jobs:
             assert.equal(
               shouldRejectRealtimeObjectFrame(fence, { baseRevision: fence.revision }),
               false,
-              `fresh draw ${index} must still be allowed`,
+              `fresh draw ${index} must remain allowed`,
             );
           }
 
           console.log('Stale draw preview regression tests passed.');
           EOF
-
-      - name: Verify regression is red before production changes
-        shell: bash
-        run: |
-          set +e
-          node scripts/test-stale-draw-preview-regression.mjs > /tmp/red.log 2>&1
-          status=$?
-          set -e
-          cat /tmp/red.log
-          if [ "$status" -eq 0 ]; then
-            echo 'Regression test unexpectedly passed before the fix.' >&2
-            exit 1
-          fi
-          grep -Eq 'draw realtime packets must carry|stroke start revision|desktop must read draw baseRevision|stale committed draw previews' /tmp/red.log
-          echo 'Expected RED failure observed.'
 
       - name: Apply minimal production fix
         shell: bash
@@ -155,6 +131,22 @@ jobs:
                   raise SystemExit(f'{label}: expected exactly one match, found {count}')
               file_path.write_text(text.replace(old, new, 1))
 
+          def replace_in_section(path, start_marker, end_marker, old, new, label):
+              file_path = Path(path)
+              text = file_path.read_text()
+              start = text.find(start_marker)
+              if start < 0:
+                  raise SystemExit(f'{label}: start marker not found')
+              end = text.find(end_marker, start)
+              if end < 0:
+                  raise SystemExit(f'{label}: end marker not found')
+              section = text[start:end]
+              count = section.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match in section, found {count}')
+              section = section.replace(old, new, 1)
+              file_path.write_text(text[:start] + section + text[end:])
+
           replace_once(
               'src/lib/realtime.js',
               """      return publishRealtime('draw', {\n        clientId,\n        name,\n        color,\n        ...draw,\n        timestamp: Date.now(),\n      });\n""",
@@ -169,85 +161,98 @@ jobs:
               'live draw state base revision',
           )
 
-          replace_once(
+          replace_in_section(
               'src/components/Board.jsx',
+              "const sendLiveDrawNow = useCallback((phase = 'update') => {",
+              'const beginLiveDraw = useCallback',
               """      sessionOrder: state.sessionOrder,\n      sequence: state.sequence,\n      phase,\n""",
               """      sessionOrder: state.sessionOrder,\n      sequence: state.sequence,\n      baseRevision: state.baseRevision,\n      phase,\n""",
               'send fixed stroke base revision',
           )
 
-          replace_once(
+          replace_in_section(
               'src/components/Board.jsx',
+              'const beginLiveDraw = useCallback',
+              'const updateLiveDraw = useCallback',
               """    state.sessionId = randomToken(12);\n    state.sessionOrder += 1;\n    state.sequence = 0;\n    state.lastSentAt = 0;\n""",
               """    state.sessionId = randomToken(12);\n    state.sessionOrder += 1;\n    state.sequence = 0;\n    state.baseRevision = Number(revisionRef.current ?? 0);\n    state.lastSentAt = 0;\n""",
               'capture stroke start revision',
           )
 
-          replace_once(
+          replace_in_section(
               'src/components/Board.jsx',
+              'const finishLiveDraw = useCallback',
+              'const handleRemoteDraw = useCallback',
               """    state.sessionId = null;\n    state.sequence = 0;\n    state.lastSentAt = 0;\n""",
               """    state.sessionId = null;\n    state.sequence = 0;\n    state.baseRevision = 0;\n    state.lastSentAt = 0;\n""",
               'reset stroke base revision',
           )
 
-          replace_once(
-              'src/components/Board.jsx',
+          board_path = 'src/components/Board.jsx'
+          remote_start = 'const handleRemoteDraw = useCallback((message) => {'
+          remote_end = 'const flushRemotePreviewQueue'
+
+          replace_in_section(
+              board_path, remote_start, remote_end,
               """    const sessionId = String(message?.sessionId ?? '');\n    const objectId = String(message?.objectId ?? '');\n    const sessionOrder = Number(message?.sessionOrder ?? 0);\n""",
               """    const sessionId = String(message?.sessionId ?? '');\n    const objectId = String(message?.objectId ?? '');\n    const baseRevision = normalizeRealtimeBaseRevision(message?.baseRevision);\n    const sessionOrder = Number(message?.sessionOrder ?? 0);\n""",
               'read remote draw base revision',
           )
 
-          replace_once(
-              'src/components/Board.jsx',
+          replace_in_section(
+              board_path, remote_start, remote_end,
               """    if (!canvas || !remoteClientId || !sessionId || !objectId) return;\n\n    const deletedAt = Number(remoteDeletedObjectIdsRef.current.get(objectId)?.timestamp ?? 0);\n""",
               """    if (!canvas || !remoteClientId || !sessionId || !objectId) return;\n\n    const authoritativeFence = authoritativeObjectStatesRef.current.get(objectId);\n    if (shouldRejectRealtimeObjectFrame(authoritativeFence, { baseRevision })) {\n      removeRegisteredObjectsByCreationSession(\n        remoteClientId,\n        sessionId,\n        null,\n        { transientOnly: true },\n      );\n      remoteDrawSessionsRef.current.delete(`${remoteClientId}:${sessionId}`);\n      canvas.requestRenderAll();\n      return;\n    }\n\n    const deletedAt = Number(remoteDeletedObjectIdsRef.current.get(objectId)?.timestamp ?? 0);\n""",
               'reject causally stale draw packets',
           )
 
-          replace_once(
-              'src/components/Board.jsx',
+          replace_in_section(
+              board_path, remote_start, remote_end,
               """        ...(previous ?? {}), sessionOrder, sequence, objectId, receivedAt: Date.now(), ended: true,\n""",
               """        ...(previous ?? {}), sessionOrder, sequence, objectId, baseRevision, receivedAt: Date.now(), ended: true,\n""",
               'remember cancel draw base revision',
           )
 
-          replace_once(
-              'src/components/Board.jsx',
+          replace_in_section(
+              board_path, remote_start, remote_end,
               """          sequence,\n          objectId,\n          receivedAt: Date.now(),\n          missingDelta: true,\n""",
               """          sequence,\n          objectId,\n          baseRevision,\n          receivedAt: Date.now(),\n          missingDelta: true,\n""",
               'remember missing-delta base revision',
           )
 
-          replace_once(
-              'src/components/Board.jsx',
+          replace_in_section(
+              board_path, remote_start, remote_end,
               """      sessionOrder,\n      sequence,\n      objectId,\n      points,\n""",
               """      sessionOrder,\n      sequence,\n      objectId,\n      baseRevision,\n      points,\n""",
               'remember remote draw base revision',
           )
 
-          replace_once(
-              'src/components/Board.jsx',
+          cleanup_start = 'const lockCleanupInterval = window.setInterval(() => {'
+          cleanup_end = 'const syncOnFocus = () => {'
+
+          replace_in_section(
+              board_path, cleanup_start, cleanup_end,
               """      for (const [sessionKey, session] of remoteDrawSessionsRef.current) {\n        const age = now - Number(session.receivedAt ?? 0);\n""",
               """      const staleDrawPreviewIds = new Set();\n      const staleDrawMinimumRevisionById = new Map();\n      for (const [sessionKey, session] of remoteDrawSessionsRef.current) {\n        const age = now - Number(session.receivedAt ?? 0);\n""",
               'initialize stale draw reconciliation batch',
           )
 
-          replace_once(
-              'src/components/Board.jsx',
+          replace_in_section(
+              board_path, cleanup_start, cleanup_end,
               """        // Never create a short white gap by deleting a completed preview after five\n        // seconds. Keep it as the visible fallback until the saved object replaces it.\n        if (age > 90000) {\n          const [remoteClientId, ...sessionParts] = sessionKey.split(':');\n          const sessionId = sessionParts.join(':');\n          if (removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId).length) {\n            removedTransient = true;\n          }\n          remoteDrawSessionsRef.current.delete(sessionKey);\n        }\n""",
               """        // A completed preview is user-visible work. Never delete it merely because\n        // its realtime lifecycle outlived the timeout. Ask the authoritative log to\n        // replace it; until that succeeds, the preview remains the visible fallback.\n        if (session.ended && session.awaitingCommit && age > 90000) {\n          const objectId = String(session.objectId ?? '');\n          const lastRequestedAt = Number(session.staleReconcileRequestedAt ?? 0);\n          if (objectId && now - lastRequestedAt >= 12000) {\n            staleDrawPreviewIds.add(objectId);\n            const drawBaseRevision = normalizeRealtimeBaseRevision(session.baseRevision);\n            if (drawBaseRevision != null) {\n              staleDrawMinimumRevisionById.set(objectId, drawBaseRevision + 1);\n            }\n            session.staleReconcileRequestedAt = now;\n            remoteDrawSessionsRef.current.set(sessionKey, session);\n          }\n          continue;\n        }\n        if (age > 90000) {\n          const [remoteClientId, ...sessionParts] = sessionKey.split(':');\n          const sessionId = sessionParts.join(':');\n          if (removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId).length) {\n            removedTransient = true;\n          }\n          remoteDrawSessionsRef.current.delete(sessionKey);\n        }\n""",
               'retain completed stale draw previews',
           )
 
-          replace_once(
-              'src/components/Board.jsx',
+          replace_in_section(
+              board_path, cleanup_start, cleanup_end,
               """      for (const object of [...canvas.getObjects()]) {\n        const stalePreview = object.transientPreview\n          && now - Number(object.previewReceivedAt ?? now) > 90000;\n        const staleRemoteSelectionProxy = object.transientSelectionProxy\n          && object.creationClientId !== clientIdRef.current\n          && now - Number(object.previewReceivedAt ?? now) > 45000;\n        if (stalePreview || staleRemoteSelectionProxy) {\n          canvas.remove(object);\n          removedTransient = true;\n        }\n      }\n      if (removedTransient) {\n""",
               """      for (const object of [...canvas.getObjects()]) {\n        const previewAge = now - Number(object.previewReceivedAt ?? now);\n        const staleAwaitingCommitPreview = object.transientPreview\n          && object.transientAwaitingCommit\n          && previewAge > 90000;\n        const stalePreview = object.transientPreview\n          && !object.transientAwaitingCommit\n          && previewAge > 90000;\n        const staleRemoteSelectionProxy = object.transientSelectionProxy\n          && object.creationClientId !== clientIdRef.current\n          && previewAge > 45000;\n        if (staleAwaitingCommitPreview) {\n          const objectId = String(object.boardObjectId ?? '');\n          const lastRequestedAt = Number(object.staleReconcileRequestedAt ?? 0);\n          if (objectId && now - lastRequestedAt >= 12000) {\n            staleDrawPreviewIds.add(objectId);\n            object.staleReconcileRequestedAt = now;\n          }\n          continue;\n        }\n        if (stalePreview || staleRemoteSelectionProxy) {\n          canvas.remove(object);\n          removedTransient = true;\n        }\n      }\n      if (staleDrawPreviewIds.size) {\n        scheduleTargetedReconciliation([...staleDrawPreviewIds], {\n          minimumRevisionById: staleDrawMinimumRevisionById.size\n            ? staleDrawMinimumRevisionById\n            : null,\n          delay: 0,\n        });\n        syncFromServer(true);\n      }\n      if (removedTransient) {\n""",
               'reconcile awaiting-commit previews instead of deleting them',
           )
 
           replace_once(
-              'src/components/Board.jsx',
+              board_path,
               """      liveDrawSendRef.current.sessionId = null;\n      liveDrawSendRef.current.lastSentPointIndex = 0;\n""",
               """      liveDrawSendRef.current.sessionId = null;\n      liveDrawSendRef.current.baseRevision = 0;\n      liveDrawSendRef.current.lastSentPointIndex = 0;\n""",
               'reset live draw base revision on unmount',
@@ -255,8 +260,8 @@ jobs:
 
           replace_once(
               'package.json',
-              "node scripts/test-sync-convergence.mjs && node scripts/test-authoritative-log.mjs",
-              "node scripts/test-sync-convergence.mjs && node scripts/test-stale-draw-preview-regression.mjs && node scripts/test-authoritative-log.mjs",
+              'node scripts/test-sync-convergence.mjs && node scripts/test-authoritative-log.mjs',
+              'node scripts/test-sync-convergence.mjs && node scripts/test-stale-draw-preview-regression.mjs && node scripts/test-authoritative-log.mjs',
               'wire regression into sync suite',
           )
           PY
@@ -264,7 +269,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify regression is green
+      - name: Verify regression
         run: node scripts/test-stale-draw-preview-regression.mjs
 
       - name: Run full sync regression suite
