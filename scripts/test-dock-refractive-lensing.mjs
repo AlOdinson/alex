@@ -67,12 +67,12 @@ const geometry = { width: 400, height: 60, outerRadius: 24, thickness: 9 };
 const top = runtime.computeContinuousContourSamplePoint({ ...geometry, x: 200, y: 4 });
 assert.ok(top?.inRing, 'Top point must belong to the continuous contour ring');
 assert.ok(Math.abs(top.normalX) < 1e-9 && top.normalY < -0.999, 'Top contour normal must point vertically outward');
-assert.ok(top.sampleY > top.y, 'Top contour reflection must sample inward from the same continuous ring');
+assert.ok(top.sampleY > 4, 'Top contour reflection must sample inward from the same continuous ring');
 
 const right = runtime.computeContinuousContourSamplePoint({ ...geometry, x: 396, y: 30 });
 assert.ok(right?.inRing, 'Right point must belong to the continuous contour ring');
 assert.ok(right.normalX > 0.999 && Math.abs(right.normalY) < 1e-9, 'Right contour normal must point horizontally outward');
-assert.ok(right.sampleX < right.x, 'Right contour reflection must sample inward from the same continuous ring');
+assert.ok(right.sampleX < 396, 'Right contour reflection must sample inward from the same continuous ring');
 
 const cornerCenterX = geometry.width - geometry.outerRadius;
 const cornerCenterY = geometry.outerRadius;
