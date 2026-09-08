@@ -13,6 +13,7 @@ assert.ok(
 );
 
 assert.equal(typeof runtime.computeSurfaceSourceRect, 'function', 'Mobile glass runtime must expose full-surface source-rect math');
+assert.equal(typeof runtime.computeInnerContourRadiusCss, 'function', 'Contour runtime must expose inner-radius geometry for regression coverage');
 assert.ok(runtime.LENS_REFRESH_MS >= 100, 'Refractive sampling must be throttled to protect iPad/Pencil performance');
 
 const sourceRect = { left: 0, top: 0, width: 1000, height: 800 };
@@ -26,6 +27,22 @@ const surfaceSample = runtime.computeSurfaceSourceRect({
 });
 assert.deepEqual(surfaceSample, { sx: 204, sy: 1404, sw: 792, sh: 112 }, 'Full mobile glass surface must sample the actual board area behind the dock');
 
+assert.equal(
+  runtime.computeInnerContourRadiusCss({ outerRadiusCss: 18, innerWidthCss: 382, innerHeightCss: 42 }),
+  18,
+  'Dock inner contour must preserve the same 18px rounded profile instead of subtracting the 9px ring thickness'
+);
+assert.equal(
+  runtime.computeInnerContourRadiusCss({ outerRadiusCss: 18, innerWidthCss: 50, innerHeightCss: 22 }),
+  11,
+  'Capsule inner contour must keep the outer profile but clamp only when the inset height physically requires it'
+);
+assert.equal(
+  runtime.computeInnerContourRadiusCss({ outerRadiusCss: 15, innerWidthCss: 300, innerHeightCss: 46 }),
+  15,
+  'Mobile dock inner contour must repeat the outer mobile curve one-for-one'
+);
+
 assert.match(runtimeSource, /\.lower-canvas/, 'Runtime must prefer Fabric lower-canvas as the real board image source');
 assert.match(runtimeSource, /drawImage\(/, 'Runtime must copy real board pixels rather than relying on backdrop-filter imitation');
 assert.match(runtimeSource, /refractive-contour-sample--dock/, 'Runtime must create one continuous contour sample for the main dock');
@@ -36,6 +53,7 @@ assert.match(runtimeSource, /scale\(1,\s*-1\)/, 'Top and bottom contour sections
 assert.match(runtimeSource, /scale\(-1,\s*1\)/, 'Left and right contour sections must mirror the board horizontally');
 assert.match(runtimeSource, /globalCompositeOperation\s*=\s*['"]destination-out['"]/, 'Contour renderer must cut out the center so the edge has uniform thickness around the full perimeter');
 assert.match(runtimeSource, /roundRect\(/, 'Contour renderer must preserve the rounded inner contour rather than only drawing top and bottom strips');
+assert.doesNotMatch(runtimeSource, /outerRadiusCss\s*-\s*config\.thicknessCss/, 'Inner contour radius must not be reduced by ring thickness because that makes the opening look rectangular');
 assert.doesNotMatch(runtimeSource, /refractive-lens-sample--dock-top/, 'Old top-only dock strip must be removed once the full contour ring is active');
 assert.doesNotMatch(runtimeSource, /refractive-lens-sample--history-top/, 'Old top-only history strip must be removed once the full contour ring is active');
 assert.match(runtimeSource, /refractive-surface-sample--dock/, 'Runtime must preserve the full sampled surface for the mobile dock');

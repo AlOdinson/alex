@@ -150,6 +150,14 @@ function resolveOuterRadiusCss(target, targetRect) {
   return clamp(parsed, 0, fallback);
 }
 
+export function computeInnerContourRadiusCss({ outerRadiusCss, innerWidthCss, innerHeightCss }) {
+  if (!Number.isFinite(outerRadiusCss) || !Number.isFinite(innerWidthCss) || !Number.isFinite(innerHeightCss)) return 0;
+  if (innerWidthCss <= 0 || innerHeightCss <= 0) return 0;
+  // Preserve the same visual curve as the outer plate. Only clamp when the inset
+  // opening is physically too small to hold that radius (e.g. the undo/redo capsule).
+  return Math.max(0, Math.min(outerRadiusCss, innerWidthCss / 2, innerHeightCss / 2));
+}
+
 function traceRoundedRect(context, x, y, width, height, radius) {
   const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
   if (typeof context.roundRect === 'function') {
@@ -300,13 +308,18 @@ function renderContourSample(source, target, config) {
   );
   context.restore();
 
-  // Cut the center out. The remaining rounded ring has the same thickness on
-  // top, bottom, both sides and throughout every curved corner.
+  // Cut the center out. The opening deliberately keeps the same rounded profile
+  // as the outer plate, so the inner edge cannot collapse into a rectangular shape.
   const innerWidth = pixelWidth - thicknessPx * 2;
   const innerHeight = pixelHeight - thicknessPx * 2;
   if (innerWidth > 0 && innerHeight > 0) {
     const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
-    const innerRadiusPx = Math.max(0, (outerRadiusCss - config.thicknessCss) * sampleDpr);
+    const innerRadiusCss = computeInnerContourRadiusCss({
+      outerRadiusCss,
+      innerWidthCss: innerWidth / sampleDpr,
+      innerHeightCss: innerHeight / sampleDpr,
+    });
+    const innerRadiusPx = innerRadiusCss * sampleDpr;
     context.save();
     context.globalCompositeOperation = 'destination-out';
     context.beginPath();
