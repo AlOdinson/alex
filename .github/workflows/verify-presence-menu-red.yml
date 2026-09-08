@@ -1,0 +1,21 @@
+name: Verify presence participant menu red phase
+
+on:
+  push:
+    branches:
+      - feature/presence-participant-menu
+
+permissions:
+  contents: read
+
+jobs:
+  regression-red:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run presence menu regression
+        run: node scripts/test-presence-menu.mjs
