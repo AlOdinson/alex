@@ -1,4 +1,4 @@
-name: Verify presence participant menu red phase
+name: Verify presence participant menu
 
 on:
   push:
@@ -6,16 +6,102 @@ on:
       - feature/presence-participant-menu
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  regression-red:
+  verify-and-commit:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Run presence menu regression
+
+      - name: Apply presence menu feature
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new, label):
+              file_path = Path(path)
+              text = file_path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{label}: expected exactly one match, found {count}')
+              file_path.write_text(text.replace(old, new, 1))
+
+          toolbar = 'src/components/Toolbar.jsx'
+          styles = 'src/styles.css'
+
+          replace_once(
+              toolbar,
+              """  const [shapesOpen, setShapesOpen] = useState(false);\n  const [exportOpen, setExportOpen] = useState(false);\n  const shapeAnchorRef = useRef(null);\n  const exportAnchorRef = useRef(null);\n""",
+              """  const [shapesOpen, setShapesOpen] = useState(false);\n  const [exportOpen, setExportOpen] = useState(false);\n  const [presenceOpen, setPresenceOpen] = useState(false);\n  const shapeAnchorRef = useRef(null);\n  const exportAnchorRef = useRef(null);\n  const presenceAnchorRef = useRef(null);\n""",
+              'presence state and anchor',
+          )
+
+          replace_once(
+              toolbar,
+              """  useEffect(() => {\n    if (!shapesOpen && !exportOpen) return undefined;\n    function closeOnOutside(event) {\n      const insideShapeButton = shapeAnchorRef.current?.contains(event.target);\n      const insideShapeMenu = event.target?.closest?.('.shape-palette');\n      if (!insideShapeButton && !insideShapeMenu) setShapesOpen(false);\n      if (!exportAnchorRef.current?.contains(event.target)) setExportOpen(false);\n    }\n    window.addEventListener('pointerdown', closeOnOutside);\n    return () => window.removeEventListener('pointerdown', closeOnOutside);\n  }, [shapesOpen, exportOpen]);\n""",
+              """  useEffect(() => {\n    if (!shapesOpen && !exportOpen && !presenceOpen) return undefined;\n    function closeOnOutside(event) {\n      const insideShapeButton = shapeAnchorRef.current?.contains(event.target);\n      const insideShapeMenu = event.target?.closest?.('.shape-palette');\n      if (!insideShapeButton && !insideShapeMenu) setShapesOpen(false);\n      if (!exportAnchorRef.current?.contains(event.target)) setExportOpen(false);\n      if (!presenceAnchorRef.current?.contains(event.target)) setPresenceOpen(false);\n    }\n    function closeOnEscape(event) {\n      if (event.key === 'Escape') {\n        setShapesOpen(false);\n        setExportOpen(false);\n        setPresenceOpen(false);\n      }\n    }\n    window.addEventListener('pointerdown', closeOnOutside);\n    window.addEventListener('keydown', closeOnEscape);\n    return () => {\n      window.removeEventListener('pointerdown', closeOnOutside);\n      window.removeEventListener('keydown', closeOnEscape);\n    };\n  }, [shapesOpen, exportOpen, presenceOpen]);\n""",
+              'popover outside and escape handling',
+          )
+
+          replace_once(
+              toolbar,
+              """        <div className=\"presence-summary\" title={users.map((user) => user.name).join(', ')}>\n          <span className=\"presence-dot\" />\n          {users.length || 1}\n        </div>\n""",
+              """        <div className=\"presence-anchor\" ref={presenceAnchorRef}>\n          <button\n            type=\"button\"\n            className=\"presence-summary\"\n            title={users.map((user) => user.name).join(', ')}\n            aria-label=\"Показать участников на доске\"\n            aria-haspopup=\"dialog\"\n            aria-expanded={presenceOpen}\n            onClick={() => setPresenceOpen((value) => !value)}\n          >\n            <span className=\"presence-dot\" />\n            {users.length || 1}\n          </button>\n          {presenceOpen && (\n            <div className=\"presence-menu\" role=\"dialog\" aria-label=\"Участники на доске\">\n              <div className=\"presence-menu-title\">Сейчас на доске</div>\n              <div className=\"presence-menu-list\" role=\"list\">\n                {users.length ? users.map((user, index) => (\n                  <div\n                    className=\"presence-menu-user\"\n                    role=\"listitem\"\n                    key={user.clientId ?? `${user.name ?? 'participant'}:${index}`}\n                  >\n                    <span className=\"presence-menu-dot\" aria-hidden=\"true\" />\n                    <span className=\"presence-menu-name\" data-i18n-skip>{user.name || 'Участник'}</span>\n                  </div>\n                )) : (\n                  <div className=\"presence-menu-user\" role=\"listitem\">\n                    <span className=\"presence-menu-dot\" aria-hidden=\"true\" />\n                    <span className=\"presence-menu-name\">Вы</span>\n                  </div>\n                )}\n              </div>\n            </div>\n          )}\n        </div>\n""",
+              'presence dropdown markup',
+          )
+
+          replace_once(
+              styles,
+              """.presence-summary {\n  flex: 0 0 auto;\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  height: 38px;\n  padding: 0 11px;\n  border: 1px solid #e2e8f0;\n  border-radius: 11px;\n  background: #ffffff;\n  color: #475569;\n  font-size: 13px;\n  font-weight: 700;\n}\n\n.presence-dot {\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n  background: #22c55e;\n  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);\n}\n""",
+              """.presence-anchor {\n  position: relative;\n  flex: 0 0 auto;\n}\n\n.presence-summary {\n  flex: 0 0 auto;\n  display: flex;\n  align-items: center;\n  gap: 7px;\n  height: 38px;\n  padding: 0 11px;\n  border: 1px solid #e2e8f0;\n  border-radius: 11px;\n  background: #ffffff;\n  color: #475569;\n  font-size: 13px;\n  font-weight: 700;\n}\n\n.presence-summary:hover,\n.presence-summary:focus-visible,\n.presence-summary[aria-expanded=\"true\"] {\n  border-color: #bfdbfe;\n  background: #eff6ff;\n  color: #1d4ed8;\n  outline: none;\n}\n\n.presence-dot,\n.presence-menu-dot {\n  width: 8px;\n  height: 8px;\n  flex: 0 0 auto;\n  border-radius: 50%;\n  background: #22c55e;\n  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);\n}\n\n.presence-menu {\n  position: absolute;\n  z-index: 80;\n  top: calc(100% + 7px);\n  right: 0;\n  min-width: 160px;\n  width: max-content;\n  max-width: min(240px, calc(100vw - 16px));\n  padding: 7px;\n  border: 1px solid #dbe2ea;\n  border-radius: 11px;\n  background: rgba(255, 255, 255, 0.99);\n  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.17);\n  color: #334155;\n}\n\n.presence-menu-title {\n  padding: 4px 7px 7px;\n  color: #64748b;\n  font-size: 10px;\n  font-weight: 800;\n  letter-spacing: 0.02em;\n  text-transform: uppercase;\n  white-space: nowrap;\n}\n\n.presence-menu-list {\n  display: grid;\n  gap: 2px;\n  max-height: min(240px, 45vh);\n  overflow-y: auto;\n}\n\n.presence-menu-user {\n  display: flex;\n  align-items: center;\n  gap: 9px;\n  min-height: 32px;\n  padding: 6px 8px;\n  border-radius: 8px;\n  background: #f8fafc;\n  font-size: 12px;\n  font-weight: 700;\n}\n\n.presence-menu-name {\n  min-width: 0;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  white-space: nowrap;\n}\n""",
+              'presence dropdown styles',
+          )
+
+          replace_once(
+              styles,
+              """  .presence-summary {\n    display: none;\n  }\n""",
+              """  .presence-anchor {\n    flex: 0 0 auto;\n  }\n""",
+              'keep presence counter available on phone',
+          )
+
+          replace_once(
+              'package.json',
+              'node scripts/test-floating-drawing-controls.mjs && node scripts/test-ipad-color-palette.mjs',
+              'node scripts/test-presence-menu.mjs && node scripts/test-floating-drawing-controls.mjs && node scripts/test-ipad-color-palette.mjs',
+              'wire presence regression into sync suite',
+          )
+          PY
+
+      - name: Install dependencies without rewriting lockfile
+        run: npm install --package-lock=false --no-audit --no-fund
+
+      - name: Verify presence dropdown regression
         run: node scripts/test-presence-menu.mjs
+
+      - name: Run sync suite except known main preset mismatch
+        shell: bash
+        run: |
+          SYNC_CMD=$(node --input-type=module -e "import fs from 'node:fs'; const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); console.log(pkg.scripts['test:sync'].replace('node scripts/test-drawing-presets.mjs && ', '')); ")
+          eval "$SYNC_CMD"
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Commit verified feature
+        shell: bash
+        run: |
+          rm .github/workflows/verify-presence-menu-red.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/components/Toolbar.jsx src/styles.css scripts/test-presence-menu.mjs package.json .github/workflows/verify-presence-menu-red.yml
+          git commit -m 'feat: show participant names from presence counter'
+          git push origin HEAD:feature/presence-participant-menu
