@@ -19,5 +19,6 @@ import './floating-toolbar-layout.css';
 import './mobile-premium-glass-fallback.css';
 import './refractive-glass-lensing.css';
 import './refractive-glass-lensing.js';
+import './refractive-glass-desktop-surface.js';
 
 createRoot(document.getElementById('root')).render(<App />);
