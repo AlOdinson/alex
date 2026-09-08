@@ -2,15 +2,13 @@
    The thin edge strips use mirrored backdrop sampling to suggest lensing/refraction
    when board text or lines pass under the glass. No continuous animation. */
 
-.board-tool-dock,
+.board-tool-dock {
+  isolation: isolate !important;
+}
+
 .dock-history-accessories {
   isolation: isolate !important;
   overflow: hidden !important;
-}
-
-.board-tool-dock > * {
-  position: relative;
-  z-index: 1;
 }
 
 /* Main dock: bright upper lens lip. Narrow on purpose so it reads as glass thickness,
