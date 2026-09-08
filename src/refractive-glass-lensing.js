@@ -33,7 +33,6 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
-// Kept as a small geometry helper for compatibility with existing callers/tests.
 export function computeLensSourceRect({
   sourceRect,
   sourceWidth,
@@ -159,9 +158,6 @@ export function computeParallelInsetRadiusCss({ outerRadiusCss, insetCss, innerW
   ) return 0;
   if (innerWidthCss <= 0 || innerHeightCss <= 0) return 0;
 
-  // A constant-width inward offset of a rounded rectangle keeps the same corner
-  // center and reduces its radius by exactly the inset. Clamping is only a safety
-  // guard for physically tiny openings, matching the browser's rounded-rect rules.
   const parallelRadiusCss = Math.max(0, outerRadiusCss - insetCss);
   return Math.max(0, Math.min(parallelRadiusCss, innerWidthCss / 2, innerHeightCss / 2));
 }
@@ -232,17 +228,7 @@ function renderContourSample(source, target, config) {
   context.save();
   context.translate(0, thicknessPx);
   context.scale(1, -1);
-  context.drawImage(
-    source,
-    sample.sx,
-    sample.sy,
-    sample.sw,
-    sourceDepthY,
-    0,
-    0,
-    pixelWidth,
-    thicknessPx,
-  );
+  context.drawImage(source, sample.sx, sample.sy, sample.sw, sourceDepthY, 0, 0, pixelWidth, thicknessPx);
   context.restore();
 
   context.save();
@@ -265,17 +251,7 @@ function renderContourSample(source, target, config) {
   context.globalAlpha = 0.92;
   context.translate(thicknessPx, 0);
   context.scale(-1, 1);
-  context.drawImage(
-    source,
-    sample.sx,
-    sample.sy,
-    sourceDepthX,
-    sample.sh,
-    0,
-    0,
-    thicknessPx,
-    pixelHeight,
-  );
+  context.drawImage(source, sample.sx, sample.sy, sourceDepthX, sample.sh, 0, 0, thicknessPx, pixelHeight);
   context.restore();
 
   context.save();
@@ -310,10 +286,23 @@ function renderContourSample(source, target, config) {
   );
   context.restore();
 
+  const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
+  const outerRadiusPx = outerRadiusCss * sampleDpr;
+
+  // Rasterize the outer and inner boundaries in the exact same Canvas coordinate
+  // system. This avoids Safari/Retina differences between a CSS border-radius clip
+  // and a Canvas roundRect cutout.
+  context.save();
+  context.globalCompositeOperation = 'destination-in';
+  context.beginPath();
+  traceRoundedRect(context, 0, 0, pixelWidth, pixelHeight, outerRadiusPx);
+  context.closePath();
+  context.fill();
+  context.restore();
+
   const innerWidth = pixelWidth - thicknessPx * 2;
   const innerHeight = pixelHeight - thicknessPx * 2;
   if (innerWidth > 0 && innerHeight > 0) {
-    const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
     const innerRadiusCss = computeParallelInsetRadiusCss({
       outerRadiusCss,
       insetCss: config.thicknessCss,
@@ -383,17 +372,7 @@ function renderSurfaceSample(source, target, config) {
   context.clearRect(0, 0, pixelWidth, pixelHeight);
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
-  context.drawImage(
-    source,
-    sample.sx,
-    sample.sy,
-    sample.sw,
-    sample.sh,
-    0,
-    0,
-    pixelWidth,
-    pixelHeight,
-  );
+  context.drawImage(source, sample.sx, sample.sy, sample.sw, sample.sh, 0, 0, pixelWidth, pixelHeight);
   return true;
 }
 
