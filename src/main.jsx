@@ -17,5 +17,6 @@ import './dock-history-icons.js';
 import './dock-style-presets-gear.js';
 import './floating-toolbar-layout.css';
 import './mobile-premium-glass-fallback.css';
+import './refractive-glass-lensing.css';
 
 createRoot(document.getElementById('root')).render(<App />);
