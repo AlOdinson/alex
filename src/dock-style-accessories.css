@@ -103,13 +103,14 @@
   margin: 0 !important;
   padding: 0 !important;
   overflow: hidden !important;
-  border: 1px solid rgba(255, 255, 255, 0.78) !important;
-  border-radius: 4px !important;
-  background: rgba(255, 255, 255, 0.22) !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.34), rgba(236, 247, 255, 0.18) 52%, rgba(255, 255, 255, 0.12)) !important;
   color: #334155 !important;
   box-shadow:
     0 5px 12px rgba(15, 23, 42, 0.13),
-    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.68),
+    inset 0 1px 0 rgba(255, 255, 255, 0.94),
     inset 0 -1px 0 rgba(92, 137, 183, 0.14) !important;
   backdrop-filter: blur(18px) saturate(200%) brightness(106%) contrast(102%) !important;
   -webkit-backdrop-filter: blur(18px) saturate(200%) brightness(106%) contrast(102%) !important;
@@ -123,18 +124,19 @@
   position: absolute;
   inset: 0;
   z-index: 1;
-  border-radius: 3px;
+  border-radius: 0;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.1) 44%, transparent 70%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.54), rgba(255, 255, 255, 0.1) 44%, transparent 70%),
     radial-gradient(circle at 82% 112%, rgba(120, 184, 255, 0.16), transparent 43%);
   pointer-events: none;
 }
 
 .dock-style-eyedropper-button:hover:not(:disabled),
 .dock-style-preset-button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.3) !important;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.46), rgba(236, 247, 255, 0.24) 52%, rgba(255, 255, 255, 0.16)) !important;
   box-shadow:
     0 7px 15px rgba(15, 23, 42, 0.16),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.76),
     inset 0 1px 0 rgba(255, 255, 255, 0.98),
     inset 0 -1px 0 rgba(92, 137, 183, 0.16) !important;
 }
@@ -149,7 +151,7 @@
   grid-row: 1 !important;
   display: grid !important;
   place-items: center !important;
-  border-radius: 4px !important;
+  border-radius: 0 !important;
   color: #334155 !important;
   line-height: 1 !important;
 }
@@ -172,19 +174,19 @@
 .dock-style-preset-button:nth-child(2) {
   grid-column: 2 !important;
   grid-row: 1 !important;
-  border-radius: 4px !important;
+  border-radius: 0 !important;
 }
 
 .dock-style-preset-button:nth-child(3) {
   grid-column: 1 !important;
   grid-row: 2 !important;
-  border-radius: 4px !important;
+  border-radius: 0 !important;
 }
 
 .dock-style-preset-button:nth-child(4) {
   grid-column: 2 !important;
   grid-row: 2 !important;
-  border-radius: 4px !important;
+  border-radius: 0 !important;
 }
 
 .dock-style-preset-fill {
@@ -229,7 +231,7 @@
   line-height: 1;
   letter-spacing: -0.02em;
   pointer-events: none;
-  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.22);
+  text-shadow: none;
 }
 
 .dock-style-preset-button:not([data-preset-width])::after {
@@ -239,13 +241,13 @@
 .dock-style-preset-button.active {
   box-shadow:
     0 5px 12px rgba(15, 23, 42, 0.13),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.86),
-    inset 0 0 0 2px rgba(37, 99, 235, 0.72),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.82),
+    inset 0 0 0 2px rgba(37, 99, 235, 0.7),
     inset 0 1px 0 rgba(255, 255, 255, 0.96) !important;
 }
 
 .dock-style-eyedropper-button.active {
-  background: rgba(233, 228, 255, 0.36) !important;
+  background: linear-gradient(145deg, rgba(237, 233, 254, 0.56), rgba(221, 214, 254, 0.3) 54%, rgba(255, 255, 255, 0.18)) !important;
   color: #6d28d9 !important;
   box-shadow:
     0 5px 12px rgba(76, 29, 149, 0.12),
