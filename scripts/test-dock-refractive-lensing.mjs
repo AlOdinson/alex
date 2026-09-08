@@ -14,6 +14,7 @@ assert.ok(
 
 assert.equal(typeof runtime.computeSurfaceSourceRect, 'function', 'Mobile glass runtime must expose full-surface source-rect math');
 assert.equal(typeof runtime.computeParallelInsetRadiusCss, 'function', 'Contour runtime must expose exact parallel-inset geometry for regression coverage');
+assert.equal(typeof runtime.computeContinuousContourSamplePoint, 'function', 'Contour runtime must expose one continuous rounded-contour reflection mapping');
 assert.ok(runtime.LENS_REFRESH_MS >= 100, 'Refractive sampling must be throttled to protect iPad/Pencil performance');
 
 const sourceRect = { left: 0, top: 0, width: 1000, height: 800 };
@@ -28,12 +29,12 @@ const surfaceSample = runtime.computeSurfaceSourceRect({
 assert.deepEqual(surfaceSample, { sx: 218, sy: 1418, sw: 764, sh: 84 }, 'Mobile dock center must sample only the area inside the 9px refractive contour');
 
 const dockInnerRadius = runtime.computeParallelInsetRadiusCss({
-  outerRadiusCss: 15,
+  outerRadiusCss: 24,
   insetCss: 9,
   innerWidthCss: 300,
   innerHeightCss: 46,
 });
-assert.equal(dockInnerRadius, 6, '15px mobile dock corner inset by 9px must have a 6px inner radius');
+assert.equal(dockInnerRadius, 15, '24px mobile dock corner inset by 9px must have a 15px inner radius');
 
 const historyInnerRadius = runtime.computeParallelInsetRadiusCss({
   outerRadiusCss: 18,
@@ -44,10 +45,9 @@ const historyInnerRadius = runtime.computeParallelInsetRadiusCss({
 assert.equal(historyInnerRadius, 11, '18px history capsule inset by 7px must have an 11px inner radius');
 
 // For concentric quarter-circle corners, a true inward offset keeps every point
-// exactly `inset` pixels away along the normal. Verify this at several angles,
-// not just by checking the radius formula.
+// exactly `inset` pixels away along the normal. Verify this at several angles.
 for (const { outerRadius, innerRadius, inset } of [
-  { outerRadius: 15, innerRadius: dockInnerRadius, inset: 9 },
+  { outerRadius: 24, innerRadius: dockInnerRadius, inset: 9 },
   { outerRadius: 18, innerRadius: historyInnerRadius, inset: 7 },
 ]) {
   for (const degrees of [0, 15, 30, 45, 60, 75, 90]) {
@@ -61,6 +61,32 @@ for (const { outerRadius, innerRadius, inset } of [
   }
 }
 
+// The new contour is one field of normals, not four rectangular mirror strips.
+// Straight sections reflect orthogonally and the corner normal rotates smoothly.
+const geometry = { width: 400, height: 60, outerRadius: 24, thickness: 9 };
+const top = runtime.computeContinuousContourSamplePoint({ ...geometry, x: 200, y: 4 });
+assert.ok(top?.inRing, 'Top point must belong to the continuous contour ring');
+assert.ok(Math.abs(top.normalX) < 1e-9 && top.normalY < -0.999, 'Top contour normal must point vertically outward');
+assert.ok(top.sampleY > top.y, 'Top contour reflection must sample inward from the same continuous ring');
+
+const right = runtime.computeContinuousContourSamplePoint({ ...geometry, x: 396, y: 30 });
+assert.ok(right?.inRing, 'Right point must belong to the continuous contour ring');
+assert.ok(right.normalX > 0.999 && Math.abs(right.normalY) < 1e-9, 'Right contour normal must point horizontally outward');
+assert.ok(right.sampleX < right.x, 'Right contour reflection must sample inward from the same continuous ring');
+
+const cornerCenterX = geometry.width - geometry.outerRadius;
+const cornerCenterY = geometry.outerRadius;
+const cornerAngle = -Math.PI / 4;
+const cornerRadius = geometry.outerRadius - 4;
+const corner = runtime.computeContinuousContourSamplePoint({
+  ...geometry,
+  x: cornerCenterX + Math.cos(cornerAngle) * cornerRadius,
+  y: cornerCenterY + Math.sin(cornerAngle) * cornerRadius,
+});
+assert.ok(corner?.inRing, 'Rounded corner point must belong to the same continuous contour ring');
+assert.ok(corner.normalX > 0.6 && corner.normalY < -0.6, 'Corner normal must rotate diagonally instead of switching between separate side strips');
+assert.ok(Math.abs(Math.hypot(corner.normalX, corner.normalY) - 1) < 1e-9, 'Continuous contour normal must remain normalized around the curve');
+
 assert.match(runtimeSource, /\.lower-canvas/, 'Runtime must prefer Fabric lower-canvas as the real board image source');
 assert.match(runtimeSource, /drawImage\(/, 'Runtime must copy real board pixels rather than relying on backdrop-filter imitation');
 assert.match(runtimeSource, /refractive-contour-sample--dock/, 'Runtime must create one continuous contour sample for the main dock');
@@ -69,8 +95,13 @@ assert.match(runtimeSource, /className:\s*'refractive-contour-sample--dock'[\s\S
 assert.match(runtimeSource, /className:\s*'refractive-contour-sample--history'[\s\S]*thicknessCss:\s*7/, 'History refractive contour must use the 1.5x thicker 7px ring');
 assert.match(runtimeSource, /className:\s*'refractive-surface-sample--dock'[\s\S]*insetCss:\s*9/, 'Dock surface sample must start exactly inside the 9px contour instead of bleeding underneath it');
 assert.match(runtimeSource, /className:\s*'refractive-surface-sample--history'[\s\S]*insetCss:\s*7/, 'History surface sample must start exactly inside the 7px contour instead of bleeding underneath it');
-assert.match(runtimeSource, /scale\(1,\s*-1\)/, 'Top and bottom contour sections must mirror the board vertically');
-assert.match(runtimeSource, /scale\(-1,\s*1\)/, 'Left and right contour sections must mirror the board horizontally');
+assert.match(runtimeSource, /computeContinuousContourSamplePoint/, 'Contour renderer must use one continuous normal-field mapping');
+assert.match(runtimeSource, /getImageData\(/, 'Continuous contour renderer must read one sampled board image for curved normal-field reflection');
+assert.match(runtimeSource, /putImageData\(/, 'Continuous contour renderer must write one unified reflected contour image');
+assert.doesNotMatch(runtimeSource, /sourceDepthX/, 'Old left\/right strip sampling must be removed');
+assert.doesNotMatch(runtimeSource, /sourceDepthY/, 'Old top\/bottom strip sampling must be removed');
+assert.doesNotMatch(runtimeSource, /context\.scale\(1,\s*-1\)/, 'Contour must not be assembled from a separate vertically mirrored top\/bottom strip');
+assert.doesNotMatch(runtimeSource, /context\.scale\(-1,\s*1\)/, 'Contour must not be assembled from a separate horizontally mirrored left\/right strip');
 assert.match(runtimeSource, /globalCompositeOperation\s*=\s*['"]destination-in['"]/, 'Outer contour must be masked by Canvas geometry rather than relying only on CSS border-radius rasterization');
 assert.match(runtimeSource, /traceRoundedRect\(context,\s*0,\s*0,\s*pixelWidth,\s*pixelHeight,\s*outerRadiusPx\)/, 'Outer contour must use the same Canvas rounded-rect path system as the inner contour');
 assert.match(runtimeSource, /globalCompositeOperation\s*=\s*['"]destination-out['"]/, 'Contour renderer must cut out the center so the edge has uniform thickness around the full perimeter');
@@ -99,4 +130,4 @@ assert.match(refractiveCss, /refractive-surface-sample--history[\s\S]*opacity:\s
 assert.doesNotMatch(refractiveCss, /animation:/, 'Refractive contour must not add continuous CSS animation on iPad\/phone');
 assert.doesNotMatch(refractiveCss, /\.dock-style-right-accessories/, 'Contour change must not touch the four right-side glass tiles');
 
-console.log('Dock exact-parallel refractive contour regression passed.');
+console.log('Dock continuous-normal refractive contour regression passed.');
