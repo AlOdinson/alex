@@ -3,35 +3,56 @@ import { readFile } from 'node:fs/promises';
 
 const mainEntry = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
 const refractiveCss = await readFile(new URL('../src/refractive-glass-lensing.css', import.meta.url), 'utf8');
+const runtimeUrl = new URL('../src/refractive-glass-lensing.js', import.meta.url);
+const runtimeSource = await readFile(runtimeUrl, 'utf8');
+const runtime = await import(`${runtimeUrl.href}?test=${Date.now()}`);
 
 assert.ok(
-  mainEntry.lastIndexOf("import './refractive-glass-lensing.css';") > mainEntry.lastIndexOf("import './mobile-premium-glass-fallback.css';"),
-  'Refractive lensing CSS must load last so mobile/WebKit fallbacks cannot flatten the effect'
+  mainEntry.lastIndexOf("import './refractive-glass-lensing.js';") > mainEntry.lastIndexOf("import './refractive-glass-lensing.css';"),
+  'Canvas-backed refractive runtime must load after the visual glass CSS'
 );
 
-const dockTopLip = refractiveCss.match(/\.board-tool-dock::before\s*\{([\s\S]*?)\}/)?.[1] ?? '';
-assert.match(dockTopLip, /height:\s*7px/, 'Bottom dock top refractive lip must stay narrow rather than becoming a second panel');
-assert.match(dockTopLip, /scaleY\(-1\)/, 'Bottom dock top lip must use a mirrored lens transform');
-assert.match(dockTopLip, /-webkit-backdrop-filter:/, 'Bottom dock top lip must have a WebKit backdrop optical pass');
-assert.match(dockTopLip, /brightness\(112%\)/, 'Bottom dock top lip must brighten refracted content like a glass edge');
+assert.equal(typeof runtime.computeLensSourceRect, 'function', 'Refractive runtime must expose its source-rect math for regression coverage');
+assert.ok(runtime.LENS_REFRESH_MS >= 100, 'Refractive sampling must be throttled to protect iPad/Pencil performance');
 
-const dockBottomLip = refractiveCss.match(/\.board-tool-dock::after\s*\{([\s\S]*?)\}/)?.[1] ?? '';
-assert.match(dockBottomLip, /height:\s*5px/, 'Bottom dock lower refractive lip must remain a thin optical edge');
-assert.match(dockBottomLip, /scaleY\(-1\)/, 'Bottom dock lower lip must mirror the passing backdrop subtly');
-assert.match(dockBottomLip, /opacity:\s*0\.48/, 'Bottom dock lower refraction must remain restrained');
+const sourceRect = { left: 0, top: 0, width: 1000, height: 800 };
+const targetRect = { left: 100, top: 700, right: 500, bottom: 760, width: 400, height: 60 };
+const topSample = runtime.computeLensSourceRect({
+  sourceRect,
+  sourceWidth: 2000,
+  sourceHeight: 1600,
+  targetRect,
+  insetCss: 12,
+  edge: 'top',
+  lipHeightCss: 7,
+  sampleDepthCss: 14,
+});
+assert.deepEqual(topSample, { sx: 224, sy: 1400, sw: 752, sh: 28 }, 'Top dock lip must sample the actual board pixels directly behind it');
 
-const historyTopLip = refractiveCss.match(/\.dock-history-accessories::before\s*\{([\s\S]*?)\}/)?.[1] ?? '';
-assert.match(historyTopLip, /height:\s*5px/, 'Undo/redo glass may use only a narrow top lens strip, not a second capsule');
-assert.match(historyTopLip, /scaleY\(-1\)/, 'Undo/redo top edge must refract/mirror the backdrop');
-assert.doesNotMatch(historyTopLip, /inset:\s*0/, 'Undo/redo refractive strip must never become a full-size inner backing');
+const bottomSample = runtime.computeLensSourceRect({
+  sourceRect,
+  sourceWidth: 2000,
+  sourceHeight: 1600,
+  targetRect,
+  insetCss: 16,
+  edge: 'bottom',
+  lipHeightCss: 5,
+  sampleDepthCss: 12,
+});
+assert.deepEqual(bottomSample, { sx: 232, sy: 1496, sw: 736, sh: 24 }, 'Bottom dock lip must sample the actual board pixels directly behind it');
 
-const historyBottomLip = refractiveCss.match(/\.dock-history-accessories::after\s*\{([\s\S]*?)\}/)?.[1] ?? '';
-assert.match(historyBottomLip, /height:\s*4px/, 'Undo/redo lower edge must remain a narrow lens strip');
-assert.match(historyBottomLip, /backdrop-filter:/, 'Undo/redo lower edge must carry its own subtle optical filtering');
+assert.match(runtimeSource, /\.lower-canvas/, 'Runtime must prefer Fabric lower-canvas as the real board image source');
+assert.match(runtimeSource, /drawImage\(/, 'Runtime must copy real board pixels rather than relying on backdrop-filter imitation');
+assert.match(runtimeSource, /scale\(1,\s*-1\)/, 'Copied board strip must be mirrored vertically for the lens reflection');
+assert.match(runtimeSource, /refractive-lens-sample--dock-top/, 'Runtime must create a real top sample for the main dock');
+assert.match(runtimeSource, /refractive-lens-sample--history-top/, 'Runtime must create a real sample for the undo\/redo glass');
+assert.match(runtimeSource, /document\.hidden/, 'Runtime must stop sampling while the tab is hidden');
 
-assert.match(refractiveCss, /@supports \(-webkit-touch-callout:\s*none\)/, 'iPad/iPhone must receive an explicit refractive edge enhancement');
-assert.match(refractiveCss, /@media \(max-width:\s*900px\)/, 'Phone viewports must keep the refractive edge treatment');
-assert.doesNotMatch(refractiveCss, /animation:/, 'Refractive lensing must not add continuous animation on iPad/phone');
+assert.match(refractiveCss, /\.refractive-lens-sample\s*\{/, 'Real sampled canvas strips must have a dedicated visual layer');
+assert.match(refractiveCss, /filter:\s*brightness\(/, 'Sampled pixels must receive a restrained optical glass treatment');
+assert.match(refractiveCss, /@supports \(-webkit-touch-callout:\s*none\)/, 'iPad\/iPhone must receive an explicit sampled-canvas enhancement');
+assert.match(refractiveCss, /@media \(max-width:\s*900px\)/, 'Phone viewports must keep sampled refraction visible');
+assert.doesNotMatch(refractiveCss, /animation:/, 'Refractive lensing must not add continuous CSS animation on iPad\/phone');
 assert.doesNotMatch(refractiveCss, /\.dock-style-right-accessories/, 'Refractive lensing change must not touch the four right-side glass tiles');
 
 console.log('Dock refractive lensing regression passed.');
