@@ -22,13 +22,14 @@ assert.match(rightShell, /background:\s*transparent/, 'Right-side accessory grou
 assert.match(rightShell, /box-shadow:\s*none/, 'Right-side accessory group must have no shared shadow/backplate');
 
 const glassTiles = accessoryCss.match(/\.dock-style-eyedropper-button,\s*\.dock-style-preset-button\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+assert.match(glassTiles, /border:\s*0/, 'Right-side liquid-glass tiles must keep the original borderless square geometry');
 assert.match(glassTiles, /backdrop-filter:\s*blur\(18px\)/, 'Each of the four right-side tiles must itself be liquid glass');
-assert.match(glassTiles, /border-radius:\s*4px/, 'Right-side tiles must stay square with only a small corner radius');
+assert.match(glassTiles, /border-radius:\s*0/, 'Right-side tiles must remain square rather than becoming rounded cards');
 assert.match(glassTiles, /box-shadow:/, 'Each right-side tile must carry its own glass depth');
 
 const tileSheen = accessoryCss.match(/\.dock-style-eyedropper-button::before,\s*\.dock-style-preset-button::before\s*\{([\s\S]*?)\}/)?.[1] ?? '';
 assert.match(tileSheen, /linear-gradient\(/, 'Each right-side tile must carry its own glass highlight');
-assert.match(tileSheen, /border-radius:\s*3px/, 'Glass highlight must follow the nearly-square tile shape');
+assert.match(tileSheen, /border-radius:\s*0/, 'Glass highlight must preserve the square tile shape');
 
 const presetFill = accessoryCss.match(/\.dock-style-preset-fill\s*\{([\s\S]*?)\}/)?.[1] ?? '';
 assert.match(presetFill, /inset:\s*0/, 'Preset color must fill the glass tile itself rather than sit on a smaller inner plate');
