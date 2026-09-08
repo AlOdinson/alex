@@ -8,11 +8,11 @@ assert.match(toolbarSource, /const \[presenceOpen, setPresenceOpen\] = useState\
   'presence counter must own open/closed menu state');
 assert.match(toolbarSource, /const presenceAnchorRef = useRef\(null\)/,
   'presence counter needs an anchor for outside-click detection');
-assert.match(toolbarSource, /className="presence-summary"[\s\S]*aria-haspopup="listbox"[\s\S]*aria-expanded=\{presenceOpen\}/,
+assert.match(toolbarSource, /className="presence-summary"[\s\S]*aria-haspopup="dialog"[\s\S]*aria-expanded=\{presenceOpen\}/,
   'presence count must be an accessible toggle button');
 assert.match(toolbarSource, /onClick=\{\(\) => setPresenceOpen\(\(value\) => !value\)\}/,
   'clicking the count must toggle the menu');
-assert.match(toolbarSource, /presenceOpen && \([\s\S]*className="presence-menu"[\s\S]*users\.map/,
+assert.match(toolbarSource, /presenceOpen && \([\s\S]*className="presence-menu"[\s\S]*role="dialog"[\s\S]*users\.map/,
   'open menu must render the live users list');
 assert.match(toolbarSource, /user\.name \|\| 'Участник'/,
   'presence menu must display each participant name');
