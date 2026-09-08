@@ -27,6 +27,7 @@ jobs:
           node scripts/test-dock-style-accessories.mjs
           node scripts/test-dock-style-accessories-functional.mjs
           node scripts/test-floating-toolbar-desktop-visibility.mjs
+          node scripts/test-dock-liquid-glass.mjs
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Existing drawing palette regressions
