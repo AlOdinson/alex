@@ -1,0 +1,150 @@
+/* WhatsApp-like refractive edge treatment for the two shared glass surfaces.
+   The thin edge strips use mirrored backdrop sampling to suggest lensing/refraction
+   when board text or lines pass under the glass. No continuous animation. */
+
+.board-tool-dock,
+.dock-history-accessories {
+  isolation: isolate !important;
+  overflow: hidden !important;
+}
+
+.board-tool-dock > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* Main dock: bright upper lens lip. Narrow on purpose so it reads as glass thickness,
+   never as a second backing panel. */
+.board-tool-dock::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 12px;
+  right: 12px;
+  top: 0;
+  height: 7px;
+  border-radius: 999px 999px 54% 54% / 100% 100% 58% 58%;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.2) 47%, rgba(174, 217, 255, 0.08) 72%, transparent 100%);
+  -webkit-backdrop-filter: blur(1.4px) saturate(158%) brightness(112%) contrast(108%);
+  backdrop-filter: blur(1.4px) saturate(158%) brightness(112%) contrast(108%);
+  transform: translateY(-1px) scaleY(-1);
+  transform-origin: center;
+  opacity: 0.72;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 7%, #000 93%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 7%, #000 93%, transparent 100%);
+}
+
+/* Main dock: softer lower mirrored lip, like the faint reflected type visible in WhatsApp. */
+.board-tool-dock::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 16px;
+  right: 16px;
+  bottom: 0;
+  height: 5px;
+  border-radius: 48% 48% 999px 999px / 46% 46% 100% 100%;
+  background:
+    linear-gradient(0deg, rgba(255, 255, 255, 0.34) 0%, rgba(131, 187, 239, 0.1) 42%, transparent 100%);
+  -webkit-backdrop-filter: blur(1px) saturate(145%) brightness(108%) contrast(106%);
+  backdrop-filter: blur(1px) saturate(145%) brightness(108%) contrast(106%);
+  transform: translateY(1px) scaleY(-1);
+  transform-origin: center;
+  opacity: 0.48;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 9%, #000 91%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 9%, #000 91%, transparent 100%);
+}
+
+/* Undo/redo capsule: the same optical idea, scaled down to the compact glass pill. */
+.dock-history-accessories::before {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 7px;
+  right: 7px;
+  top: 0;
+  height: 5px;
+  border-radius: 999px 999px 48% 48% / 100% 100% 52% 52%;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78) 0%, rgba(255, 255, 255, 0.24) 48%, rgba(145, 203, 255, 0.1) 74%, transparent 100%);
+  -webkit-backdrop-filter: blur(1.1px) saturate(165%) brightness(113%) contrast(108%);
+  backdrop-filter: blur(1.1px) saturate(165%) brightness(113%) contrast(108%);
+  transform: translateY(-1px) scaleY(-1);
+  transform-origin: center;
+  opacity: 0.78;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 13%, #000 87%, transparent 100%);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 13%, #000 87%, transparent 100%);
+}
+
+.dock-history-accessories::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 9px;
+  right: 9px;
+  bottom: 0;
+  top: auto;
+  width: auto;
+  height: 4px;
+  border-radius: 45% 45% 999px 999px / 40% 40% 100% 100%;
+  background:
+    linear-gradient(0deg, rgba(255, 255, 255, 0.38) 0%, rgba(111, 177, 238, 0.12) 44%, transparent 100%);
+  -webkit-backdrop-filter: blur(0.9px) saturate(150%) brightness(109%) contrast(106%);
+  backdrop-filter: blur(0.9px) saturate(150%) brightness(109%) contrast(106%);
+  filter: none;
+  transform: translateY(1px) scaleY(-1);
+  transform-origin: center;
+  opacity: 0.52;
+  pointer-events: none;
+}
+
+/* Safari/iPad/iPhone: make the lens lips more legible because WebKit can render
+   nested backdrop effects more softly than desktop Chromium. */
+@supports (-webkit-touch-callout: none) {
+  .board-tool-dock::before {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.84) 0%, rgba(255, 255, 255, 0.3) 47%, rgba(145, 203, 255, 0.13) 74%, transparent 100%);
+    -webkit-backdrop-filter: blur(1.6px) saturate(170%) brightness(115%) contrast(109%);
+    backdrop-filter: blur(1.6px) saturate(170%) brightness(115%) contrast(109%);
+    opacity: 0.88;
+  }
+
+  .board-tool-dock::after {
+    opacity: 0.58;
+  }
+
+  .dock-history-accessories::before {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.34) 47%, rgba(145, 203, 255, 0.16) 75%, transparent 100%);
+    -webkit-backdrop-filter: blur(1.3px) saturate(175%) brightness(116%) contrast(109%);
+    backdrop-filter: blur(1.3px) saturate(175%) brightness(116%) contrast(109%);
+    opacity: 0.9;
+  }
+
+  .dock-history-accessories::after {
+    opacity: 0.62;
+  }
+}
+
+/* Phone-sized viewports keep the same physical-glass cue without hover. */
+@media (max-width: 900px) {
+  .board-tool-dock::before {
+    opacity: 0.86;
+  }
+
+  .board-tool-dock::after {
+    opacity: 0.56;
+  }
+
+  .dock-history-accessories::before {
+    opacity: 0.88;
+  }
+
+  .dock-history-accessories::after {
+    opacity: 0.6;
+  }
+}
