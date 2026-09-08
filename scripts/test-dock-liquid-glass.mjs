@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 
 const historyCss = await readFile(new URL('../src/dock-history-icons.css', import.meta.url), 'utf8');
 const accessoryCss = await readFile(new URL('../src/dock-style-accessories.css', import.meta.url), 'utf8');
+const mobileCss = await readFile(new URL('../src/mobile-premium-glass-fallback.css', import.meta.url), 'utf8');
+const mainEntry = await readFile(new URL('../src/main.jsx', import.meta.url), 'utf8');
 
 const historyStand = historyCss.match(/\.dock-history-accessories\s*\{([\s\S]*?)\}/)?.[1] ?? '';
 assert.match(historyStand, /backdrop-filter:\s*blur\(24px\)/, 'Undo/redo stand must use the stronger Telegram-like frosted blur');
@@ -60,5 +62,14 @@ assert.match(historyCss, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.d
 assert.match(accessoryCss, /@media \(hover: none\), \(pointer: coarse\)/, 'Touch devices must have an explicit premium accessory-glass treatment');
 assert.match(accessoryCss, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.dock-style-eyedropper-button::before,[\s\S]*?\.dock-style-preset-button::before\s*\{[\s\S]*?opacity:\s*0\.94/, 'Touch accessory tiles must show the premium specular layer statically');
 assert.match(accessoryCss, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.board-tool-dock\s*\{[\s\S]*?backdrop-filter:\s*blur\(22px\)/, 'Touch bottom dock must keep the same white matte glass material as desktop');
+
+assert.ok(mainEntry.lastIndexOf("import './mobile-premium-glass-fallback.css';") > mainEntry.lastIndexOf("import './floating-toolbar-layout.css';"), 'Mobile WebKit glass fallback must load after every other layout/style sheet');
+assert.match(mobileCss, /@supports \(-webkit-touch-callout:\s*none\)/, 'iPhone/iPad must have an explicit WebKit glass fallback independent of pointer reporting');
+assert.match(mobileCss, /@supports \(-webkit-touch-callout:\s*none\)[\s\S]*?\.dock-history-accessories\s*\{[\s\S]*?rgba\(145, 203, 255, 0\.34\)/, 'iOS history glass must have a clearly visible cold reflection even if blur is weak');
+assert.match(mobileCss, /@supports \(-webkit-touch-callout:\s*none\)[\s\S]*?\.dock-style-eyedropper-button::before,[\s\S]*?\.dock-style-preset-button::before\s*\{[\s\S]*?opacity:\s*1/, 'iOS square tiles must render their premium specular layer at full strength without hover');
+assert.match(mobileCss, /@supports \(-webkit-touch-callout:\s*none\)[\s\S]*?\.board-tool-dock\s*\{[\s\S]*?background-color:\s*rgba\(255, 255, 255, 0\.72\)/, 'iOS matte dock must remain visibly frosted even over a white board');
+assert.match(mobileCss, /@media \(max-width:\s*900px\)[\s\S]*?\.dock-style-eyedropper-button::before,[\s\S]*?\.dock-style-preset-button::before\s*\{[\s\S]*?opacity:\s*1/, 'Phone viewport fallback must keep premium tile reflections visible on non-iOS mobile browsers');
+assert.match(mobileCss, /@media \(max-width:\s*900px\)[\s\S]*?\.board-tool-dock\s*\{[\s\S]*?background-color:\s*rgba\(255, 255, 255, 0\.72\)/, 'Phone viewport fallback must make the matte dock visibly distinct from the white board');
+assert.doesNotMatch(mobileCss, /\.dock-style-right-accessories\s*\{[\s\S]*?background:/, 'Mobile fallback must not add a shared backing behind the four square tiles');
 
 console.log('Dock liquid glass regression passed.');

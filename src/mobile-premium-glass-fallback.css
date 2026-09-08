@@ -1,0 +1,137 @@
+/* Last-loaded mobile/WebKit optical fallback.
+   This keeps the premium material visible even when iOS Safari weakens backdrop-filter
+   or reports desktop-like pointer capabilities. Geometry and behavior stay unchanged. */
+
+@supports (-webkit-touch-callout: none) {
+  .board-tool-dock {
+    border-color: rgba(255, 255, 255, 0.78) !important;
+    background-color: rgba(255, 255, 255, 0.72) !important;
+    background-image:
+      radial-gradient(circle at 16% -22%, rgba(255, 255, 255, 0.98) 0%, rgba(255, 255, 255, 0.46) 27%, transparent 51%),
+      linear-gradient(116deg, rgba(168, 211, 255, 0.2) 0%, rgba(168, 211, 255, 0.04) 22%, transparent 42%),
+      linear-gradient(148deg, rgba(255, 255, 255, 0.72) 0%, rgba(239, 247, 255, 0.46) 52%, rgba(225, 238, 252, 0.28) 100%) !important;
+    box-shadow:
+      0 11px 30px rgba(15, 23, 42, 0.16),
+      0 2px 8px rgba(60, 105, 151, 0.09),
+      inset 0 1px 0 rgba(255, 255, 255, 0.98),
+      inset 0 -1px 0 rgba(92, 128, 165, 0.12) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(190%) brightness(108%) contrast(102%) !important;
+    backdrop-filter: blur(24px) saturate(190%) brightness(108%) contrast(102%) !important;
+  }
+
+  .dock-history-accessories {
+    border-color: rgba(255, 255, 255, 0.8) !important;
+    background-color: rgba(240, 248, 255, 0.44) !important;
+    background-image:
+      radial-gradient(circle at 15% -5%, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0.42) 24%, transparent 48%),
+      linear-gradient(112deg, rgba(145, 203, 255, 0.34) 0%, rgba(145, 203, 255, 0.1) 20%, transparent 41%),
+      radial-gradient(circle at 86% 116%, rgba(92, 166, 238, 0.2) 0%, transparent 44%),
+      linear-gradient(148deg, rgba(255, 255, 255, 0.52) 0%, rgba(226, 242, 255, 0.32) 50%, rgba(255, 255, 255, 0.16) 100%) !important;
+    box-shadow:
+      0 10px 26px rgba(15, 23, 42, 0.17),
+      0 2px 8px rgba(60, 110, 164, 0.11),
+      inset 0 1px 0 rgba(255, 255, 255, 0.98),
+      inset 0 -1px 0 rgba(74, 123, 171, 0.14),
+      inset 1px 0 0 rgba(145, 203, 255, 0.18) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(205%) brightness(109%) contrast(102%) !important;
+    backdrop-filter: blur(24px) saturate(205%) brightness(109%) contrast(102%) !important;
+  }
+
+  .dock-history-accessories::after {
+    background: rgba(255, 255, 255, 0.62) !important;
+    opacity: 0.88 !important;
+  }
+
+  .dock-style-eyedropper-button,
+  .dock-style-preset-button {
+    background-color: rgba(239, 247, 255, 0.38) !important;
+    background-image:
+      linear-gradient(150deg, rgba(255, 255, 255, 0.46), rgba(218, 239, 255, 0.2) 52%, rgba(255, 255, 255, 0.1)) !important;
+    box-shadow:
+      0 6px 14px rgba(15, 23, 42, 0.15),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.76),
+      inset 0 1px 0 rgba(255, 255, 255, 0.98),
+      inset 0 -1px 0 rgba(71, 119, 166, 0.14) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(205%) brightness(108%) contrast(102%) !important;
+    backdrop-filter: blur(20px) saturate(205%) brightness(108%) contrast(102%) !important;
+  }
+
+  .dock-style-eyedropper-button::before,
+  .dock-style-preset-button::before {
+    background:
+      linear-gradient(122deg, rgba(255, 255, 255, 0.88) 0%, rgba(255, 255, 255, 0.34) 25%, transparent 47%),
+      radial-gradient(circle at 82% 112%, rgba(100, 176, 255, 0.3), transparent 44%),
+      linear-gradient(315deg, rgba(145, 203, 255, 0.22), transparent 38%) !important;
+    transform: translate3d(-1px, -1px, 0) scale(1.04) !important;
+    opacity: 1 !important;
+  }
+
+  .dock-style-eyedropper-button:hover:not(:disabled)::before,
+  .dock-style-preset-button:hover:not(:disabled)::before {
+    transform: translate3d(-1px, -1px, 0) scale(1.04) !important;
+    opacity: 1 !important;
+  }
+}
+
+@media (max-width: 900px) {
+  .board-tool-dock {
+    border-color: rgba(255, 255, 255, 0.78) !important;
+    background-color: rgba(255, 255, 255, 0.72) !important;
+    background-image:
+      radial-gradient(circle at 16% -22%, rgba(255, 255, 255, 0.96) 0%, rgba(255, 255, 255, 0.44) 27%, transparent 51%),
+      linear-gradient(116deg, rgba(168, 211, 255, 0.18) 0%, rgba(168, 211, 255, 0.04) 22%, transparent 42%),
+      linear-gradient(148deg, rgba(255, 255, 255, 0.7) 0%, rgba(239, 247, 255, 0.44) 52%, rgba(225, 238, 252, 0.27) 100%) !important;
+    box-shadow:
+      0 10px 27px rgba(15, 23, 42, 0.15),
+      0 2px 7px rgba(60, 105, 151, 0.08),
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      inset 0 -1px 0 rgba(92, 128, 165, 0.11) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(190%) brightness(107%) contrast(102%) !important;
+    backdrop-filter: blur(22px) saturate(190%) brightness(107%) contrast(102%) !important;
+  }
+
+  .dock-history-accessories {
+    border-color: rgba(255, 255, 255, 0.78) !important;
+    background-color: rgba(240, 248, 255, 0.42) !important;
+    background-image:
+      radial-gradient(circle at 15% -5%, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.4) 24%, transparent 48%),
+      linear-gradient(112deg, rgba(145, 203, 255, 0.34) 0%, rgba(145, 203, 255, 0.1) 20%, transparent 41%),
+      radial-gradient(circle at 86% 116%, rgba(92, 166, 238, 0.19) 0%, transparent 44%),
+      linear-gradient(148deg, rgba(255, 255, 255, 0.5) 0%, rgba(226, 242, 255, 0.31) 50%, rgba(255, 255, 255, 0.15) 100%) !important;
+    box-shadow:
+      0 10px 25px rgba(15, 23, 42, 0.16),
+      0 2px 8px rgba(60, 110, 164, 0.1),
+      inset 0 1px 0 rgba(255, 255, 255, 0.96),
+      inset 0 -1px 0 rgba(74, 123, 171, 0.14) !important;
+  }
+
+  .dock-style-eyedropper-button,
+  .dock-style-preset-button {
+    background-color: rgba(239, 247, 255, 0.38) !important;
+    background-image:
+      linear-gradient(150deg, rgba(255, 255, 255, 0.45), rgba(218, 239, 255, 0.2) 52%, rgba(255, 255, 255, 0.1)) !important;
+    box-shadow:
+      0 6px 14px rgba(15, 23, 42, 0.15),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.75),
+      inset 0 1px 0 rgba(255, 255, 255, 0.98),
+      inset 0 -1px 0 rgba(71, 119, 166, 0.14) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(205%) brightness(108%) contrast(102%) !important;
+    backdrop-filter: blur(20px) saturate(205%) brightness(108%) contrast(102%) !important;
+  }
+
+  .dock-style-eyedropper-button::before,
+  .dock-style-preset-button::before {
+    background:
+      linear-gradient(122deg, rgba(255, 255, 255, 0.86) 0%, rgba(255, 255, 255, 0.33) 25%, transparent 47%),
+      radial-gradient(circle at 82% 112%, rgba(100, 176, 255, 0.29), transparent 44%),
+      linear-gradient(315deg, rgba(145, 203, 255, 0.21), transparent 38%) !important;
+    transform: translate3d(-1px, -1px, 0) scale(1.04) !important;
+    opacity: 1 !important;
+  }
+
+  .dock-style-eyedropper-button:hover:not(:disabled)::before,
+  .dock-style-preset-button:hover:not(:disabled)::before {
+    transform: translate3d(-1px, -1px, 0) scale(1.04) !important;
+    opacity: 1 !important;
+  }
+}
