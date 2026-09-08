@@ -78,9 +78,13 @@
 }
 
 /* iPhone/iPad: the container itself must not paint a second full-area glass
-   plate. The sampled center and contour canvases are the only visible material. */
+   plate. The sampled center and contour canvases are the only visible material.
+   The dock needs a larger outer radius so its 9px inset still leaves a clearly
+   rounded 15px inner contour. Undo/redo is a true capsule: 999px is clamped by
+   the runtime to half of the element's actual rendered height. */
 @supports (-webkit-touch-callout: none) {
   .board-tool-dock {
+    border-radius: 24px !important;
     border-color: transparent !important;
     background: transparent !important;
     box-shadow:
@@ -91,6 +95,7 @@
   }
 
   .dock-history-accessories {
+    border-radius: 999px !important;
     border-color: transparent !important;
     background: transparent !important;
     box-shadow:
@@ -119,10 +124,11 @@
   }
 }
 
-/* Phone/narrow-viewport fallback: keep the shell visually inert too. This also
-   prevents desktop high-zoom viewports from activating a rectangular fallback. */
+/* Phone/narrow-viewport fallback: keep the shell visually inert and preserve
+   exactly the same rounded geometry as the iOS/iPad path. */
 @media (max-width: 900px) {
   .board-tool-dock {
+    border-radius: 24px !important;
     border-color: transparent !important;
     background: transparent !important;
     box-shadow:
@@ -133,6 +139,7 @@
   }
 
   .dock-history-accessories {
+    border-radius: 999px !important;
     border-color: transparent !important;
     background: transparent !important;
     box-shadow:
