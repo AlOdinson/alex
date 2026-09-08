@@ -29,6 +29,7 @@ jobs:
           node scripts/test-floating-toolbar-desktop-visibility.mjs
           node scripts/test-dock-liquid-glass.mjs
           node scripts/test-dock-refractive-lensing.mjs
+          node scripts/test-mobile-glass-parity.mjs
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Existing drawing palette regressions
