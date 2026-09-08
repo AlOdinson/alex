@@ -13,7 +13,7 @@ assert.ok(
 );
 
 assert.equal(typeof runtime.computeSurfaceSourceRect, 'function', 'Mobile glass runtime must expose full-surface source-rect math');
-assert.equal(typeof runtime.computeInnerContourRadiusCss, 'function', 'Contour runtime must expose inner-radius geometry for regression coverage');
+assert.equal(typeof runtime.computeParallelInsetRadiusCss, 'function', 'Contour runtime must expose exact parallel-inset geometry for regression coverage');
 assert.ok(runtime.LENS_REFRESH_MS >= 100, 'Refractive sampling must be throttled to protect iPad/Pencil performance');
 
 const sourceRect = { left: 0, top: 0, width: 1000, height: 800 };
@@ -27,21 +27,39 @@ const surfaceSample = runtime.computeSurfaceSourceRect({
 });
 assert.deepEqual(surfaceSample, { sx: 218, sy: 1418, sw: 764, sh: 84 }, 'Mobile dock center must sample only the area inside the 9px refractive contour');
 
-assert.equal(
-  runtime.computeInnerContourRadiusCss({ outerRadiusCss: 18, innerWidthCss: 382, innerHeightCss: 42 }),
-  18,
-  'Dock inner contour must preserve the same 18px rounded profile instead of subtracting the 9px ring thickness'
-);
-assert.equal(
-  runtime.computeInnerContourRadiusCss({ outerRadiusCss: 18, innerWidthCss: 50, innerHeightCss: 22 }),
-  11,
-  'Capsule inner contour must keep the outer profile but clamp only when the inset height physically requires it'
-);
-assert.equal(
-  runtime.computeInnerContourRadiusCss({ outerRadiusCss: 15, innerWidthCss: 300, innerHeightCss: 46 }),
-  15,
-  'Mobile dock inner contour must repeat the outer mobile curve one-for-one'
-);
+const dockInnerRadius = runtime.computeParallelInsetRadiusCss({
+  outerRadiusCss: 15,
+  insetCss: 9,
+  innerWidthCss: 300,
+  innerHeightCss: 46,
+});
+assert.equal(dockInnerRadius, 6, '15px mobile dock corner inset by 9px must have a 6px inner radius');
+
+const historyInnerRadius = runtime.computeParallelInsetRadiusCss({
+  outerRadiusCss: 18,
+  insetCss: 7,
+  innerWidthCss: 56,
+  innerHeightCss: 22,
+});
+assert.equal(historyInnerRadius, 11, '18px history capsule inset by 7px must have an 11px inner radius');
+
+// For concentric quarter-circle corners, a true inward offset keeps every point
+// exactly `inset` pixels away along the normal. Verify this at several angles,
+// not just by checking the radius formula.
+for (const { outerRadius, innerRadius, inset } of [
+  { outerRadius: 15, innerRadius: dockInnerRadius, inset: 9 },
+  { outerRadius: 18, innerRadius: historyInnerRadius, inset: 7 },
+]) {
+  for (const degrees of [0, 15, 30, 45, 60, 75, 90]) {
+    const angle = (degrees * Math.PI) / 180;
+    const outerX = outerRadius * Math.cos(angle);
+    const outerY = outerRadius * Math.sin(angle);
+    const innerX = innerRadius * Math.cos(angle);
+    const innerY = innerRadius * Math.sin(angle);
+    const distance = Math.hypot(outerX - innerX, outerY - innerY);
+    assert.ok(Math.abs(distance - inset) < 1e-9, `Parallel corner offset must stay ${inset}px at ${degrees}°; got ${distance}`);
+  }
+}
 
 assert.match(runtimeSource, /\.lower-canvas/, 'Runtime must prefer Fabric lower-canvas as the real board image source');
 assert.match(runtimeSource, /drawImage\(/, 'Runtime must copy real board pixels rather than relying on backdrop-filter imitation');
@@ -55,9 +73,9 @@ assert.match(runtimeSource, /scale\(1,\s*-1\)/, 'Top and bottom contour sections
 assert.match(runtimeSource, /scale\(-1,\s*1\)/, 'Left and right contour sections must mirror the board horizontally');
 assert.match(runtimeSource, /globalCompositeOperation\s*=\s*['"]destination-out['"]/, 'Contour renderer must cut out the center so the edge has uniform thickness around the full perimeter');
 assert.match(runtimeSource, /roundRect\(/, 'Contour renderer must preserve the rounded inner contour rather than only drawing top and bottom strips');
-assert.doesNotMatch(runtimeSource, /outerRadiusCss\s*-\s*config\.thicknessCss/, 'Inner contour radius must not be reduced by ring thickness because that makes the opening look rectangular');
+assert.match(runtimeSource, /outerRadiusCss\s*-\s*insetCss/, 'Exact parallel rounded-rect inset must reduce the corner radius by the same physical inset');
 assert.match(runtimeSource, /canvas\.style\.borderRadius\s*=\s*`\$\{innerRadiusCss\}px`/, 'Mobile center canvas must use exactly the same rounded radius as the inner contour opening');
-assert.match(runtimeSource, /canvas\.style\.clipPath\s*=\s*`inset\(0 round \$\{innerRadiusCss\}px\)`/, 'Mobile center canvas must be explicitly clipped to the rounded inner contour so filter blur cannot create a rectangular plate');
+assert.match(runtimeSource, /canvas\.style\.clipPath\s*=\s*`inset\(0 round \$\{innerRadiusCss\}px\)`/, 'Mobile center canvas must be explicitly clipped to the same parallel inner contour so filter blur cannot create a rectangular plate');
 assert.doesNotMatch(runtimeSource, /refractive-lens-sample--dock-top/, 'Old top-only dock strip must be removed once the full contour ring is active');
 assert.doesNotMatch(runtimeSource, /refractive-lens-sample--history-top/, 'Old top-only history strip must be removed once the full contour ring is active');
 assert.match(runtimeSource, /refractive-surface-sample--dock/, 'Runtime must preserve the full sampled surface for the mobile dock');
@@ -79,4 +97,4 @@ assert.match(refractiveCss, /refractive-surface-sample--history[\s\S]*opacity:\s
 assert.doesNotMatch(refractiveCss, /animation:/, 'Refractive contour must not add continuous CSS animation on iPad\/phone');
 assert.doesNotMatch(refractiveCss, /\.dock-style-right-accessories/, 'Contour change must not touch the four right-side glass tiles');
 
-console.log('Dock full-contour refractive lensing regression passed.');
+console.log('Dock exact-parallel refractive contour regression passed.');
