@@ -10,6 +10,7 @@ assert.match(historyStand, /linear-gradient\(/, 'Undo/redo stand must keep a tra
 assert.match(historyStand, /radial-gradient\(/, 'Undo/redo stand must have a stronger specular reflection');
 assert.match(historyStand, /border-radius:\s*18px/, 'Undo/redo stand must remain one compact rounded glass capsule');
 assert.match(historyStand, /box-shadow:/, 'Undo/redo stand must have floating liquid-glass depth');
+assert.doesNotMatch(historyCss, /\.dock-history-accessories::before\s*\{/, 'Undo/redo stand must not render a second full-size inner capsule');
 
 const historyButton = historyCss.match(/\.dock-history-button\s*\{([\s\S]*?)\}/)?.[1] ?? '';
 assert.match(historyButton, /background:\s*transparent/, 'Undo/redo arrows must remain transparent inside the shared glass stand');
