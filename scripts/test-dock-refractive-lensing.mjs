@@ -58,7 +58,8 @@ assert.match(runtimeSource, /refractive-lens-sample--dock-top/, 'Runtime must cr
 assert.match(runtimeSource, /refractive-lens-sample--history-top/, 'Runtime must create a real sample for the undo\/redo glass');
 assert.match(runtimeSource, /refractive-surface-sample--dock/, 'Runtime must create a full sampled surface for the mobile dock');
 assert.match(runtimeSource, /refractive-surface-sample--history/, 'Runtime must create a full sampled surface for mobile undo\/redo glass');
-assert.match(runtimeSource, /matchMedia\(['"]\(pointer:\s*coarse\)['"]\)/, 'Full-surface sampling must be limited to touch/coarse-pointer devices');
+assert.match(runtimeSource, /matchMedia\?\.\(['"]\(pointer:\s*coarse\)['"]\)/, 'Full-surface sampling must be limited to touch/coarse-pointer devices');
+assert.match(runtimeSource, /maxTouchPoints/, 'iPad surface sampling must also survive desktop-like pointer reporting');
 assert.match(runtimeSource, /document\.hidden/, 'Runtime must stop sampling while the tab is hidden');
 
 assert.match(refractiveCss, /\.refractive-lens-sample\s*\{/, 'Real sampled canvas strips must have a dedicated visual layer');
