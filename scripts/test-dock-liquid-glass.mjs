@@ -49,4 +49,16 @@ assert.match(presetFill, /inset:\s*0/, 'Preset color must fill the glass tile it
 assert.match(presetFill, /border-radius:\s*inherit/, 'Preset color must follow the tile shape directly');
 assert.match(presetFill, /inset 0 0 10px rgba\(15, 23, 42, 0\.045\)/, 'Preset color must read as sitting beneath a shallow glass surface');
 
+const matteDock = accessoryCss.match(/\.board-tool-dock\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+assert.match(matteDock, /border:\s*1px solid rgba\(255, 255, 255, 0\.58\)/, 'Bottom dock must have a restrained translucent white glass edge');
+assert.match(matteDock, /rgba\(255, 255, 255, 0\.46\)/, 'Bottom dock must use a white frosted-glass base rather than an opaque white plate');
+assert.match(matteDock, /backdrop-filter:\s*blur\(22px\)/, 'Bottom dock must use matte blur');
+assert.match(matteDock, /box-shadow:/, 'Bottom dock must keep soft floating depth');
+
+assert.match(historyCss, /@media \(hover: none\), \(pointer: coarse\)/, 'Touch devices must have an explicit premium history-glass treatment');
+assert.match(historyCss, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.dock-history-accessories\s*\{[\s\S]*?rgba\(163, 207, 255, 0\.24\)/, 'Touch history glass must retain a visible cold reflection without hover');
+assert.match(accessoryCss, /@media \(hover: none\), \(pointer: coarse\)/, 'Touch devices must have an explicit premium accessory-glass treatment');
+assert.match(accessoryCss, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.dock-style-eyedropper-button::before,[\s\S]*?\.dock-style-preset-button::before\s*\{[\s\S]*?opacity:\s*0\.94/, 'Touch accessory tiles must show the premium specular layer statically');
+assert.match(accessoryCss, /@media \(hover: none\), \(pointer: coarse\)[\s\S]*?\.board-tool-dock\s*\{[\s\S]*?backdrop-filter:\s*blur\(22px\)/, 'Touch bottom dock must keep the same white matte glass material as desktop');
+
 console.log('Dock liquid glass regression passed.');
