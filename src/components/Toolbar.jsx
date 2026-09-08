@@ -349,8 +349,10 @@ export default function Toolbar({
 }) {
   const [shapesOpen, setShapesOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [presenceOpen, setPresenceOpen] = useState(false);
   const shapeAnchorRef = useRef(null);
   const exportAnchorRef = useRef(null);
+  const presenceAnchorRef = useRef(null);
 
   const showDrawingSettings = ['pencil', 'line', 'shape', 'text'].includes(tool);
   const showFloatingDrawingSettings = ['pencil', 'line', 'shape'].includes(tool);
@@ -362,16 +364,28 @@ export default function Toolbar({
     && (selectedSupports.canColor || selectedSupports.canOpacity || selectedSupports.canWidth);
 
   useEffect(() => {
-    if (!shapesOpen && !exportOpen) return undefined;
+    if (!shapesOpen && !exportOpen && !presenceOpen) return undefined;
     function closeOnOutside(event) {
       const insideShapeButton = shapeAnchorRef.current?.contains(event.target);
       const insideShapeMenu = event.target?.closest?.('.shape-palette');
       if (!insideShapeButton && !insideShapeMenu) setShapesOpen(false);
       if (!exportAnchorRef.current?.contains(event.target)) setExportOpen(false);
+      if (!presenceAnchorRef.current?.contains(event.target)) setPresenceOpen(false);
+    }
+    function closeOnEscape(event) {
+      if (event.key === 'Escape') {
+        setShapesOpen(false);
+        setExportOpen(false);
+        setPresenceOpen(false);
+      }
     }
     window.addEventListener('pointerdown', closeOnOutside);
-    return () => window.removeEventListener('pointerdown', closeOnOutside);
-  }, [shapesOpen, exportOpen]);
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      window.removeEventListener('pointerdown', closeOnOutside);
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [shapesOpen, exportOpen, presenceOpen]);
 
   return (
     <>
@@ -462,9 +476,41 @@ export default function Toolbar({
           </button>
         )}
 
-        <div className="presence-summary" title={users.map((user) => user.name).join(', ')}>
-          <span className="presence-dot" />
-          {users.length || 1}
+        <div className="presence-anchor" ref={presenceAnchorRef}>
+          <button
+            type="button"
+            className="presence-summary"
+            title={users.map((user) => user.name).join(', ')}
+            aria-label="Показать участников на доске"
+            aria-haspopup="dialog"
+            aria-expanded={presenceOpen}
+            onClick={() => setPresenceOpen((value) => !value)}
+          >
+            <span className="presence-dot" />
+            {users.length || 1}
+          </button>
+          {presenceOpen && (
+            <div className="presence-menu" role="dialog" aria-label="Участники на доске">
+              <div className="presence-menu-title">Сейчас на доске</div>
+              <div className="presence-menu-list" role="list">
+                {users.length ? users.map((user, index) => (
+                  <div
+                    className="presence-menu-user"
+                    role="listitem"
+                    key={user.clientId ?? `${user.name ?? 'participant'}:${index}`}
+                  >
+                    <span className="presence-menu-dot" aria-hidden="true" />
+                    <span className="presence-menu-name" data-i18n-skip>{user.name || 'Участник'}</span>
+                  </div>
+                )) : (
+                  <div className="presence-menu-user" role="listitem">
+                    <span className="presence-menu-dot" aria-hidden="true" />
+                    <span className="presence-menu-name">Вы</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="toolbar-end-actions" aria-label="Экспорт и доступ к доске">
