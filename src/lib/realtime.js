@@ -978,11 +978,16 @@ export function connectBoardRealtime({
         return Promise.resolve('ignored');
       }
       if (draw.phase === 'update' && draw.points.length === 0) return Promise.resolve('ignored');
+      const requestedBaseRevision = Number(draw.baseRevision);
+      const baseRevision = Number.isFinite(requestedBaseRevision) && requestedBaseRevision >= 0
+        ? requestedBaseRevision
+        : Number(getKnownRevision?.() ?? 0);
       return publishRealtime('draw', {
         clientId,
         name,
         color,
         ...draw,
+        baseRevision,
         timestamp: Date.now(),
       });
     },
