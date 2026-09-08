@@ -180,6 +180,16 @@ function traceRoundedRect(context, x, y, width, height, radius) {
   context.quadraticCurveTo(x, y, x + safeRadius, y);
 }
 
+function maskRoundedSurface(context, pixelWidth, pixelHeight, innerRadiusPx) {
+  context.save();
+  context.globalCompositeOperation = 'destination-in';
+  context.beginPath();
+  traceRoundedRect(context, 0, 0, pixelWidth, pixelHeight, innerRadiusPx);
+  context.closePath();
+  context.fill();
+  context.restore();
+}
+
 function renderContourSample(source, target, config) {
   if (!(source instanceof HTMLCanvasElement) || !(target instanceof HTMLElement)) return false;
   if (target.hidden) {
@@ -289,9 +299,6 @@ function renderContourSample(source, target, config) {
   const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
   const outerRadiusPx = outerRadiusCss * sampleDpr;
 
-  // Rasterize the outer and inner boundaries in the exact same Canvas coordinate
-  // system. This avoids Safari/Retina differences between a CSS border-radius clip
-  // and a Canvas roundRect cutout.
   context.save();
   context.globalCompositeOperation = 'destination-in';
   context.beginPath();
@@ -355,6 +362,7 @@ function renderSurfaceSample(source, target, config) {
     innerWidthCss: cssWidth,
     innerHeightCss: cssHeight,
   });
+  const innerRadiusPx = innerRadiusCss * sampleDpr;
 
   if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
   if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
@@ -373,6 +381,7 @@ function renderSurfaceSample(source, target, config) {
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
   context.drawImage(source, sample.sx, sample.sy, sample.sw, sample.sh, 0, 0, pixelWidth, pixelHeight);
+  maskRoundedSurface(context, pixelWidth, pixelHeight, innerRadiusPx);
   return true;
 }
 
