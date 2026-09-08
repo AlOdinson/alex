@@ -1,15 +1,41 @@
 .dock-history-accessories {
-  gap: 12px !important;
+  top: calc(var(--dock-style-top, calc(100vh - 76px)) + (var(--dock-style-height, 58px) - 36px) / 2) !important;
+  gap: 2px !important;
+  padding: 3px 5px !important;
+  box-sizing: border-box !important;
+  border: 1px solid rgba(255, 255, 255, 0.72) !important;
+  border-radius: 18px !important;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.28)) !important;
+  box-shadow:
+    0 10px 28px rgba(15, 23, 42, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.22) !important;
+  backdrop-filter: blur(18px) saturate(180%) contrast(104%) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(180%) contrast(104%) !important;
+  isolation: isolate !important;
+  overflow: hidden !important;
+}
+
+.dock-history-accessories::before {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  z-index: 0;
+  border-radius: 16px;
+  background: linear-gradient(130deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.08) 48%, transparent 72%);
+  pointer-events: none;
 }
 
 .dock-history-button {
+  position: relative !important;
+  z-index: 1 !important;
   width: 28px !important;
   min-width: 28px !important;
   height: 28px !important;
   min-height: 28px !important;
   padding: 0 !important;
   border: 0 !important;
-  border-radius: 0 !important;
+  border-radius: 11px !important;
   background: transparent !important;
   color: #2f4778 !important;
   box-shadow: none !important;
@@ -21,16 +47,19 @@
 }
 
 .dock-history-button:hover:not(:disabled) {
-  opacity: 0.76 !important;
+  opacity: 1 !important;
+  background: rgba(255, 255, 255, 0.34) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.54) !important;
 }
 
 .dock-history-button:focus-visible {
   outline: 2px solid rgba(47, 71, 120, 0.32) !important;
-  outline-offset: 3px !important;
+  outline-offset: 2px !important;
 }
 
 .dock-history-button:active:not(:disabled) {
   transform: scale(0.94) !important;
+  background: rgba(255, 255, 255, 0.26) !important;
 }
 
 .dock-history-button:disabled {
@@ -53,7 +82,8 @@
 @media (max-width: 760px) {
   .dock-history-accessories {
     left: max(4px, calc(var(--dock-style-left, 50vw) - 70px)) !important;
-    gap: 10px !important;
+    gap: 2px !important;
+    padding: 3px 5px !important;
   }
 
   .dock-history-button {
@@ -61,7 +91,7 @@
     min-width: 28px !important;
     height: 28px !important;
     min-height: 28px !important;
-    border-radius: 0 !important;
+    border-radius: 11px !important;
   }
 
   .dock-history-icon {
