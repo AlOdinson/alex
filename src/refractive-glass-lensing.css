@@ -1,14 +1,15 @@
-/* Real WhatsApp-like refractive edge treatment.
-   Unlike the old pseudo-element/backdrop imitation, these thin canvases contain
-   actual mirrored pixels sampled from the Fabric board underneath the glass. */
+/* Real WhatsApp-like refractive glass treatment.
+   Edge canvases contain mirrored board pixels. On touch devices, full-surface
+   canvases also contain the real board area behind the dock/history glass so
+   iOS/WebKit cannot turn the center into an opaque matte plate. */
 
 .board-tool-dock,
 .dock-history-accessories {
   isolation: isolate !important;
+  overflow: hidden !important;
 }
 
-/* Disable the previous CSS-only mirror imitation. A transformed backdrop-filter
-   does not geometrically mirror the backdrop, especially in iOS/WebKit. */
+/* Disable the old CSS-only mirror imitation. */
 .board-tool-dock::before,
 .board-tool-dock::after,
 .dock-history-accessories::before,
@@ -16,10 +17,35 @@
   content: none !important;
 }
 
-.board-tool-dock > *:not(.refractive-lens-sample),
+.board-tool-dock > *:not(.refractive-lens-sample):not(.refractive-surface-sample),
 .dock-history-button {
   position: relative;
   z-index: 2;
+}
+
+.refractive-surface-sample {
+  position: absolute;
+  z-index: 0;
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transform: translateZ(0);
+  transform-origin: center;
+  border-radius: inherit;
+  filter: brightness(1.035) saturate(1.1) contrast(1.015) blur(1.35px);
+}
+
+.refractive-surface-sample--dock {
+  opacity: 0.72;
+}
+
+.refractive-surface-sample--history {
+  opacity: 0.76;
+  filter: brightness(1.045) saturate(1.12) contrast(1.02) blur(1.1px);
 }
 
 .refractive-lens-sample {
@@ -70,9 +96,47 @@
   mask-image: linear-gradient(90deg, transparent 0%, #000 14%, #000 86%, transparent 100%);
 }
 
-/* iPhone/iPad: the sampled pixels are ordinary canvas content, so this path does
-   not depend on nested backdrop-filter behavior. Increase only visibility/optics. */
+/* iPhone/iPad: WebKit can render CSS backdrop-filter over Fabric canvas as a
+   milky compositing layer. Keep the shell extremely light and let the real sampled
+   board pixels provide the visible transparent body. */
 @supports (-webkit-touch-callout: none) {
+  .board-tool-dock {
+    border-color: rgba(255, 255, 255, 0.46) !important;
+    background:
+      radial-gradient(circle at 18% -18%, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.055) 31%, transparent 52%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.105) 0%, rgba(244, 249, 255, 0.05) 52%, rgba(255, 255, 255, 0.018) 100%) !important;
+    box-shadow:
+      0 10px 28px rgba(15, 23, 42, 0.13),
+      0 2px 7px rgba(71, 111, 156, 0.07),
+      inset 0 1px 0 rgba(255, 255, 255, 0.68),
+      inset 0 -1px 0 rgba(100, 132, 166, 0.08) !important;
+    -webkit-backdrop-filter: blur(7px) saturate(145%) brightness(103%) contrast(101%) !important;
+    backdrop-filter: blur(7px) saturate(145%) brightness(103%) contrast(101%) !important;
+  }
+
+  .dock-history-accessories {
+    border-color: rgba(255, 255, 255, 0.52) !important;
+    background:
+      radial-gradient(circle at 17% -4%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.07) 23%, transparent 47%),
+      linear-gradient(112deg, rgba(163, 207, 255, 0.09) 0%, rgba(163, 207, 255, 0.018) 18%, transparent 38%),
+      linear-gradient(148deg, rgba(255, 255, 255, 0.09) 0%, rgba(229, 243, 255, 0.04) 48%, rgba(255, 255, 255, 0.015) 100%) !important;
+    box-shadow:
+      0 9px 24px rgba(15, 23, 42, 0.14),
+      0 2px 7px rgba(64, 113, 166, 0.09),
+      inset 0 1px 0 rgba(255, 255, 255, 0.72),
+      inset 0 -1px 0 rgba(79, 128, 177, 0.1) !important;
+    -webkit-backdrop-filter: blur(7px) saturate(150%) brightness(103%) contrast(101%) !important;
+    backdrop-filter: blur(7px) saturate(150%) brightness(103%) contrast(101%) !important;
+  }
+
+  .refractive-surface-sample--dock {
+    opacity: 0.72;
+  }
+
+  .refractive-surface-sample--history {
+    opacity: 0.76;
+  }
+
   .refractive-lens-sample {
     filter: brightness(1.16) saturate(1.44) contrast(1.1) blur(0.18px);
   }
@@ -95,9 +159,35 @@
   }
 }
 
-/* Phone viewport fallback also keeps the real sampled reflection visible even on
-   non-iOS mobile browsers. */
+/* Phone fallback uses the same real sampled-surface mechanism. */
 @media (max-width: 900px) {
+  .board-tool-dock {
+    border-color: rgba(255, 255, 255, 0.46) !important;
+    background:
+      radial-gradient(circle at 18% -18%, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.055) 31%, transparent 52%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.105) 0%, rgba(244, 249, 255, 0.05) 52%, rgba(255, 255, 255, 0.018) 100%) !important;
+    -webkit-backdrop-filter: blur(7px) saturate(145%) brightness(103%) contrast(101%) !important;
+    backdrop-filter: blur(7px) saturate(145%) brightness(103%) contrast(101%) !important;
+  }
+
+  .dock-history-accessories {
+    border-color: rgba(255, 255, 255, 0.52) !important;
+    background:
+      radial-gradient(circle at 17% -4%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.07) 23%, transparent 47%),
+      linear-gradient(112deg, rgba(163, 207, 255, 0.09) 0%, rgba(163, 207, 255, 0.018) 18%, transparent 38%),
+      linear-gradient(148deg, rgba(255, 255, 255, 0.09) 0%, rgba(229, 243, 255, 0.04) 48%, rgba(255, 255, 255, 0.015) 100%) !important;
+    -webkit-backdrop-filter: blur(7px) saturate(150%) brightness(103%) contrast(101%) !important;
+    backdrop-filter: blur(7px) saturate(150%) brightness(103%) contrast(101%) !important;
+  }
+
+  .refractive-surface-sample--dock {
+    opacity: 0.72;
+  }
+
+  .refractive-surface-sample--history {
+    opacity: 0.76;
+  }
+
   .refractive-lens-sample--dock-top {
     opacity: 0.76;
   }

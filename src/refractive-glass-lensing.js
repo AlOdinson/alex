@@ -1,6 +1,7 @@
 export const LENS_REFRESH_MS = 120;
 const IDLE_REFRESH_MS = 500;
 const MAX_SAMPLE_DPR = 2;
+const MAX_SURFACE_DPR = 1.5;
 
 const LENS_CONFIGS = [
   {
@@ -34,6 +35,19 @@ const LENS_CONFIGS = [
     insetCss: 9,
     lipHeightCss: 4,
     sampleDepthCss: 9,
+  },
+];
+
+const SURFACE_CONFIGS = [
+  {
+    targetSelector: '.board-tool-dock',
+    className: 'refractive-surface-sample--dock',
+    insetCss: 2,
+  },
+  {
+    targetSelector: '.dock-history-accessories',
+    className: 'refractive-surface-sample--history',
+    insetCss: 1,
   },
 ];
 
@@ -74,6 +88,35 @@ export function computeLensSourceRect({
   return { sx, sy, sw, sh };
 }
 
+export function computeSurfaceSourceRect({
+  sourceRect,
+  sourceWidth,
+  sourceHeight,
+  targetRect,
+  insetCss = 0,
+}) {
+  if (!sourceRect || !targetRect || !sourceRect.width || !sourceRect.height) return null;
+  if (!sourceWidth || !sourceHeight || !targetRect.width || !targetRect.height) return null;
+
+  const scaleX = sourceWidth / sourceRect.width;
+  const scaleY = sourceHeight / sourceRect.height;
+  const cssX = targetRect.left + insetCss - sourceRect.left;
+  const cssY = targetRect.top + insetCss - sourceRect.top;
+  const cssWidth = Math.max(1, targetRect.width - insetCss * 2);
+  const cssHeight = Math.max(1, targetRect.height - insetCss * 2);
+
+  const rawSx = Math.round(cssX * scaleX);
+  const rawSy = Math.round(cssY * scaleY);
+  const rawSw = Math.round(cssWidth * scaleX);
+  const rawSh = Math.round(cssHeight * scaleY);
+
+  const sx = clamp(rawSx, 0, Math.max(0, sourceWidth - 1));
+  const sy = clamp(rawSy, 0, Math.max(0, sourceHeight - 1));
+  const sw = Math.max(1, Math.min(rawSw, sourceWidth - sx));
+  const sh = Math.max(1, Math.min(rawSh, sourceHeight - sy));
+  return { sx, sy, sw, sh };
+}
+
 function findBoardCanvas() {
   if (typeof document === 'undefined') return null;
   const preferred = document.querySelector('.canvas-host .lower-canvas');
@@ -84,16 +127,32 @@ function findBoardCanvas() {
   return fallback ?? null;
 }
 
-function ensureSampleCanvas(target, className) {
+function isTouchSurfaceDevice() {
+  if (typeof window === 'undefined') return false;
+  const coarsePointer = window.matchMedia?.('(pointer: coarse)')?.matches === true;
+  const anyCoarsePointer = window.matchMedia?.('(any-pointer: coarse)')?.matches === true;
+  const touchPoints = typeof navigator !== 'undefined' ? Number(navigator.maxTouchPoints) || 0 : 0;
+  return coarsePointer || anyCoarsePointer || touchPoints > 0;
+}
+
+function ensureCanvas(target, className, baseClass) {
   let canvas = target.querySelector(`canvas.${className}`);
   if (canvas instanceof HTMLCanvasElement) return canvas;
 
   canvas = document.createElement('canvas');
-  canvas.className = `refractive-lens-sample ${className}`;
+  canvas.className = `${baseClass} ${className}`;
   canvas.setAttribute('aria-hidden', 'true');
   canvas.tabIndex = -1;
   target.prepend(canvas);
   return canvas;
+}
+
+function ensureSampleCanvas(target, className) {
+  return ensureCanvas(target, className, 'refractive-lens-sample');
+}
+
+function ensureSurfaceCanvas(target, className) {
+  return ensureCanvas(target, className, 'refractive-surface-sample');
 }
 
 function clearSample(target, className) {
@@ -164,8 +223,6 @@ function renderSample(source, target, config) {
   );
   context.restore();
 
-  // A very light second optical pass creates the compressed/reflected edge cue
-  // without turning the strip into a duplicated panel.
   context.save();
   context.globalAlpha = 0.18;
   context.translate(0, pixelHeight - Math.max(1, Math.round(sampleDpr)));
@@ -185,12 +242,75 @@ function renderSample(source, target, config) {
   return true;
 }
 
+function renderSurfaceSample(source, target, config) {
+  if (!(source instanceof HTMLCanvasElement) || !(target instanceof HTMLElement)) return false;
+  if (target.hidden) {
+    clearSample(target, config.className);
+    return false;
+  }
+
+  const sourceRect = source.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  if (!sourceRect.width || !sourceRect.height || !targetRect.width || !targetRect.height) return false;
+
+  const sample = computeSurfaceSourceRect({
+    sourceRect,
+    sourceWidth: source.width,
+    sourceHeight: source.height,
+    targetRect,
+    insetCss: config.insetCss,
+  });
+  if (!sample) return false;
+
+  const cssWidth = Math.max(1, targetRect.width - config.insetCss * 2);
+  const cssHeight = Math.max(1, targetRect.height - config.insetCss * 2);
+  const sampleDpr = Math.min(MAX_SURFACE_DPR, Math.max(1, Number(window.devicePixelRatio) || 1));
+  const pixelWidth = Math.max(1, Math.round(cssWidth * sampleDpr));
+  const pixelHeight = Math.max(1, Math.round(cssHeight * sampleDpr));
+  const canvas = ensureSurfaceCanvas(target, config.className);
+
+  if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+  if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+  canvas.style.left = `${config.insetCss}px`;
+  canvas.style.top = `${config.insetCss}px`;
+  canvas.style.width = `${cssWidth}px`;
+  canvas.style.height = `${cssHeight}px`;
+
+  const context = canvas.getContext('2d', { alpha: true });
+  if (!context) return false;
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, pixelWidth, pixelHeight);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  context.drawImage(
+    source,
+    sample.sx,
+    sample.sy,
+    sample.sw,
+    sample.sh,
+    0,
+    0,
+    pixelWidth,
+    pixelHeight,
+  );
+  return true;
+}
+
 function renderAllSamples() {
   if (typeof document === 'undefined' || document.hidden) return false;
   const source = findBoardCanvas();
   if (!source) return false;
 
   let rendered = false;
+
+  if (isTouchSurfaceDevice()) {
+    for (const config of SURFACE_CONFIGS) {
+      const target = document.querySelector(config.targetSelector);
+      if (!(target instanceof HTMLElement)) continue;
+      rendered = renderSurfaceSample(source, target, config) || rendered;
+    }
+  }
+
   for (const config of LENS_CONFIGS) {
     const target = document.querySelector(config.targetSelector);
     if (!(target instanceof HTMLElement)) continue;
