@@ -29,6 +29,9 @@ const SURFACE_CONFIGS = [
   },
 ];
 
+const contourScratchByCanvas = new WeakMap();
+const contourMapByCanvas = new WeakMap();
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -162,6 +165,102 @@ export function computeParallelInsetRadiusCss({ outerRadiusCss, insetCss, innerW
   return Math.max(0, Math.min(parallelRadiusCss, innerWidthCss / 2, innerHeightCss / 2));
 }
 
+function roundedRectSignedDistance(x, y, left, top, width, height, radius) {
+  if (width <= 0 || height <= 0) return Number.POSITIVE_INFINITY;
+  const safeRadius = clamp(radius, 0, Math.min(width, height) / 2);
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+  const centerX = left + halfWidth;
+  const centerY = top + halfHeight;
+  const qx = Math.abs(x - centerX) - (halfWidth - safeRadius);
+  const qy = Math.abs(y - centerY) - (halfHeight - safeRadius);
+  const outsideX = Math.max(qx, 0);
+  const outsideY = Math.max(qy, 0);
+  return Math.hypot(outsideX, outsideY) + Math.min(Math.max(qx, qy), 0) - safeRadius;
+}
+
+function projectOutsidePointToRoundedRect(x, y, left, top, width, height, radius) {
+  const safeRadius = clamp(radius, 0, Math.min(width, height) / 2);
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+  const centerX = left + halfWidth;
+  const centerY = top + halfHeight;
+  const localX = x - centerX;
+  const localY = y - centerY;
+  const signX = localX < 0 ? -1 : 1;
+  const signY = localY < 0 ? -1 : 1;
+  const qx = Math.abs(localX) - (halfWidth - safeRadius);
+  const qy = Math.abs(localY) - (halfHeight - safeRadius);
+  const outsideX = Math.max(qx, 0);
+  const outsideY = Math.max(qy, 0);
+  const length = Math.hypot(outsideX, outsideY);
+
+  if (length <= 1e-12) return null;
+
+  const normalX = (outsideX / length) * signX;
+  const normalY = (outsideY / length) * signY;
+  const distance = Math.max(0, length - safeRadius);
+  return { normalX, normalY, distance };
+}
+
+// Map one point of the glass lip through a single closed rounded contour.
+// The point is reflected across the parallel inner contour along its local normal.
+// On straight sections the normal is horizontal/vertical; around a rounded corner
+// it rotates continuously with the arc, so there are no four-strip seams.
+export function computeContinuousContourSamplePoint({
+  x,
+  y,
+  width,
+  height,
+  outerRadius,
+  thickness,
+}) {
+  if (![x, y, width, height, outerRadius, thickness].every(Number.isFinite)) return null;
+  if (width <= 0 || height <= 0 || thickness <= 0) return null;
+
+  const safeOuterRadius = clamp(outerRadius, 0, Math.min(width, height) / 2);
+  if (roundedRectSignedDistance(x, y, 0, 0, width, height, safeOuterRadius) > 0) {
+    return { inRing: false };
+  }
+
+  const innerWidth = width - thickness * 2;
+  const innerHeight = height - thickness * 2;
+  if (innerWidth <= 0 || innerHeight <= 0) return { inRing: true, sampleX: x, sampleY: y, normalX: 0, normalY: 0, distance: 0 };
+
+  const innerRadius = computeParallelInsetRadiusCss({
+    outerRadiusCss: safeOuterRadius,
+    insetCss: thickness,
+    innerWidthCss: innerWidth,
+    innerHeightCss: innerHeight,
+  });
+  const innerDistance = roundedRectSignedDistance(
+    x,
+    y,
+    thickness,
+    thickness,
+    innerWidth,
+    innerHeight,
+    innerRadius,
+  );
+  if (innerDistance < 0) return { inRing: false };
+
+  const projection = projectOutsidePointToRoundedRect(
+    x,
+    y,
+    thickness,
+    thickness,
+    innerWidth,
+    innerHeight,
+    innerRadius,
+  );
+  if (!projection) return { inRing: false };
+
+  const { normalX, normalY, distance } = projection;
+  const sampleX = clamp(x - normalX * distance * 2, 0, Math.max(0, width - 1e-6));
+  const sampleY = clamp(y - normalY * distance * 2, 0, Math.max(0, height - 1e-6));
+  return { inRing: true, sampleX, sampleY, normalX, normalY, distance };
+}
+
 function traceRoundedRect(context, x, y, width, height, radius) {
   const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
   if (typeof context.roundRect === 'function') {
@@ -190,6 +289,71 @@ function maskRoundedSurface(context, pixelWidth, pixelHeight, innerRadiusPx) {
   context.restore();
 }
 
+function ensureContourScratch(canvas, pixelWidth, pixelHeight) {
+  let scratch = contourScratchByCanvas.get(canvas);
+  if (!(scratch instanceof HTMLCanvasElement)) {
+    scratch = document.createElement('canvas');
+    contourScratchByCanvas.set(canvas, scratch);
+  }
+  if (scratch.width !== pixelWidth) scratch.width = pixelWidth;
+  if (scratch.height !== pixelHeight) scratch.height = pixelHeight;
+  return scratch;
+}
+
+function ensureContinuousContourMap(canvas, pixelWidth, pixelHeight, outerRadiusPx, thicknessPx) {
+  const key = `${pixelWidth}:${pixelHeight}:${outerRadiusPx.toFixed(3)}:${thicknessPx.toFixed(3)}`;
+  const cached = contourMapByCanvas.get(canvas);
+  if (cached?.key === key) return cached.map;
+
+  const map = new Int32Array(pixelWidth * pixelHeight);
+  map.fill(-1);
+  for (let y = 0; y < pixelHeight; y += 1) {
+    for (let x = 0; x < pixelWidth; x += 1) {
+      const point = computeContinuousContourSamplePoint({
+        x: x + 0.5,
+        y: y + 0.5,
+        width: pixelWidth,
+        height: pixelHeight,
+        outerRadius: outerRadiusPx,
+        thickness: thicknessPx,
+      });
+      if (!point?.inRing) continue;
+      const sampleX = clamp(Math.floor(point.sampleX), 0, pixelWidth - 1);
+      const sampleY = clamp(Math.floor(point.sampleY), 0, pixelHeight - 1);
+      map[y * pixelWidth + x] = sampleY * pixelWidth + sampleX;
+    }
+  }
+  contourMapByCanvas.set(canvas, { key, map });
+  return map;
+}
+
+function maskContinuousContour(context, pixelWidth, pixelHeight, outerRadiusPx, thicknessPx) {
+  context.save();
+  context.globalCompositeOperation = 'destination-in';
+  context.beginPath();
+  traceRoundedRect(context, 0, 0, pixelWidth, pixelHeight, outerRadiusPx);
+  context.closePath();
+  context.fill();
+  context.restore();
+
+  const innerWidth = pixelWidth - thicknessPx * 2;
+  const innerHeight = pixelHeight - thicknessPx * 2;
+  if (innerWidth <= 0 || innerHeight <= 0) return;
+  const innerRadiusPx = computeParallelInsetRadiusCss({
+    outerRadiusCss: outerRadiusPx,
+    insetCss: thicknessPx,
+    innerWidthCss: innerWidth,
+    innerHeightCss: innerHeight,
+  });
+  context.save();
+  context.globalCompositeOperation = 'destination-out';
+  context.beginPath();
+  traceRoundedRect(context, thicknessPx, thicknessPx, innerWidth, innerHeight, innerRadiusPx);
+  context.closePath();
+  context.fill();
+  context.restore();
+}
+
 function renderContourSample(source, target, config) {
   if (!(source instanceof HTMLCanvasElement) || !(target instanceof HTMLElement)) return false;
   if (target.hidden) {
@@ -213,7 +377,7 @@ function renderContourSample(source, target, config) {
   const sampleDpr = Math.min(MAX_CONTOUR_DPR, Math.max(1, Number(window.devicePixelRatio) || 1));
   const pixelWidth = Math.max(1, Math.round(targetRect.width * sampleDpr));
   const pixelHeight = Math.max(1, Math.round(targetRect.height * sampleDpr));
-  const thicknessPx = Math.max(1, Math.round(config.thicknessCss * sampleDpr));
+  const thicknessPx = Math.max(1, config.thicknessCss * sampleDpr);
   const canvas = ensureContourCanvas(target, config.className);
 
   if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
@@ -225,107 +389,46 @@ function renderContourSample(source, target, config) {
 
   const context = canvas.getContext('2d', { alpha: true });
   if (!context) return false;
-  context.setTransform(1, 0, 0, 1, 0, 0);
-  context.clearRect(0, 0, pixelWidth, pixelHeight);
-  context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = 'high';
+  const scratch = ensureContourScratch(canvas, pixelWidth, pixelHeight);
+  const scratchContext = scratch.getContext('2d', { alpha: true, willReadFrequently: true });
+  if (!scratchContext) return false;
 
-  const sourceScaleX = source.width / sourceRect.width;
-  const sourceScaleY = source.height / sourceRect.height;
-  const sourceDepthX = Math.max(1, Math.min(sample.sw, Math.round(config.thicknessCss * 2 * sourceScaleX)));
-  const sourceDepthY = Math.max(1, Math.min(sample.sh, Math.round(config.thicknessCss * 2 * sourceScaleY)));
+  scratchContext.setTransform(1, 0, 0, 1, 0, 0);
+  scratchContext.clearRect(0, 0, pixelWidth, pixelHeight);
+  scratchContext.imageSmoothingEnabled = true;
+  scratchContext.imageSmoothingQuality = 'high';
+  scratchContext.drawImage(source, sample.sx, sample.sy, sample.sw, sample.sh, 0, 0, pixelWidth, pixelHeight);
 
-  context.save();
-  context.translate(0, thicknessPx);
-  context.scale(1, -1);
-  context.drawImage(source, sample.sx, sample.sy, sample.sw, sourceDepthY, 0, 0, pixelWidth, thicknessPx);
-  context.restore();
-
-  context.save();
-  context.translate(0, pixelHeight);
-  context.scale(1, -1);
-  context.drawImage(
-    source,
-    sample.sx,
-    sample.sy + sample.sh - sourceDepthY,
-    sample.sw,
-    sourceDepthY,
-    0,
-    0,
-    pixelWidth,
-    thicknessPx,
-  );
-  context.restore();
-
-  context.save();
-  context.globalAlpha = 0.92;
-  context.translate(thicknessPx, 0);
-  context.scale(-1, 1);
-  context.drawImage(source, sample.sx, sample.sy, sourceDepthX, sample.sh, 0, 0, thicknessPx, pixelHeight);
-  context.restore();
-
-  context.save();
-  context.globalAlpha = 0.92;
-  context.translate(pixelWidth, 0);
-  context.scale(-1, 1);
-  context.drawImage(
-    source,
-    sample.sx + sample.sw - sourceDepthX,
-    sample.sy,
-    sourceDepthX,
-    sample.sh,
-    0,
-    0,
-    thicknessPx,
-    pixelHeight,
-  );
-  context.restore();
-
-  context.save();
-  context.globalAlpha = 0.14;
-  context.drawImage(
-    source,
-    sample.sx,
-    sample.sy,
-    sample.sw,
-    sample.sh,
-    -thicknessPx * 0.18,
-    -thicknessPx * 0.18,
-    pixelWidth + thicknessPx * 0.36,
-    pixelHeight + thicknessPx * 0.36,
-  );
-  context.restore();
+  let sampledImage;
+  try {
+    sampledImage = scratchContext.getImageData(0, 0, pixelWidth, pixelHeight);
+  } catch {
+    context.clearRect(0, 0, pixelWidth, pixelHeight);
+    return false;
+  }
 
   const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
   const outerRadiusPx = outerRadiusCss * sampleDpr;
+  const contourMap = ensureContinuousContourMap(canvas, pixelWidth, pixelHeight, outerRadiusPx, thicknessPx);
+  const reflectedImage = context.createImageData(pixelWidth, pixelHeight);
+  const sourcePixels = sampledImage.data;
+  const reflectedPixels = reflectedImage.data;
 
-  context.save();
-  context.globalCompositeOperation = 'destination-in';
-  context.beginPath();
-  traceRoundedRect(context, 0, 0, pixelWidth, pixelHeight, outerRadiusPx);
-  context.closePath();
-  context.fill();
-  context.restore();
-
-  const innerWidth = pixelWidth - thicknessPx * 2;
-  const innerHeight = pixelHeight - thicknessPx * 2;
-  if (innerWidth > 0 && innerHeight > 0) {
-    const innerRadiusCss = computeParallelInsetRadiusCss({
-      outerRadiusCss,
-      insetCss: config.thicknessCss,
-      innerWidthCss: innerWidth / sampleDpr,
-      innerHeightCss: innerHeight / sampleDpr,
-    });
-    const innerRadiusPx = innerRadiusCss * sampleDpr;
-    context.save();
-    context.globalCompositeOperation = 'destination-out';
-    context.beginPath();
-    traceRoundedRect(context, thicknessPx, thicknessPx, innerWidth, innerHeight, innerRadiusPx);
-    context.closePath();
-    context.fill();
-    context.restore();
+  for (let outputIndex = 0; outputIndex < contourMap.length; outputIndex += 1) {
+    const sourceIndex = contourMap[outputIndex];
+    if (sourceIndex < 0) continue;
+    const sourceOffset = sourceIndex * 4;
+    const outputOffset = outputIndex * 4;
+    reflectedPixels[outputOffset] = sourcePixels[sourceOffset];
+    reflectedPixels[outputOffset + 1] = sourcePixels[sourceOffset + 1];
+    reflectedPixels[outputOffset + 2] = sourcePixels[sourceOffset + 2];
+    reflectedPixels[outputOffset + 3] = sourcePixels[sourceOffset + 3];
   }
 
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, pixelWidth, pixelHeight);
+  context.putImageData(reflectedImage, 0, 0);
+  maskContinuousContour(context, pixelWidth, pixelHeight, outerRadiusPx, thicknessPx);
   return true;
 }
 
