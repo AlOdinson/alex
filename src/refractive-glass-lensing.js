@@ -208,38 +208,100 @@ function renderContourSample(source, target, config) {
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
 
-  // Slightly magnify the sampled board inside the contour so every side reads as
-  // a refractive glass edge rather than a plain transparent copy.
-  const opticalShift = Math.max(1, Math.round(thicknessPx * 0.28));
-  context.drawImage(
-    source,
-    sample.sx,
-    sample.sy,
-    sample.sw,
-    sample.sh,
-    -opticalShift,
-    -opticalShift,
-    pixelWidth + opticalShift * 2,
-    pixelHeight + opticalShift * 2,
-  );
+  const sourceScaleX = source.width / sourceRect.width;
+  const sourceScaleY = source.height / sourceRect.height;
+  const sourceDepthX = Math.max(1, Math.min(sample.sw, Math.round(config.thicknessCss * 2 * sourceScaleX)));
+  const sourceDepthY = Math.max(1, Math.min(sample.sh, Math.round(config.thicknessCss * 2 * sourceScaleY)));
 
+  // Top edge: mirror the board vertically into the thicker contour.
   context.save();
-  context.globalAlpha = 0.16;
+  context.translate(0, thicknessPx);
+  context.scale(1, -1);
   context.drawImage(
     source,
     sample.sx,
     sample.sy,
     sample.sw,
-    sample.sh,
-    opticalShift,
-    opticalShift,
-    pixelWidth - opticalShift * 2,
-    pixelHeight - opticalShift * 2,
+    sourceDepthY,
+    0,
+    0,
+    pixelWidth,
+    thicknessPx,
   );
   context.restore();
 
-  // Cut the center out of the sampled image. The remaining rounded ring has the
-  // same thickness on top, bottom, both sides and through every curved corner.
+  // Bottom edge: same mirrored treatment, sampled from the board directly below it.
+  context.save();
+  context.translate(0, pixelHeight);
+  context.scale(1, -1);
+  context.drawImage(
+    source,
+    sample.sx,
+    sample.sy + sample.sh - sourceDepthY,
+    sample.sw,
+    sourceDepthY,
+    0,
+    0,
+    pixelWidth,
+    thicknessPx,
+  );
+  context.restore();
+
+  // Left and right sides mirror horizontally so the rounded sides carry the same
+  // refractive behavior as the top and bottom rather than becoming plain borders.
+  context.save();
+  context.globalAlpha = 0.92;
+  context.translate(thicknessPx, 0);
+  context.scale(-1, 1);
+  context.drawImage(
+    source,
+    sample.sx,
+    sample.sy,
+    sourceDepthX,
+    sample.sh,
+    0,
+    0,
+    thicknessPx,
+    pixelHeight,
+  );
+  context.restore();
+
+  context.save();
+  context.globalAlpha = 0.92;
+  context.translate(pixelWidth, 0);
+  context.scale(-1, 1);
+  context.drawImage(
+    source,
+    sample.sx + sample.sw - sourceDepthX,
+    sample.sy,
+    sourceDepthX,
+    sample.sh,
+    0,
+    0,
+    thicknessPx,
+    pixelHeight,
+  );
+  context.restore();
+
+  // Add a restrained secondary optical pass so the whole ring reads as one
+  // thicker piece of glass instead of four independent mirrored strips.
+  context.save();
+  context.globalAlpha = 0.14;
+  context.drawImage(
+    source,
+    sample.sx,
+    sample.sy,
+    sample.sw,
+    sample.sh,
+    -thicknessPx * 0.18,
+    -thicknessPx * 0.18,
+    pixelWidth + thicknessPx * 0.36,
+    pixelHeight + thicknessPx * 0.36,
+  );
+  context.restore();
+
+  // Cut the center out. The remaining rounded ring has the same thickness on
+  // top, bottom, both sides and throughout every curved corner.
   const innerWidth = pixelWidth - thicknessPx * 2;
   const innerHeight = pixelHeight - thicknessPx * 2;
   if (innerWidth > 0 && innerHeight > 0) {
