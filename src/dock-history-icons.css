@@ -3,15 +3,18 @@
   gap: 2px !important;
   padding: 3px 5px !important;
   box-sizing: border-box !important;
-  border: 1px solid rgba(255, 255, 255, 0.72) !important;
+  border: 1px solid rgba(255, 255, 255, 0.88) !important;
   border-radius: 18px !important;
-  background: linear-gradient(145deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0.28)) !important;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.96) 0, rgba(255, 255, 255, 0.54) 22%, transparent 47%),
+    linear-gradient(140deg, rgba(255, 255, 255, 0.62) 0%, rgba(230, 244, 255, 0.38) 45%, rgba(255, 255, 255, 0.2) 100%) !important;
   box-shadow:
-    0 10px 28px rgba(15, 23, 42, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9),
-    inset 0 -1px 0 rgba(255, 255, 255, 0.22) !important;
-  backdrop-filter: blur(18px) saturate(180%) contrast(104%) !important;
-  -webkit-backdrop-filter: blur(18px) saturate(180%) contrast(104%) !important;
+    0 12px 32px rgba(15, 23, 42, 0.18),
+    0 2px 9px rgba(79, 129, 189, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 -1px 0 rgba(94, 140, 190, 0.16) !important;
+  backdrop-filter: blur(24px) saturate(210%) brightness(108%) contrast(103%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(210%) brightness(108%) contrast(103%) !important;
   isolation: isolate !important;
   overflow: hidden !important;
 }
@@ -22,7 +25,25 @@
   inset: 1px;
   z-index: 0;
   border-radius: 16px;
-  background: linear-gradient(130deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0.08) 48%, transparent 72%);
+  background:
+    linear-gradient(128deg, rgba(255, 255, 255, 0.58), rgba(255, 255, 255, 0.12) 42%, transparent 68%),
+    radial-gradient(circle at 78% 115%, rgba(120, 184, 255, 0.2), transparent 44%);
+  pointer-events: none;
+}
+
+.dock-history-accessories::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  left: 10px;
+  top: -7px;
+  width: 24px;
+  height: 13px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+  filter: blur(4px);
+  transform: rotate(-12deg);
+  opacity: 0.8;
   pointer-events: none;
 }
 
@@ -48,8 +69,8 @@
 
 .dock-history-button:hover:not(:disabled) {
   opacity: 1 !important;
-  background: rgba(255, 255, 255, 0.34) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.54) !important;
+  background: rgba(255, 255, 255, 0.28) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62) !important;
 }
 
 .dock-history-button:focus-visible {
@@ -59,7 +80,7 @@
 
 .dock-history-button:active:not(:disabled) {
   transform: scale(0.94) !important;
-  background: rgba(255, 255, 255, 0.26) !important;
+  background: rgba(255, 255, 255, 0.22) !important;
 }
 
 .dock-history-button:disabled {
@@ -77,6 +98,7 @@
   stroke-linecap: round !important;
   stroke-linejoin: round !important;
   pointer-events: none !important;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.5));
 }
 
 @media (max-width: 760px) {
