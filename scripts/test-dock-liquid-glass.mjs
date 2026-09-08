@@ -11,6 +11,9 @@ assert.match(historyStand, /radial-gradient\(/, 'Undo/redo stand must have a str
 assert.match(historyStand, /border-radius:\s*18px/, 'Undo/redo stand must remain one compact rounded glass capsule');
 assert.match(historyStand, /box-shadow:/, 'Undo/redo stand must have floating liquid-glass depth');
 assert.doesNotMatch(historyCss, /\.dock-history-accessories::before\s*\{/, 'Undo/redo stand must not render a second full-size inner capsule');
+assert.match(historyStand, /border:\s*1px solid rgba\(255, 255, 255, 0\.64\)/, 'Premium history glass must use a thinner-looking translucent edge instead of a milky white rim');
+assert.match(historyStand, /0 9px 24px rgba\(15, 23, 42, 0\.14\)/, 'Premium history glass must use a tighter softer floating shadow');
+assert.match(historyStand, /rgba\(163, 207, 255, 0\.2\)/, 'Premium history glass must include a restrained cold edge reflection');
 
 const historyButton = historyCss.match(/\.dock-history-button\s*\{([\s\S]*?)\}/)?.[1] ?? '';
 assert.match(historyButton, /background:\s*transparent/, 'Undo/redo arrows must remain transparent inside the shared glass stand');
@@ -27,13 +30,23 @@ assert.match(glassTiles, /border:\s*0/, 'Right-side liquid-glass tiles must keep
 assert.match(glassTiles, /backdrop-filter:\s*blur\(18px\)/, 'Each of the four right-side tiles must itself be liquid glass');
 assert.match(glassTiles, /border-radius:\s*0/, 'Right-side tiles must remain square rather than becoming rounded cards');
 assert.match(glassTiles, /box-shadow:/, 'Each right-side tile must carry its own glass depth');
+assert.match(glassTiles, /transition:\s*box-shadow 140ms/, 'Premium glass tiles must transition their optical depth without changing layout');
 
 const tileSheen = accessoryCss.match(/\.dock-style-eyedropper-button::before,\s*\.dock-style-preset-button::before\s*\{([\s\S]*?)\}/)?.[1] ?? '';
 assert.match(tileSheen, /linear-gradient\(/, 'Each right-side tile must carry its own glass highlight');
 assert.match(tileSheen, /border-radius:\s*0/, 'Glass highlight must preserve the square tile shape');
+assert.match(tileSheen, /transform:\s*translate3d\(-1px, -1px, 0\) scale\(1\.04\)/, 'Premium tile highlight must begin slightly offset to simulate a glass reflection');
+assert.match(tileSheen, /transition:\s*transform 140ms/, 'Premium tile reflection must shift subtly on interaction');
+
+const tileHoverSheen = accessoryCss.match(/\.dock-style-eyedropper-button:hover:not\(:disabled\)::before,\s*\.dock-style-preset-button:hover:not\(:disabled\)::before\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+assert.match(tileHoverSheen, /translate3d\(1px, 1px, 0\)/, 'Hover must move the specular reflection rather than adding another backing layer');
+
+const tileActiveSheen = accessoryCss.match(/\.dock-style-eyedropper-button:active:not\(:disabled\)::before,\s*\.dock-style-preset-button:active:not\(:disabled\)::before\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+assert.match(tileActiveSheen, /translate3d\(0, 2px, 0\)/, 'Press must nudge the reflection by only a couple of pixels');
 
 const presetFill = accessoryCss.match(/\.dock-style-preset-fill\s*\{([\s\S]*?)\}/)?.[1] ?? '';
 assert.match(presetFill, /inset:\s*0/, 'Preset color must fill the glass tile itself rather than sit on a smaller inner plate');
 assert.match(presetFill, /border-radius:\s*inherit/, 'Preset color must follow the tile shape directly');
+assert.match(presetFill, /inset 0 0 10px rgba\(15, 23, 42, 0\.045\)/, 'Preset color must read as sitting beneath a shallow glass surface');
 
 console.log('Dock liquid glass regression passed.');

@@ -3,19 +3,21 @@
   gap: 2px !important;
   padding: 3px 5px !important;
   box-sizing: border-box !important;
-  border: 1px solid rgba(255, 255, 255, 0.88) !important;
+  border: 1px solid rgba(255, 255, 255, 0.64) !important;
   border-radius: 18px !important;
   background:
-    radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.96) 0, rgba(255, 255, 255, 0.54) 22%, transparent 47%),
-    radial-gradient(circle at 82% 112%, rgba(120, 184, 255, 0.18) 0%, transparent 43%),
-    linear-gradient(140deg, rgba(255, 255, 255, 0.62) 0%, rgba(230, 244, 255, 0.38) 45%, rgba(255, 255, 255, 0.2) 100%) !important;
+    radial-gradient(circle at 17% -4%, rgba(255, 255, 255, 0.74) 0%, rgba(255, 255, 255, 0.25) 23%, transparent 47%),
+    linear-gradient(112deg, rgba(163, 207, 255, 0.2) 0%, rgba(163, 207, 255, 0.04) 18%, transparent 38%),
+    radial-gradient(circle at 84% 116%, rgba(105, 170, 238, 0.12) 0%, transparent 44%),
+    linear-gradient(148deg, rgba(255, 255, 255, 0.34) 0%, rgba(229, 243, 255, 0.2) 48%, rgba(255, 255, 255, 0.09) 100%) !important;
   box-shadow:
-    0 12px 32px rgba(15, 23, 42, 0.18),
-    0 2px 9px rgba(79, 129, 189, 0.12),
-    inset 0 1px 0 rgba(255, 255, 255, 1),
-    inset 0 -1px 0 rgba(94, 140, 190, 0.16) !important;
-  backdrop-filter: blur(24px) saturate(210%) brightness(108%) contrast(103%) !important;
-  -webkit-backdrop-filter: blur(24px) saturate(210%) brightness(108%) contrast(103%) !important;
+    0 9px 24px rgba(15, 23, 42, 0.14),
+    0 2px 7px rgba(64, 113, 166, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    inset 0 -1px 0 rgba(79, 128, 177, 0.12),
+    inset 1px 0 0 rgba(163, 207, 255, 0.11) !important;
+  backdrop-filter: blur(24px) saturate(190%) brightness(105%) contrast(102%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(190%) brightness(105%) contrast(102%) !important;
   isolation: isolate !important;
   overflow: hidden !important;
 }
@@ -24,15 +26,15 @@
   content: '';
   position: absolute;
   z-index: 0;
-  left: 10px;
-  top: -7px;
-  width: 24px;
-  height: 13px;
+  left: 11px;
+  top: -6px;
+  width: 20px;
+  height: 11px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.6);
-  filter: blur(4px);
-  transform: rotate(-12deg);
-  opacity: 0.8;
+  background: rgba(255, 255, 255, 0.44);
+  filter: blur(3px);
+  transform: rotate(-10deg);
+  opacity: 0.62;
   pointer-events: none;
 }
 
@@ -54,12 +56,13 @@
   font-size: 0 !important;
   line-height: 1 !important;
   opacity: 1 !important;
+  transition: background 120ms ease, transform 90ms ease, box-shadow 120ms ease !important;
 }
 
 .dock-history-button:hover:not(:disabled) {
   opacity: 1 !important;
-  background: rgba(255, 255, 255, 0.28) !important;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.62) !important;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.18), rgba(190, 220, 252, 0.07)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.36) !important;
 }
 
 .dock-history-button:focus-visible {
@@ -68,8 +71,8 @@
 }
 
 .dock-history-button:active:not(:disabled) {
-  transform: scale(0.94) !important;
-  background: rgba(255, 255, 255, 0.22) !important;
+  transform: scale(0.95) !important;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.13), rgba(190, 220, 252, 0.06)) !important;
 }
 
 .dock-history-button:disabled {
@@ -87,7 +90,7 @@
   stroke-linecap: round !important;
   stroke-linejoin: round !important;
   pointer-events: none !important;
-  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.5));
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.46));
 }
 
 @media (max-width: 760px) {
