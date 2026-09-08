@@ -1,40 +1,18 @@
 export const LENS_REFRESH_MS = 120;
 const IDLE_REFRESH_MS = 500;
-const MAX_SAMPLE_DPR = 2;
+const MAX_CONTOUR_DPR = 2;
 const MAX_SURFACE_DPR = 1.5;
 
-const LENS_CONFIGS = [
+const CONTOUR_CONFIGS = [
   {
     targetSelector: '.board-tool-dock',
-    className: 'refractive-lens-sample--dock-top',
-    edge: 'top',
-    insetCss: 12,
-    lipHeightCss: 7,
-    sampleDepthCss: 14,
-  },
-  {
-    targetSelector: '.board-tool-dock',
-    className: 'refractive-lens-sample--dock-bottom',
-    edge: 'bottom',
-    insetCss: 16,
-    lipHeightCss: 5,
-    sampleDepthCss: 12,
+    className: 'refractive-contour-sample--dock',
+    thicknessCss: 9,
   },
   {
     targetSelector: '.dock-history-accessories',
-    className: 'refractive-lens-sample--history-top',
-    edge: 'top',
-    insetCss: 7,
-    lipHeightCss: 5,
-    sampleDepthCss: 11,
-  },
-  {
-    targetSelector: '.dock-history-accessories',
-    className: 'refractive-lens-sample--history-bottom',
-    edge: 'bottom',
-    insetCss: 9,
-    lipHeightCss: 4,
-    sampleDepthCss: 9,
+    className: 'refractive-contour-sample--history',
+    thicknessCss: 7,
   },
 ];
 
@@ -55,6 +33,7 @@ function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
 
+// Kept as a small geometry helper for compatibility with existing callers/tests.
 export function computeLensSourceRect({
   sourceRect,
   sourceWidth,
@@ -147,8 +126,8 @@ function ensureCanvas(target, className, baseClass) {
   return canvas;
 }
 
-function ensureSampleCanvas(target, className) {
-  return ensureCanvas(target, className, 'refractive-lens-sample');
+function ensureContourCanvas(target, className) {
+  return ensureCanvas(target, className, 'refractive-contour-sample');
 }
 
 function ensureSurfaceCanvas(target, className) {
@@ -162,7 +141,34 @@ function clearSample(target, className) {
   context?.clearRect(0, 0, canvas.width, canvas.height);
 }
 
-function renderSample(source, target, config) {
+function resolveOuterRadiusCss(target, targetRect) {
+  const fallback = Math.min(targetRect.width, targetRect.height) / 2;
+  if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') return fallback;
+  const style = window.getComputedStyle(target);
+  const parsed = Number.parseFloat(style.borderTopLeftRadius);
+  if (!Number.isFinite(parsed)) return fallback;
+  return clamp(parsed, 0, fallback);
+}
+
+function traceRoundedRect(context, x, y, width, height, radius) {
+  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
+  if (typeof context.roundRect === 'function') {
+    context.roundRect(x, y, width, height, safeRadius);
+    return;
+  }
+
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+}
+
+function renderContourSample(source, target, config) {
   if (!(source instanceof HTMLCanvasElement) || !(target instanceof HTMLElement)) return false;
   if (target.hidden) {
     clearSample(target, config.className);
@@ -173,32 +179,27 @@ function renderSample(source, target, config) {
   const targetRect = target.getBoundingClientRect();
   if (!sourceRect.width || !sourceRect.height || !targetRect.width || !targetRect.height) return false;
 
-  const sample = computeLensSourceRect({
+  const sample = computeSurfaceSourceRect({
     sourceRect,
     sourceWidth: source.width,
     sourceHeight: source.height,
     targetRect,
-    insetCss: config.insetCss,
-    edge: config.edge,
-    lipHeightCss: config.lipHeightCss,
-    sampleDepthCss: config.sampleDepthCss,
+    insetCss: 0,
   });
   if (!sample) return false;
 
-  const cssWidth = Math.max(1, targetRect.width - config.insetCss * 2);
-  const cssHeight = config.lipHeightCss;
-  const sampleDpr = Math.min(MAX_SAMPLE_DPR, Math.max(1, Number(window.devicePixelRatio) || 1));
-  const pixelWidth = Math.max(1, Math.round(cssWidth * sampleDpr));
-  const pixelHeight = Math.max(1, Math.round(cssHeight * sampleDpr));
-  const canvas = ensureSampleCanvas(target, config.className);
+  const sampleDpr = Math.min(MAX_CONTOUR_DPR, Math.max(1, Number(window.devicePixelRatio) || 1));
+  const pixelWidth = Math.max(1, Math.round(targetRect.width * sampleDpr));
+  const pixelHeight = Math.max(1, Math.round(targetRect.height * sampleDpr));
+  const thicknessPx = Math.max(1, Math.round(config.thicknessCss * sampleDpr));
+  const canvas = ensureContourCanvas(target, config.className);
 
   if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
   if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-  canvas.style.left = `${config.insetCss}px`;
-  canvas.style.width = `${cssWidth}px`;
-  canvas.style.height = `${cssHeight}px`;
-  canvas.style.top = config.edge === 'top' ? '0px' : 'auto';
-  canvas.style.bottom = config.edge === 'bottom' ? '0px' : 'auto';
+  canvas.style.left = '0px';
+  canvas.style.top = '0px';
+  canvas.style.width = `${targetRect.width}px`;
+  canvas.style.height = `${targetRect.height}px`;
 
   const context = canvas.getContext('2d', { alpha: true });
   if (!context) return false;
@@ -207,38 +208,114 @@ function renderSample(source, target, config) {
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
 
+  const sourceScaleX = source.width / sourceRect.width;
+  const sourceScaleY = source.height / sourceRect.height;
+  const sourceDepthX = Math.max(1, Math.min(sample.sw, Math.round(config.thicknessCss * 2 * sourceScaleX)));
+  const sourceDepthY = Math.max(1, Math.min(sample.sh, Math.round(config.thicknessCss * 2 * sourceScaleY)));
+
+  // Top edge: mirror the board vertically into the thicker contour.
+  context.save();
+  context.translate(0, thicknessPx);
+  context.scale(1, -1);
+  context.drawImage(
+    source,
+    sample.sx,
+    sample.sy,
+    sample.sw,
+    sourceDepthY,
+    0,
+    0,
+    pixelWidth,
+    thicknessPx,
+  );
+  context.restore();
+
+  // Bottom edge: same mirrored treatment, sampled from the board directly below it.
   context.save();
   context.translate(0, pixelHeight);
   context.scale(1, -1);
   context.drawImage(
     source,
     sample.sx,
-    sample.sy,
+    sample.sy + sample.sh - sourceDepthY,
     sample.sw,
-    sample.sh,
+    sourceDepthY,
     0,
     0,
     pixelWidth,
+    thicknessPx,
+  );
+  context.restore();
+
+  // Left and right sides mirror horizontally so the rounded sides carry the same
+  // refractive behavior as the top and bottom rather than becoming plain borders.
+  context.save();
+  context.globalAlpha = 0.92;
+  context.translate(thicknessPx, 0);
+  context.scale(-1, 1);
+  context.drawImage(
+    source,
+    sample.sx,
+    sample.sy,
+    sourceDepthX,
+    sample.sh,
+    0,
+    0,
+    thicknessPx,
     pixelHeight,
   );
   context.restore();
 
   context.save();
-  context.globalAlpha = 0.18;
-  context.translate(0, pixelHeight - Math.max(1, Math.round(sampleDpr)));
-  context.scale(1, -1);
+  context.globalAlpha = 0.92;
+  context.translate(pixelWidth, 0);
+  context.scale(-1, 1);
+  context.drawImage(
+    source,
+    sample.sx + sample.sw - sourceDepthX,
+    sample.sy,
+    sourceDepthX,
+    sample.sh,
+    0,
+    0,
+    thicknessPx,
+    pixelHeight,
+  );
+  context.restore();
+
+  // Add a restrained secondary optical pass so the whole ring reads as one
+  // thicker piece of glass instead of four independent mirrored strips.
+  context.save();
+  context.globalAlpha = 0.14;
   context.drawImage(
     source,
     sample.sx,
     sample.sy,
     sample.sw,
     sample.sh,
-    0,
-    0,
-    pixelWidth,
-    pixelHeight,
+    -thicknessPx * 0.18,
+    -thicknessPx * 0.18,
+    pixelWidth + thicknessPx * 0.36,
+    pixelHeight + thicknessPx * 0.36,
   );
   context.restore();
+
+  // Cut the center out. The remaining rounded ring has the same thickness on
+  // top, bottom, both sides and throughout every curved corner.
+  const innerWidth = pixelWidth - thicknessPx * 2;
+  const innerHeight = pixelHeight - thicknessPx * 2;
+  if (innerWidth > 0 && innerHeight > 0) {
+    const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
+    const innerRadiusPx = Math.max(0, (outerRadiusCss - config.thicknessCss) * sampleDpr);
+    context.save();
+    context.globalCompositeOperation = 'destination-out';
+    context.beginPath();
+    traceRoundedRect(context, thicknessPx, thicknessPx, innerWidth, innerHeight, innerRadiusPx);
+    context.closePath();
+    context.fill();
+    context.restore();
+  }
+
   return true;
 }
 
@@ -311,10 +388,10 @@ function renderAllSamples() {
     }
   }
 
-  for (const config of LENS_CONFIGS) {
+  for (const config of CONTOUR_CONFIGS) {
     const target = document.querySelector(config.targetSelector);
     if (!(target instanceof HTMLElement)) continue;
-    rendered = renderSample(source, target, config) || rendered;
+    rendered = renderContourSample(source, target, config) || rendered;
   }
   return rendered;
 }
