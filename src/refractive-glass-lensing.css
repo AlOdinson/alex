@@ -77,37 +77,27 @@
   filter: brightness(1.17) saturate(1.46) contrast(1.11) blur(0.18px);
 }
 
-/* iPhone/iPad: WebKit can render CSS backdrop-filter over Fabric canvas as a
-   milky compositing layer. Keep the shell light and let sampled board pixels
-   provide both the transparent center and the stronger full-perimeter edge. */
+/* iPhone/iPad: the container itself must not paint a second full-area glass
+   plate. The sampled center and contour canvases are the only visible material. */
 @supports (-webkit-touch-callout: none) {
   .board-tool-dock {
-    border-color: rgba(255, 255, 255, 0.46) !important;
-    background:
-      radial-gradient(circle at 18% -18%, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.055) 31%, transparent 52%),
-      linear-gradient(145deg, rgba(255, 255, 255, 0.105) 0%, rgba(244, 249, 255, 0.05) 52%, rgba(255, 255, 255, 0.018) 100%) !important;
+    border-color: transparent !important;
+    background: transparent !important;
     box-shadow:
       0 10px 28px rgba(15, 23, 42, 0.13),
-      0 2px 7px rgba(71, 111, 156, 0.07),
-      inset 0 1px 0 rgba(255, 255, 255, 0.68),
-      inset 0 -1px 0 rgba(100, 132, 166, 0.08) !important;
-    -webkit-backdrop-filter: blur(7px) saturate(145%) brightness(103%) contrast(101%) !important;
-    backdrop-filter: blur(7px) saturate(145%) brightness(103%) contrast(101%) !important;
+      0 2px 7px rgba(71, 111, 156, 0.07) !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 
   .dock-history-accessories {
-    border-color: rgba(255, 255, 255, 0.52) !important;
-    background:
-      radial-gradient(circle at 17% -4%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.07) 23%, transparent 47%),
-      linear-gradient(112deg, rgba(163, 207, 255, 0.09) 0%, rgba(163, 207, 255, 0.018) 18%, transparent 38%),
-      linear-gradient(148deg, rgba(255, 255, 255, 0.09) 0%, rgba(229, 243, 255, 0.04) 48%, rgba(255, 255, 255, 0.015) 100%) !important;
+    border-color: transparent !important;
+    background: transparent !important;
     box-shadow:
       0 9px 24px rgba(15, 23, 42, 0.14),
-      0 2px 7px rgba(64, 113, 166, 0.09),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72),
-      inset 0 -1px 0 rgba(79, 128, 177, 0.1) !important;
-    -webkit-backdrop-filter: blur(7px) saturate(150%) brightness(103%) contrast(101%) !important;
-    backdrop-filter: blur(7px) saturate(150%) brightness(103%) contrast(101%) !important;
+      0 2px 7px rgba(64, 113, 166, 0.09) !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 
   .refractive-surface-sample--dock {
@@ -129,25 +119,27 @@
   }
 }
 
-/* Phone fallback uses the same real sampled-surface and full-contour mechanism. */
+/* Phone/narrow-viewport fallback: keep the shell visually inert too. This also
+   prevents desktop high-zoom viewports from activating a rectangular fallback. */
 @media (max-width: 900px) {
   .board-tool-dock {
-    border-color: rgba(255, 255, 255, 0.46) !important;
-    background:
-      radial-gradient(circle at 18% -18%, rgba(255, 255, 255, 0.24) 0%, rgba(255, 255, 255, 0.055) 31%, transparent 52%),
-      linear-gradient(145deg, rgba(255, 255, 255, 0.105) 0%, rgba(244, 249, 255, 0.05) 52%, rgba(255, 255, 255, 0.018) 100%) !important;
-    -webkit-backdrop-filter: blur(7px) saturate(145%) brightness(103%) contrast(101%) !important;
-    backdrop-filter: blur(7px) saturate(145%) brightness(103%) contrast(101%) !important;
+    border-color: transparent !important;
+    background: transparent !important;
+    box-shadow:
+      0 10px 28px rgba(15, 23, 42, 0.13),
+      0 2px 7px rgba(71, 111, 156, 0.07) !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 
   .dock-history-accessories {
-    border-color: rgba(255, 255, 255, 0.52) !important;
-    background:
-      radial-gradient(circle at 17% -4%, rgba(255, 255, 255, 0.28) 0%, rgba(255, 255, 255, 0.07) 23%, transparent 47%),
-      linear-gradient(112deg, rgba(163, 207, 255, 0.09) 0%, rgba(163, 207, 255, 0.018) 18%, transparent 38%),
-      linear-gradient(148deg, rgba(255, 255, 255, 0.09) 0%, rgba(229, 243, 255, 0.04) 48%, rgba(255, 255, 255, 0.015) 100%) !important;
-    -webkit-backdrop-filter: blur(7px) saturate(150%) brightness(103%) contrast(101%) !important;
-    backdrop-filter: blur(7px) saturate(150%) brightness(103%) contrast(101%) !important;
+    border-color: transparent !important;
+    background: transparent !important;
+    box-shadow:
+      0 9px 24px rgba(15, 23, 42, 0.14),
+      0 2px 7px rgba(64, 113, 166, 0.09) !important;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 
   .refractive-surface-sample--dock {
