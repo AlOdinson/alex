@@ -1863,6 +1863,7 @@ function BoardWorkspace({
     sessionId: null,
     sessionOrder: 0,
     sequence: 0,
+    baseRevision: 0,
     lastSentAt: 0,
     lastSentPointIndex: 0,
     timer: null,
@@ -7539,6 +7540,7 @@ function BoardWorkspace({
       sessionId: state.sessionId,
       sessionOrder: state.sessionOrder,
       sequence: state.sequence,
+      baseRevision: state.baseRevision,
       phase,
       tool: state.tool,
       objectId: state.objectId,
@@ -7567,6 +7569,7 @@ function BoardWorkspace({
     state.sessionId = randomToken(12);
     state.sessionOrder += 1;
     state.sequence = 0;
+    state.baseRevision = Number(revisionRef.current ?? 0);
     state.lastSentAt = 0;
     state.lastSentPointIndex = 0;
     state.tool = toolName;
@@ -7613,6 +7616,7 @@ function BoardWorkspace({
     sendLiveDrawNow(phase);
     state.sessionId = null;
     state.sequence = 0;
+    state.baseRevision = 0;
     state.lastSentAt = 0;
     state.lastSentPointIndex = 0;
     state.tool = null;
@@ -7628,6 +7632,7 @@ function BoardWorkspace({
     const remoteClientId = String(message?.clientId ?? '');
     const sessionId = String(message?.sessionId ?? '');
     const objectId = String(message?.objectId ?? '');
+    const baseRevision = normalizeRealtimeBaseRevision(message?.baseRevision);
     const sessionOrder = Number(message?.sessionOrder ?? 0);
     const sequence = Number(message?.sequence ?? 0);
     const phase = ['start', 'update', 'end', 'cancel'].includes(message?.phase) ? message.phase : 'update';
@@ -7651,6 +7656,19 @@ function BoardWorkspace({
       : [];
     if (!canvas || !remoteClientId || !sessionId || !objectId) return;
 
+    const authoritativeFence = authoritativeObjectStatesRef.current.get(objectId);
+    if (shouldRejectRealtimeObjectFrame(authoritativeFence, { baseRevision })) {
+      removeRegisteredObjectsByCreationSession(
+        remoteClientId,
+        sessionId,
+        null,
+        { transientOnly: true },
+      );
+      remoteDrawSessionsRef.current.delete(`${remoteClientId}:${sessionId}`);
+      canvas.requestRenderAll();
+      return;
+    }
+
     const deletedAt = Number(remoteDeletedObjectIdsRef.current.get(objectId)?.timestamp ?? 0);
     if (deletedAt && Date.now() - deletedAt < 120000) {
       if (phase === 'cancel' || phase === 'end') {
@@ -7672,7 +7690,7 @@ function BoardWorkspace({
 
     if (phase === 'cancel') {
       remoteDrawSessionsRef.current.set(sessionKey, {
-        ...(previous ?? {}), sessionOrder, sequence, objectId, receivedAt: Date.now(), ended: true,
+        ...(previous ?? {}), sessionOrder, sequence, objectId, baseRevision, receivedAt: Date.now(), ended: true,
       });
       removeRegisteredObjectsByCreationSession(
         remoteClientId,
@@ -7696,6 +7714,7 @@ function BoardWorkspace({
           sessionOrder,
           sequence,
           objectId,
+          baseRevision,
           receivedAt: Date.now(),
           missingDelta: true,
         });
@@ -7711,6 +7730,7 @@ function BoardWorkspace({
       sessionOrder,
       sequence,
       objectId,
+      baseRevision,
       points,
       tool: toolName,
       style: message?.style ?? previous?.style ?? {},
@@ -9194,6 +9214,8 @@ function BoardWorkspace({
           remotePreviewChunksRef.current.delete(batchKey);
         }
       }
+      const staleDrawPreviewIds = new Set();
+      const staleDrawMinimumRevisionById = new Map();
       for (const [sessionKey, session] of remoteDrawSessionsRef.current) {
         const age = now - Number(session.receivedAt ?? 0);
         if (session.ended && session.awaitingCommit && age > 12000 && !session.syncRequested) {
@@ -9202,8 +9224,23 @@ function BoardWorkspace({
           remoteDrawSessionsRef.current.set(sessionKey, session);
           syncFromServer(true);
         }
-        // Never create a short white gap by deleting a completed preview after five
-        // seconds. Keep it as the visible fallback until the saved object replaces it.
+        // A completed preview is user-visible work. Never delete it merely because
+        // its realtime lifecycle outlived the timeout. Ask the authoritative log to
+        // replace it; until that succeeds, the preview remains the visible fallback.
+        if (session.ended && session.awaitingCommit && age > 90000) {
+          const objectId = String(session.objectId ?? '');
+          const lastRequestedAt = Number(session.staleReconcileRequestedAt ?? 0);
+          if (objectId && now - lastRequestedAt >= 12000) {
+            staleDrawPreviewIds.add(objectId);
+            const drawBaseRevision = normalizeRealtimeBaseRevision(session.baseRevision);
+            if (drawBaseRevision != null) {
+              staleDrawMinimumRevisionById.set(objectId, drawBaseRevision + 1);
+            }
+            session.staleReconcileRequestedAt = now;
+            remoteDrawSessionsRef.current.set(sessionKey, session);
+          }
+          continue;
+        }
         if (age > 90000) {
           const [remoteClientId, ...sessionParts] = sessionKey.split(':');
           const sessionId = sessionParts.join(':');
@@ -9214,15 +9251,38 @@ function BoardWorkspace({
         }
       }
       for (const object of [...canvas.getObjects()]) {
+        const previewAge = now - Number(object.previewReceivedAt ?? now);
+        const staleAwaitingCommitPreview = object.transientPreview
+          && object.transientAwaitingCommit
+          && previewAge > 90000;
         const stalePreview = object.transientPreview
-          && now - Number(object.previewReceivedAt ?? now) > 90000;
+          && !object.transientAwaitingCommit
+          && previewAge > 90000;
         const staleRemoteSelectionProxy = object.transientSelectionProxy
           && object.creationClientId !== clientIdRef.current
-          && now - Number(object.previewReceivedAt ?? now) > 45000;
+          && previewAge > 45000;
+        if (staleAwaitingCommitPreview) {
+          const objectId = String(object.boardObjectId ?? '');
+          const lastRequestedAt = Number(object.staleReconcileRequestedAt ?? 0);
+          if (objectId && now - lastRequestedAt >= 12000) {
+            staleDrawPreviewIds.add(objectId);
+            object.staleReconcileRequestedAt = now;
+          }
+          continue;
+        }
         if (stalePreview || staleRemoteSelectionProxy) {
           canvas.remove(object);
           removedTransient = true;
         }
+      }
+      if (staleDrawPreviewIds.size) {
+        scheduleTargetedReconciliation([...staleDrawPreviewIds], {
+          minimumRevisionById: staleDrawMinimumRevisionById.size
+            ? staleDrawMinimumRevisionById
+            : null,
+          delay: 0,
+        });
+        syncFromServer(true);
       }
       if (removedTransient) {
         canvas.requestRenderAll();
@@ -13310,6 +13370,7 @@ function BoardWorkspace({
         startingViewportRects: [],
       };
       liveDrawSendRef.current.sessionId = null;
+      liveDrawSendRef.current.baseRevision = 0;
       liveDrawSendRef.current.lastSentPointIndex = 0;
       liveDrawSendRef.current.points = [];
       liveDrawSendRef.current.acceptingPoints = false;
