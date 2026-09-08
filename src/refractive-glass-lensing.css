@@ -108,12 +108,12 @@
 
   .refractive-surface-sample--dock,
   .refractive-contour-sample--dock {
-    opacity: 0.72;
+    opacity: 0.84;
   }
 
   .refractive-surface-sample--history,
   .refractive-contour-sample--history {
-    opacity: 0.76;
+    opacity: 0.88;
   }
 }
 
@@ -143,11 +143,11 @@
 
   .refractive-surface-sample--dock,
   .refractive-contour-sample--dock {
-    opacity: 0.72;
+    opacity: 0.82;
   }
 
   .refractive-surface-sample--history,
   .refractive-contour-sample--history {
-    opacity: 0.76;
+    opacity: 0.86;
   }
 }

@@ -125,8 +125,10 @@ assert.doesNotMatch(refractiveCss, /refractive-lens-sample--dock-top/, 'CSS must
 assert.doesNotMatch(refractiveCss, /refractive-lens-sample--dock-bottom/, 'CSS must no longer render only a bottom dock edge');
 assert.match(refractiveCss, /@supports \(-webkit-touch-callout:\s*none\)/, 'iPad\/iPhone must retain an explicit sampled-canvas enhancement');
 assert.match(refractiveCss, /@media \(max-width:\s*900px\)/, 'Phone viewports must keep sampled refraction visible');
-assert.match(refractiveCss, /refractive-surface-sample--dock[\s\S]*opacity:\s*0\.72/, 'Mobile dock surface sample must stay visibly transparent rather than milky');
-assert.match(refractiveCss, /refractive-surface-sample--history[\s\S]*opacity:\s*0\.76/, 'Mobile history surface sample must keep showing board content through the glass');
+assert.match(refractiveCss, /@supports \(-webkit-touch-callout:\s*none\)[\s\S]*refractive-surface-sample--dock,[\s\S]*refractive-contour-sample--dock\s*\{[\s\S]*opacity:\s*0\.84/, 'iOS dock center must reuse the approved clean contour opacity');
+assert.match(refractiveCss, /@supports \(-webkit-touch-callout:\s*none\)[\s\S]*refractive-surface-sample--history,[\s\S]*refractive-contour-sample--history\s*\{[\s\S]*opacity:\s*0\.88/, 'iOS history center must reuse the approved clean contour opacity');
+assert.match(refractiveCss, /@media \(max-width:\s*900px\)[\s\S]*refractive-surface-sample--dock,[\s\S]*refractive-contour-sample--dock\s*\{[\s\S]*opacity:\s*0\.82/, 'Phone dock center and contour must keep identical opacity');
+assert.match(refractiveCss, /@media \(max-width:\s*900px\)[\s\S]*refractive-surface-sample--history,[\s\S]*refractive-contour-sample--history\s*\{[\s\S]*opacity:\s*0\.86/, 'Phone history center and contour must keep identical opacity');
 assert.doesNotMatch(refractiveCss, /animation:/, 'Refractive contour must not add continuous CSS animation on iPad\/phone');
 assert.doesNotMatch(refractiveCss, /\.dock-style-right-accessories/, 'Contour change must not touch the four right-side glass tiles');
 
