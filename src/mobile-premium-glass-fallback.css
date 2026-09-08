@@ -1,190 +1,117 @@
-/* Last-loaded mobile/WebKit premium glass material.
-   The refractive canvas layer handles the mirrored edge. This file controls the
-   actual body material: translucent matte glass for the dock/history capsule and
-   four independent convex glass tiles with preset color visibly beneath the surface. */
+/* Mobile/iPad material parity.
+   Do not invent a separate mobile glass body. The rules below intentionally repeat
+   the desktop material exactly so late mobile/touch overrides cannot make the dock,
+   undo/redo capsule, or four right tiles more opaque than the PC version.
+   The real mirrored edge remains in refractive-glass-lensing.css/js. */
 
 @supports (-webkit-touch-callout: none) {
   .board-tool-dock {
-    border-color: rgba(255, 255, 255, 0.62) !important;
-    background-color: rgba(255, 255, 255, 0.18) !important;
-    background-image:
-      radial-gradient(circle at 17% -18%, rgba(255, 255, 255, 0.58) 0%, rgba(255, 255, 255, 0.16) 29%, transparent 53%),
-      linear-gradient(116deg, rgba(155, 207, 255, 0.14) 0%, rgba(155, 207, 255, 0.025) 23%, transparent 43%),
-      linear-gradient(148deg, rgba(255, 255, 255, 0.22) 0%, rgba(235, 246, 255, 0.12) 52%, rgba(216, 235, 252, 0.06) 100%) !important;
-    background-blend-mode: screen, screen, normal !important;
+    border: 1px solid rgba(255, 255, 255, 0.58) !important;
+    background:
+      radial-gradient(circle at 18% -18%, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.2) 31%, transparent 52%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.46) 0%, rgba(244, 249, 255, 0.3) 52%, rgba(255, 255, 255, 0.18) 100%) !important;
     box-shadow:
-      0 12px 32px rgba(15, 23, 42, 0.15),
-      0 2px 8px rgba(60, 105, 151, 0.08),
+      0 10px 28px rgba(15, 23, 42, 0.13),
+      0 2px 7px rgba(71, 111, 156, 0.07),
       inset 0 1px 0 rgba(255, 255, 255, 0.82),
-      inset 0 -2px 3px rgba(82, 127, 171, 0.08),
-      inset 0 0 18px rgba(255, 255, 255, 0.055) !important;
-    -webkit-backdrop-filter: blur(26px) saturate(188%) brightness(106%) contrast(102%) !important;
-    backdrop-filter: blur(26px) saturate(188%) brightness(106%) contrast(102%) !important;
+      inset 0 -1px 0 rgba(100, 132, 166, 0.09) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(175%) brightness(106%) contrast(101%) !important;
+    backdrop-filter: blur(22px) saturate(175%) brightness(106%) contrast(101%) !important;
   }
 
   .dock-history-accessories {
-    border-color: rgba(255, 255, 255, 0.66) !important;
-    background-color: rgba(240, 248, 255, 0.10) !important;
-    background-image:
-      radial-gradient(circle at 16% -7%, rgba(255, 255, 255, 0.48) 0%, rgba(255, 255, 255, 0.13) 25%, transparent 50%),
-      linear-gradient(112deg, rgba(132, 195, 255, 0.19) 0%, rgba(132, 195, 255, 0.035) 22%, transparent 43%),
-      radial-gradient(circle at 84% 116%, rgba(79, 151, 223, 0.12) 0%, transparent 46%),
-      linear-gradient(148deg, rgba(255, 255, 255, 0.18) 0%, rgba(219, 239, 255, 0.10) 51%, rgba(255, 255, 255, 0.045) 100%) !important;
-    background-blend-mode: screen, screen, screen, normal !important;
+    border: 1px solid rgba(255, 255, 255, 0.64) !important;
+    background:
+      radial-gradient(circle at 17% -4%, rgba(255, 255, 255, 0.74) 0%, rgba(255, 255, 255, 0.25) 23%, transparent 47%),
+      linear-gradient(112deg, rgba(163, 207, 255, 0.2) 0%, rgba(163, 207, 255, 0.04) 18%, transparent 38%),
+      radial-gradient(circle at 84% 116%, rgba(105, 170, 238, 0.12) 0%, transparent 44%),
+      linear-gradient(148deg, rgba(255, 255, 255, 0.34) 0%, rgba(229, 243, 255, 0.2) 48%, rgba(255, 255, 255, 0.09) 100%) !important;
     box-shadow:
-      0 11px 28px rgba(15, 23, 42, 0.16),
-      0 2px 8px rgba(60, 110, 164, 0.10),
-      inset 0 1px 0 rgba(255, 255, 255, 0.84),
-      inset 0 -2px 4px rgba(63, 112, 161, 0.10),
-      inset 2px 0 4px rgba(255, 255, 255, 0.08),
-      inset -2px 0 4px rgba(58, 111, 164, 0.055) !important;
-    -webkit-backdrop-filter: blur(26px) saturate(202%) brightness(107%) contrast(102%) !important;
-    backdrop-filter: blur(26px) saturate(202%) brightness(107%) contrast(102%) !important;
+      0 9px 24px rgba(15, 23, 42, 0.14),
+      0 2px 7px rgba(64, 113, 166, 0.09),
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      inset 0 -1px 0 rgba(79, 128, 177, 0.12),
+      inset 1px 0 0 rgba(163, 207, 255, 0.11) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(190%) brightness(105%) contrast(102%) !important;
+    backdrop-filter: blur(24px) saturate(190%) brightness(105%) contrast(102%) !important;
   }
 
   .dock-style-eyedropper-button,
   .dock-style-preset-button {
-    background-color: rgba(239, 247, 255, 0.05) !important;
-    background-image:
-      linear-gradient(150deg, rgba(255, 255, 255, 0.18), rgba(214, 237, 255, 0.065) 52%, rgba(255, 255, 255, 0.018)) !important;
+    background:
+      linear-gradient(150deg, rgba(255, 255, 255, 0.24), rgba(225, 241, 255, 0.11) 52%, rgba(255, 255, 255, 0.05)) !important;
     box-shadow:
-      0 7px 16px rgba(15, 23, 42, 0.16),
-      0 1px 3px rgba(66, 113, 158, 0.10),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.72),
-      inset 0 3px 4px rgba(255, 255, 255, 0.42),
-      inset 0 -4px 6px rgba(55, 108, 162, 0.18),
-      inset 3px 0 5px rgba(255, 255, 255, 0.09),
-      inset -3px 0 5px rgba(48, 99, 149, 0.07) !important;
-    -webkit-backdrop-filter: blur(21px) saturate(210%) brightness(107%) contrast(103%) !important;
-    backdrop-filter: blur(21px) saturate(210%) brightness(107%) contrast(103%) !important;
-    transform: translateZ(0) !important;
+      0 4px 10px rgba(15, 23, 42, 0.11),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.54),
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      inset 0 -1px 0 rgba(80, 126, 173, 0.1) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(190%) brightness(104%) contrast(102%) !important;
+    backdrop-filter: blur(18px) saturate(190%) brightness(104%) contrast(102%) !important;
   }
 
   .dock-style-eyedropper-button::before,
   .dock-style-preset-button::before {
     background:
-      radial-gradient(ellipse at 50% 4%, rgba(255, 255, 255, 0.92) 0%, rgba(255, 255, 255, 0.34) 29%, rgba(255, 255, 255, 0.08) 51%, transparent 70%),
-      radial-gradient(ellipse at 50% 106%, rgba(72, 142, 211, 0.22) 0%, rgba(72, 142, 211, 0.08) 39%, transparent 70%),
-      linear-gradient(122deg, rgba(255, 255, 255, 0.46) 0%, rgba(255, 255, 255, 0.10) 27%, transparent 49%),
-      linear-gradient(315deg, rgba(132, 193, 252, 0.16), transparent 40%) !important;
+      linear-gradient(122deg, rgba(255, 255, 255, 0.66) 0%, rgba(255, 255, 255, 0.18) 23%, transparent 45%),
+      radial-gradient(circle at 82% 112%, rgba(118, 181, 255, 0.2), transparent 44%),
+      linear-gradient(315deg, rgba(149, 196, 246, 0.13), transparent 36%) !important;
     transform: translate3d(-1px, -1px, 0) scale(1.04) !important;
-    opacity: 0.96 !important;
-  }
-
-  .dock-style-preset-fill {
-    opacity: 0.68 !important;
-    filter: saturate(1.08) brightness(0.98) contrast(0.99) !important;
-    box-shadow:
-      inset 0 0 12px rgba(15, 23, 42, 0.055),
-      inset 0 2px 3px rgba(255, 255, 255, 0.08),
-      inset 0 -3px 5px rgba(15, 23, 42, 0.07) !important;
-  }
-
-  .dock-style-preset-button.active {
-    box-shadow:
-      0 7px 16px rgba(15, 23, 42, 0.16),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.78),
-      inset 0 0 0 2px rgba(37, 99, 235, 0.56),
-      inset 0 3px 4px rgba(255, 255, 255, 0.42),
-      inset 0 -4px 6px rgba(55, 108, 162, 0.18) !important;
-  }
-
-  .dock-style-eyedropper-button:hover:not(:disabled)::before,
-  .dock-style-preset-button:hover:not(:disabled)::before {
-    transform: translate3d(-1px, -1px, 0) scale(1.04) !important;
-    opacity: 0.96 !important;
+    opacity: 0.82 !important;
   }
 }
 
 @media (max-width: 900px) {
   .board-tool-dock {
-    border-color: rgba(255, 255, 255, 0.62) !important;
-    background-color: rgba(255, 255, 255, 0.18) !important;
-    background-image:
-      radial-gradient(circle at 17% -18%, rgba(255, 255, 255, 0.56) 0%, rgba(255, 255, 255, 0.15) 29%, transparent 53%),
-      linear-gradient(116deg, rgba(155, 207, 255, 0.13) 0%, rgba(155, 207, 255, 0.025) 23%, transparent 43%),
-      linear-gradient(148deg, rgba(255, 255, 255, 0.21) 0%, rgba(235, 246, 255, 0.11) 52%, rgba(216, 235, 252, 0.055) 100%) !important;
-    background-blend-mode: screen, screen, normal !important;
+    border: 1px solid rgba(255, 255, 255, 0.58) !important;
+    background:
+      radial-gradient(circle at 18% -18%, rgba(255, 255, 255, 0.72) 0%, rgba(255, 255, 255, 0.2) 31%, transparent 52%),
+      linear-gradient(145deg, rgba(255, 255, 255, 0.46) 0%, rgba(244, 249, 255, 0.3) 52%, rgba(255, 255, 255, 0.18) 100%) !important;
     box-shadow:
-      0 11px 30px rgba(15, 23, 42, 0.15),
-      0 2px 8px rgba(60, 105, 151, 0.08),
-      inset 0 1px 0 rgba(255, 255, 255, 0.80),
-      inset 0 -2px 3px rgba(82, 127, 171, 0.08),
-      inset 0 0 16px rgba(255, 255, 255, 0.05) !important;
-    -webkit-backdrop-filter: blur(24px) saturate(186%) brightness(106%) contrast(102%) !important;
-    backdrop-filter: blur(24px) saturate(186%) brightness(106%) contrast(102%) !important;
+      0 10px 28px rgba(15, 23, 42, 0.13),
+      0 2px 7px rgba(71, 111, 156, 0.07),
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      inset 0 -1px 0 rgba(100, 132, 166, 0.09) !important;
+    -webkit-backdrop-filter: blur(22px) saturate(175%) brightness(106%) contrast(101%) !important;
+    backdrop-filter: blur(22px) saturate(175%) brightness(106%) contrast(101%) !important;
   }
 
   .dock-history-accessories {
-    border-color: rgba(255, 255, 255, 0.64) !important;
-    background-color: rgba(240, 248, 255, 0.10) !important;
-    background-image:
-      radial-gradient(circle at 16% -7%, rgba(255, 255, 255, 0.46) 0%, rgba(255, 255, 255, 0.12) 25%, transparent 50%),
-      linear-gradient(112deg, rgba(132, 195, 255, 0.18) 0%, rgba(132, 195, 255, 0.035) 22%, transparent 43%),
-      radial-gradient(circle at 84% 116%, rgba(79, 151, 223, 0.11) 0%, transparent 46%),
-      linear-gradient(148deg, rgba(255, 255, 255, 0.17) 0%, rgba(219, 239, 255, 0.095) 51%, rgba(255, 255, 255, 0.04) 100%) !important;
-    background-blend-mode: screen, screen, screen, normal !important;
+    border: 1px solid rgba(255, 255, 255, 0.64) !important;
+    background:
+      radial-gradient(circle at 17% -4%, rgba(255, 255, 255, 0.74) 0%, rgba(255, 255, 255, 0.25) 23%, transparent 47%),
+      linear-gradient(112deg, rgba(163, 207, 255, 0.2) 0%, rgba(163, 207, 255, 0.04) 18%, transparent 38%),
+      radial-gradient(circle at 84% 116%, rgba(105, 170, 238, 0.12) 0%, transparent 44%),
+      linear-gradient(148deg, rgba(255, 255, 255, 0.34) 0%, rgba(229, 243, 255, 0.2) 48%, rgba(255, 255, 255, 0.09) 100%) !important;
     box-shadow:
-      0 10px 27px rgba(15, 23, 42, 0.16),
-      0 2px 8px rgba(60, 110, 164, 0.10),
+      0 9px 24px rgba(15, 23, 42, 0.14),
+      0 2px 7px rgba(64, 113, 166, 0.09),
       inset 0 1px 0 rgba(255, 255, 255, 0.82),
-      inset 0 -2px 4px rgba(63, 112, 161, 0.10),
-      inset 2px 0 4px rgba(255, 255, 255, 0.08),
-      inset -2px 0 4px rgba(58, 111, 164, 0.055) !important;
-    -webkit-backdrop-filter: blur(24px) saturate(200%) brightness(107%) contrast(102%) !important;
-    backdrop-filter: blur(24px) saturate(200%) brightness(107%) contrast(102%) !important;
+      inset 0 -1px 0 rgba(79, 128, 177, 0.12),
+      inset 1px 0 0 rgba(163, 207, 255, 0.11) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(190%) brightness(105%) contrast(102%) !important;
+    backdrop-filter: blur(24px) saturate(190%) brightness(105%) contrast(102%) !important;
   }
 
   .dock-style-eyedropper-button,
   .dock-style-preset-button {
-    background-color: rgba(239, 247, 255, 0.05) !important;
-    background-image:
-      linear-gradient(150deg, rgba(255, 255, 255, 0.18), rgba(214, 237, 255, 0.065) 52%, rgba(255, 255, 255, 0.018)) !important;
+    background:
+      linear-gradient(150deg, rgba(255, 255, 255, 0.24), rgba(225, 241, 255, 0.11) 52%, rgba(255, 255, 255, 0.05)) !important;
     box-shadow:
-      0 7px 16px rgba(15, 23, 42, 0.16),
-      0 1px 3px rgba(66, 113, 158, 0.10),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.72),
-      inset 0 3px 4px rgba(255, 255, 255, 0.42),
-      inset 0 -4px 6px rgba(55, 108, 162, 0.18),
-      inset 3px 0 5px rgba(255, 255, 255, 0.09),
-      inset -3px 0 5px rgba(48, 99, 149, 0.07) !important;
-    -webkit-backdrop-filter: blur(20px) saturate(208%) brightness(107%) contrast(103%) !important;
-    backdrop-filter: blur(20px) saturate(208%) brightness(107%) contrast(103%) !important;
-    transform: translateZ(0) !important;
+      0 4px 10px rgba(15, 23, 42, 0.11),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.54),
+      inset 0 1px 0 rgba(255, 255, 255, 0.82),
+      inset 0 -1px 0 rgba(80, 126, 173, 0.1) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(190%) brightness(104%) contrast(102%) !important;
+    backdrop-filter: blur(18px) saturate(190%) brightness(104%) contrast(102%) !important;
   }
 
   .dock-style-eyedropper-button::before,
   .dock-style-preset-button::before {
     background:
-      radial-gradient(ellipse at 50% 4%, rgba(255, 255, 255, 0.90) 0%, rgba(255, 255, 255, 0.33) 29%, rgba(255, 255, 255, 0.08) 51%, transparent 70%),
-      radial-gradient(ellipse at 50% 106%, rgba(72, 142, 211, 0.21) 0%, rgba(72, 142, 211, 0.075) 39%, transparent 70%),
-      linear-gradient(122deg, rgba(255, 255, 255, 0.44) 0%, rgba(255, 255, 255, 0.095) 27%, transparent 49%),
-      linear-gradient(315deg, rgba(132, 193, 252, 0.15), transparent 40%) !important;
+      linear-gradient(122deg, rgba(255, 255, 255, 0.66) 0%, rgba(255, 255, 255, 0.18) 23%, transparent 45%),
+      radial-gradient(circle at 82% 112%, rgba(118, 181, 255, 0.2), transparent 44%),
+      linear-gradient(315deg, rgba(149, 196, 246, 0.13), transparent 36%) !important;
     transform: translate3d(-1px, -1px, 0) scale(1.04) !important;
-    opacity: 0.96 !important;
-  }
-
-  .dock-style-preset-fill {
-    opacity: 0.68 !important;
-    filter: saturate(1.08) brightness(0.98) contrast(0.99) !important;
-    box-shadow:
-      inset 0 0 12px rgba(15, 23, 42, 0.055),
-      inset 0 2px 3px rgba(255, 255, 255, 0.08),
-      inset 0 -3px 5px rgba(15, 23, 42, 0.07) !important;
-  }
-
-  .dock-style-preset-button.active {
-    box-shadow:
-      0 7px 16px rgba(15, 23, 42, 0.16),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.78),
-      inset 0 0 0 2px rgba(37, 99, 235, 0.56),
-      inset 0 3px 4px rgba(255, 255, 255, 0.42),
-      inset 0 -4px 6px rgba(55, 108, 162, 0.18) !important;
-  }
-
-  .dock-style-eyedropper-button:hover:not(:disabled)::before,
-  .dock-style-preset-button:hover:not(:disabled)::before {
-    transform: translate3d(-1px, -1px, 0) scale(1.04) !important;
-    opacity: 0.96 !important;
+    opacity: 0.82 !important;
   }
 }
