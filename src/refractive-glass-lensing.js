@@ -20,12 +20,12 @@ const SURFACE_CONFIGS = [
   {
     targetSelector: '.board-tool-dock',
     className: 'refractive-surface-sample--dock',
-    insetCss: 2,
+    insetCss: 9,
   },
   {
     targetSelector: '.dock-history-accessories',
     className: 'refractive-surface-sample--history',
-    insetCss: 1,
+    insetCss: 7,
   },
 ];
 
@@ -221,7 +221,6 @@ function renderContourSample(source, target, config) {
   const sourceDepthX = Math.max(1, Math.min(sample.sw, Math.round(config.thicknessCss * 2 * sourceScaleX)));
   const sourceDepthY = Math.max(1, Math.min(sample.sh, Math.round(config.thicknessCss * 2 * sourceScaleY)));
 
-  // Top edge: mirror the board vertically into the thicker contour.
   context.save();
   context.translate(0, thicknessPx);
   context.scale(1, -1);
@@ -238,7 +237,6 @@ function renderContourSample(source, target, config) {
   );
   context.restore();
 
-  // Bottom edge: same mirrored treatment, sampled from the board directly below it.
   context.save();
   context.translate(0, pixelHeight);
   context.scale(1, -1);
@@ -255,8 +253,6 @@ function renderContourSample(source, target, config) {
   );
   context.restore();
 
-  // Left and right sides mirror horizontally so the rounded sides carry the same
-  // refractive behavior as the top and bottom rather than becoming plain borders.
   context.save();
   context.globalAlpha = 0.92;
   context.translate(thicknessPx, 0);
@@ -291,8 +287,6 @@ function renderContourSample(source, target, config) {
   );
   context.restore();
 
-  // Add a restrained secondary optical pass so the whole ring reads as one
-  // thicker piece of glass instead of four independent mirrored strips.
   context.save();
   context.globalAlpha = 0.14;
   context.drawImage(
@@ -308,8 +302,6 @@ function renderContourSample(source, target, config) {
   );
   context.restore();
 
-  // Cut the center out. The opening deliberately keeps the same rounded profile
-  // as the outer plate, so the inner edge cannot collapse into a rectangular shape.
   const innerWidth = pixelWidth - thicknessPx * 2;
   const innerHeight = pixelHeight - thicknessPx * 2;
   if (innerWidth > 0 && innerHeight > 0) {
@@ -358,6 +350,12 @@ function renderSurfaceSample(source, target, config) {
   const pixelWidth = Math.max(1, Math.round(cssWidth * sampleDpr));
   const pixelHeight = Math.max(1, Math.round(cssHeight * sampleDpr));
   const canvas = ensureSurfaceCanvas(target, config.className);
+  const outerRadiusCss = resolveOuterRadiusCss(target, targetRect);
+  const innerRadiusCss = computeInnerContourRadiusCss({
+    outerRadiusCss,
+    innerWidthCss: cssWidth,
+    innerHeightCss: cssHeight,
+  });
 
   if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
   if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
@@ -365,6 +363,9 @@ function renderSurfaceSample(source, target, config) {
   canvas.style.top = `${config.insetCss}px`;
   canvas.style.width = `${cssWidth}px`;
   canvas.style.height = `${cssHeight}px`;
+  canvas.style.borderRadius = `${innerRadiusCss}px`;
+  canvas.style.clipPath = `inset(0 round ${innerRadiusCss}px)`;
+  canvas.style.webkitClipPath = `inset(0 round ${innerRadiusCss}px)`;
 
   const context = canvas.getContext('2d', { alpha: true });
   if (!context) return false;
