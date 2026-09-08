@@ -256,7 +256,7 @@
   line-height: 1;
   letter-spacing: -0.02em;
   pointer-events: none;
-  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.18);
+  text-shadow: none;
 }
 
 .dock-style-preset-button:not([data-preset-width])::after {
