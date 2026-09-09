@@ -7,6 +7,7 @@ import {
 const ROOT_ID = 'alex-board-fullscreen-root';
 const FALLBACK_CLASS = 'alex-board-immersive-fallback';
 const BUTTON_GAP = 8;
+const FULLSCREEN_ICON_VARIANT = 'corner-brackets-1';
 
 let fallbackActive = false;
 let busy = false;
@@ -24,11 +25,11 @@ function isActive() {
 
 function fullscreenIcon(active) {
   return active
-    ? `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
+    ? `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" data-icon-variant="${FULLSCREEN_ICON_VARIANT}">
+        <path d="M5 10h5V5M19 10h-5V5M5 14h5v5M19 14h-5v5" />
       </svg>`
-    : `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-        <path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" />
+    : `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" data-icon-variant="${FULLSCREEN_ICON_VARIANT}">
+        <path d="M10 5H5V10M14 5h5v5M10 19H5v-5M14 19h5v-5" />
       </svg>`;
 }
 
