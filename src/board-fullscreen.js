@@ -6,7 +6,7 @@ import {
 
 const ROOT_ID = 'alex-board-fullscreen-root';
 const FALLBACK_CLASS = 'alex-board-immersive-fallback';
-const BUTTON_GAP = 8;
+const BUTTON_GAP = 5;
 const BUTTON_SIZE = 42;
 const FULLSCREEN_ICON_VARIANT = 'corner-brackets-1';
 
