@@ -1,4 +1,9 @@
 /* option-3-pin-four-inward-arrows: selected Bring here icon. */
+.alex-settings-source-bring {
+  transform: scale(1.2) !important;
+  transform-origin: center center !important;
+}
+
 .alex-settings-source-bring::before {
   content: '';
   width: 22px;
