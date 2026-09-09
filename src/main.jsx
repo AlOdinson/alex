@@ -23,5 +23,7 @@ import './refractive-glass-desktop-surface.js';
 import './board-settings-gear.css';
 import './bring-here-option-3.css';
 import './board-settings-gear.js';
+import './board-fullscreen.css';
+import './board-fullscreen.js';
 
 createRoot(document.getElementById('root')).render(<App />);
