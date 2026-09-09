@@ -30,6 +30,7 @@ jobs:
           node scripts/test-dock-liquid-glass.mjs
           node scripts/test-dock-refractive-lensing.mjs
           node scripts/test-glass-optical-parity.mjs
+          node scripts/test-desktop-glass-opaque.mjs
           node scripts/test-mobile-glass-parity.mjs
           node scripts/test-mobile-glass-shell-geometry.mjs
       - name: Install dependencies
