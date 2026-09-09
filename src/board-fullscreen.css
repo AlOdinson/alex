@@ -1,0 +1,95 @@
+/* Fullscreen control anchored immediately to the right of the fixed Alex Board brand button. */
+#alex-board-fullscreen-root {
+  position: fixed;
+  z-index: 195;
+  width: 42px;
+  height: 42px;
+  margin: 0;
+  padding: 0;
+  pointer-events: auto;
+}
+
+#alex-board-fullscreen-root[hidden] {
+  display: none !important;
+}
+
+.alex-board-fullscreen-button {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 13px;
+  background: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 8px 22px rgba(37, 99, 235, 0.24);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.alex-board-fullscreen-button:hover {
+  background: #1d4ed8;
+  box-shadow: 0 10px 26px rgba(37, 99, 235, 0.3);
+  transform: translateY(-1px);
+}
+
+.alex-board-fullscreen-button:active {
+  transform: scale(0.96);
+}
+
+.alex-board-fullscreen-button:focus-visible {
+  outline: 3px solid rgba(147, 197, 253, 0.75);
+  outline-offset: 2px;
+}
+
+.alex-board-fullscreen-button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.alex-board-fullscreen-button svg {
+  width: 24px;
+  height: 24px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Reserve the left corner for A + fullscreen on narrow touch layouts. */
+@media (max-width: 760px) {
+  .toolbar-primary-row {
+    left: max(110px, calc(env(safe-area-inset-left) + 110px)) !important;
+  }
+}
+
+/* iPhone/WebKit fallback when Element Fullscreen is unavailable. This cannot remove
+   browser chrome that WebKit itself refuses to hide, but the board occupies the entire
+   live visual viewport and returns cleanly on the next button press. */
+html.alex-board-immersive-fallback,
+html.alex-board-immersive-fallback body {
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0 !important;
+  overflow: hidden !important;
+}
+
+html.alex-board-immersive-fallback body {
+  position: fixed !important;
+  inset: 0 !important;
+}
+
+html.alex-board-immersive-fallback #root {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  overflow: hidden !important;
+}
