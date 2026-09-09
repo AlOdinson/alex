@@ -17,9 +17,10 @@ assert.match(desktopRuntime, /computeSurfaceSourceRect/, 'Desktop sampler must c
 assert.match(desktopRuntime, /maskRoundedSurface/, 'Desktop center must keep the same rounded inner geometry');
 
 assert.match(css, /\.board-tool-dock,\s*\.dock-history-accessories\s*\{[\s\S]*?background:\s*transparent\s*!important;[\s\S]*?-webkit-backdrop-filter:\s*none\s*!important;[\s\S]*?backdrop-filter:\s*none\s*!important;/, 'Legacy full-area CSS glass must be globally inert, including desktop');
-assert.match(css, /\.board-tool-dock\s*\{[\s\S]*?--refractive-sample-opacity:\s*0\.70;[\s\S]*?--refractive-sample-filter:\s*brightness\(1\.14\)\s+saturate\(1\.4\)\s+contrast\(1\.09\)\s+blur\(0\.22px\);/, 'Dock must define one shared optical profile');
-assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?--refractive-sample-opacity:\s*0\.76;[\s\S]*?--refractive-sample-filter:\s*brightness\(1\.17\)\s+saturate\(1\.46\)\s+contrast\(1\.11\)\s+blur\(0\.18px\);/, 'History must define one shared optical profile');
+assert.match(css, /\.board-tool-dock\s*\{[\s\S]*?--refractive-sample-opacity:\s*0\.84;[\s\S]*?--refractive-sample-filter:\s*brightness\(1\.18\)\s+saturate\(1\.5\)\s+contrast\(1\.12\)\s+blur\(0\.16px\);/, 'Desktop dock must use the same opaque sampled-glass profile as iPad');
+assert.match(css, /\.dock-history-accessories\s*\{[\s\S]*?--refractive-sample-opacity:\s*0\.88;[\s\S]*?--refractive-sample-filter:\s*brightness\(1\.2\)\s+saturate\(1\.54\)\s+contrast\(1\.13\)\s+blur\(0\.14px\);/, 'Desktop history capsule must use the same opaque sampled-glass profile as iPad');
 assert.match(css, /\.refractive-surface-sample,\s*\.refractive-contour-sample\s*\{[\s\S]*?opacity:\s*var\(--refractive-sample-opacity\);[\s\S]*?filter:\s*var\(--refractive-sample-filter\);/, 'Surface and contour must consume the exact same opacity and filter');
+assert.doesNotMatch(css, /--refractive-sample-opacity:\s*0\.70|--refractive-sample-opacity:\s*0\.76/, 'Desktop must not leave enough underlying board visible to create a second text/grid layer');
 assert.doesNotMatch(css, /blur\(1\.35px\)|blur\(1\.1px\)/, 'Old dirty center blur must be removed');
 
 console.log('Glass center/contour optical parity regression passed.');

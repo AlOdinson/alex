@@ -14,16 +14,16 @@
 }
 
 .board-tool-dock {
-  --refractive-sample-opacity: 0.70;
-  --refractive-sample-filter: brightness(1.14) saturate(1.4) contrast(1.09) blur(0.22px);
+  --refractive-sample-opacity: 0.84;
+  --refractive-sample-filter: brightness(1.18) saturate(1.5) contrast(1.12) blur(0.16px);
   box-shadow:
     0 10px 28px rgba(15, 23, 42, 0.13),
     0 2px 7px rgba(71, 111, 156, 0.07) !important;
 }
 
 .dock-history-accessories {
-  --refractive-sample-opacity: 0.76;
-  --refractive-sample-filter: brightness(1.17) saturate(1.46) contrast(1.11) blur(0.18px);
+  --refractive-sample-opacity: 0.88;
+  --refractive-sample-filter: brightness(1.2) saturate(1.54) contrast(1.13) blur(0.14px);
   box-shadow:
     0 9px 24px rgba(15, 23, 42, 0.14),
     0 2px 7px rgba(64, 113, 166, 0.09) !important;
