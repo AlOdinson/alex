@@ -76,6 +76,8 @@ function maskRoundedSurface(context, pixelWidth, pixelHeight, innerRadiusPx) {
 
 function renderDesktopSurfaceSample(source, target, config) {
   if (!(source instanceof HTMLCanvasElement) || !(target instanceof HTMLElement) || target.hidden) return false;
+  target.classList.add('refractive-desktop-opaque');
+
   const sourceRect = source.getBoundingClientRect();
   const targetRect = target.getBoundingClientRect();
   if (!sourceRect.width || !sourceRect.height || !targetRect.width || !targetRect.height) return false;
