@@ -58,7 +58,10 @@ assert.match(ui, /M10 19H5v-5/);
 assert.match(ui, /M14 19h5v-5/);
 assert.match(css, /\.alex-board-fullscreen-button[\s\S]*?width:\s*42px/);
 assert.match(css, /\.alex-board-fullscreen-button[\s\S]*?height:\s*42px/);
-assert.match(css, /background:\s*#2563eb/);
+assert.match(css, /\.alex-board-fullscreen-button[\s\S]*?background:\s*transparent/);
+assert.match(css, /\.alex-board-fullscreen-button[\s\S]*?color:\s*#2563eb/);
+assert.match(css, /\.alex-board-fullscreen-button[\s\S]*?box-shadow:\s*none/);
+assert.doesNotMatch(css, /\.alex-board-fullscreen-button\s*\{[\s\S]*?background:\s*#2563eb/);
 assert.match(pkg.scripts['test:sync'], /test-board-fullscreen\.mjs/);
 
 console.log('Board fullscreen regression passed.');
