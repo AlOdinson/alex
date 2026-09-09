@@ -1,0 +1,14 @@
+/* option-3-pin-four-inward-arrows: selected Bring here icon. */
+.alex-settings-source-bring::before {
+  content: '';
+  width: 22px;
+  height: 22px;
+  display: block;
+  background: transparent !important;
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2032%2032%27%3E%3Cdefs%3E%3ClinearGradient%20id%3D%27g%27%20x1%3D%270%27%20y1%3D%270%27%20x2%3D%271%27%20y2%3D%271%27%3E%3Cstop%20offset%3D%270%27%20stop-color%3D%27%232f7cff%27%2F%3E%3Cstop%20offset%3D%271%27%20stop-color%3D%27%231258e8%27%2F%3E%3C%2FlinearGradient%3E%3C%2Fdefs%3E%3Cg%20fill%3D%27none%27%20stroke%3D%27url%28%23g%29%27%20stroke-width%3D%272.7%27%20stroke-linecap%3D%27round%27%20stroke-linejoin%3D%27round%27%3E%3Cpath%20d%3D%27M4.5%204.5%2010.3%2010.3M10.3%2010.3%2010%207.1M10.3%2010.3%207.1%2010%27%2F%3E%3Cpath%20d%3D%27M27.5%204.5%2021.7%2010.3M21.7%2010.3%2025%2010M21.7%2010.3%2022%207.1%27%2F%3E%3Cpath%20d%3D%27M4.5%2027.5%2010.3%2021.7M10.3%2021.7%207.1%2022M10.3%2021.7%2010%2025%27%2F%3E%3Cpath%20d%3D%27M27.5%2027.5%2021.7%2021.7M21.7%2021.7%2022%2025M21.7%2021.7%2025%2022%27%2F%3E%3C%2Fg%3E%3Cpath%20d%3D%27M16%207.7c-3.72%200-6.75%202.92-6.75%206.55%200%204.84%206.75%2011.95%206.75%2011.95s6.75-7.11%206.75-11.95C22.75%2010.62%2019.72%207.7%2016%207.7Z%27%20fill%3D%27url%28%23g%29%27%2F%3E%3Ccircle%20cx%3D%2716%27%20cy%3D%2714.25%27%20r%3D%272.65%27%20fill%3D%27white%27%2F%3E%3C%2Fsvg%3E") !important;
+  background-position: center !important;
+  background-repeat: no-repeat !important;
+  background-size: contain !important;
+  -webkit-mask: none !important;
+  mask: none !important;
+}
