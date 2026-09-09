@@ -1,4 +1,8 @@
-import { applyBoardActionBatch, isSupabaseConfigured } from './boardRepository.js';
+import {
+  applyBoardActionBatch,
+  getBoardObjectLocks,
+  isSupabaseConfigured,
+} from './boardRepository.js';
 import {
   confirmPendingActions,
   countPendingActions,
@@ -144,6 +148,10 @@ export function connectBoardRealtime({
   let localChannel = null;
   let localHeartbeat = null;
   let ablyPresenceRefresh = Promise.resolve();
+  let refreshAblyUsers = null;
+  let ablyRecoveryPromise = null;
+  let ablyConnectedOnce = false;
+  let ablyChannelAttachedOnce = false;
 
   const resolveTransport = (kind) => {
     if (transportResolved) return;
@@ -680,6 +688,60 @@ export function connectBoardRealtime({
   window.addEventListener('online', handleOnline);
   window.addEventListener('offline', handleOffline);
 
+  const refreshAuthoritativeLocks = async () => {
+    if (!isSupabaseConfigured || disconnected) return;
+    try {
+      const locks = await getBoardObjectLocks(boardId, boardKey);
+      const now = Date.now();
+      for (const lock of Array.isArray(locks) ? locks : []) {
+        const objectId = String(lock?.objectId ?? '');
+        const lockClientId = String(lock?.clientId ?? '');
+        const expiresAt = Number(lock?.expiresAt ?? 0);
+        if (!objectId || !lockClientId || lockClientId === String(clientId) || expiresAt <= now) continue;
+        onLock?.({
+          clientId: lockClientId,
+          objectIds: [objectId],
+          locked: true,
+          expiresAt,
+          recovered: true,
+        });
+      }
+    } catch (error) {
+      if (!disconnected) console.warn('Could not refresh authoritative object locks', error);
+    }
+  };
+
+  const recoverAblySession = (reason) => {
+    if (disconnected || transportKind !== 'ably') return Promise.resolve();
+    if (ablyRecoveryPromise) return ablyRecoveryPromise;
+
+    onStatus?.('RECOVERING');
+    lastCursorSignature = '';
+    lastViewSignature = '';
+    ablyRecoveryPromise = Promise.resolve()
+      .then(() => flushPending())
+      .then(async () => {
+        if (disconnected || transportKind !== 'ably') return;
+        await Promise.all([
+          refreshAblyUsers?.() ?? Promise.resolve(),
+          refreshAuthoritativeLocks(),
+        ]);
+        if (disconnected || transportKind !== 'ably') return;
+        onSyncRequired?.(Number(getKnownRevision?.() ?? 0));
+      })
+      .catch((error) => {
+        if (!disconnected) {
+          console.warn(`Could not recover Ably session after ${reason}`, error);
+          onStatus?.('RECOVERING');
+          onSyncRequired?.(Number(getKnownRevision?.() ?? 0));
+        }
+      })
+      .finally(() => {
+        ablyRecoveryPromise = null;
+      });
+    return ablyRecoveryPromise;
+  };
+
   const startAblyTransport = async () => {
     const Ably = window.Ably;
     if (!Ably?.Realtime) throw new Error('Ably SDK did not load');
@@ -707,7 +769,14 @@ export function connectBoardRealtime({
 
     ablyClient.connection.on((change) => {
       const state = change?.current ?? ablyClient?.connection?.state;
-      if (state === 'connected' && transportKind === 'ably') onStatus?.('SUBSCRIBED');
+      if (state === 'connected') {
+        const wasPreviouslyConnected = ablyConnectedOnce;
+        ablyConnectedOnce = true;
+        if (transportKind === 'ably') {
+          onStatus?.('SUBSCRIBED');
+          if (wasPreviouslyConnected) recoverAblySession('connection-reconnected');
+        }
+      }
       if (state === 'disconnected') onStatus?.('TIMED_OUT');
       if (state === 'suspended' || state === 'failed') onStatus?.('CHANNEL_ERROR');
       if (state === 'closed') onStatus?.('CLOSED');
@@ -722,6 +791,17 @@ export function connectBoardRealtime({
     if (disconnected) throw new Error('Connection was closed');
 
     ablyChannel = ablyClient.channels.get(topic);
+    ablyChannel.on('attached', (change) => {
+      const wasPreviouslyAttached = ablyChannelAttachedOnce;
+      ablyChannelAttachedOnce = true;
+      if (wasPreviouslyAttached && change?.resumed === false) {
+        recoverAblySession('channel-reattached-without-continuity');
+      }
+    });
+    ablyChannel.on('update', (change) => {
+      if (change?.resumed === false) recoverAblySession('channel-continuity-update');
+    });
+
     await withTimeout(
       ablyChannel.subscribe((message) => {
         handleRealtimeEvent(message?.name, message?.data);
@@ -730,7 +810,7 @@ export function connectBoardRealtime({
       'Timed out while attaching Ably channel',
     );
 
-    const refreshUsers = async () => {
+    refreshAblyUsers = async () => {
       if (!ablyChannel || disconnected) return;
       try {
         const members = await ablyChannel.presence.get();
@@ -755,7 +835,7 @@ export function connectBoardRealtime({
     await ablyChannel.presence.subscribe(() => {
       ablyPresenceRefresh = ablyPresenceRefresh
         .catch(() => undefined)
-        .then(refreshUsers);
+        .then(refreshAblyUsers);
     });
 
     await ablyChannel.presence.enter({
@@ -767,7 +847,8 @@ export function connectBoardRealtime({
     });
 
     resolveTransport('ably');
-    await refreshUsers();
+    await refreshAblyUsers();
+    await refreshAuthoritativeLocks();
     onStatus?.('SUBSCRIBED');
     await flushPending();
     onSyncRequired?.(Number(getKnownRevision?.() ?? 0));
@@ -901,6 +982,8 @@ export function connectBoardRealtime({
       }
       ablyClient = null;
       ablyChannel = null;
+      refreshAblyUsers = null;
+      ablyRecoveryPromise = null;
       onStatus?.('RECOVERING');
       await startSupabaseTransport();
     });
@@ -1151,6 +1234,8 @@ export function connectBoardRealtime({
           // The connection may already be closed.
         }
       }
+      refreshAblyUsers = null;
+      ablyRecoveryPromise = null;
       try {
         ablyClient?.close();
       } catch {
