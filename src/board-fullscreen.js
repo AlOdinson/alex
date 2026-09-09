@@ -65,7 +65,9 @@ function setFallback(active) {
   fallbackActive = Boolean(active);
   document.documentElement.classList.toggle(FALLBACK_CLASS, fallbackActive);
   document.body?.classList.toggle(FALLBACK_CLASS, fallbackActive);
-  if (fallbackActive) window.scrollTo?.(0, 0);
+  if (fallbackActive) {
+    window.scrollTo?.(0, 0);
+  }
 }
 
 async function toggleFullscreen() {
