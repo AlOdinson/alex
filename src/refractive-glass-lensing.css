@@ -151,3 +151,10 @@
     opacity: 0.86;
   }
 }
+
+/* Desktop is not physically transparent: the sampled redraw fully covers the
+   real board beneath it, eliminating doubled handwriting and grid bleed-through. */
+.refractive-desktop-opaque > .refractive-surface-sample,
+.refractive-desktop-opaque > .refractive-contour-sample {
+  opacity: 1 !important;
+}
