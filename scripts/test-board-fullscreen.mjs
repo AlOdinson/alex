@@ -47,10 +47,10 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 assert.match(main, /import ['"]\.\/board-fullscreen\.css['"]/);
 assert.match(main, /import ['"]\.\/board-fullscreen\.js['"]/);
 assert.match(ui, /\.toolbar-primary-row \.brand-button/);
-assert.match(ui, /const BUTTON_GAP\s*=\s*12/);
+assert.match(ui, /const BUTTON_GAP\s*=\s*8/);
 assert.match(ui, /const BUTTON_SIZE\s*=\s*42/);
 assert.match(ui, /brandRect\.right\s*\+\s*BUTTON_GAP/);
-assert.match(ui, /brandRect\.top\s*\+\s*\(brandRect\.height\s*\/\s*2\)\s*-\s*\(BUTTON_SIZE\s*\/\s*2\)/);
+assert.match(ui, /brandRect\.top\s*\+\s*\(brandRect\.height\s*\/\s*2\)\s*-\s*\(BUTTON_SIZE\s*\/\s*2\)\s*\+\s*1/);
 assert.match(ui, /alex-board-immersive-fallback/);
 assert.match(ui, /fullscreenchange/);
 assert.match(ui, /webkitfullscreenchange/);
