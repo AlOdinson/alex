@@ -13,6 +13,8 @@
   display: none !important;
 }
 
+/* The visible control is intentionally icon-only: four blue corner brackets with no
+   blue tile, border, glass plate or shadow behind them. Keep the full 42px hit target. */
 .alex-board-fullscreen-button {
   width: 42px;
   height: 42px;
@@ -21,19 +23,20 @@
   margin: 0;
   padding: 0;
   border: 0;
-  border-radius: 13px;
-  background: #2563eb;
-  color: #ffffff;
-  box-shadow: 0 8px 22px rgba(37, 99, 235, 0.24);
+  border-radius: 0;
+  background: transparent;
+  color: #2563eb;
+  box-shadow: none;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
-  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+  transition: transform 140ms ease, opacity 140ms ease;
 }
 
 .alex-board-fullscreen-button:hover {
-  background: #1d4ed8;
-  box-shadow: 0 10px 26px rgba(37, 99, 235, 0.3);
+  background: transparent;
+  color: #1d4ed8;
+  box-shadow: none;
   transform: translateY(-1px);
 }
 
@@ -42,7 +45,7 @@
 }
 
 .alex-board-fullscreen-button:focus-visible {
-  outline: 3px solid rgba(147, 197, 253, 0.75);
+  outline: 2px solid rgba(37, 99, 235, 0.35);
   outline-offset: 2px;
 }
 
@@ -52,12 +55,12 @@
 }
 
 .alex-board-fullscreen-button svg {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   display: block;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: 2.65;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
