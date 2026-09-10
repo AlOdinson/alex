@@ -1,3 +1,9 @@
+import {
+  DOCK_LAYOUT_CHANGE_EVENT,
+  contextualDirectionForMode,
+  getDockLayoutMode,
+} from './dock-layout-controller.js';
+
 const ROOT_SELECTOR = '.floating-drawing-controls';
 const ACTIVE_DOCK_SELECTOR = '.board-tool-dock .dock-tool-button.active';
 const OPACITY_LABEL_SELECTOR = ':scope > .eyedropper-button + .compact-slider';
@@ -21,6 +27,22 @@ function syncPosition(root) {
   if (!activeButton) return;
   const rect = activeButton.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
+
+  const direction = contextualDirectionForMode(getDockLayoutMode(document));
+  root.dataset.contextDirection = direction;
+
+  if (direction === 'below') {
+    root.style.setProperty('--drawing-controls-x', `${rect.left + rect.width / 2}px`);
+    root.style.setProperty('--drawing-controls-y', `${rect.bottom + 10}px`);
+    return;
+  }
+
+  if (direction === 'right') {
+    root.style.setProperty('--drawing-controls-x', `${rect.right + 10}px`);
+    root.style.setProperty('--drawing-controls-y', `${rect.top + rect.height / 2}px`);
+    return;
+  }
+
   root.style.setProperty('--drawing-controls-x', `${rect.left + rect.width / 2}px`);
   root.style.setProperty('--drawing-controls-y', `${rect.top - 10}px`);
 }
@@ -72,7 +94,7 @@ function handlePointerDown(event) {
 
   if (!rangeInfo.root.classList.contains(openClass)) {
     // First press only reveals the scale. A second press/drag adjusts the value,
-    // preventing the collapsed 14px range from jumping to an accidental value.
+    // preventing the collapsed range from jumping to an accidental value.
     event.preventDefault();
     rangeInfo.root.classList.remove(otherClass);
     rangeInfo.root.classList.add(openClass);
@@ -113,6 +135,7 @@ if (typeof document !== 'undefined') {
   document.addEventListener('keydown', handleKeyDown, true);
 
   const resync = () => syncAll(document);
+  document.addEventListener(DOCK_LAYOUT_CHANGE_EVENT, resync);
   window.addEventListener('resize', resync);
   window.addEventListener('orientationchange', resync);
   window.addEventListener('scroll', resync, true);
