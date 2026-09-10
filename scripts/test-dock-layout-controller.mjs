@@ -60,4 +60,22 @@ assert.equal(contextualDirectionForMode('3'), 'right');
   assert.deepEqual(doc.events.at(-1).detail, { mode: '3', direction: 'right' });
 }
 
+{
+  const doc = fakeDocument();
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+  Object.defineProperty(globalThis, 'localStorage', {
+    configurable: true,
+    get() { throw new Error('storage blocked'); },
+  });
+  try {
+    assert.equal(initializeDockLayout({ doc }), '1');
+    assert.equal(setDockLayoutMode('2', { doc }), '2');
+    assert.equal(advanceDockLayoutMode({ doc }), '3');
+    assert.equal(doc.documentElement.dataset.dockLayout, '3');
+  } finally {
+    if (previous) Object.defineProperty(globalThis, 'localStorage', previous);
+    else delete globalThis.localStorage;
+  }
+}
+
 console.log('Dock layout controller regression passed.');
