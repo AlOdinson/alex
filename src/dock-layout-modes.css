@@ -157,6 +157,27 @@ html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
   transform: translate(0, -50%) !important;
 }
 
+/* In the left-vertical layout the opacity dot is the first control to the right of
+   the dock. Its legacy range opens left, which would cross the dock, so reverse only
+   that range in right-facing mode. While open, temporarily clear the two following
+   dots so the range has a clean horizontal lane. */
+.floating-drawing-controls[data-context-direction="right"] > .eyedropper-button + .compact-slider input[type="range"] {
+  left: 0 !important;
+  right: auto !important;
+}
+
+.floating-drawing-controls[data-context-direction="right"].opacity-open > .eyedropper-button + .compact-slider input[type="range"] {
+  left: 0 !important;
+  right: auto !important;
+  z-index: 6 !important;
+}
+
+.floating-drawing-controls[data-context-direction="right"].opacity-open > .color-control,
+.floating-drawing-controls[data-context-direction="right"].opacity-open > .compact-slider + .compact-slider {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 @media (max-width: 760px) {
   html[data-dock-layout="1"] .board-tool-dock {
     bottom: max(8px, env(safe-area-inset-bottom)) !important;
