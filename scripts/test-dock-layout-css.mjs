@@ -17,5 +17,7 @@ assert.match(css, /data-dock-layout="3"[\s\S]*?\.object-actions[\s\S]*?flex-dire
 assert.match(css, /data-context-direction="below"/);
 assert.match(css, /data-context-direction="right"/);
 assert.match(css, /dock-layout-mode-button/);
+assert.match(css, /@media \(max-width: 1180px\)[\s\S]*?data-dock-layout="2"[\s\S]*?top:\s*max\(64px/);
+assert.match(css, /data-dock-layout="2"[\s\S]*?\.toolbar-secondary-row[\s\S]*?top:\s*max\(132px/);
 
 console.log('Dock layout CSS regression passed.');
