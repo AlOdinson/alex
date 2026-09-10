@@ -152,13 +152,27 @@ html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
   transform: translate(0, -50%) !important;
 }
 
+@media (max-width: 1180px) {
+  html[data-dock-layout="2"] .board-tool-dock {
+    top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
+  }
+
+  html[data-dock-layout="2"] .toolbar-secondary-row {
+    top: max(132px, calc(env(safe-area-inset-top) + 132px)) !important;
+  }
+
+  html[data-dock-layout="3"] .toolbar-secondary-row .edit-actions {
+    top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
+  }
+
+  html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
+    top: max(112px, calc(env(safe-area-inset-top) + 112px)) !important;
+  }
+}
+
 @media (max-width: 760px) {
   html[data-dock-layout="1"] .board-tool-dock {
     bottom: max(8px, env(safe-area-inset-bottom)) !important;
-  }
-
-  html[data-dock-layout="2"] .board-tool-dock {
-    top: max(8px, env(safe-area-inset-top)) !important;
   }
 
   html[data-dock-layout="3"] .board-tool-dock {
@@ -170,13 +184,5 @@ html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
     flex-basis: 52px !important;
     width: 54px !important;
     height: 52px !important;
-  }
-
-  html[data-dock-layout="3"] .toolbar-secondary-row .edit-actions {
-    top: max(8px, env(safe-area-inset-top)) !important;
-  }
-
-  html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
-    top: max(54px, calc(env(safe-area-inset-top) + 54px)) !important;
   }
 }
