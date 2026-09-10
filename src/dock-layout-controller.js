@@ -18,8 +18,14 @@ export function contextualDirectionForMode(mode) {
   return DIRECTION[normalizeDockLayoutMode(mode)];
 }
 
-export function getDockLayoutMode(doc = document) {
+export function getDockLayoutMode(doc = globalThis.document) {
   return normalizeDockLayoutMode(doc?.documentElement?.dataset?.dockLayout);
+}
+
+function resolveStorage(storage) {
+  if (storage !== undefined) return storage;
+  try { return globalThis.localStorage; }
+  catch { return null; }
 }
 
 function readStoredMode(storage) {
@@ -40,20 +46,20 @@ function emitLayoutChange(doc, mode) {
   doc?.dispatchEvent?.(event);
 }
 
-export function setDockLayoutMode(mode, { doc = document, storage = globalThis.localStorage } = {}) {
+export function setDockLayoutMode(mode, { doc = globalThis.document, storage } = {}) {
   const normalized = normalizeDockLayoutMode(mode);
   if (doc?.documentElement?.dataset) doc.documentElement.dataset.dockLayout = normalized;
-  persistMode(storage, normalized);
+  persistMode(resolveStorage(storage), normalized);
   emitLayoutChange(doc, normalized);
   return normalized;
 }
 
-export function advanceDockLayoutMode({ doc = document, storage = globalThis.localStorage } = {}) {
+export function advanceDockLayoutMode({ doc = globalThis.document, storage } = {}) {
   return setDockLayoutMode(nextDockLayoutMode(getDockLayoutMode(doc)), { doc, storage });
 }
 
-export function initializeDockLayout({ doc = document, storage = globalThis.localStorage } = {}) {
-  const mode = readStoredMode(storage);
+export function initializeDockLayout({ doc = globalThis.document, storage } = {}) {
+  const mode = readStoredMode(resolveStorage(storage));
   if (doc?.documentElement?.dataset) doc.documentElement.dataset.dockLayout = mode;
   return mode;
 }
