@@ -33,6 +33,13 @@ jobs:
           node scripts/test-desktop-glass-opaque.mjs
           node scripts/test-mobile-glass-parity.mjs
           node scripts/test-mobile-glass-shell-geometry.mjs
+      - name: Run dock layout mode regressions
+        run: |
+          node scripts/test-dock-layout-controller.mjs
+          node scripts/test-dock-layout-switcher.mjs
+          node scripts/test-dock-contextual-direction.mjs
+          node scripts/test-dock-layout-css.mjs
+          node scripts/test-dock-layout-modes.mjs
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Existing drawing palette regressions

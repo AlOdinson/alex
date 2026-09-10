@@ -1,0 +1,196 @@
+/* Three user-selectable tool-dock layouts. Mode 1 preserves the current bottom layout. */
+html[data-dock-layout="1"] .board-tool-dock {
+  position: fixed !important;
+  left: 50% !important;
+  right: auto !important;
+  top: auto !important;
+  bottom: max(12px, env(safe-area-inset-bottom)) !important;
+  transform: translateX(-50%) !important;
+  flex-direction: row !important;
+}
+
+/* Mode 2 sits below the existing top utility row so the centered dock never overlaps it. */
+html[data-dock-layout="2"] .board-tool-dock {
+  position: fixed !important;
+  left: 50% !important;
+  right: auto !important;
+  top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
+  bottom: auto !important;
+  transform: translateX(-50%) !important;
+  flex-direction: row !important;
+}
+
+html[data-dock-layout="2"] .toolbar-secondary-row {
+  top: max(132px, calc(env(safe-area-inset-top) + 132px)) !important;
+}
+
+html[data-dock-layout="1"] .dock-history-accessories,
+html[data-dock-layout="2"] .dock-history-accessories {
+  left: max(6px, calc(var(--dock-style-left, 50vw) - 70px)) !important;
+  top: calc(var(--dock-style-top, 0px) + (var(--dock-style-height, 58px) - 32px) / 2) !important;
+  transform: none !important;
+  flex-direction: row !important;
+}
+
+html[data-dock-layout="1"] .dock-style-right-accessories,
+html[data-dock-layout="2"] .dock-style-right-accessories {
+  left: min(calc(100vw - 88px), calc(var(--dock-style-right, 50vw) + 8px)) !important;
+  top: var(--dock-style-accessory-top, 0px) !important;
+}
+
+/* Mode 3: main tools become a left-center vertical dock. */
+html[data-dock-layout="3"] .board-tool-dock {
+  position: fixed !important;
+  left: max(12px, env(safe-area-inset-left)) !important;
+  right: auto !important;
+  top: 50% !important;
+  bottom: auto !important;
+  transform: translateY(-50%) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  max-width: none !important;
+  max-height: calc(100dvh - 150px) !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+html[data-dock-layout="3"] .board-tool-dock .dock-tool-button {
+  flex: 0 0 58px !important;
+  width: 62px !important;
+  height: 58px !important;
+}
+
+html[data-dock-layout="3"] .dock-history-accessories {
+  left: calc(var(--dock-style-center-x, 43px) - 34px) !important;
+  top: max(6px, calc(var(--dock-style-top, 50vh) - 40px)) !important;
+  transform: none !important;
+  flex-direction: row !important;
+}
+
+html[data-dock-layout="3"] .dock-style-right-accessories {
+  left: calc(var(--dock-style-center-x, 43px) - 29px) !important;
+  top: min(calc(100dvh - 70px), calc(var(--dock-style-bottom, 50vh) + 8px)) !important;
+}
+
+/* Small mode number: visually quiet, but with a 28x28 mouse/touch/Pencil target. */
+.dock-layout-mode-button {
+  position: fixed !important;
+  z-index: 189 !important;
+  width: 28px !important;
+  min-width: 28px !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  display: grid !important;
+  place-items: center !important;
+  border: 0 !important;
+  border-radius: 8px !important;
+  background: transparent !important;
+  color: #64748b !important;
+  box-shadow: none !important;
+  font-size: 11px !important;
+  font-weight: 800 !important;
+  line-height: 1 !important;
+  cursor: pointer !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  touch-action: manipulation !important;
+}
+
+.dock-layout-mode-button:hover,
+.dock-layout-mode-button:focus-visible {
+  color: #2563eb !important;
+  background: rgba(255, 255, 255, 0.58) !important;
+}
+
+.dock-layout-mode-button:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.42) !important;
+  outline-offset: 1px !important;
+}
+
+.dock-layout-mode-button[hidden] {
+  display: none !important;
+}
+
+html[data-dock-layout="1"] .dock-layout-mode-button,
+html[data-dock-layout="2"] .dock-layout-mode-button {
+  left: min(calc(100vw - 30px), calc(var(--dock-style-right, 50vw) + 72px)) !important;
+  top: calc(var(--dock-style-accessory-top, 0px) + 27px) !important;
+}
+
+html[data-dock-layout="3"] .dock-layout-mode-button {
+  left: min(calc(100vw - 30px), calc(var(--dock-style-center-x, 43px) + 35px)) !important;
+  top: min(calc(100dvh - 32px), calc(var(--dock-style-bottom, 50vh) + 35px)) !important;
+}
+
+/* In mode 3 the existing left utility menu moves as one horizontal group to top center,
+   below the permanent A/top-right utility row. */
+html[data-dock-layout="3"] .toolbar-secondary-row .edit-actions {
+  left: 50% !important;
+  right: auto !important;
+  top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
+  transform: translateX(-50%) !important;
+  flex-direction: row !important;
+}
+
+/* Selection object actions become a second horizontal row beneath the utility group. */
+html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
+  left: 50% !important;
+  right: auto !important;
+  top: max(112px, calc(env(safe-area-inset-top) + 112px)) !important;
+  transform: translateX(-50%) !important;
+  flex-direction: row !important;
+}
+
+/* The enhancer supplies the anchor point; these rules attach the correct edge. */
+.floating-drawing-controls[data-context-direction="above"] {
+  transform: translate(-50%, -100%) !important;
+}
+
+.floating-drawing-controls[data-context-direction="below"] {
+  transform: translate(-50%, 0) !important;
+}
+
+.floating-drawing-controls[data-context-direction="right"] {
+  transform: translate(0, -50%) !important;
+}
+
+/* In the left-vertical layout the opacity dot is the first control to the right of
+   the dock. Its legacy range opens left, which would cross the dock, so reverse only
+   that range in right-facing mode. While open, temporarily clear the two following
+   dots so the range has a clean horizontal lane. */
+.floating-drawing-controls[data-context-direction="right"] > .eyedropper-button + .compact-slider input[type="range"] {
+  left: 0 !important;
+  right: auto !important;
+}
+
+.floating-drawing-controls[data-context-direction="right"].opacity-open > .eyedropper-button + .compact-slider input[type="range"] {
+  left: 0 !important;
+  right: auto !important;
+  z-index: 6 !important;
+}
+
+.floating-drawing-controls[data-context-direction="right"].opacity-open > .color-control,
+.floating-drawing-controls[data-context-direction="right"].opacity-open > .compact-slider + .compact-slider {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+@media (max-width: 760px) {
+  html[data-dock-layout="1"] .board-tool-dock {
+    bottom: max(8px, env(safe-area-inset-bottom)) !important;
+  }
+
+  html[data-dock-layout="3"] .board-tool-dock {
+    left: max(8px, env(safe-area-inset-left)) !important;
+    max-height: calc(100dvh - 138px) !important;
+  }
+
+  html[data-dock-layout="3"] .board-tool-dock .dock-tool-button {
+    flex-basis: 52px !important;
+    width: 54px !important;
+    height: 52px !important;
+  }
+}
