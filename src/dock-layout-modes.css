@@ -9,15 +9,19 @@ html[data-dock-layout="1"] .board-tool-dock {
   flex-direction: row !important;
 }
 
-/* Mode 2 mirrors the dock to the top center while keeping it horizontal. */
+/* Mode 2 sits below the existing top utility row so the centered dock never overlaps it. */
 html[data-dock-layout="2"] .board-tool-dock {
   position: fixed !important;
   left: 50% !important;
   right: auto !important;
-  top: max(12px, env(safe-area-inset-top)) !important;
+  top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
   bottom: auto !important;
   transform: translateX(-50%) !important;
   flex-direction: row !important;
+}
+
+html[data-dock-layout="2"] .toolbar-secondary-row {
+  top: max(132px, calc(env(safe-area-inset-top) + 132px)) !important;
 }
 
 html[data-dock-layout="1"] .dock-history-accessories,
@@ -121,11 +125,12 @@ html[data-dock-layout="3"] .dock-layout-mode-button {
   top: min(calc(100dvh - 32px), calc(var(--dock-style-bottom, 50vh) + 35px)) !important;
 }
 
-/* In mode 3 the existing left utility menu moves as one horizontal group to top center. */
+/* In mode 3 the existing left utility menu moves as one horizontal group to top center,
+   below the permanent A/top-right utility row. */
 html[data-dock-layout="3"] .toolbar-secondary-row .edit-actions {
   left: 50% !important;
   right: auto !important;
-  top: max(10px, env(safe-area-inset-top)) !important;
+  top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
   transform: translateX(-50%) !important;
   flex-direction: row !important;
 }
@@ -134,7 +139,7 @@ html[data-dock-layout="3"] .toolbar-secondary-row .edit-actions {
 html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
   left: 50% !important;
   right: auto !important;
-  top: max(58px, calc(env(safe-area-inset-top) + 58px)) !important;
+  top: max(112px, calc(env(safe-area-inset-top) + 112px)) !important;
   transform: translateX(-50%) !important;
   flex-direction: row !important;
 }
@@ -150,24 +155,6 @@ html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
 
 .floating-drawing-controls[data-context-direction="right"] {
   transform: translate(0, -50%) !important;
-}
-
-@media (max-width: 1180px) {
-  html[data-dock-layout="2"] .board-tool-dock {
-    top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
-  }
-
-  html[data-dock-layout="2"] .toolbar-secondary-row {
-    top: max(132px, calc(env(safe-area-inset-top) + 132px)) !important;
-  }
-
-  html[data-dock-layout="3"] .toolbar-secondary-row .edit-actions {
-    top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
-  }
-
-  html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
-    top: max(112px, calc(env(safe-area-inset-top) + 112px)) !important;
-  }
 }
 
 @media (max-width: 760px) {
