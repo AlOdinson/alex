@@ -32,9 +32,9 @@ The controller stores the current mode as `1`, `2`, or `3`, persists it under a 
 
 `data-dock-layout="1|2|3"`
 
-All visual relocation rules should derive from this attribute. Existing body-level helpers and enhancer scripts should read the same mode when they need geometry-specific positioning. Do not create independent mode state in multiple files.
+All visual relocation rules derive from this attribute. Existing body-level helpers and enhancer scripts read the same mode when they need geometry-specific positioning. Do not create independent mode state in multiple files.
 
-Recommended persistence key:
+Persistence key:
 
 `alex-board:dock-layout:v1`
 
@@ -48,7 +48,7 @@ This is the current layout and remains the default fallback.
 - Left edit menu stays vertically centered on the left.
 - Object-action menu stays beside the left edit menu when a selection exists.
 - Drawing three-dot controls for Pencil, Line, and Shapes appear above the active dock button, as they do now.
-- Selection floating controls also appear above the relevant dock/selection anchor.
+- Selection floating controls also appear above the active Select tool button.
 - Undo/redo remain immediately to the left of the dock.
 - The 2×2 style/preset block remains immediately to the right of the dock.
 - The gear remains attached to that block.
@@ -59,10 +59,12 @@ This is the current layout and remains the default fallback.
 The main dock moves to the top center and remains horizontal.
 
 - Main dock is centered horizontally near the top safe area.
-- The 2×2 style/preset block, gear, undo/redo, and layout button move with the dock while preserving their existing relative arrangement.
-- Layout button displays `2`.
+- Undo/redo stay immediately to the left of the dock.
+- The 2×2 style/preset block stays immediately to the right of the dock.
+- The gear stays attached to the 2×2 block.
+- The layout button stays immediately to the right of the 2×2 block, slightly lower than the gear, and displays `2`.
 - Drawing three-dot controls for Pencil, Line, and Shapes appear below the active tool button instead of above it.
-- Selection floating controls appear below the active dock/selection anchor.
+- Selection floating controls appear below the active Select tool button.
 - Side ranges still expand away from the middle dot according to their existing left/right behavior; only the group’s anchor position changes.
 - Left edit menu and object-action menu keep their normal left-side placement in this mode.
 
@@ -71,13 +73,15 @@ The main dock moves to the top center and remains horizontal.
 The main dock moves to the left-center and becomes vertical.
 
 - Main dock is vertically centered near the left edge.
-- Tool order remains unchanged from the horizontal dock.
-- The 2×2 style/preset block, gear, undo/redo, and layout button relocate with the dock in a coherent left-side arrangement without obscuring tool buttons.
-- Layout button displays `3`.
+- Tool order remains unchanged from the horizontal dock, from top to bottom.
+- Undo/redo move immediately above the vertical dock and remain horizontal.
+- The 2×2 style/preset block moves immediately below the vertical dock.
+- The preset gear stays attached at the upper-right edge of the 2×2 block.
+- The layout button stays immediately to the right of the 2×2 block, slightly lower than the gear, and displays `3`.
 - Drawing three-dot controls for Pencil, Line, and Shapes appear to the right of the active tool button.
-- Selection floating controls appear to the right of the relevant dock/selection anchor.
-- The existing left edit menu of five utility buttons moves to the top center and becomes horizontal.
-- When a selection exists, the object-action menu must also move out of the left-center dock area so it cannot overlap the vertical main dock; it should align with the top utility area in a predictable horizontal row beneath or adjacent to the edit menu.
+- Selection floating controls appear to the right of the active Select tool button.
+- The existing left edit menu moves as one unit to the top center and becomes horizontal. Its current actions and order are preserved; implementation must not depend on a hard-coded button count.
+- When a selection exists, the object-action menu also moves away from the left-center dock area. It becomes a horizontal row centered directly beneath the top edit menu with a small gap, so it cannot overlap the vertical main dock.
 
 The next layout-button press returns to mode `1`.
 
@@ -90,8 +94,8 @@ Requirements:
 - Visible text is exactly the current mode number: `1`, `2`, or `3`.
 - One press advances to the next mode.
 - It is located with the accessory cluster, not inside the main tool list.
-- In mode 1 it sits immediately to the right of the 2×2 style block and slightly below the preset gear.
-- In modes 2 and 3 it stays attached to the relocated accessory cluster.
+- In modes 1 and 2 it sits immediately to the right of the 2×2 style block and slightly below the preset gear.
+- In mode 3 it keeps the same relationship to the 2×2 block below the vertical dock.
 - It must not steal focus from the active drawing tool or clear selection.
 - It must work with mouse, touch, and Apple Pencil-style touch interactions consistently with existing accessory controls.
 
@@ -110,7 +114,9 @@ This applies to:
 - Shapes drawing controls
 - Selection style proxy shown after selecting objects
 
-The position should be calculated from the active tool button’s current `getBoundingClientRect()` and the current mode, rather than relying only on fixed viewport coordinates.
+The position is calculated from the active tool button’s current `getBoundingClientRect()` and the current mode, rather than relying only on fixed viewport coordinates.
+
+For selection styling, the anchor is the active Select dock button; changing the selected object does not move the proxy to the canvas object itself.
 
 All positioning must be resynchronized on:
 
@@ -191,7 +197,8 @@ Minimum checks:
 7. Mode 3 maps contextual direction to `right`.
 8. Existing fullscreen control behavior remains independent.
 9. Existing dock regression tests still pass.
-10. Static checks ensure mode 3 makes the main dock vertical and moves the left utility menu to the top-center region.
+10. Static checks ensure mode 3 makes the main dock vertical, moves the edit menu to the top center, and moves object actions to a separate horizontal row beneath it.
+11. Static/geometry checks ensure mode 3 places undo/redo above the vertical dock and the 2×2 block below it.
 
 Where practical, isolate pure mode/cycle/direction functions so they can be tested in Node without a browser DOM.
 
@@ -206,5 +213,6 @@ The feature is accepted when:
 - Mode 3 contextual controls open to the right.
 - Mode 3 main dock is vertical at left-center.
 - Mode 3 moves the existing left utility menu to the top center.
+- Mode 3 keeps undo/redo above the vertical dock and the 2×2 block below it.
 - No tool selection, object selection, drawing setting, or board content is lost when changing modes.
 - Current bottom-mode behavior remains unchanged when mode 1 is active.
