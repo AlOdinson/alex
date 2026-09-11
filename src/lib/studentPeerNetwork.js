@@ -87,6 +87,15 @@ export function createStudentPeerNetwork({
       return session.proposeAction(action);
     },
 
+    async proposeActionAndWait(action) {
+      if (!session) throw new Error('Teacher peer data channel is not ready');
+      await channelStart;
+      if (typeof session.proposeActionAndWait !== 'function') {
+        throw new Error('Acknowledged durable action API is unavailable');
+      }
+      return session.proposeActionAndWait(action);
+    },
+
     async requestLock(operation, payload = {}) {
       if (!session) throw new Error('Teacher peer data channel is not ready');
       await channelStart;
