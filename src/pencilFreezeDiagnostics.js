@@ -30,6 +30,15 @@ function pencilSummary() {
   return document.querySelector('[data-pencil-debug-summary="true"]')?.textContent ?? '';
 }
 
+function durableEditGateSnapshot() {
+  const dataset = document.documentElement?.dataset ?? {};
+  return {
+    state: String(dataset.alexDurableEditState ?? ''),
+    permission: String(dataset.alexDurableEditPermission ?? ''),
+    blocked: String(dataset.alexDurableEditBlocked ?? ''),
+  };
+}
+
 function eventDeliveryLagMs(event, now = performance.now()) {
   const stamp = Number(event?.timeStamp);
   if (!Number.isFinite(stamp) || stamp <= 0) return null;
@@ -141,18 +150,24 @@ function installFreezeDiagnostics() {
   window.addEventListener('pointermove', pointerHandler, { capture: true, passive: true });
   window.addEventListener('pointerrawupdate', pointerHandler, { capture: true, passive: true });
 
-  const exportText = () => [
-    'Alex Board iPad freeze diagnostic',
-    `created=${new Date().toISOString()}`,
-    `userAgent=${navigator.userAgent}`,
-    `maxUiGapMs=${numeric(maximumGapMs, 0)}`,
-    `maxPointerDeliveryLagMs=${numeric(maximumDeliveryLagMs, 0)}`,
-    `pencilSummary=${pencilSummary()}`,
-    '--- freeze events ---',
-    ...lines,
-    '--- visible pencil journal ---',
-    document.querySelector('[data-pencil-debug-output="true"]')?.textContent ?? '',
-  ].join('\n');
+  const exportText = () => {
+    const gate = durableEditGateSnapshot();
+    return [
+      'Alex Board iPad freeze diagnostic',
+      `created=${new Date().toISOString()}`,
+      `userAgent=${navigator.userAgent}`,
+      `maxUiGapMs=${numeric(maximumGapMs, 0)}`,
+      `maxPointerDeliveryLagMs=${numeric(maximumDeliveryLagMs, 0)}`,
+      `durableEditState=${gate.state}`,
+      `durableEditPermission=${gate.permission}`,
+      `durableEditBlocked=${gate.blocked}`,
+      `pencilSummary=${pencilSummary()}`,
+      '--- freeze events ---',
+      ...lines,
+      '--- visible pencil journal ---',
+      document.querySelector('[data-pencil-debug-output="true"]')?.textContent ?? '',
+    ].join('\n');
+  };
 
   copyButton.addEventListener('click', async (event) => {
     event.stopPropagation();
@@ -191,4 +206,4 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   installFreezeDiagnostics();
 }
 
-export { eventDeliveryLagMs, installFreezeDiagnostics };
+export { durableEditGateSnapshot, eventDeliveryLagMs, installFreezeDiagnostics };
