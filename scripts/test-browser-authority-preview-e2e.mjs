@@ -52,6 +52,64 @@ async function authorityBoard(page, boardId) {
   }), boardId);
 }
 
+async function authorityCommits(page, boardId) {
+  return page.evaluate(async (id) => new Promise((resolve, reject) => {
+    const request = indexedDB.open('alex-board-authority');
+    request.onerror = () => reject(request.error ?? new Error('Could not open authority IndexedDB'));
+    request.onsuccess = () => {
+      const db = request.result;
+      try {
+        const store = db.transaction('commits', 'readonly').objectStore('commits');
+        const index = store.index('boardRevision');
+        const range = IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]);
+        const cursorRequest = index.openCursor(range, 'next');
+        const commits = [];
+        cursorRequest.onerror = () => {
+          db.close();
+          reject(cursorRequest.error ?? new Error('Could not read authority commits'));
+        };
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            db.close();
+            resolve(commits);
+            return;
+          }
+          commits.push(cursor.value);
+          cursor.continue();
+        };
+      } catch (error) {
+        db.close();
+        reject(error);
+      }
+    };
+  }), boardId);
+}
+
+function imageUpsertAtRevision(commits, revision) {
+  const commit = (Array.isArray(commits) ? commits : []).find((entry) => Number(entry?.revision) === Number(revision));
+  return (Array.isArray(commit?.ops) ? commit.ops : []).find((op) => (
+    op?.type === 'upsert'
+    && String(op?.object?.type ?? '').toLowerCase() === 'image'
+  )) ?? null;
+}
+
+function imageVisualSignature(operation) {
+  const object = operation?.object ?? {};
+  return {
+    src: object.src ?? null,
+    left: Number(object.left ?? 0),
+    top: Number(object.top ?? 0),
+    width: Number(object.width ?? 0),
+    height: Number(object.height ?? 0),
+    scaleX: Number(object.scaleX ?? 1),
+    scaleY: Number(object.scaleY ?? 1),
+    angle: Number(object.angle ?? 0),
+    flipX: Boolean(object.flipX),
+    flipY: Boolean(object.flipY),
+  };
+}
+
 async function listAuthorityBoardsInPage(page) {
   return page.evaluate(async () => new Promise((resolve) => {
     const request = indexedDB.open('alex-board-authority');
@@ -288,8 +346,6 @@ try {
 
   await waitFor('student authoritative stroke rendered on teacher', async () => (await canvasDigest(teacher)) !== teacherAfterFirst);
 
-  // A page reload destroys the student's in-memory replica. It must reconnect to the
-  // live teacher and receive the current authoritative board again over the peer path.
   const teacherBeforeStudentReconnect = await canvasDigest(teacher);
   await student.reload({ waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
   await enterBoardIfNeeded(student, 'Student E2E');
@@ -303,8 +359,6 @@ try {
     (await canvasDigest(student)) === teacherBeforeStudentReconnect
   ));
 
-  // Image upload must remain self-contained and durable through the same authority
-  // path, then undo/redo must each become new authoritative revisions visible remotely.
   const teacherBeforeImage = await canvasDigest(teacher);
   const studentBeforeImage = await canvasDigest(student);
   await uploadTestImage(teacher);
@@ -312,14 +366,15 @@ try {
     const board = await authorityBoard(teacher, boardId);
     return Number(board?.revision ?? 0) > revisionAfterStudent ? Number(board.revision) : 0;
   });
-  const teacherAfterImage = await waitFor('image rendered on teacher', async () => {
-    const digest = await canvasDigest(teacher);
-    return digest !== teacherBeforeImage ? digest : '';
-  });
-  const studentAfterImage = await waitFor('image rendered on student', async () => {
-    const digest = await canvasDigest(student);
-    return digest !== studentBeforeImage ? digest : '';
-  });
+  await waitFor('image rendered on teacher', async () => (
+    (await canvasDigest(teacher)) !== teacherBeforeImage
+  ));
+  await waitFor('image rendered on student', async () => (
+    (await canvasDigest(student)) !== studentBeforeImage
+  ));
+  const imageCommit = imageUpsertAtRevision(await authorityCommits(teacher, boardId), revisionAfterImage);
+  assert.ok(imageCommit?.object?.src?.startsWith('data:image/'), 'Image commit must contain a self-contained data URL');
+  const imageSignature = imageVisualSignature(imageCommit);
 
   await blurActiveElement(teacher);
   await teacher.keyboard.press('Control+z');
@@ -340,16 +395,20 @@ try {
     const board = await authorityBoard(teacher, boardId);
     return Number(board?.revision ?? 0) > revisionAfterUndo ? Number(board.revision) : 0;
   });
-  await waitFor('teacher image restored by redo', async () => (
-    (await canvasDigest(teacher)) === teacherAfterImage
+  const redoCommit = imageUpsertAtRevision(await authorityCommits(teacher, boardId), revisionAfterRedo);
+  assert.ok(redoCommit, 'Redo must persist an image upsert');
+  assert.deepEqual(
+    imageVisualSignature(redoCommit),
+    imageSignature,
+    'Redo must restore the same durable image bytes and visual geometry',
+  );
+  await waitFor('teacher image visible after redo', async () => (
+    (await canvasDigest(teacher)) !== teacherBeforeImage
   ));
-  await waitFor('student image restored by redo', async () => (
-    (await canvasDigest(student)) === studentAfterImage
+  await waitFor('student image visible after redo', async () => (
+    (await canvasDigest(student)) !== studentBeforeImage
   ));
 
-  // View-only is authoritative at the teacher. Even if a stale guest UI still offers
-  // an editing control, the teacher must reject the proposal and restore the peer to
-  // the authoritative snapshot without advancing IndexedDB revision.
   const beforeViewOnly = await authorityBoard(teacher, boardId);
   await clickOwnerShareOrDump(teacher, beforeViewOnly);
   await teacher.getByRole('button', { name: /Только просмотр/ }).click();
@@ -402,6 +461,7 @@ try {
     revisionAfterImage,
     revisionAfterUndo,
     revisionAfterRedo,
+    imageRedoSemanticMatch: true,
     viewOnlyAttempt,
     viewOnlyRevision: Number(boardAfterReload.revision),
     preview: PREVIEW_URL,
