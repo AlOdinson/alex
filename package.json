@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "@csstools/css-parser-algorithms": "3.0.5",
-    "@csstools/css-tokenizer": "3.0.5",
+    "@csstools/css-tokenizer": "3.0.4",
     "@vitejs/plugin-react": "6.0.3",
     "vite": "8.1.5"
   }
