@@ -52,6 +52,52 @@ async function authorityBoard(page, boardId) {
   }), boardId);
 }
 
+async function listAuthorityBoardsInPage(page) {
+  return page.evaluate(async () => new Promise((resolve) => {
+    const request = indexedDB.open('alex-board-authority');
+    request.onerror = () => resolve({ error: String(request.error ?? 'open failed') });
+    request.onsuccess = () => {
+      const db = request.result;
+      try {
+        if (!db.objectStoreNames.contains('boards')) {
+          const stores = [...db.objectStoreNames];
+          db.close();
+          resolve({ stores, boards: [] });
+          return;
+        }
+        const get = db.transaction('boards', 'readonly').objectStore('boards').getAll();
+        get.onerror = () => {
+          db.close();
+          resolve({ error: String(get.error ?? 'getAll failed') });
+        };
+        get.onsuccess = () => {
+          const result = { stores: [...db.objectStoreNames], boards: get.result ?? [] };
+          db.close();
+          resolve(result);
+        };
+      } catch (error) {
+        db.close();
+        resolve({ error: String(error) });
+      }
+    };
+  }));
+}
+
+async function waitForCanvasOrDump(page, label) {
+  try {
+    await page.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
+  } catch (error) {
+    const [bodyText, authorityState] = await Promise.all([
+      page.locator('body').innerText().catch(() => '<body unavailable>'),
+      listAuthorityBoardsInPage(page).catch((caught) => ({ error: String(caught) })),
+    ]);
+    console.error(`${label} bootstrap URL:`, page.url());
+    console.error(`${label} body:`, bodyText.slice(0, 6000));
+    console.error(`${label} authority IndexedDB:`, JSON.stringify(authorityState));
+    throw error;
+  }
+}
+
 async function canvasDigest(page) {
   return page.locator('canvas.lower-canvas').evaluate((canvas) => canvas.toDataURL('image/png'));
 }
@@ -83,9 +129,21 @@ const studentContext = await browser.newContext({ viewport: { width: 1280, heigh
 const teacher = await teacherContext.newPage();
 const student = await studentContext.newPage();
 
+function attachDiagnostics(page, label) {
+  page.on('pageerror', (error) => console.error(`${label} pageerror:`, error.message));
+  page.on('console', (message) => {
+    if (message.type() === 'error' || message.type() === 'warning') {
+      console.error(`${label} console ${message.type()}:`, message.text());
+    }
+  });
+  page.on('requestfailed', (request) => {
+    console.error(`${label} requestfailed:`, request.url(), request.failure()?.errorText ?? 'unknown');
+  });
+}
+
 try {
-  teacher.on('pageerror', (error) => console.error('teacher pageerror:', error.message));
-  student.on('pageerror', (error) => console.error('student pageerror:', error.message));
+  attachDiagnostics(teacher, 'teacher');
+  attachDiagnostics(student, 'student');
 
   await teacher.goto(PREVIEW_URL, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
   await teacher.getByLabel('Название доски').fill(`E2E ${Date.now()}`);
@@ -94,7 +152,7 @@ try {
     teacher.waitForURL(/\/preview-browser-authority\/board\//, { timeout: TIMEOUT_MS }),
     teacher.getByRole('button', { name: 'Создать доску' }).click(),
   ]);
-  await teacher.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
+  await waitForCanvasOrDump(teacher, 'teacher');
 
   const boardId = boardIdFromUrl(teacher.url());
   assert.ok(boardId, 'Could not determine created board id');
@@ -109,7 +167,7 @@ try {
   });
 
   await student.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
-  await student.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
+  await waitForCanvasOrDump(student, 'student');
 
   await waitFor('teacher/student Ably presence', async () => {
     const teacherCount = Number((await teacher.locator('.presence-summary').textContent())?.trim());
@@ -137,10 +195,8 @@ try {
 
   await waitFor('student authoritative stroke rendered on teacher', async () => (await canvasDigest(teacher)) !== teacherAfterFirst);
 
-  // Teacher authority must survive a real browser reload without fetching board state
-  // from Supabase durable storage.
   await teacher.reload({ waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
-  await teacher.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
+  await waitForCanvasOrDump(teacher, 'teacher reload');
   const boardAfterReload = await waitFor('teacher IndexedDB authority after reload', async () => {
     const board = await authorityBoard(teacher, boardId);
     return Number(board?.revision ?? 0) >= revisionAfterStudent ? board : null;
