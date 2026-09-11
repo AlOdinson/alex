@@ -1,3 +1,5 @@
+import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
+
 function defaultTransferId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -25,7 +27,7 @@ export function createTeacherPeerHub({
   createTransferId = defaultTransferId,
   maxJournalCommits = 256,
   onCommit = () => {},
-  lockAuthority = null,
+  lockAuthority = createTeacherObjectLockAuthority(),
 } = {}) {
   if (!authority?.getRevision || !authority?.commitAction) throw new Error('teacher authority is required');
   if (typeof getSnapshot !== 'function') throw new Error('getSnapshot is required');
