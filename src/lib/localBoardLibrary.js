@@ -25,7 +25,9 @@ export function createLocalBoardLibrary({
       const boardId = randomToken(12);
       const ownerKey = randomToken(28);
       const shareKey = await deriveShareKey(ownerKey);
-      const realtimeKey = randomToken(18);
+      // The share secret is also the unguessable realtime room secret. This removes
+      // the need for any server-side boardId -> realtimeKey mapping.
+      const realtimeKey = shareKey;
       const record = await createBoardRecord({
         boardId,
         ownerKey,
