@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { connectBoardRealtime } from '../src/lib/browserAuthorityRealtime.js';
+import { connectBoardRealtime } from '../src/lib/realtime.js';
 
-function realtimeHarness({ coreDisconnect = Promise.resolve(), onSessionClose = () => {} } = {}) {
+function realtimeHarness({ onSessionClose = () => {} } = {}) {
   return connectBoardRealtime({
     boardId: 'pagehide-board',
     realtimeKey: 'room-key-pagehide-1234567890',
@@ -18,7 +18,7 @@ function realtimeHarness({ coreDisconnect = Promise.resolve(), onSessionClose = 
     }),
     createCore: () => ({
       async flushPending() {},
-      disconnect() { return coreDisconnect; },
+      async disconnect() {},
       async sendScreenShareSignal() {},
     }),
     createTransport: () => ({
@@ -29,29 +29,6 @@ function realtimeHarness({ coreDisconnect = Promise.resolve(), onSessionClose = 
   });
 }
 
-test('disconnect releases the owner session before awaiting async cleanup', async () => {
-  let sessionClosed = false;
-  let resolveCoreDisconnect;
-  const coreDisconnect = new Promise((resolve) => { resolveCoreDisconnect = resolve; });
-  const realtime = realtimeHarness({
-    coreDisconnect,
-    onSessionClose: () => { sessionClosed = true; },
-  });
-
-  await Promise.resolve();
-  await Promise.resolve();
-  const disconnectTask = realtime.disconnect();
-
-  assert.equal(
-    sessionClosed,
-    true,
-    'disconnect must synchronously start releasing the teacher Web Lock before awaiting core/transport cleanup',
-  );
-
-  resolveCoreDisconnect();
-  await disconnectTask;
-});
-
 test('pagehide releases authority after Board pagehide handlers and BFCache restore reloads', async () => {
   const previousWindow = globalThis.window;
   const fakeWindow = new EventTarget();
@@ -61,13 +38,10 @@ test('pagehide releases authority after Board pagehide handlers and BFCache rest
   });
   Object.defineProperty(globalThis, 'window', { configurable: true, value: fakeWindow });
 
-  let resolveCoreDisconnect;
-  const coreDisconnect = new Promise((resolve) => { resolveCoreDisconnect = resolve; });
   let sessionCloseCount = 0;
 
   try {
     const realtime = realtimeHarness({
-      coreDisconnect,
       onSessionClose: () => { sessionCloseCount += 1; },
     });
     await Promise.resolve();
@@ -82,14 +56,16 @@ test('pagehide releases authority after Board pagehide handlers and BFCache rest
     assert.deepEqual(
       closeStateSeenByLaterPagehideHandler,
       [0],
-      'authority teardown must be deferred until all same-turn Board pagehide handlers can flush their final state',
+      'authority teardown must wait until same-turn Board pagehide handlers can flush their final state',
     );
 
+    await Promise.resolve();
+    await Promise.resolve();
     await Promise.resolve();
     assert.equal(
       sessionCloseCount,
       1,
-      'authority must be released at the pagehide microtask checkpoint even while async cleanup is still pending',
+      'owner authority must be released before the page can remain frozen in BFCache',
     );
 
     const pageShow = new Event('pageshow');
@@ -97,7 +73,6 @@ test('pagehide releases authority after Board pagehide handlers and BFCache rest
     fakeWindow.dispatchEvent(pageShow);
     assert.equal(reloadCount, 1, 'a BFCache-restored board must reload and create a fresh authority session');
 
-    resolveCoreDisconnect();
     await realtime.disconnect();
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
