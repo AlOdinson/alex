@@ -229,7 +229,7 @@ export function createAblyBrowserTransport({
 
     async publish(event, payload, { force = false } = {}) {
       if (closed) return 'closed';
-      if (!channel) throw new Error('Ably board channel is not ready');
+      if (!channel) return 'starting';
       if (!force && remoteParticipantCount === 0) return 'solo';
       await channel.publish(event, payload);
       return 'ok';
