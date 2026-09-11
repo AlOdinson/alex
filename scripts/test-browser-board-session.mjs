@@ -2,6 +2,27 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBrowserBoardSession } from '../src/lib/browserBoardSession.js';
 
+function createImmediateTeacherTabAuthority({ onChange = () => {} } = {}) {
+  let authority = false;
+  let release = null;
+  return {
+    start() {
+      authority = true;
+      onChange(true);
+      return new Promise((resolve) => { release = resolve; });
+    },
+    stop() {
+      if (authority) {
+        authority = false;
+        onChange(false);
+      }
+      release?.();
+      release = null;
+    },
+    isAuthority() { return authority; },
+  };
+}
+
 test('owner starts one teacher runtime, registers it, and routes remote durable commits to the board', async () => {
   const events = [];
   const teacherRuntime = {
@@ -19,6 +40,7 @@ test('owner starts one teacher runtime, registers it, and routes remote durable 
     permission: 'owner',
     sendScreenShareSignal: async () => {},
     onAuthoritativeCommit: async (commit) => events.push(['commit', commit.revision]),
+    createTeacherTabAuthority: createImmediateTeacherTabAuthority,
     createTeacherRuntime: async (options) => { teacherOptions = options; return teacherRuntime; },
     registerRuntime: (_boardId, runtime) => {
       registeredRuntime = runtime;
@@ -42,6 +64,66 @@ test('owner starts one teacher runtime, registers it, and routes remote durable 
   assert.deepEqual(events.at(-1), ['signal', { protocol: 'peer' }]);
   session.close();
   assert.deepEqual(events.slice(-2), [['unregister'], ['close']]);
+});
+
+test('owner waits for exclusive tab authority before creating the teacher runtime', async () => {
+  let authorityChange = null;
+  let releaseLease = null;
+  let authorityHeld = false;
+  let runtimeStarts = 0;
+  let leaseStops = 0;
+
+  const session = createBrowserBoardSession({
+    boardId: 'board-exclusive',
+    clientId: 'teacher-exclusive',
+    permission: 'owner',
+    sendScreenShareSignal: async () => {},
+    createTeacherTabAuthority: ({ boardId, onChange }) => {
+      assert.equal(boardId, 'board-exclusive');
+      authorityChange = onChange;
+      return {
+        start() {
+          return new Promise((resolve) => { releaseLease = resolve; });
+        },
+        stop() {
+          leaseStops += 1;
+          authorityHeld = false;
+          onChange(false);
+          releaseLease?.();
+        },
+        isAuthority() { return authorityHeld; },
+      };
+    },
+    createTeacherRuntime: async () => {
+      runtimeStarts += 1;
+      return {
+        getRevision: () => 0,
+        commitTeacherAction: async (action) => ({ ...action, revision: 1, changed: true, appliedOps: action.ops }),
+        close() {},
+      };
+    },
+    registerRuntime: () => () => {},
+  });
+
+  let started = false;
+  const startTask = session.start().then((value) => {
+    started = true;
+    return value;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(runtimeStarts, 0, 'teacher runtime must not exist before this tab owns the board lock');
+  assert.equal(started, false);
+  assert.equal(typeof authorityChange, 'function');
+
+  authorityHeld = true;
+  authorityChange(true);
+  await startTask;
+  assert.equal(runtimeStarts, 1);
+  assert.equal(started, true);
+
+  session.close();
+  assert.equal(leaseStops, 1);
 });
 
 test('student waits for owner presence, creates a peer runtime, and applies teacher commits into replica before the board', async () => {
