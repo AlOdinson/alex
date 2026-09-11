@@ -1,6 +1,7 @@
 const DEBUG_QUERY_KEY = 'pencilDebug';
 const SAMPLE_MS = 50;
 const EVENT_LOOP_GAP_MS = 180;
+const RAF_GAP_MS = 180;
 const DELIVERY_LAG_MS = 80;
 const MAX_LINES = 600;
 
@@ -39,6 +40,19 @@ function durableEditGateSnapshot() {
   };
 }
 
+function pageStateSnapshot() {
+  let hasFocus = null;
+  try {
+    hasFocus = typeof document.hasFocus === 'function' ? Boolean(document.hasFocus()) : null;
+  } catch {
+    hasFocus = null;
+  }
+  return {
+    visibility: String(document.visibilityState ?? 'unknown'),
+    hasFocus,
+  };
+}
+
 function eventDeliveryLagMs(event, now = performance.now()) {
   const stamp = Number(event?.timeStamp);
   if (!Number.isFinite(stamp) || stamp <= 0) return null;
@@ -58,9 +72,12 @@ function installFreezeDiagnostics() {
   const startedAt = performance.now();
   const lines = [];
   let lastTick = startedAt;
+  let lastRafAt = null;
   let lastDeliveryLagLogAt = Number.NEGATIVE_INFINITY;
   let maximumGapMs = 0;
+  let maximumRafGapMs = 0;
   let maximumDeliveryLagMs = 0;
+  let rafId = null;
 
   const panel = document.createElement('aside');
   panel.dataset.pencilFreezeDebug = 'true';
@@ -104,7 +121,7 @@ function installFreezeDiagnostics() {
   document.body.append(panel);
 
   const render = () => {
-    summary.textContent = `max UI gap ${numeric(maximumGapMs, 0)} ms · max event lag ${numeric(maximumDeliveryLagMs, 0)} ms`;
+    summary.textContent = `max UI ${numeric(maximumGapMs, 0)} ms · max frame ${numeric(maximumRafGapMs, 0)} ms · max event ${numeric(maximumDeliveryLagMs, 0)} ms`;
     output.textContent = lines.slice(-20).join('\n');
     output.scrollTop = output.scrollHeight;
   };
@@ -126,9 +143,28 @@ function installFreezeDiagnostics() {
     record('UI event-loop gap', {
       gapMs: numeric(gapMs),
       tickElapsedMs: numeric(elapsed),
-      visibility: document.visibilityState ?? 'unknown',
+      ...pageStateSnapshot(),
     });
   }, SAMPLE_MS);
+
+  const animationFrameTick = (now) => {
+    const state = pageStateSnapshot();
+    if (lastRafAt != null && state.visibility === 'visible') {
+      const gapMs = Number(now) - lastRafAt;
+      if (gapMs >= RAF_GAP_MS) {
+        maximumRafGapMs = Math.max(maximumRafGapMs, gapMs);
+        record('UI animation-frame gap', {
+          gapMs: numeric(gapMs),
+          ...state,
+        });
+      }
+    }
+    lastRafAt = Number(now);
+    rafId = window.requestAnimationFrame?.(animationFrameTick) ?? null;
+  };
+  if (typeof window.requestAnimationFrame === 'function') {
+    rafId = window.requestAnimationFrame(animationFrameTick);
+  }
 
   const pointerHandler = (event) => {
     if (event.pointerType !== 'pen') return;
@@ -150,14 +186,31 @@ function installFreezeDiagnostics() {
   window.addEventListener('pointermove', pointerHandler, { capture: true, passive: true });
   window.addEventListener('pointerrawupdate', pointerHandler, { capture: true, passive: true });
 
+  const lifecycleHandler = (event) => {
+    if (event.type === 'visibilitychange') lastRafAt = performance.now();
+    record(`PAGE ${event.type}`, {
+      persisted: typeof event.persisted === 'boolean' ? event.persisted : undefined,
+      ...pageStateSnapshot(),
+    });
+  };
+  document.addEventListener?.('visibilitychange', lifecycleHandler, true);
+  window.addEventListener('focus', lifecycleHandler, true);
+  window.addEventListener('blur', lifecycleHandler, true);
+  window.addEventListener('pageshow', lifecycleHandler, true);
+  window.addEventListener('pagehide', lifecycleHandler, true);
+
   const exportText = () => {
     const gate = durableEditGateSnapshot();
+    const page = pageStateSnapshot();
     return [
       'Alex Board iPad freeze diagnostic',
       `created=${new Date().toISOString()}`,
       `userAgent=${navigator.userAgent}`,
       `maxUiGapMs=${numeric(maximumGapMs, 0)}`,
+      `maxRafGapMs=${numeric(maximumRafGapMs, 0)}`,
       `maxPointerDeliveryLagMs=${numeric(maximumDeliveryLagMs, 0)}`,
+      `pageVisibility=${page.visibility}`,
+      `pageHasFocus=${page.hasFocus == null ? 'unknown' : String(page.hasFocus)}`,
       `durableEditState=${gate.state}`,
       `durableEditPermission=${gate.permission}`,
       `durableEditBlocked=${gate.blocked}`,
@@ -184,19 +237,29 @@ function installFreezeDiagnostics() {
     event.stopPropagation();
     lines.length = 0;
     maximumGapMs = 0;
+    maximumRafGapMs = 0;
     maximumDeliveryLagMs = 0;
     lastTick = performance.now();
+    lastRafAt = lastTick;
     render();
   });
 
-  record('FREEZE diagnostics started');
+  record('FREEZE diagnostics started', pageStateSnapshot());
 
   return {
     exportText,
     destroy() {
       window.clearInterval(intervalId);
+      if (rafId != null && typeof window.cancelAnimationFrame === 'function') {
+        window.cancelAnimationFrame(rafId);
+      }
       window.removeEventListener('pointermove', pointerHandler, true);
       window.removeEventListener('pointerrawupdate', pointerHandler, true);
+      document.removeEventListener?.('visibilitychange', lifecycleHandler, true);
+      window.removeEventListener('focus', lifecycleHandler, true);
+      window.removeEventListener('blur', lifecycleHandler, true);
+      window.removeEventListener('pageshow', lifecycleHandler, true);
+      window.removeEventListener('pagehide', lifecycleHandler, true);
       panel.remove();
     },
   };
@@ -206,4 +269,9 @@ if (typeof window !== 'undefined' && typeof document !== 'undefined') {
   installFreezeDiagnostics();
 }
 
-export { durableEditGateSnapshot, eventDeliveryLagMs, installFreezeDiagnostics };
+export {
+  durableEditGateSnapshot,
+  eventDeliveryLagMs,
+  installFreezeDiagnostics,
+  pageStateSnapshot,
+};
