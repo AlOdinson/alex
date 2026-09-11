@@ -102,3 +102,42 @@ test('accepts only signaling from the configured teacher', async () => {
   await network.handleSignal({ sourceId: 'teacher-a', signal: { type: 'answer' } });
   assert.deepEqual(handled, [{ type: 'answer' }]);
 });
+
+test('closing the student network closes the active peer session', async () => {
+  let connectionOptions;
+  let sessionCloseCount = 0;
+  let transportCloseCount = 0;
+  let connectionCloseCount = 0;
+
+  const network = createStudentPeerNetwork({
+    teacherId: 'teacher-a',
+    signaling: { send: async () => {} },
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    createConnection: (options) => {
+      connectionOptions = options;
+      return {
+        async start() {},
+        async handleSignal() {},
+        close() { connectionCloseCount += 1; },
+      };
+    },
+    createTransport: () => ({
+      send: async () => {},
+      close() { transportCloseCount += 1; },
+    }),
+    createSession: () => ({
+      async start() {},
+      close() { sessionCloseCount += 1; },
+    }),
+  });
+
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await Promise.resolve();
+  network.close();
+
+  assert.equal(sessionCloseCount, 1);
+  assert.equal(transportCloseCount, 1);
+  assert.equal(connectionCloseCount, 1);
+});
