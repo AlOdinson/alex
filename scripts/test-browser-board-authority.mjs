@@ -38,6 +38,8 @@ test('rejects startup when the local durable journal has a revision gap', async 
 
 test('updates the in-memory snapshot only after a new durable commit succeeds', async () => {
   let releasePersist;
+  let markPersistStarted;
+  const persistStarted = new Promise((resolve) => { markPersistStarted = resolve; });
   const persisted = [];
   const service = await openBrowserBoardAuthority({
     boardId: 'board-b',
@@ -45,6 +47,7 @@ test('updates the in-memory snapshot only after a new durable commit succeeds', 
     loadCommitsAfter: async () => [],
     persistCommit: async (_boardId, commit) => {
       persisted.push(commit);
+      markPersistStarted();
       await new Promise((resolve) => { releasePersist = resolve; });
       return { commit, duplicate: false };
     },
@@ -57,8 +60,7 @@ test('updates the in-memory snapshot only after a new durable commit succeeds', 
     actionId: 'add-1', clientId: 'teacher', baseRevision: 0,
     ops: [{ type: 'upsert', object: { boardObjectId: 'x', type: 'rect', left: 7 } }],
   });
-  await Promise.resolve();
-  await Promise.resolve();
+  await persistStarted;
   assert.equal(service.getRevision(), 0);
   assert.equal(service.getSnapshot().canvas.objects.length, 0);
   assert.equal(persisted.length, 1);
