@@ -87,6 +87,24 @@ async function withTransaction(storeNames, mode, work) {
   }
 }
 
+function deleteRecordsByBoardId(store, boardId) {
+  return new Promise((resolve, reject) => {
+    const index = store.index(BOARD_ID_INDEX);
+    const request = index.openCursor(IDBKeyRange.only(boardId));
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) {
+        resolve();
+        return;
+      }
+      const deletion = cursor.delete();
+      deletion.onsuccess = () => cursor.continue();
+      deletion.onerror = () => reject(deletion.error ?? new Error('Could not delete authority board records'));
+    };
+    request.onerror = () => reject(request.error ?? new Error('Could not scan authority board records'));
+  });
+}
+
 function normalizeBoardInput(input) {
   const boardId = String(input?.boardId ?? '').trim();
   if (!boardId) throw new Error('boardId is required');
@@ -132,6 +150,49 @@ export async function listAuthorityBoards() {
     return (Array.isArray(boards) ? boards : [])
       .map(cloneValue)
       .sort((left, right) => Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0));
+  });
+}
+
+export async function updateAuthorityBoardMetadata(boardId, patch = {}) {
+  const key = String(boardId ?? '').trim();
+  if (!key) throw new Error('boardId is required');
+  return withTransaction([BOARD_STORE], 'readwrite', async (transaction) => {
+    const boards = transaction.objectStore(BOARD_STORE);
+    const board = await requestResult(boards.get(key));
+    if (!board) throw new Error('Authority board not found');
+
+    const next = { ...board };
+    if (Object.hasOwn(patch, 'title')) {
+      next.title = String(patch.title ?? '').trim() || 'Новая доска';
+    }
+    if (Object.hasOwn(patch, 'studentName')) {
+      next.studentName = String(patch.studentName ?? '').trim();
+    }
+    if (Object.hasOwn(patch, 'guestMode')) {
+      next.guestMode = patch.guestMode === 'view' ? 'view' : 'edit';
+    }
+    if (Object.hasOwn(patch, 'gameLibraryVisible')) {
+      next.gameLibraryVisible = Boolean(patch.gameLibraryVisible);
+    }
+    next.updatedAt = Date.now();
+    await requestResult(boards.put(next));
+    return cloneValue(next);
+  });
+}
+
+export async function deleteAuthorityBoard(boardId) {
+  const key = String(boardId ?? '').trim();
+  if (!key) return false;
+  return withTransaction([BOARD_STORE, COMMIT_STORE, ASSET_STORE], 'readwrite', async (transaction) => {
+    const boards = transaction.objectStore(BOARD_STORE);
+    const existing = await requestResult(boards.get(key));
+    if (!existing) return false;
+    await Promise.all([
+      requestResult(boards.delete(key)),
+      deleteRecordsByBoardId(transaction.objectStore(COMMIT_STORE), key),
+      deleteRecordsByBoardId(transaction.objectStore(ASSET_STORE), key),
+    ]);
+    return true;
   });
 }
 
