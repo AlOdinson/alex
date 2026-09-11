@@ -111,7 +111,10 @@ async function waitForCanvasOrDump(page, label) {
 }
 
 async function clickOwnerShareOrDump(page, authorityRecord) {
-  const shareButton = page.getByRole('button', { name: 'Поделиться ссылкой на доску' });
+  // On adaptive layouts the visible share control is the compact button named
+  // "Поделиться"; the desktop control with the longer aria-label may stay in the DOM
+  // but be hidden by CSS. Target the user-visible control rather than a layout variant.
+  const shareButton = page.getByRole('button', { name: 'Поделиться', exact: true });
   try {
     await shareButton.waitFor({ state: 'visible', timeout: 8_000 });
   } catch (error) {
