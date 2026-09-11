@@ -3,6 +3,11 @@ function safeRevision(value) {
   return Number.isInteger(revision) && revision >= 0 ? revision : 0;
 }
 
+function defaultRequestId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `lock-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export function createStudentPeerSession({
   transport,
   getRevision,
@@ -10,6 +15,7 @@ export function createStudentPeerSession({
   installSnapshot,
   onAck = () => {},
   onError = () => {},
+  createRequestId = defaultRequestId,
 } = {}) {
   if (!transport?.send) throw new Error('peer transport is required');
   if (typeof getRevision !== 'function') throw new Error('getRevision is required');
@@ -17,6 +23,7 @@ export function createStudentPeerSession({
   if (typeof installSnapshot !== 'function') throw new Error('installSnapshot is required');
 
   let applyQueue = Promise.resolve();
+  const lockWaiters = new Map();
 
   const requestSync = () => transport.send('sync-request', {
     revision: safeRevision(getRevision()),
@@ -48,6 +55,16 @@ export function createStudentPeerSession({
 
       if (type === 'ack') {
         onAck(payload);
+        return Promise.resolve();
+      }
+
+      if (type === 'lock-result') {
+        const requestId = String(payload.requestId ?? '');
+        const waiter = lockWaiters.get(requestId);
+        if (waiter) {
+          lockWaiters.delete(requestId);
+          waiter.resolve(payload);
+        }
         return Promise.resolve();
       }
 
@@ -84,6 +101,31 @@ export function createStudentPeerSession({
         baseRevision: safeRevision(getRevision()),
       };
       return transport.send('action-proposal', payload);
+    },
+
+    requestLock(operation, payload = {}) {
+      const safeOperation = String(operation ?? '').trim();
+      if (!['acquire', 'refresh', 'release'].includes(safeOperation)) {
+        return Promise.reject(new Error('Unsupported lock operation'));
+      }
+      const requestId = String(createRequestId()).trim();
+      if (!requestId) return Promise.reject(new Error('Lock request id is required'));
+      if (lockWaiters.has(requestId)) return Promise.reject(new Error('Duplicate lock request id'));
+
+      const task = new Promise((resolve, reject) => {
+        lockWaiters.set(requestId, { resolve, reject, operation: safeOperation });
+      });
+      Promise.resolve(transport.send('lock-request', {
+        requestId,
+        operation: safeOperation,
+        ...(payload && typeof payload === 'object' ? payload : {}),
+      })).catch((error) => {
+        const waiter = lockWaiters.get(requestId);
+        if (!waiter) return;
+        lockWaiters.delete(requestId);
+        waiter.reject(error);
+      });
+      return task;
     },
 
     whenIdle() {
