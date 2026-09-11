@@ -27,6 +27,7 @@ test('owner starts one teacher runtime, registers it, and routes remote durable 
   });
 
   await session.start();
+  assert.equal(await session.whenRuntimeReady(), teacherRuntime);
   assert.equal(registeredRuntime, teacherRuntime);
   assert.equal(teacherOptions.boardId, 'board-a');
   assert.equal(teacherOptions.clientId, 'teacher-a');
@@ -85,11 +86,16 @@ test('student waits for owner presence, creates a peer runtime, and applies teac
   });
 
   await session.start();
+  let readySettled = false;
+  const readyTask = session.whenRuntimeReady().then((value) => { readySettled = true; return value; });
+  await Promise.resolve();
+  assert.equal(readySettled, false);
   assert.equal(registeredRuntime, null);
   await session.updateParticipants([
     { clientId: 'student-a', permission: 'edit' },
     { clientId: 'teacher-a', permission: 'owner' },
   ]);
+  assert.equal(await readyTask, studentRuntime);
   assert.equal(studentOptions.teacherId, 'teacher-a');
   assert.equal(registeredRuntime, studentRuntime);
   assert.deepEqual(events[0], ['start']);
