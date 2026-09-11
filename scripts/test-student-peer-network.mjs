@@ -21,13 +21,18 @@ test('starts an initiator connection and targets teacher signaling', async () =>
       };
     },
     createTransport: () => ({ send: async () => {}, close() {} }),
+    createSession: () => ({ async start() {}, close() {} }),
   });
 
-  await network.start();
+  const starting = network.start();
+  await Promise.resolve();
   assert.equal(started, 1);
   assert.equal(options.initiator, true);
   await options.sendSignal({ type: 'offer' });
   assert.deepEqual(sentSignals, [{ peerId: 'teacher-a', signal: { type: 'offer' } }]);
+  options.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  assert.equal(network.isReady(), true);
 });
 
 test('starts student sync when data channel opens and routes messages/transfers', async () => {
@@ -57,14 +62,16 @@ test('starts student sync when data channel opens and routes messages/transfers'
       async proposeAction(action) { sessionEvents.push(['proposal', action]); return 'sent'; },
       async proposeActionAndWait(action) { sessionEvents.push(['proposal-wait', action]); return { accepted: true, revision: 6 }; },
       whenIdle: async () => {},
+      close() {},
     }),
   });
 
-  await network.start();
+  const starting = network.start();
+  await Promise.resolve();
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
-  await Promise.resolve();
-  await Promise.resolve();
+  await starting;
   assert.equal(sessionStartCount, 1);
+  assert.equal(network.isReady(), true);
 
   await transportOptions.onMessage({ type: 'head', payload: { revision: 5 } });
   await transportOptions.onTransfer({ kind: 'snapshot', text: '{}' });
