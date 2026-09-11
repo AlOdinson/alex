@@ -100,3 +100,26 @@ test('rejects owner-only mutations when owner key is wrong', async () => {
   await assert.rejects(() => repo.setGuestMode('board-a', 'share-secret', 'view'), /owner/i);
   await assert.rejects(() => repo.deleteBoard('board-a', 'wrong',), /owner/i);
 });
+
+test('remote student snapshot compaction cannot overwrite the authoritative replica', async () => {
+  let replicaInstalls = 0;
+  const { repo } = makeRepository({
+    installReplicaSnapshot: () => { replicaInstalls += 1; },
+  });
+  const attempted = {
+    version: 2,
+    background: 'blank',
+    canvas: { objects: [{ boardObjectId: 'local-only' }] },
+  };
+
+  const savedRevision = await repo.saveBoardSnapshot(
+    'student-board',
+    'remote-share-secret',
+    attempted,
+    8,
+  );
+
+  assert.equal(savedRevision, 8);
+  assert.equal(replicaInstalls, 0, 'student compaction must never become a second replica writer');
+  assert.equal((await repo.getBoardRecovery('student-board', 'remote-share-secret')).snapshot.background, 'dots');
+});
