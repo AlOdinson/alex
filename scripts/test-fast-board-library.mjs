@@ -15,8 +15,20 @@ globalThis.localStorage = {
   },
 };
 
+const LEGACY_LIBRARY_KEY = 'alex-board:owner-library:v1';
+const CURRENT_LIBRARY_KEY = 'alex-board:owner-library:v2';
+storage.set(LEGACY_LIBRARY_KEY, JSON.stringify([
+  { boardId: 'legacy-supabase-board', ownerKey: 'legacy-owner-key' },
+]));
+
 const library = await import('../src/lib/boardLibrary.js');
 assert.equal(library.OWNED_BOARD_LIMIT, 50);
+assert.deepEqual(
+  library.getOwnedBoards(),
+  [],
+  'legacy v1 board cards must disappear instead of being migrated into browser authority',
+);
+assert.equal(storage.has(LEGACY_LIBRARY_KEY), false, 'the obsolete v1 library should be deleted locally');
 
 for (let index = 0; index < 52; index += 1) {
   library.rememberOwnedBoard({
@@ -25,6 +37,7 @@ for (let index = 0; index < 52; index += 1) {
     createdAt: new Date(Date.UTC(2026, 0, index + 1)).toISOString(),
   });
 }
+assert.equal(storage.has(CURRENT_LIBRARY_KEY), true, 'new browser-authority cards must use the v2 library');
 
 const overflow = library.getOwnedBoardsOverLimit(50, 'board-51');
 assert.deepEqual(overflow.map((entry) => entry.boardId), ['board-00', 'board-01']);
@@ -81,10 +94,6 @@ assert.equal(wrongOwnerBoards.has('protected-board'), true, 'wrong owner must ne
 const homeSource = await readFile(new URL('../src/components/Home.jsx', import.meta.url), 'utf8');
 assert.doesNotMatch(homeSource, /getBoardAccess/);
 assert.match(homeSource, /getOwnedBoardSummaries\(entries\)/);
-assert.match(homeSource, /const missingBoardIds = entries/);
-assert.match(homeSource, /forgetOwnedBoards\(missingBoardIds\)/);
-assert.match(homeSource, /if \(!summary\) return \[\]/);
-assert.doesNotMatch(homeSource, /unavailable: true/);
 assert.match(homeSource, /Выделить все/);
 assert.match(homeSource, /deleteOwnedBoards\(selectedBoards,/);
 assert.match(homeSource, /getOwnedBoardsOverLimit\(OWNED_BOARD_LIMIT/);
@@ -102,4 +111,4 @@ assert.match(compatSource, /onProgress/);
 assert.match(compatSource, /detachedBoardIds/);
 assert.doesNotMatch(compatSource, /supabase\.rpc/);
 
-console.log('Fast local creation, automatic 50-board cleanup, stale-card pruning, and safe sequential deletion tests passed.');
+console.log('V2 local board library, automatic 50-board cleanup, and safe sequential deletion tests passed.');
