@@ -5,6 +5,7 @@ const MESSAGE_TYPES = new Set([
   'head-request',
   'head',
   'snapshot-request',
+  'sync-request',
   'action-proposal',
   'commit',
   'ack',
