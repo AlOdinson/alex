@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { createBrowserBoardRepository } from '../src/lib/browserBoardRepositoryCompat.js';
 
 const storage = new Map();
 globalThis.localStorage = {
@@ -30,25 +31,52 @@ assert.deepEqual(overflow.map((entry) => entry.boardId), ['board-00', 'board-01'
 library.forgetOwnedBoards(overflow.map((entry) => entry.boardId));
 assert.equal(library.getOwnedBoards().length, 50);
 
-const { sha256 } = await import('../src/lib/ids.js');
-const repository = await import('../src/lib/boardRepository.js');
-const localOwnerKey = 'local-owner-key';
-localStorage.setItem('alex-board:board:local-present', JSON.stringify({
-  id: 'local-present',
-  ownerKeyHash: await sha256(localOwnerKey),
-}));
+const authorityBoards = new Map([
+  ['local-present', {
+    boardId: 'local-present',
+    ownerKey: 'local-owner-key',
+    title: 'Local board',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }],
+]);
 const deletionProgress = [];
+const repository = createBrowserBoardRepository({
+  getBoard: async (boardId) => authorityBoards.get(boardId) ?? null,
+  listBoards: async () => [...authorityBoards.values()],
+  deleteBoardRecord: async (boardId) => authorityBoards.delete(boardId),
+});
 const localDeletion = await repository.deleteOwnedBoards([
-  { boardId: 'local-present', ownerKey: localOwnerKey },
+  { boardId: 'local-present', ownerKey: 'local-owner-key' },
   { boardId: 'already-missing', ownerKey: 'missing-owner-key' },
 ], {
   onProgress: (progress) => deletionProgress.push(progress),
 });
-assert.deepEqual(localDeletion.deletedBoardIds, ['local-present', 'already-missing']);
+assert.deepEqual(
+  localDeletion.deletedBoardIds,
+  ['local-present', 'already-missing'],
+  'a stale library entry whose authority board is already absent should be removable as a successful detach',
+);
 assert.deepEqual(localDeletion.detachedBoardIds, ['already-missing']);
 assert.deepEqual(localDeletion.failedBoardIds, []);
 assert.deepEqual(deletionProgress.map((progress) => progress.completed), [1, 2]);
-assert.equal(localStorage.getItem('alex-board:board:local-present'), null);
+assert.equal(authorityBoards.has('local-present'), false);
+
+const wrongOwnerBoards = new Map([
+  ['protected-board', { boardId: 'protected-board', ownerKey: 'real-owner' }],
+]);
+const protectedRepository = createBrowserBoardRepository({
+  getBoard: async (boardId) => wrongOwnerBoards.get(boardId) ?? null,
+  listBoards: async () => [...wrongOwnerBoards.values()],
+  deleteBoardRecord: async (boardId) => wrongOwnerBoards.delete(boardId),
+});
+const wrongOwnerDeletion = await protectedRepository.deleteOwnedBoards([
+  { boardId: 'protected-board', ownerKey: 'wrong-owner' },
+]);
+assert.deepEqual(wrongOwnerDeletion.deletedBoardIds, []);
+assert.deepEqual(wrongOwnerDeletion.detachedBoardIds, []);
+assert.deepEqual(wrongOwnerDeletion.failedBoardIds, ['protected-board']);
+assert.equal(wrongOwnerBoards.has('protected-board'), true, 'wrong owner must never delete a local authority board');
 
 const homeSource = await readFile(new URL('../src/components/Home.jsx', import.meta.url), 'utf8');
 assert.doesNotMatch(homeSource, /getBoardAccess/);
@@ -60,18 +88,14 @@ assert.match(homeSource, /deleteOwnedBoards\(overflow/);
 assert.match(homeSource, /Убираю старые доски сверх лимита 50/);
 assert.doesNotMatch(homeSource, /await enforceOwnedBoardLimit/);
 
-const repositorySource = await readFile(new URL('../src/lib/boardRepository.js', import.meta.url), 'utf8');
-assert.match(repositorySource, /create_board_fast_v8/);
-assert.match(repositorySource, /get_owned_board_summaries_v8/);
-assert.doesNotMatch(repositorySource, /supabase\.rpc\('delete_owned_boards_v8'/);
-assert.match(repositorySource, /for \(const entry of prepared\)/);
-assert.match(repositorySource, /onProgress/);
-assert.match(repositorySource, /detachedBoardIds/);
+const publicRepositorySource = await readFile(new URL('../src/lib/boardRepository.js', import.meta.url), 'utf8');
+assert.match(publicRepositorySource, /browserBoardRepositoryCompat\.js/);
+assert.doesNotMatch(publicRepositorySource, /supabase\.rpc/);
 
-const sqlSource = await readFile(new URL('../supabase/fast_board_library_v8.sql', import.meta.url), 'utf8');
-assert.match(sqlSource, /create or replace function public\.create_board_fast_v8/);
-assert.match(sqlSource, /create or replace function public\.get_owned_board_summaries_v8/);
-assert.match(sqlSource, /create or replace function public\.delete_owned_boards_v8/);
-assert.doesNotMatch(sqlSource, /snapshot::jsonb[\s\S]*get_owned_board_summaries_v8/);
+const compatSource = await readFile(new URL('../src/lib/browserBoardRepositoryCompat.js', import.meta.url), 'utf8');
+assert.match(compatSource, /deleteOwnedBoards/);
+assert.match(compatSource, /onProgress/);
+assert.match(compatSource, /detachedBoardIds/);
+assert.doesNotMatch(compatSource, /supabase\.rpc/);
 
-console.log('Fast creation, automatic 50-board cleanup, and safe sequential deletion tests passed.');
+console.log('Fast local creation, automatic 50-board cleanup, and safe sequential deletion tests passed.');
