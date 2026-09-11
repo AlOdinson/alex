@@ -157,6 +157,11 @@ async function clickOwnerShareOrDump(page, authorityRecord) {
   }
 }
 
+async function closeShareDialog(page) {
+  await page.getByRole('button', { name: 'Закрыть', exact: true }).click();
+  await page.locator('.share-dialog').waitFor({ state: 'detached', timeout: 8_000 });
+}
+
 async function canvasDigest(page) {
   return page.locator('canvas.lower-canvas').evaluate((canvas) => canvas.toDataURL('image/png'));
 }
@@ -175,6 +180,13 @@ async function drawStroke(page, offset = 0) {
   await page.mouse.down();
   await page.mouse.move(x2, y2, { steps: 12 });
   await page.mouse.up();
+}
+
+async function tryDrawStroke(page, offset = 0) {
+  const pencil = page.getByRole('button', { name: 'Карандаш' });
+  if (await pencil.isDisabled().catch(() => false)) return 'ui-blocked';
+  await drawStroke(page, offset);
+  return 'attempted';
 }
 
 const browser = await chromium.launch({
@@ -225,8 +237,7 @@ try {
     const value = await shareInput.inputValue();
     return value.includes('/preview-browser-authority/board/') && value.includes('?key=') ? value : '';
   });
-  await teacher.getByRole('button', { name: 'Закрыть', exact: true }).click();
-  await teacher.locator('.share-dialog').waitFor({ state: 'detached', timeout: 8_000 });
+  await closeShareDialog(teacher);
 
   await student.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
   await enterBoardIfNeeded(student, 'Student E2E');
@@ -258,6 +269,57 @@ try {
 
   await waitFor('student authoritative stroke rendered on teacher', async () => (await canvasDigest(teacher)) !== teacherAfterFirst);
 
+  // A page reload destroys the student's in-memory replica. It must reconnect to the
+  // live teacher and receive the current authoritative board again over the peer path.
+  const teacherBeforeStudentReconnect = await canvasDigest(teacher);
+  await student.reload({ waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
+  await enterBoardIfNeeded(student, 'Student E2E');
+  await waitForCanvasOrDump(student, 'student reconnect');
+  await waitFor('student presence after reconnect', async () => {
+    const teacherCount = Number((await teacher.locator('.presence-summary').textContent())?.trim());
+    const studentCount = Number((await student.locator('.presence-summary').textContent())?.trim());
+    return teacherCount >= 2 && studentCount >= 2;
+  });
+  await waitFor('student snapshot restored after reconnect', async () => (
+    (await canvasDigest(student)) === teacherBeforeStudentReconnect
+  ));
+
+  // View-only is authoritative at the teacher. Even if a stale guest UI still offers
+  // an editing control, the teacher must reject the proposal and restore the peer to
+  // the authoritative snapshot without advancing IndexedDB revision.
+  const beforeViewOnly = await authorityBoard(teacher, boardId);
+  await clickOwnerShareOrDump(teacher, beforeViewOnly);
+  await teacher.getByRole('button', { name: /Только просмотр/ }).click();
+  const viewBoard = await waitFor('view-only metadata persisted', async () => {
+    const board = await authorityBoard(teacher, boardId);
+    return board?.guestMode === 'view' ? board : null;
+  });
+  assert.equal(viewBoard.guestMode, 'view');
+  await closeShareDialog(teacher);
+
+  const revisionBeforeBlockedEdit = Number(viewBoard.revision ?? 0);
+  const teacherBeforeBlockedEdit = await canvasDigest(teacher);
+  const studentBeforeBlockedEdit = await canvasDigest(student);
+  const viewOnlyAttempt = await tryDrawStroke(student, 230);
+
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  const afterBlockedEdit = await authorityBoard(teacher, boardId);
+  assert.equal(
+    Number(afterBlockedEdit.revision ?? -1),
+    revisionBeforeBlockedEdit,
+    'View-only student edit must not advance teacher authority revision',
+  );
+  assert.equal(
+    await canvasDigest(teacher),
+    teacherBeforeBlockedEdit,
+    'View-only student edit must not mutate the teacher canvas',
+  );
+  if (viewOnlyAttempt === 'attempted') {
+    await waitFor('view-only student restored to authoritative canvas', async () => (
+      (await canvasDigest(student)) === studentBeforeBlockedEdit
+    ), 12_000);
+  }
+
   await teacher.reload({ waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
   await enterBoardIfNeeded(teacher, 'Teacher E2E');
   await waitForCanvasOrDump(teacher, 'teacher reload');
@@ -266,12 +328,16 @@ try {
     return Number(board?.revision ?? 0) >= revisionAfterStudent ? board : null;
   });
   assert.ok(Number(boardAfterReload.revision) >= revisionAfterStudent);
+  assert.equal(boardAfterReload.guestMode, 'view');
 
   console.log(JSON.stringify({
     ok: true,
     boardId,
     revisionAfterTeacher,
     revisionAfterStudent,
+    studentReconnect: true,
+    viewOnlyAttempt,
+    viewOnlyRevision: Number(boardAfterReload.revision),
     preview: PREVIEW_URL,
   }));
 } finally {
