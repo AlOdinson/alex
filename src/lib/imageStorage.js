@@ -1,10 +1,12 @@
-import { randomToken } from './ids.js';
-import { isSupabaseConfigured, supabase } from './supabase.js';
-
-const IMAGE_BUCKET = 'board-assets';
 const MAX_SIDE = 1800;
 const TARGET_MAX_BYTES = Math.floor(4.5 * 1024 * 1024);
 const ACCEPTED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif']);
+
+function cloneValue(value) {
+  if (value == null || typeof value !== 'object') return value;
+  if (typeof structuredClone === 'function') return structuredClone(value);
+  return JSON.parse(JSON.stringify(value));
+}
 
 function fileExtension(name = '') {
   const match = String(name).toLowerCase().match(/\.([a-z0-9]+)$/);
@@ -84,8 +86,8 @@ export async function loadImageElement(source, { retries = 8 } = {}) {
     } catch (caught) {
       lastError = caught;
       if (attempt < retries) {
-        // Public Storage/CDN may briefly return an old cached 404 immediately
-        // after an upload. Every retry uses a fresh query token.
+        // A remote source can be temporarily unavailable. Data/object URLs simply
+        // retry without a cache token, while HTTP sources get a fresh request URL.
         // eslint-disable-next-line no-await-in-loop
         await sleep(Math.min(1800, 260 * (attempt + 1)));
       }
@@ -191,48 +193,13 @@ export async function prepareImageForBoard(file) {
 }
 
 export async function storeBoardImage(boardId, file) {
+  // Keep the public call signature stable for Board.jsx. The board id is no longer
+  // needed because the compressed bytes live inside the browser-authoritative object.
+  void boardId;
   const prepared = await prepareImageForBoard(file);
-
-  if (!isSupabaseConfigured) {
-    return {
-      url: await blobToDataUrl(prepared.blob),
-      storagePath: null,
-      ...prepared,
-    };
-  }
-
-  const storagePath = `${boardId}/${Date.now()}-${randomToken(14)}.${prepared.extension}`;
-  const { error } = await supabase.storage
-    .from(IMAGE_BUCKET)
-    .upload(storagePath, prepared.blob, {
-      cacheControl: '31536000',
-      contentType: prepared.contentType,
-      upsert: false,
-    });
-
-  if (error) {
-    if (/bucket.*not found/i.test(error.message ?? '')) {
-      throw new Error('В Supabase не создано хранилище board-assets. Запусти SQL обновления 0.3.7.');
-    }
-    throw new Error(`Не удалось загрузить изображение: ${error.message}`);
-  }
-
-  const { data } = supabase.storage.from(IMAGE_BUCKET).getPublicUrl(storagePath);
-  const publicUrl = data?.publicUrl;
-  if (!publicUrl) throw new Error('Supabase не вернул ссылку на изображение');
-
-  // Store a versioned URL in the board. This prevents another phone/tablet
-  // from reusing a cached 404 response for a file that has just been uploaded.
-  const separator = publicUrl.includes('?') ? '&' : '?';
-  const versionedUrl = `${publicUrl}${separator}v=${Date.now()}`;
-
-  // Verify that the freshly uploaded asset is readable before its URL is
-  // committed to the shared board state.
-  await loadImageElement(versionedUrl, { retries: 10 });
-
   return {
-    url: versionedUrl,
-    storagePath,
+    url: await blobToDataUrl(prepared.blob),
+    storagePath: null,
     ...prepared,
   };
 }
@@ -265,70 +232,11 @@ export async function preloadSerializedImages(value) {
   await Promise.all(workers);
 }
 
-function collectSerializedImageNodes(value, results) {
-  if (!value || typeof value !== 'object') return;
-  if (Array.isArray(value)) {
-    value.forEach((item) => collectSerializedImageNodes(item, results));
-    return;
-  }
-  const type = String(value.type ?? '').toLowerCase();
-  if ((type === 'image' || value.objectKind === 'image') && typeof value.src === 'string') {
-    results.push(value);
-  }
-  Object.values(value).forEach((item) => collectSerializedImageNodes(item, results));
-}
-
 /**
- * Give cross-board pasted images their own Storage files. This prevents a pasted
- * lesson from depending on the source board's asset folder forever.
+ * Browser-authority images are self-contained data URLs. A cross-board duplicate
+ * therefore needs only a defensive clone; no network fetch or second upload exists.
  */
 export async function copySerializedBoardImages(value, targetBoardId) {
-  if (!isSupabaseConfigured) return value;
-  const sourceNodes = [];
-  collectSerializedImageNodes(value, sourceNodes);
-  if (!sourceNodes.length) return value;
-
-  const clone = typeof structuredClone === 'function'
-    ? structuredClone(value)
-    : JSON.parse(JSON.stringify(value));
-  const nodes = [];
-  collectSerializedImageNodes(clone, nodes);
-  const sourceMap = new Map();
-  for (const node of nodes) {
-    const source = String(node.src ?? '');
-    if (!source || sourceMap.has(source)) continue;
-    sourceMap.set(source, null);
-  }
-
-  const sources = [...sourceMap.keys()];
-  const queue = [...sources];
-  const workers = Array.from({ length: Math.min(2, queue.length) }, async () => {
-    while (queue.length) {
-      const source = queue.shift();
-      if (!source) continue;
-      const response = await fetch(source, { mode: 'cors', cache: 'force-cache' });
-      if (!response.ok) throw new Error(`Не удалось скопировать изображение (${response.status})`);
-      const blob = await response.blob();
-      const extension = blob.type === 'image/png'
-        ? 'png'
-        : blob.type === 'image/webp'
-          ? 'webp'
-          : 'jpg';
-      const file = new File([blob], `copied-image.${extension}`, {
-        type: blob.type || `image/${extension === 'jpg' ? 'jpeg' : extension}`,
-      });
-      // eslint-disable-next-line no-await-in-loop
-      const stored = await storeBoardImage(targetBoardId, file);
-      sourceMap.set(source, stored);
-    }
-  });
-  await Promise.all(workers);
-
-  nodes.forEach((node) => {
-    const stored = sourceMap.get(String(node.src ?? ''));
-    if (!stored) return;
-    node.src = stored.url;
-    node.storagePath = stored.storagePath;
-  });
-  return clone;
+  void targetBoardId;
+  return cloneValue(value);
 }
