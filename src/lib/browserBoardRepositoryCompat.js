@@ -339,7 +339,7 @@ export function createBrowserBoardRepository({
       return results;
     },
 
-    async saveBoardSnapshot(boardId, key, snapshot, revision) {
+    async saveBoardSnapshot(boardId, key, _snapshot, _revision) {
       const id = String(boardId ?? '').trim();
       const board = await getBoard(id);
       if (!board) {
@@ -349,8 +349,24 @@ export function createBrowserBoardRepository({
         // to a student replica are authoritative teacher snapshots/commits over P2P.
         return safeRevision(getReplica(id)?.revision);
       }
+
       await requireOwner(boardId, key);
-      return saveSnapshot(id, cloneValue(snapshot ?? EMPTY_SNAPSHOT), safeRevision(revision));
+
+      // Board.jsx still owns legacy UI/Fabric snapshot compaction hooks. Those snapshots
+      // are useful as a render cache but they are not allowed to become durable truth:
+      // an incomplete UI snapshot combined with an advanced snapshotRevision can make
+      // older valid journal commits unreachable on the next reload. Only the teacher
+      // authority runtime (or a freshly-opened authority when no runtime is registered)
+      // may compact the canonical snapshot.
+      const runtime = activeRuntime(id);
+      if (typeof runtime?.compactSnapshot === 'function') {
+        return safeRevision(await runtime.compactSnapshot());
+      }
+      const authority = await openAuthority({ boardId: id });
+      if (typeof authority?.compactSnapshot !== 'function') {
+        throw new Error('Teacher authority snapshot compaction is unavailable');
+      }
+      return safeRevision(await authority.compactSnapshot());
     },
   };
 }
