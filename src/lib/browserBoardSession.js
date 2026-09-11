@@ -29,6 +29,7 @@ export function createBrowserBoardSession({
   onAuthoritativeCommit = async () => {},
   onAuthoritativeSnapshot = async () => {},
   onPeerState = () => {},
+  onRuntimeState = () => {},
   onError = () => {},
   rtcConfig = {},
   createTeacherTabAuthority = createDefaultTeacherTabAuthority,
@@ -58,7 +59,25 @@ export function createBrowserBoardSession({
   let teacherTabAuthorityHeld = false;
   let teacherTabReadyPromise = null;
   let rejectTeacherTabReady = null;
+  let runtimeState = 'idle';
   const runtimeWaiters = new Set();
+
+  const reportRuntimeState = (nextState, error = null) => {
+    const normalized = String(nextState || 'waiting');
+    if (runtimeState === normalized) return;
+    runtimeState = normalized;
+    try {
+      onRuntimeState(normalized, {
+        boardId: safeBoardId,
+        clientId: safeClientId,
+        permission,
+        teacherId,
+        error: error instanceof Error ? error.message : (error ? String(error) : null),
+      });
+    } catch {
+      // Runtime-state observers are diagnostic/UI only and must never break authority.
+    }
+  };
 
   const replicaRevision = () => safeRevision(
     typeof getReplicaRevision === 'function'
@@ -78,7 +97,7 @@ export function createBrowserBoardSession({
     runtimeWaiters.clear();
   };
 
-  const clearRuntime = () => {
+  const clearRuntime = ({ nextState = closed ? 'closed' : 'waiting' } = {}) => {
     const previousRuntime = runtime;
     const previousUnregister = unregisterRuntime;
     runtime = null;
@@ -86,6 +105,14 @@ export function createBrowserBoardSession({
     durableBridge = null;
     previousUnregister?.();
     try { previousRuntime?.close?.(); } catch (error) { onError(error); }
+    reportRuntimeState(nextState);
+  };
+
+  const failRuntimeReadiness = (error) => {
+    const resolvedError = error instanceof Error ? error : new Error(String(error));
+    rejectRuntimeWaiters(resolvedError);
+    reportRuntimeState('error', resolvedError);
+    return resolvedError;
   };
 
   const releaseTeacherTabAuthority = (error = new Error('Teacher tab authority was released')) => {
@@ -176,6 +203,7 @@ export function createBrowserBoardSession({
     runtime = nextRuntime;
     unregisterRuntime = registerRuntime(safeBoardId, nextRuntime);
     durableBridge = createBrowserAuthorityDurableBridge({ runtime: nextRuntime, clientId: safeClientId });
+    reportRuntimeState('ready');
     settleRuntimeWaiters(nextRuntime);
     return nextRuntime;
   };
@@ -216,6 +244,7 @@ export function createBrowserBoardSession({
     const resolvedTeacherId = safeId(nextTeacherId);
     if (!resolvedTeacherId) return null;
     if (runtime && teacherId === resolvedTeacherId) return runtime;
+    reportRuntimeState('waiting');
 
     let nextRuntime = null;
     const handleStudentState = (state) => {
@@ -260,6 +289,7 @@ export function createBrowserBoardSession({
         teacherId = '';
         clearRuntime();
       }
+      failRuntimeReadiness(error);
       throw error;
     }
     return installed;
@@ -277,12 +307,17 @@ export function createBrowserBoardSession({
     start() {
       if (closed) return Promise.reject(new Error('Board session is closed'));
       if (startPromise) return startPromise;
-      startPromise = isOwner ? startTeacher() : Promise.resolve(null);
+      reportRuntimeState('waiting');
+      const task = isOwner ? startTeacher() : Promise.resolve(null);
+      startPromise = task.catch((error) => {
+        throw failRuntimeReadiness(error);
+      });
       return startPromise;
     },
     whenRuntimeReady() {
       if (runtime) return Promise.resolve(runtime);
       if (closed) return Promise.reject(new Error('Board session is closed'));
+      if (runtimeState === 'error') return Promise.reject(new Error('Browser durable runtime startup failed'));
       return new Promise((resolve, reject) => runtimeWaiters.add({ resolve, reject }));
     },
     updateParticipants(users) {
@@ -308,6 +343,7 @@ export function createBrowserBoardSession({
       return runtime.requestLock(operation, payload);
     },
     getRuntime() { return runtime; },
+    getRuntimeState() { return runtimeState; },
     getTeacherId() { return teacherId; },
     getRevision() {
       if (typeof runtime?.getRevision === 'function') return safeRevision(runtime.getRevision());
@@ -319,7 +355,7 @@ export function createBrowserBoardSession({
       teacherId = '';
       const closeError = new Error('Board session is closed');
       rejectRuntimeWaiters(closeError);
-      clearRuntime();
+      clearRuntime({ nextState: 'closed' });
       if (isOwner) releaseTeacherTabAuthority(closeError);
     },
   };
