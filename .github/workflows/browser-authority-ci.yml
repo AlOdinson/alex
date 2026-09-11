@@ -218,7 +218,12 @@ jobs:
       - name: Install lightweight Playwright driver
         run: npm install --no-save --no-package-lock playwright-core@1.55.0
 
-      - name: Two-context Chromium browser-authority E2E
+      - name: Chromium browser-authority functional E2E
         env:
           BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
         run: node scripts/test-browser-authority-preview-e2e.mjs
+
+      - name: Chromium browser-authority resilience E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-resilience-e2e.mjs
