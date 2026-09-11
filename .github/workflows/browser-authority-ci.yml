@@ -214,3 +214,11 @@ jobs:
             exit 1
           fi
           echo "Published browser-authority preview and production root: ok"
+
+      - name: Install lightweight Playwright driver
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
+
+      - name: Two-context Chromium browser-authority E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-preview-e2e.mjs
