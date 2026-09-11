@@ -130,3 +130,58 @@ test('broadcasts a teacher-originated durable commit to every connected peer', a
   assert.deepEqual(peerA.sent, [{ type: 'commit', payload: commit }]);
   assert.deepEqual(peerB.sent, [{ type: 'commit', payload: commit }]);
 });
+
+test('routes peer lock requests through teacher authority without trusting payload clientId', async () => {
+  const transport = makeTransport();
+  const requests = [];
+  const lockAuthority = {
+    acquire(request) {
+      requests.push(request);
+      return {
+        granted: true,
+        objectIds: request.objectIds,
+        lockToken: request.lockToken,
+        expiresAt: 12345,
+        conflicts: [],
+      };
+    },
+  };
+  const hub = createTeacherPeerHub({
+    authority: { getRevision: () => 0, commitAction: async () => null },
+    getSnapshot: async () => ({ snapshot: {}, revision: 0 }),
+    getCommitsAfter: async () => [],
+    lockAuthority,
+  });
+  hub.addPeer('student-a', transport);
+
+  await hub.handleMessage('student-a', {
+    type: 'lock-request',
+    payload: {
+      requestId: 'request-1',
+      operation: 'acquire',
+      clientId: 'spoofed-client',
+      lockToken: 'lock-token-123',
+      objectIds: ['shape-1'],
+      ttlMs: 12000,
+    },
+  });
+
+  assert.deepEqual(requests, [{
+    clientId: 'student-a',
+    lockToken: 'lock-token-123',
+    objectIds: ['shape-1'],
+    ttlMs: 12000,
+  }]);
+  assert.deepEqual(transport.sent, [{
+    type: 'lock-result',
+    payload: {
+      requestId: 'request-1',
+      operation: 'acquire',
+      granted: true,
+      objectIds: ['shape-1'],
+      lockToken: 'lock-token-123',
+      expiresAt: 12345,
+      conflicts: [],
+    },
+  }]);
+});
