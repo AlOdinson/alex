@@ -86,3 +86,28 @@ test('serializes simultaneous commits so revisions cannot collide', async () => 
   assert.deepEqual(persisted, [31, 32]);
   assert.equal(authority.getRevision(), 32);
 });
+
+test('honors durable deduplication after authority reload without advancing revision', async () => {
+  const authority = createTeacherAuthority({
+    initialRevision: 12,
+    persistCommit: async (attempted) => ({
+      duplicate: true,
+      commit: {
+        ...attempted,
+        revision: 9,
+        committedAt: 100,
+      },
+    }),
+  });
+
+  const result = await authority.commitAction({
+    actionId: 'action-from-before-reload',
+    clientId: 'student-a',
+    baseRevision: 8,
+    ops: [{ type: 'delete', id: 'old' }],
+  });
+
+  assert.equal(result.revision, 9);
+  assert.equal(result.duplicate, true);
+  assert.equal(authority.getRevision(), 12);
+});
