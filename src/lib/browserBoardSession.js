@@ -11,6 +11,7 @@ import { createTeacherBoardRuntime as createDefaultTeacherRuntime } from './teac
 import { createTeacherTabAuthority as createDefaultTeacherTabAuthority } from './teacherTabAuthority.js';
 
 const TERMINAL_STUDENT_STATES = new Set(['failed', 'closed']);
+const RUNTIME_STATE_EVENT = 'alex-board-runtime-state';
 
 function safeId(value) {
   return String(value ?? '').trim();
@@ -66,16 +67,27 @@ export function createBrowserBoardSession({
     const normalized = String(nextState || 'waiting');
     if (runtimeState === normalized) return;
     runtimeState = normalized;
+    const detail = {
+      state: normalized,
+      boardId: safeBoardId,
+      clientId: safeClientId,
+      permission,
+      teacherId,
+      error: error instanceof Error ? error.message : (error ? String(error) : null),
+    };
     try {
-      onRuntimeState(normalized, {
-        boardId: safeBoardId,
-        clientId: safeClientId,
-        permission,
-        teacherId,
-        error: error instanceof Error ? error.message : (error ? String(error) : null),
-      });
+      onRuntimeState(normalized, detail);
     } catch {
       // Runtime-state observers are diagnostic/UI only and must never break authority.
+    }
+    try {
+      if (typeof window !== 'undefined'
+        && typeof window.dispatchEvent === 'function'
+        && typeof CustomEvent === 'function') {
+        window.dispatchEvent(new CustomEvent(RUNTIME_STATE_EVENT, { detail }));
+      }
+    } catch {
+      // Browser UI diagnostics/gating must never break the durable authority runtime.
     }
   };
 
