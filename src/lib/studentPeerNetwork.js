@@ -87,6 +87,13 @@ export function createStudentPeerNetwork({
       return session.proposeAction(action);
     },
 
+    async requestLock(operation, payload = {}) {
+      if (!session) throw new Error('Teacher peer data channel is not ready');
+      await channelStart;
+      if (typeof session.requestLock !== 'function') throw new Error('Peer lock API is unavailable');
+      return session.requestLock(operation, payload);
+    },
+
     whenIdle() {
       return Promise.all([
         channelStart.catch(() => undefined),
