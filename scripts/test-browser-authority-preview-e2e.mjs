@@ -110,6 +110,34 @@ async function waitForCanvasOrDump(page, label) {
   }
 }
 
+async function clickOwnerShareOrDump(page, authorityRecord) {
+  const shareButton = page.getByRole('button', { name: 'Поделиться ссылкой на доску' });
+  try {
+    await shareButton.waitFor({ state: 'visible', timeout: 8_000 });
+  } catch (error) {
+    const diagnostic = await page.evaluate(() => ({
+      url: window.location.href,
+      body: document.body?.innerText?.slice(0, 6000) ?? '',
+      buttons: [...document.querySelectorAll('button')].map((button) => ({
+        text: button.innerText,
+        ariaLabel: button.getAttribute('aria-label'),
+        title: button.getAttribute('title'),
+        disabled: button.disabled,
+      })),
+    }));
+    const urlKey = new URL(page.url()).searchParams.get('key') ?? '';
+    console.error('teacher owner-key diagnostic:', JSON.stringify({
+      urlKeyMatchesIndexedOwnerKey: urlKey === String(authorityRecord?.ownerKey ?? ''),
+      urlKeyLength: urlKey.length,
+      indexedOwnerKeyLength: String(authorityRecord?.ownerKey ?? '').length,
+      indexedGuestMode: authorityRecord?.guestMode ?? null,
+    }));
+    console.error('teacher toolbar diagnostic:', JSON.stringify(diagnostic));
+    throw error;
+  }
+  await shareButton.click();
+}
+
 async function canvasDigest(page) {
   return page.locator('canvas.lower-canvas').evaluate((canvas) => canvas.toDataURL('image/png'));
 }
@@ -172,7 +200,7 @@ try {
   const initialBoard = await waitFor('teacher authority board', async () => authorityBoard(teacher, boardId));
   assert.equal(Number(initialBoard.revision ?? -1), 0, 'A fresh board should start at revision 0');
 
-  await teacher.getByRole('button', { name: 'Поделиться ссылкой на доску' }).click();
+  await clickOwnerShareOrDump(teacher, initialBoard);
   const shareInput = teacher.locator('.share-dialog .copy-row input');
   const shareUrl = await waitFor('derived student share URL', async () => {
     const value = await shareInput.inputValue();
