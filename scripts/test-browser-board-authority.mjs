@@ -212,3 +212,67 @@ test('compacts the reconstructed current snapshot at the current revision', asyn
   assert.equal(saves[0].revision, 1);
   assert.equal(saves[0].snapshot.canvas.objects[0].boardObjectId, 'x');
 });
+
+test('one teacher Pencil commit does not structuredClone the entire authoritative snapshot', async () => {
+  const largeSnapshot = {
+    version: 2,
+    background: 'grid',
+    canvas: {
+      objects: Array.from({ length: 2000 }, (_, index) => ({
+        boardObjectId: `teacher-existing-${index}`,
+        type: 'path',
+        path: [['M', index, index], ['L', index + 1, index + 1]],
+      })),
+    },
+  };
+
+  const service = await openBrowserBoardAuthority({
+    boardId: 'teacher-hot-path',
+    loadBoard: async () => ({
+      boardId: 'teacher-hot-path',
+      revision: 0,
+      snapshotRevision: 0,
+      snapshot: largeSnapshot,
+      tombstones: {},
+    }),
+    loadCommitsAfter: async () => [],
+    persistCommit: async (_boardId, commit) => ({ commit, duplicate: false }),
+    persistNoopOutcome: async (_boardId, result) => ({ result, duplicate: false }),
+    loadActionOutcome: async () => null,
+    saveSnapshot: async () => {},
+  });
+
+  const originalStructuredClone = globalThis.structuredClone;
+  assert.equal(typeof originalStructuredClone, 'function');
+  let wholeSnapshotClones = 0;
+  globalThis.structuredClone = (value) => {
+    if (Array.isArray(value?.canvas?.objects) && value.canvas.objects.length >= 2000) {
+      wholeSnapshotClones += 1;
+    }
+    return originalStructuredClone(value);
+  };
+
+  try {
+    const result = await service.commitAction({
+      actionId: 'teacher-hot-1',
+      clientId: 'teacher',
+      baseRevision: 0,
+      ops: [{
+        type: 'upsert',
+        object: {
+          boardObjectId: 'teacher-new-stroke',
+          type: 'path',
+          path: [['M', 0, 0], ['L', 3, 3]],
+        },
+      }],
+    });
+    assert.equal(result.changed, true);
+    assert.equal(
+      wholeSnapshotClones,
+      0,
+      'teacher authority must mutate its private in-memory snapshot after persistence instead of cloning the whole board',
+    );
+  } finally {
+    globalThis.structuredClone = originalStructuredClone;
+  }
+});
