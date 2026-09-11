@@ -10,6 +10,7 @@ import './ipad-system-color-palette.css';
 import './ipad-system-color-palette-scale.css';
 import './historyKeyboardShortcuts.js';
 import './durableEditGate.js';
+import './fabricStylusTouchCompatibility.js';
 import './pencilFreezeDiagnostics.js';
 import './dock-layout-controller.js';
 import './floating-drawing-controls-enhancer.js';
