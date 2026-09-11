@@ -96,3 +96,75 @@ test('proposes local actions against the current authoritative revision', async 
     },
   }]);
 });
+
+test('waits for the matching durable ack before resolving a student proposal', async () => {
+  const transport = makeTransport();
+  const session = createStudentPeerSession({
+    transport,
+    getRevision: () => 22,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+  });
+
+  let settled = false;
+  const task = session.proposeActionAndWait({
+    actionId: 'student-action-ack',
+    clientId: 'student-a',
+    ops: [{ type: 'delete', id: 'x' }],
+  }).then((value) => {
+    settled = true;
+    return value;
+  });
+
+  await Promise.resolve();
+  assert.equal(settled, false);
+  assert.equal(transport.sent.at(-1)?.type, 'action-proposal');
+
+  await session.handleMessage({
+    type: 'ack',
+    payload: { actionId: 'some-other-action', revision: 23, accepted: true },
+  });
+  await Promise.resolve();
+  assert.equal(settled, false);
+
+  await session.handleMessage({
+    type: 'ack',
+    payload: { actionId: 'student-action-ack', revision: 23, accepted: true, duplicate: false },
+  });
+  assert.deepEqual(await task, {
+    actionId: 'student-action-ack',
+    revision: 23,
+    accepted: true,
+    duplicate: false,
+  });
+});
+
+test('returns rejected durable acks to the caller instead of hiding conflicts', async () => {
+  const transport = makeTransport();
+  const session = createStudentPeerSession({
+    transport,
+    getRevision: () => 9,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+  });
+
+  const task = session.proposeActionAndWait({
+    actionId: 'student-rejected-action',
+    ops: [{ type: 'patch', id: 'locked', patch: { left: 10 } }],
+  });
+  await Promise.resolve();
+  await session.handleMessage({
+    type: 'ack',
+    payload: {
+      actionId: 'student-rejected-action',
+      revision: 9,
+      accepted: false,
+      rejectedObjectIds: ['locked'],
+      needsSync: false,
+      error: 'Object locked by another participant',
+    },
+  });
+  const result = await task;
+  assert.equal(result.accepted, false);
+  assert.deepEqual(result.rejectedObjectIds, ['locked']);
+});
