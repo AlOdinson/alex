@@ -55,7 +55,6 @@ jobs:
       cancel-in-progress: true
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}preview-browser-authority/
 
     steps:
       - name: Checkout browser-authority branch
