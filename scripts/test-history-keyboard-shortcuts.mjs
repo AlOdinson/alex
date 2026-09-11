@@ -17,6 +17,17 @@ assert.equal(
   'Ctrl+physical-Y must normalize to redo on a Russian keyboard layout',
 );
 assert.equal(
+  normalizeHistoryShortcutKey({
+    ctrlKey: true,
+    metaKey: false,
+    code: 'KeyZ',
+    key: 'я',
+    target: { tagName: 'INPUT', isContentEditable: false },
+  }),
+  null,
+  'Text inputs must keep the browser native undo behavior',
+);
+assert.equal(
   normalizeHistoryShortcutKey({ ctrlKey: true, metaKey: false, code: 'KeyZ', key: 'z' }),
   null,
   'Already-normalized Latin shortcuts must be left to Board.jsx to avoid duplicate undo',
