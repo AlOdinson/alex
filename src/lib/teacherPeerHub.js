@@ -1,3 +1,4 @@
+import { operationObjectIds } from './operationProtocol.js';
 import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
 
 function defaultTransferId() {
@@ -164,8 +165,32 @@ export function createTeacherPeerHub({
 
       if (type !== 'action-proposal') return;
 
+      const proposal = {
+        ...payload,
+        clientId: safePeerId,
+      };
+      const affectedIds = [...operationObjectIds(proposal.ops ?? [])];
+      if (affectedIds.length && typeof lockAuthority?.getConflicts === 'function') {
+        const conflicts = await lockAuthority.getConflicts({
+          clientId: safePeerId,
+          objectIds: affectedIds,
+        });
+        if (Array.isArray(conflicts) && conflicts.length) {
+          await peer.send('ack', {
+            actionId: String(proposal.actionId ?? ''),
+            revision: safeRevision(authority.getRevision()),
+            accepted: false,
+            duplicate: false,
+            needsSync: false,
+            rejectedObjectIds: [...new Set(conflicts.map((conflict) => String(conflict?.objectId ?? '')).filter(Boolean))],
+            error: 'Object locked by another participant',
+          });
+          return;
+        }
+      }
+
       try {
-        const commit = await authority.commitAction(payload);
+        const commit = await authority.commitAction(proposal);
         if (commit?.duplicate) {
           await peer.send('commit', commit);
         } else {
@@ -173,7 +198,7 @@ export function createTeacherPeerHub({
           onCommit(commit);
         }
         await peer.send('ack', {
-          actionId: String(commit?.actionId ?? payload.actionId ?? ''),
+          actionId: String(commit?.actionId ?? proposal.actionId ?? ''),
           revision: safeRevision(commit?.revision),
           accepted: true,
           duplicate: Boolean(commit?.duplicate),
@@ -181,7 +206,7 @@ export function createTeacherPeerHub({
         });
       } catch (error) {
         await peer.send('ack', {
-          actionId: String(payload.actionId ?? ''),
+          actionId: String(proposal.actionId ?? ''),
           revision: safeRevision(authority.getRevision()),
           accepted: false,
           duplicate: false,
