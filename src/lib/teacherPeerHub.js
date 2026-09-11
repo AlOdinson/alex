@@ -25,6 +25,7 @@ export function createTeacherPeerHub({
   createTransferId = defaultTransferId,
   maxJournalCommits = 256,
   onCommit = () => {},
+  lockAuthority = null,
 } = {}) {
   if (!authority?.getRevision || !authority?.commitAction) throw new Error('teacher authority is required');
   if (typeof getSnapshot !== 'function') throw new Error('getSnapshot is required');
@@ -99,7 +100,8 @@ export function createTeacherPeerHub({
     broadcastCommit,
 
     async handleMessage(peerId, message) {
-      const peer = requirePeer(peerId);
+      const safePeerId = String(peerId ?? '').trim();
+      const peer = requirePeer(safePeerId);
       const type = String(message?.type ?? '');
       const payload = message?.payload && typeof message.payload === 'object' ? message.payload : {};
 
@@ -115,6 +117,22 @@ export function createTeacherPeerHub({
 
       if (type === 'sync-request') {
         await sendSync(peer, payload.revision);
+        return;
+      }
+
+      if (type === 'lock-request') {
+        if (!lockAuthority || String(payload.operation ?? '') !== 'acquire') return;
+        const result = await lockAuthority.acquire({
+          clientId: safePeerId,
+          lockToken: String(payload.lockToken ?? ''),
+          objectIds: Array.isArray(payload.objectIds) ? payload.objectIds.map(String) : [],
+          ttlMs: Number(payload.ttlMs ?? 0),
+        });
+        await peer.send('lock-result', {
+          ...result,
+          requestId: String(payload.requestId ?? ''),
+          operation: 'acquire',
+        });
         return;
       }
 
