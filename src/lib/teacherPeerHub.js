@@ -42,6 +42,14 @@ export function createTeacherPeerHub({
     return peer;
   };
 
+  const removePeer = (peerId) => {
+    const id = String(peerId ?? '').trim();
+    peers.delete(id);
+    if (id && typeof lockAuthority?.release === 'function') {
+      Promise.resolve(lockAuthority.release({ clientId: id })).catch(() => undefined);
+    }
+  };
+
   const broadcastCommit = async (commit) => {
     for (const transport of peers.values()) {
       // eslint-disable-next-line no-await-in-loop
@@ -88,12 +96,10 @@ export function createTeacherPeerHub({
       if (!id) throw new Error('peerId is required');
       if (!transport?.send || !transport?.sendTextTransfer) throw new Error('peer transport is required');
       peers.set(id, transport);
-      return () => peers.delete(id);
+      return () => removePeer(id);
     },
 
-    removePeer(peerId) {
-      peers.delete(String(peerId ?? ''));
-    },
+    removePeer,
 
     getPeerCount() {
       return peers.size;
@@ -123,17 +129,35 @@ export function createTeacherPeerHub({
       }
 
       if (type === 'lock-request') {
-        if (!lockAuthority || String(payload.operation ?? '') !== 'acquire') return;
-        const result = await lockAuthority.acquire({
-          clientId: safePeerId,
-          lockToken: String(payload.lockToken ?? ''),
-          objectIds: Array.isArray(payload.objectIds) ? payload.objectIds.map(String) : [],
-          ttlMs: Number(payload.ttlMs ?? 0),
-        });
+        if (!lockAuthority) return;
+        const operation = String(payload.operation ?? '');
+        let result = null;
+        if (operation === 'acquire' && typeof lockAuthority.acquire === 'function') {
+          result = await lockAuthority.acquire({
+            clientId: safePeerId,
+            lockToken: String(payload.lockToken ?? ''),
+            objectIds: Array.isArray(payload.objectIds) ? payload.objectIds.map(String) : [],
+            ttlMs: Number(payload.ttlMs ?? 0),
+          });
+        }
+        if (operation === 'refresh' && typeof lockAuthority.refresh === 'function') {
+          result = await lockAuthority.refresh({
+            clientId: safePeerId,
+            lockToken: String(payload.lockToken ?? ''),
+            ttlMs: Number(payload.ttlMs ?? 0),
+          });
+        }
+        if (operation === 'release' && typeof lockAuthority.release === 'function') {
+          result = await lockAuthority.release({
+            clientId: safePeerId,
+            lockToken: payload.lockToken == null ? null : String(payload.lockToken),
+          });
+        }
+        if (!result) return;
         await peer.send('lock-result', {
           ...result,
           requestId: String(payload.requestId ?? ''),
-          operation: 'acquire',
+          operation,
         });
         return;
       }
