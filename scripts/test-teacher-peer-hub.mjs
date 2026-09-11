@@ -185,3 +185,57 @@ test('routes peer lock requests through teacher authority without trusting paylo
     },
   }]);
 });
+
+test('default teacher lock authority rejects conflicts atomically and releases replaced selection', async () => {
+  const peerA = makeTransport();
+  const peerB = makeTransport();
+  const hub = createTeacherPeerHub({
+    authority: { getRevision: () => 0, commitAction: async () => null },
+    getSnapshot: async () => ({ snapshot: {}, revision: 0 }),
+    getCommitsAfter: async () => [],
+  });
+  hub.addPeer('student-a', peerA);
+  hub.addPeer('student-b', peerB);
+
+  await hub.handleMessage('student-a', {
+    type: 'lock-request',
+    payload: {
+      requestId: 'a-1', operation: 'acquire', lockToken: 'token-student-a',
+      objectIds: ['shape-1'], ttlMs: 12000,
+    },
+  });
+  const first = peerA.sent.at(-1)?.payload;
+  assert.equal(first?.granted, true);
+  assert.deepEqual(first?.objectIds, ['shape-1']);
+
+  await hub.handleMessage('student-b', {
+    type: 'lock-request',
+    payload: {
+      requestId: 'b-1', operation: 'acquire', lockToken: 'token-student-b',
+      objectIds: ['shape-1'], ttlMs: 12000,
+    },
+  });
+  const conflict = peerB.sent.at(-1)?.payload;
+  assert.equal(conflict?.granted, false);
+  assert.deepEqual(conflict?.objectIds, ['shape-1']);
+  assert.equal(conflict?.conflicts?.[0]?.objectId, 'shape-1');
+  assert.equal(conflict?.conflicts?.[0]?.clientId, 'student-a');
+
+  await hub.handleMessage('student-a', {
+    type: 'lock-request',
+    payload: {
+      requestId: 'a-2', operation: 'acquire', lockToken: 'token-student-a',
+      objectIds: ['shape-2'], ttlMs: 12000,
+    },
+  });
+  assert.equal(peerA.sent.at(-1)?.payload?.granted, true);
+
+  await hub.handleMessage('student-b', {
+    type: 'lock-request',
+    payload: {
+      requestId: 'b-2', operation: 'acquire', lockToken: 'token-student-b',
+      objectIds: ['shape-1'], ttlMs: 12000,
+    },
+  });
+  assert.equal(peerB.sent.at(-1)?.payload?.granted, true);
+});
