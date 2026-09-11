@@ -84,5 +84,56 @@ export function createTeacherObjectLockAuthority({ now = () => Date.now() } = {}
         conflicts: [],
       };
     },
+
+    refresh({ clientId, lockToken, ttlMs } = {}) {
+      const safeClientId = cleanString(clientId);
+      const safeLockToken = cleanString(lockToken);
+      if (!safeClientId) throw new Error('clientId is required');
+      if (safeLockToken.length < 8) throw new Error('Invalid lock token');
+      const timestamp = cleanupExpired();
+      const objectIds = [...locks.entries()]
+        .filter(([, lock]) => lock.clientId === safeClientId && lock.lockToken === safeLockToken)
+        .map(([objectId]) => objectId)
+        .sort();
+      if (!objectIds.length) {
+        return {
+          refreshed: false,
+          objectIds: [],
+          lockToken: safeLockToken,
+          expiresAt: timestamp,
+        };
+      }
+
+      const expiresAt = timestamp + safeTtl(ttlMs);
+      objectIds.forEach((objectId) => {
+        const lock = locks.get(objectId);
+        if (lock) locks.set(objectId, { ...lock, expiresAt });
+      });
+      return {
+        refreshed: true,
+        objectIds,
+        lockToken: safeLockToken,
+        expiresAt,
+      };
+    },
+
+    release({ clientId, lockToken = null } = {}) {
+      const safeClientId = cleanString(clientId);
+      const safeLockToken = lockToken == null ? null : cleanString(lockToken);
+      if (!safeClientId) throw new Error('clientId is required');
+      cleanupExpired();
+      const objectIds = [];
+      for (const [objectId, lock] of locks) {
+        if (lock.clientId !== safeClientId) continue;
+        if (safeLockToken != null && lock.lockToken !== safeLockToken) continue;
+        locks.delete(objectId);
+        objectIds.push(objectId);
+      }
+      objectIds.sort();
+      return {
+        released: objectIds.length,
+        objectIds,
+      };
+    },
   };
 }
