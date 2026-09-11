@@ -1,33 +1,50 @@
-# Browser Authority two-browser E2E checklist
+# Browser Authority final physical-network E2E checklist
 
 Use this only against the temporary `/preview-browser-authority/` deployment.
 
-## Setup
+## Already covered automatically
 
-- Teacher: desktop browser on the preview home page.
-- Student: separate browser/profile or device. Prefer a different network for the final pass (for example desktop Wi-Fi + phone cellular/hotspot).
+The hosted Chromium gates already verify on every browser-authority push:
+
+- new-board creation and guest-link bootstrap through the real UI;
+- Ably presence and WebRTC DataChannel establishment;
+- teacher → student and student → teacher durable drawing with teacher ACK/revisions;
+- student reload/reconnect and authoritative catch-up;
+- browser offline → online reconnect, including a teacher commit while the student is offline and a student durable edit after reconnect;
+- image transfer without Supabase Storage;
+- durable image undo/redo;
+- view-only enforcement;
+- teacher reload from IndexedDB;
+- exclusive owner-tab Web Lock, including blocking a second owner tab and authority takeover after the first owner closes.
+
+Do not repeat those as a large manual regression suite unless debugging a failure.
+
+## Final manual merge gate: different physical networks/NATs
+
+This is the one environment hosted CI cannot reproduce faithfully because the release intentionally uses direct WebRTC with STUN and **no TURN relay**.
+
+Setup:
+
+- Teacher: laptop/desktop on normal Wi-Fi, open the preview home page.
+- Student: a phone/tablet/second computer on a genuinely different network, preferably cellular data with Wi-Fi disabled.
 - Create a **new** board in the preview. Old Supabase-era boards are intentionally not migrated.
 
-## Required pass
+Required pass:
 
-1. Teacher creates a new board and draws text + pencil + shape.
-2. Teacher opens Share, copies the guest link, and opens it on the student browser.
-3. Student receives the full current board without a page refresh.
-4. Teacher draws/moves/deletes objects; student sees live preview and authoritative final state.
-5. Student draws/moves/deletes objects; teacher receives the durable change and the student does not report saved before teacher ACK.
-6. Insert an image on the teacher side; student receives it over the peer channel and can reload without needing Supabase Storage.
-7. Run undo/redo from both sides, including a stale/conflicting object edit. Newer remote edits must not be overwritten.
-8. Switch guest mode to **view**. Student must still sync but must not acquire a lock or commit an edit.
-9. Switch back to **edit** and confirm editing resumes without recreating the board.
-10. Reload the student. It must reconnect to the same teacher and resync from its local revision or a fresh snapshot.
-11. Temporarily disconnect the student network, reconnect it, and confirm the peer session is recreated and catches up.
-12. Close/reopen the teacher board tab. The board must restore from teacher IndexedDB. Student should reconnect once the teacher tab is available again.
-13. Verify a second teacher tab does not become a second authority for the same board.
+1. Teacher creates the new board and copies the guest link.
+2. Student opens the guest link over the other network and reaches the board.
+3. Teacher draws one pencil stroke; student receives the authoritative result.
+4. Student draws one pencil stroke; teacher receives it and the durable save completes.
+5. Leave both sides connected for roughly a minute and confirm the session does not fall into a reconnect/error loop.
+
+If all five pass, the direct-P2P physical-network merge gate is complete.
 
 ## Direct-only networking note
 
-The board uses STUN for NAT discovery and no TURN relay. A failure only on restrictive/corporate/symmetric-NAT networks may therefore be a direct-P2P reachability limitation rather than a board-state bug. Record the browser console/connection status if that occurs.
+The board uses `stun:stun.cloudflare.com:3478` for NAT discovery and no TURN relay. If the same build passes hosted E2E but cannot establish a peer connection on a restrictive/corporate/symmetric-NAT network, that can be a direct-P2P reachability limitation rather than a board-state defect. Record both networks and the browser connection status. Adding TURN later would broaden reachability but is intentionally outside the current architecture.
 
 ## Merge gate
 
-Do not merge PR #61 into `main` until the required pass succeeds in two real browsers. After verification, remove the temporary preview deployment workflow before or immediately after merge so normal `main` Pages deployment remains the only deployment path.
+Do not merge PR #61 into `main` until the five-step physical-network pass above succeeds, or until the release owner explicitly accepts the known direct-only reachability limitation and chooses to ship without that physical test.
+
+Keep the temporary preview deployment available until that decision is made. After merge, remove the temporary preview-only deployment machinery so normal `main` Pages deployment remains the production path.
