@@ -71,6 +71,9 @@ async function createOwnerBoard(page, title) {
   const boardId = boardIdFromUrl(page.url());
   assert.ok(boardId, 'Could not determine owner board id');
   const board = await waitFor('owner authority board', () => authorityBoard(page, boardId));
+  await waitFor('owner durable edit readiness', async () => (
+    await page.locator('html').getAttribute('data-alex-durable-edit-state') === 'ready'
+  ));
   return { boardId, board };
 }
 
@@ -120,7 +123,8 @@ const browser = await chromium.launch({
 });
 
 try {
-  // Scenario 1: only one owner tab may hold teacher authority at a time.
+  // Scenario 1: only one owner tab may hold teacher authority at a time. A waiting
+  // owner is explicitly non-editable, so no local stroke can pile up behind the lock.
   const ownerContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
   const ownerA = await ownerContext.newPage();
   attachDiagnostics(ownerA, 'owner-a');
@@ -132,8 +136,23 @@ try {
   await ownerB.goto(ownerA.url(), { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
   await enterBoardIfNeeded(ownerB, 'Teacher resilience');
   await ownerB.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
+  await waitFor('second owner waiting for authority', async () => (
+    await ownerB.locator('html').getAttribute('data-alex-durable-edit-state') === 'waiting'
+  ));
+  assert.equal(
+    await ownerB.locator('html').getAttribute('data-alex-durable-edit-blocked'),
+    'true',
+    'second owner must expose a blocked edit gate while the first owner holds the Web Lock',
+  );
+
+  const waitingDigest = await canvasDigest(ownerB);
   await drawStroke(ownerB, 80);
-  await new Promise((resolve) => setTimeout(resolve, 1800));
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  assert.equal(
+    await canvasDigest(ownerB),
+    waitingDigest,
+    'second owner must not even create a local canvas stroke while durable authority is unavailable',
+  );
   assert.equal(
     Number((await authorityBoard(ownerB, lockBoardId))?.revision ?? -1),
     0,
@@ -141,11 +160,22 @@ try {
   );
 
   await ownerA.close();
-  const takeoverRevision = await waitFor('second owner tab authority takeover', async () => {
+  await waitFor('second owner edit gate opens after authority takeover', async () => (
+    await ownerB.locator('html').getAttribute('data-alex-durable-edit-state') === 'ready'
+  ), 20_000);
+  assert.equal(
+    await ownerB.locator('html').getAttribute('data-alex-durable-edit-blocked'),
+    'false',
+    'edit gate must open after the second owner obtains durable authority',
+  );
+
+  await drawStroke(ownerB, 80);
+  const takeoverRevision = await waitFor('second owner durable edit after takeover', async () => {
     const revision = Number((await authorityBoard(ownerB, lockBoardId))?.revision ?? 0);
     return revision > 0 ? revision : 0;
   }, 20_000);
-  assert.ok(takeoverRevision > 0, 'second owner tab did not take authority after the first tab closed');
+  assert.ok(takeoverRevision > 0, 'second owner did not commit after taking authority');
+  assert.notEqual(await canvasDigest(ownerB), waitingDigest, 'post-takeover stroke did not render');
   await ownerContext.close();
 
   // Scenario 2: a real browser offline/online transition must recreate student connectivity and catch up.
@@ -162,6 +192,9 @@ try {
   await enterBoardIfNeeded(student, 'Student offline E2E');
   await student.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
   await waitForPresence(teacher, student);
+  await waitFor('student durable edit readiness', async () => (
+    await student.locator('html').getAttribute('data-alex-durable-edit-state') === 'ready'
+  ));
 
   const studentBlank = await canvasDigest(student);
   await drawStroke(teacher, 0);
@@ -185,6 +218,9 @@ try {
   await waitFor('student catch-up after offline reconnect', async () => (
     (await canvasDigest(student)) === teacherWhileOffline
   ), 30_000);
+  await waitFor('student edit gate reopens after reconnect', async () => (
+    await student.locator('html').getAttribute('data-alex-durable-edit-state') === 'ready'
+  ), 30_000);
 
   const teacherBeforeStudentEdit = await canvasDigest(teacher);
   await drawStroke(student, 240);
@@ -199,6 +235,7 @@ try {
   console.log(JSON.stringify({
     ok: true,
     secondOwnerBlocked: true,
+    waitingOwnerLocalStrokeBlocked: true,
     takeoverRevision,
     offlineReconnect: true,
     revisionBeforeOffline,
