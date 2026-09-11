@@ -65,18 +65,31 @@ export function createTeacherPeerHub({
     return peer;
   };
 
-  const removePeer = (peerId) => {
+  const removePeer = (peerId, expectedTransport = null) => {
     const id = String(peerId ?? '').trim();
+    const transport = peers.get(id);
+    if (!transport) return false;
+    // A stale cleanup callback must not unregister a replacement transport that has
+    // already been installed under the same stable peer id.
+    if (expectedTransport && transport !== expectedTransport) return false;
     peers.delete(id);
     if (id && typeof lockAuthority?.release === 'function') {
       Promise.resolve(lockAuthority.release({ clientId: id })).catch(() => undefined);
     }
+    return true;
   };
 
   const broadcastCommit = async (commit) => {
-    for (const transport of peers.values()) {
-      // eslint-disable-next-line no-await-in-loop
-      await transport.send('commit', commit);
+    for (const [peerId, transport] of peers.entries()) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await transport.send('commit', commit);
+      } catch {
+        // A durable teacher commit is already persisted before broadcast. One stale
+        // DataChannel must not prevent healthy peers receiving that authoritative
+        // commit, so retire only the transport that actually failed and continue.
+        removePeer(peerId, transport);
+      }
     }
   };
 
@@ -137,7 +150,7 @@ export function createTeacherPeerHub({
       if (!id) throw new Error('peerId is required');
       if (!transport?.send || !transport?.sendTextTransfer) throw new Error('peer transport is required');
       peers.set(id, transport);
-      return () => removePeer(id);
+      return () => removePeer(id, transport);
     },
 
     removePeer,
