@@ -157,3 +157,52 @@ test('student replaces the peer runtime when teacher presence changes and stale 
   assert.equal(second.teacherId, 'teacher-b');
   assert.deepEqual(closed, [1]);
 });
+
+test('student can recreate a failed peer runtime for the same teacher after presence refresh', async () => {
+  const runtimes = [];
+  const closed = [];
+  let currentRegistered = null;
+  const session = createBrowserBoardSession({
+    boardId: 'board-a',
+    clientId: 'student-a',
+    permission: 'edit',
+    sendScreenShareSignal: async () => {},
+    getReplica: () => ({ revision: 7 }),
+    createStudentRuntime: (options) => {
+      const number = runtimes.length + 1;
+      const next = {
+        number,
+        teacherId: options.teacherId,
+        start: async () => {},
+        proposeActionAndWait: async () => ({ accepted: true, revision: 7 }),
+        close() { closed.push(number); },
+      };
+      runtimes.push({ runtime: next, options });
+      return next;
+    },
+    registerRuntime: (_boardId, runtime) => {
+      currentRegistered = runtime;
+      return () => {
+        if (currentRegistered !== runtime) return false;
+        currentRegistered = null;
+        return true;
+      };
+    },
+  });
+
+  const presence = [{ clientId: 'teacher-a', permission: 'owner' }];
+  await session.start();
+  await session.updateParticipants(presence);
+  const first = currentRegistered;
+  assert.equal(first?.number, 1);
+
+  runtimes[0].options.onState('failed');
+  assert.equal(currentRegistered, null, 'failed student runtime must be unregistered before reconnect');
+  assert.deepEqual(closed, [1]);
+
+  await session.updateParticipants(presence);
+  const second = currentRegistered;
+  assert.equal(second?.number, 2);
+  assert.notEqual(second, first);
+  assert.equal(second.teacherId, 'teacher-a');
+});
