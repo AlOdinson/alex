@@ -21,6 +21,8 @@ for (const marker of [
   'RAW orphan pen contact sample',
   'RAW orphan stylus touchmove start',
   'RAW orphan compatibility mouse contact',
+  'RAW pointer delivery lag',
+  'UI event-loop gap',
   'APP capture pointerdown',
   'FABRIC pointerdown',
   'FABRIC path:created',
@@ -38,6 +40,12 @@ assert.match(diagnostics, /\['touchmove', touchHandler\]/,
   'diagnostics must observe stylus touchmove events that have no touchstart');
 assert.match(diagnostics, /pointerHasContact\(event\)/,
   'orphan Pencil contact detection must use buttons or pressure');
+assert.match(diagnostics, /deliveryLagMs/,
+  'diagnostics must measure delayed Pencil event delivery after a UI stall');
+assert.match(diagnostics, /window\.setInterval\(/,
+  'diagnostics must sample event-loop responsiveness while pencilDebug=1 is active');
+assert.match(diagnostics, /window\.clearInterval\(/,
+  'diagnostic event-loop sampling must be cleaned up on destroy');
 
 assert.match(board, /pencilDiagnosticsRef\.current = createPencilDiagnostics\(/,
   'Board must initialize the isolated diagnostic observer');
