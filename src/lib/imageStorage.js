@@ -221,14 +221,6 @@ export async function preloadSerializedImages(value) {
   const sources = new Set();
   collectImageSources(value, sources);
   const queue = [...sources];
-  const dataImageCount = queue.filter((source) => /^data:image\//i.test(source)).length;
-  if (dataImageCount > 0) {
-    console.warn('[authority-image-debug] preload:start', {
-      dataImageCount,
-      total: queue.length,
-      stack: new Error().stack,
-    });
-  }
   const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
     while (queue.length) {
       const source = queue.shift();
@@ -238,9 +230,6 @@ export async function preloadSerializedImages(value) {
     }
   });
   await Promise.all(workers);
-  if (dataImageCount > 0) {
-    console.warn('[authority-image-debug] preload:ok', { dataImageCount });
-  }
 }
 
 /**
