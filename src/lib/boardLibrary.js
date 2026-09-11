@@ -1,7 +1,21 @@
-const LIBRARY_KEY = 'alex-board:owner-library:v1';
+const LIBRARY_KEY = 'alex-board:owner-library:v2';
+const LEGACY_LIBRARY_KEY = 'alex-board:owner-library:v1';
 export const OWNED_BOARD_LIMIT = 50;
 
+let legacyLibraryCleared = false;
+
+function clearLegacyLibrary() {
+  if (legacyLibraryCleared) return;
+  legacyLibraryCleared = true;
+  try {
+    localStorage.removeItem(LEGACY_LIBRARY_KEY);
+  } catch {
+    // The board library is best-effort metadata. IndexedDB remains authoritative.
+  }
+}
+
 function readAll() {
+  clearLegacyLibrary();
   try {
     const value = JSON.parse(localStorage.getItem(LIBRARY_KEY) ?? '[]');
     return Array.isArray(value) ? value : [];
@@ -11,6 +25,7 @@ function readAll() {
 }
 
 function writeAll(entries) {
+  clearLegacyLibrary();
   localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries));
 }
 
@@ -60,8 +75,8 @@ export function updateOwnedBoard(boardId, patch) {
 }
 
 function createdTime(entry) {
-  const serverCreatedAt = Date.parse(entry?.createdAt ?? '');
-  if (Number.isFinite(serverCreatedAt)) return serverCreatedAt;
+  const createdAt = Date.parse(entry?.createdAt ?? '');
+  if (Number.isFinite(createdAt)) return createdAt;
   return Number(entry?.libraryAddedAt ?? entry?.lastOpenedAt ?? 0);
 }
 

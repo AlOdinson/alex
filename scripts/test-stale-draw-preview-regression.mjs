@@ -1,17 +1,49 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createBrowserAuthorityRealtimeCore } from '../src/lib/browserAuthorityRealtimeCore.js';
 import { shouldRejectRealtimeObjectFrame } from '../src/lib/convergence.js';
 
-const realtimeSource = fs.readFileSync(new URL('../src/lib/realtime.js', import.meta.url), 'utf8');
 const boardSource = fs.readFileSync(new URL('../src/components/Board.jsx', import.meta.url), 'utf8');
 
-const sendDrawStart = realtimeSource.indexOf('sendDraw(draw) {');
-const sendDrawEnd = realtimeSource.indexOf('sendPreview(records', sendDrawStart);
-assert.ok(sendDrawStart >= 0 && sendDrawEnd > sendDrawStart, 'sendDraw block must be present');
-assert.match(
-  realtimeSource.slice(sendDrawStart, sendDrawEnd),
-  /baseRevision/,
-  'draw realtime packets must carry a causal baseRevision',
+const published = [];
+const realtimeCore = createBrowserAuthorityRealtimeCore({
+  session: {
+    sendOps: async () => null,
+    getRevision: () => 999,
+  },
+  clientId: 'student-a',
+  getKnownRevision: () => 41,
+  publish: async (event, payload) => {
+    published.push({ event, payload });
+    return 'ok';
+  },
+});
+
+await realtimeCore.sendDraw({
+  sessionId: 'stroke-a',
+  objectId: 'path-a',
+  phase: 'update',
+  points: [[1, 2], [3, 4]],
+  baseRevision: 17,
+});
+assert.equal(published.length, 1, 'draw packet must be published');
+assert.equal(published[0].event, 'draw');
+assert.equal(
+  published[0].payload.baseRevision,
+  17,
+  'draw realtime packets must preserve the causal stroke baseRevision',
+);
+
+await realtimeCore.sendDraw({
+  sessionId: 'stroke-b',
+  objectId: 'path-b',
+  phase: 'update',
+  points: [[5, 6]],
+});
+assert.equal(
+  published.at(-1).payload.baseRevision,
+  41,
+  'draw packets without an explicit causal revision must fall back to the known Board revision',
 );
 
 const liveSendStart = boardSource.indexOf("const sendLiveDrawNow = useCallback((phase = 'update') => {");
@@ -85,4 +117,5 @@ for (let index = 0; index < 400; index += 1) {
   );
 }
 
+await realtimeCore.disconnect();
 console.log('Stale draw preview regression tests passed.');

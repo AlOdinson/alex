@@ -1,0 +1,234 @@
+name: Browser Authority CI
+
+on:
+  push:
+    branches:
+      - feature/browser-authority-v1
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Browser authority regressions
+        run: npm run test:browser-authority
+
+      - name: Legacy board and sync regressions (hosted-safe)
+        run: npm run test:sync:ci
+
+      - name: Type-check stateless Ably token endpoint
+        run: deno check --node-modules-dir=auto supabase/functions/ably-browser-token/index.ts
+
+      - name: Production build
+        run: npm run build
+
+  preview:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/browser-authority-v1'
+    needs: test
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: true
+
+    steps:
+      - name: Checkout browser-authority branch
+        uses: actions/checkout@v6
+
+      - name: Checkout current main for production root
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: main-src
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate Supabase public configuration
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_PUBLISHABLE_KEY" ]; then
+            echo "::error::VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY are required"
+            exit 1
+          fi
+
+      - name: Build production root from main
+        working-directory: main-src
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Build browser-authority preview
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          npm install --no-audit --no-fund
+          npm run build -- --base=/alex/preview-browser-authority/
+
+      - name: Smoke live stateless Ably token broker
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createClient } from '@supabase/supabase-js';
+
+          const client = createClient(
+            process.env.VITE_SUPABASE_URL,
+            process.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            { auth: { persistSession: false, autoRefreshToken: false } },
+          );
+          const { data, error } = await client.functions.invoke('ably-browser-token', {
+            body: {
+              boardId: 'previewSmoke01',
+              roomKey: 'previewSmokeRoomKey0123456789abcdef',
+              clientId: 'preview-smoke',
+            },
+          });
+          if (error) throw error;
+          if (!data || typeof data.token !== 'string' || !data.token) {
+            throw new Error('Live ably-browser-token returned no token');
+          }
+          console.log('Live stateless Ably token broker: ok');
+          NODE
+
+      - name: Compose production root plus isolated preview
+        run: |
+          rm -rf site
+          mkdir -p site/preview-browser-authority
+          cp -R main-src/dist/. site/
+          cp -R dist/. site/preview-browser-authority/
+
+      - name: Preserve preview deep links without breaking production routes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          preview_base = '/alex/preview-browser-authority/'
+          preview_root = preview_base[:-1]
+          preview_index = Path('site/preview-browser-authority/index.html')
+          preview_html = preview_index.read_text()
+          restore_script = f'''<script>
+          (() => {{
+            const params = new URLSearchParams(window.location.search);
+            const previewPath = params.get('__preview_path');
+            if (!previewPath) return;
+            params.delete('__preview_path');
+            const query = params.toString();
+            const target = {preview_root!r} + previewPath + (query ? '?' + query : '') + window.location.hash;
+            window.history.replaceState(null, '', target);
+          }})();
+          </script>'''
+          preview_html = preview_html.replace('<head>', '<head>' + restore_script, 1)
+          preview_index.write_text(preview_html)
+
+          main_index = Path('site/index.html').read_text()
+          redirect_script = f'''<script>
+          (() => {{
+            const base = {preview_base!r};
+            if (!window.location.pathname.startsWith(base)) return;
+            const route = window.location.pathname.slice(base.length - 1) || '/';
+            const params = new URLSearchParams(window.location.search);
+            params.set('__preview_path', route);
+            window.location.replace(base + '?' + params.toString() + window.location.hash);
+          }})();
+          </script>'''
+          Path('site/404.html').write_text(main_index.replace('<head>', '<head>' + redirect_script, 1))
+          PY
+
+      - name: Verify preview artifact structure
+        run: |
+          test -f site/index.html
+          test -f site/404.html
+          test -f site/preview-browser-authority/index.html
+          grep -q '/alex/preview-browser-authority/' site/preview-browser-authority/index.html
+          grep -q '__preview_path' site/404.html
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload combined Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+      - name: Publish preview alongside production root
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Smoke published preview over HTTPS
+        env:
+          ROOT_URL: https://alodinson.github.io/alex/
+          PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: |
+          set -e
+          preview_ok=0
+          for attempt in $(seq 1 12); do
+            body="$(curl -fsSL --max-time 15 "$PREVIEW_URL" || true)"
+            if printf '%s' "$body" | grep -q '/alex/preview-browser-authority/assets/'; then
+              preview_ok=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$preview_ok" -ne 1 ]; then
+            echo "::error::Published browser-authority preview did not become reachable"
+            exit 1
+          fi
+
+          root_body="$(curl -fsSL --max-time 15 "$ROOT_URL")"
+          printf '%s' "$root_body" | grep -q '/alex/assets/'
+          if printf '%s' "$root_body" | grep -q '/alex/preview-browser-authority/assets/'; then
+            echo "::error::Production root unexpectedly serves the preview build"
+            exit 1
+          fi
+          echo "Published browser-authority preview and production root: ok"
+
+      - name: Install lightweight Playwright driver
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
+
+      - name: Chromium browser-authority functional E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-preview-e2e.mjs
+
+      - name: Chromium student-originated undo/redo convergence E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-student-history-e2e.mjs
+
+      - name: Chromium browser-authority resilience E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-resilience-e2e.mjs
