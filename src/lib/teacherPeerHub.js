@@ -21,6 +21,26 @@ function journalIsContiguous(commits, fromRevision, toRevision) {
   return true;
 }
 
+function authoritativeAckFields(commit) {
+  const fields = {};
+  if (Object.prototype.hasOwnProperty.call(commit ?? {}, 'changed')) {
+    fields.changed = Boolean(commit.changed);
+  }
+  if (Object.prototype.hasOwnProperty.call(commit ?? {}, 'appliedOps')) {
+    fields.appliedOps = Array.isArray(commit.appliedOps) ? commit.appliedOps : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(commit ?? {}, 'appliedBackground')) {
+    fields.appliedBackground = commit.appliedBackground ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(commit ?? {}, 'skippedConflicts')) {
+    fields.skippedConflicts = Array.isArray(commit.skippedConflicts) ? commit.skippedConflicts : [];
+  }
+  if (Object.prototype.hasOwnProperty.call(commit ?? {}, 'rejectedObjectIds')) {
+    fields.rejectedObjectIds = Array.isArray(commit.rejectedObjectIds) ? commit.rejectedObjectIds : [];
+  }
+  return fields;
+}
+
 export function createTeacherPeerHub({
   authority,
   getSnapshot,
@@ -182,6 +202,10 @@ export function createTeacherPeerHub({
             accepted: false,
             duplicate: false,
             needsSync: false,
+            changed: false,
+            appliedOps: [],
+            appliedBackground: null,
+            skippedConflicts: [],
             rejectedObjectIds: [...new Set(conflicts.map((conflict) => String(conflict?.objectId ?? '')).filter(Boolean))],
             error: 'Object locked by another participant',
           });
@@ -193,7 +217,7 @@ export function createTeacherPeerHub({
         const commit = await authority.commitAction(proposal);
         if (commit?.duplicate) {
           await peer.send('commit', commit);
-        } else {
+        } else if (commit?.changed !== false) {
           await broadcastCommit(commit);
           onCommit(commit);
         }
@@ -203,6 +227,7 @@ export function createTeacherPeerHub({
           accepted: true,
           duplicate: Boolean(commit?.duplicate),
           needsSync: Boolean(commit?.needsSync),
+          ...authoritativeAckFields(commit),
         });
       } catch (error) {
         await peer.send('ack', {
@@ -211,6 +236,11 @@ export function createTeacherPeerHub({
           accepted: false,
           duplicate: false,
           needsSync: true,
+          changed: false,
+          appliedOps: [],
+          appliedBackground: null,
+          skippedConflicts: [],
+          rejectedObjectIds: [],
           error: String(error?.message ?? error ?? 'Commit rejected'),
         });
       }
