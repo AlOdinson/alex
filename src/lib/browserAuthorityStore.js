@@ -121,10 +121,34 @@ function normalizeBoardInput(input) {
     revision: 0,
     snapshotRevision: 0,
     snapshot: cloneValue(input?.snapshot ?? EMPTY_SNAPSHOT),
+    tombstones: cloneValue(input?.tombstones ?? {}),
     protocolVersion: 1,
     createdAt: now,
     updatedAt: now,
   };
+}
+
+function applyCommitTombstones(source, commit) {
+  const tombstones = cloneValue(source ?? {});
+  const clientId = String(commit?.clientId ?? '');
+  const actionId = String(commit?.actionId ?? '');
+  const revision = Number(commit?.revision ?? 0);
+  for (const operation of Array.isArray(commit?.ops) ? commit.ops : []) {
+    if (operation?.type === 'delete' && operation.id) {
+      const id = String(operation.id);
+      tombstones[id] = {
+        clientId,
+        mutationId: String(operation.mutationId ?? actionId),
+        actionId,
+        revision,
+      };
+      continue;
+    }
+    if (operation?.type === 'upsert' && operation.object?.boardObjectId) {
+      delete tombstones[String(operation.object.boardObjectId)];
+    }
+  }
+  return tombstones;
 }
 
 export async function createAuthorityBoard(input) {
@@ -196,6 +220,50 @@ export async function deleteAuthorityBoard(boardId) {
   });
 }
 
+export async function getAuthorityActionOutcome(boardId, actionId) {
+  const key = String(boardId ?? '').trim();
+  const safeActionId = String(actionId ?? '').trim();
+  if (!key || !safeActionId) return null;
+  return withTransaction([COMMIT_STORE], 'readonly', async (transaction) => {
+    const record = await requestResult(
+      transaction.objectStore(COMMIT_STORE).get(`${key}:${safeActionId}`),
+    );
+    if (!record) return null;
+    return cloneValue(record.noop ? record.result : record);
+  });
+}
+
+export async function persistAuthorityNoopOutcome(boardId, result) {
+  const key = String(boardId ?? '').trim();
+  const actionId = String(result?.actionId ?? '').trim();
+  if (!key) throw new Error('boardId is required');
+  if (!actionId) throw new Error('actionId is required');
+  const actionKey = `${key}:${actionId}`;
+
+  return withTransaction([COMMIT_STORE], 'readwrite', async (transaction) => {
+    const commits = transaction.objectStore(COMMIT_STORE);
+    const existing = await requestResult(commits.get(actionKey));
+    if (existing) {
+      return {
+        result: cloneValue(existing.noop ? existing.result : existing),
+        duplicate: true,
+      };
+    }
+    const record = {
+      actionKey,
+      boardId: key,
+      actionId,
+      noop: true,
+      result: cloneValue(result),
+      createdAt: Date.now(),
+    };
+    // No top-level revision is stored for a no-op, so it is deliberately absent from
+    // the compound boardRevision journal index and cannot create a revision gap.
+    await requestResult(commits.add(record));
+    return { result: cloneValue(result), duplicate: false };
+  });
+}
+
 export async function persistAuthorityCommit(boardId, commit) {
   const key = String(boardId ?? '').trim();
   const actionId = String(commit?.actionId ?? '').trim();
@@ -207,7 +275,12 @@ export async function persistAuthorityCommit(boardId, commit) {
     const boards = transaction.objectStore(BOARD_STORE);
     const commits = transaction.objectStore(COMMIT_STORE);
     const existing = await requestResult(commits.get(actionKey));
-    if (existing) return { commit: cloneValue(existing), duplicate: true };
+    if (existing) {
+      return {
+        commit: cloneValue(existing.noop ? existing.result : existing),
+        duplicate: true,
+      };
+    }
 
     const board = await requestResult(boards.get(key));
     if (!board) throw new Error('Authority board not found');
@@ -228,6 +301,7 @@ export async function persistAuthorityCommit(boardId, commit) {
     const nextBoard = {
       ...board,
       revision,
+      tombstones: applyCommitTombstones(board.tombstones, record),
       updatedAt: Number(commit?.committedAt ?? Date.now()) || Date.now(),
     };
 
