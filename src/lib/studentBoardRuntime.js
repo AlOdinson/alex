@@ -55,6 +55,10 @@ export function createStudentBoardRuntime({
       return network.proposeAction(action);
     },
 
+    requestLock(operation, payload = {}) {
+      return network.requestLock(operation, payload);
+    },
+
     whenIdle() {
       return network.whenIdle();
     },
