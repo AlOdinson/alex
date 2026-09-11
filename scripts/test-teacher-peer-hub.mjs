@@ -114,3 +114,19 @@ test('sync request falls back to a snapshot when the journal has a gap', async (
   assert.equal(transport.transfers[0].options.transferId, 'snapshot-transfer');
   assert.deepEqual(JSON.parse(transport.transfers[0].text), { snapshot: { full: true }, revision: 8 });
 });
+
+test('broadcasts a teacher-originated durable commit to every connected peer', async () => {
+  const peerA = makeTransport();
+  const peerB = makeTransport();
+  const hub = createTeacherPeerHub({
+    authority: { getRevision: () => 11, commitAction: async () => null },
+    getSnapshot: async () => ({ snapshot: {}, revision: 11 }),
+    getCommitsAfter: async () => [],
+  });
+  hub.addPeer('student-a', peerA);
+  hub.addPeer('student-b', peerB);
+  const commit = { actionId: 'teacher-action', clientId: 'teacher', revision: 11, ops: [] };
+  await hub.broadcastCommit(commit);
+  assert.deepEqual(peerA.sent, [{ type: 'commit', payload: commit }]);
+  assert.deepEqual(peerB.sent, [{ type: 'commit', payload: commit }]);
+});
