@@ -23,6 +23,12 @@ Object.assign(fakeWindow, {
   clearInterval: globalThis.clearInterval.bind(globalThis),
   setTimeout: globalThis.setTimeout.bind(globalThis),
   clearTimeout: globalThis.clearTimeout.bind(globalThis),
+  requestAnimationFrame(callback) {
+    return globalThis.setTimeout(() => callback(performance.now()), 0);
+  },
+  cancelAnimationFrame(handle) {
+    globalThis.clearTimeout(handle);
+  },
 });
 
 const root = new FakeElement('html');
@@ -31,10 +37,11 @@ root.dataset.alexDurableEditPermission = 'owner';
 root.dataset.alexDurableEditBlocked = 'true';
 
 let freezePanel = null;
-const fakeDocument = {
+const fakeDocument = Object.assign(new EventTarget(), {
   visibilityState: 'visible',
   documentElement: root,
   body: new FakeElement('body'),
+  hasFocus() { return true; },
   createElement(tagName) {
     const element = new FakeElement(tagName);
     if (String(tagName).toLowerCase() === 'aside') freezePanel = element;
@@ -48,7 +55,7 @@ const fakeDocument = {
     if (selector === '[data-pencil-debug-output="true"]') return { textContent: 'journal' };
     return null;
   },
-};
+});
 
 Object.defineProperty(globalThis, 'window', { configurable: true, value: fakeWindow });
 Object.defineProperty(globalThis, 'document', { configurable: true, value: fakeDocument });
@@ -63,9 +70,12 @@ const diagnostics = installFreezeDiagnostics();
 assert.ok(diagnostics, 'pencilDebug=1 must install freeze diagnostics');
 
 const exported = diagnostics.exportText();
+assert.match(exported, /maxRafGapMs=0/);
+assert.match(exported, /pageVisibility=visible/);
+assert.match(exported, /pageHasFocus=true/);
 assert.match(exported, /durableEditState=waiting/);
 assert.match(exported, /durableEditPermission=owner/);
 assert.match(exported, /durableEditBlocked=true/);
 
 diagnostics.destroy();
-console.log('Pencil freeze diagnostics durable edit gate state checks passed.');
+console.log('Pencil freeze diagnostics render-loop and durable edit gate checks passed.');
