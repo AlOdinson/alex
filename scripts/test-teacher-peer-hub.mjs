@@ -239,3 +239,54 @@ test('default teacher lock authority rejects conflicts atomically and releases r
   });
   assert.equal(peerB.sent.at(-1)?.payload?.granted, true);
 });
+
+test('view-only peer can sync but cannot acquire locks or commit durable actions', async () => {
+  const transport = makeTransport();
+  let commits = 0;
+  let lockAcquires = 0;
+  const hub = createTeacherPeerHub({
+    authority: {
+      getRevision: () => 12,
+      async commitAction() {
+        commits += 1;
+        return { revision: 13 };
+      },
+    },
+    getSnapshot: async () => ({ snapshot: { version: 2 }, revision: 12 }),
+    getCommitsAfter: async () => [],
+    canPeerEdit: async (peerId) => peerId !== 'student-view',
+    lockAuthority: {
+      async acquire() {
+        lockAcquires += 1;
+        return { granted: true, objectIds: ['shape-1'], conflicts: [] };
+      },
+      async release() { return { released: 0 }; },
+    },
+  });
+  hub.addPeer('student-view', transport);
+
+  await hub.handleMessage('student-view', { type: 'head-request', payload: {} });
+  assert.deepEqual(transport.sent.at(-1), { type: 'head', payload: { revision: 12 } });
+
+  await hub.handleMessage('student-view', {
+    type: 'lock-request',
+    payload: {
+      requestId: 'view-lock', operation: 'acquire', lockToken: 'token-view',
+      objectIds: ['shape-1'], ttlMs: 12000,
+    },
+  });
+  assert.equal(lockAcquires, 0);
+  assert.equal(transport.sent.at(-1)?.type, 'lock-result');
+  assert.equal(transport.sent.at(-1)?.payload?.granted, false);
+  assert.equal(transport.sent.at(-1)?.payload?.error, 'Board is view-only');
+
+  await hub.handleMessage('student-view', {
+    type: 'action-proposal',
+    payload: { actionId: 'view-action', baseRevision: 12, ops: [{ type: 'delete', id: 'shape-1' }] },
+  });
+  assert.equal(commits, 0);
+  assert.equal(transport.sent.at(-1)?.type, 'ack');
+  assert.equal(transport.sent.at(-1)?.payload?.accepted, false);
+  assert.equal(transport.sent.at(-1)?.payload?.needsSync, false);
+  assert.equal(transport.sent.at(-1)?.payload?.error, 'Board is view-only');
+});
