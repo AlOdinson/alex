@@ -101,3 +101,50 @@ test('Ably continuity recovery wakes durable work and asks Board to reconcile pe
   assert.deepEqual(syncRevisions, [7]);
   await realtime.disconnect();
 });
+
+test('terminal student peer failure refreshes Ably presence so the same teacher can be reconnected', async () => {
+  let sessionOptions = null;
+  let refreshCalls = 0;
+  const statuses = [];
+
+  const realtime = connectBoardRealtime({
+    boardId: 'board-a',
+    realtimeKey: 'room-key-12345678901234567890',
+    clientId: 'student-a',
+    permission: 'edit',
+    onStatus: (status) => statuses.push(status),
+  }, {
+    createSession: (options) => {
+      sessionOptions = options;
+      return {
+        async start() {},
+        async updateParticipants() {},
+        async handleRealtimeSignal() {},
+        close() {},
+      };
+    },
+    createCore: () => ({
+      async flushPending() {},
+      async disconnect() {},
+      async sendScreenShareSignal() {},
+    }),
+    createTransport: () => ({
+      async start() {},
+      async publish() { return 'ok'; },
+      async refreshUsers() { refreshCalls += 1; },
+      async disconnect() {},
+    }),
+  });
+
+  await Promise.resolve();
+  sessionOptions.onPeerState('disconnected');
+  await Promise.resolve();
+  assert.equal(refreshCalls, 0, 'temporary disconnected state must be allowed to heal naturally');
+
+  sessionOptions.onPeerState('failed');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(refreshCalls, 1, 'terminal student peer failure must force an owner presence refresh');
+  assert.ok(statuses.includes('RECOVERING'));
+  await realtime.disconnect();
+});
