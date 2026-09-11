@@ -167,6 +167,13 @@ export function applyAuthorityOps(sourceSnapshot, ops, background = null, commit
   return applyMutable(cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT), ops, background, committedAt);
 }
 
+export function applyAuthorityOpsInPlace(snapshot, ops, background = null, committedAt = null) {
+  const target = snapshot && typeof snapshot === 'object'
+    ? snapshot
+    : cloneValue(EMPTY_SNAPSHOT);
+  return applyMutable(target, ops, background, committedAt);
+}
+
 export function applyAuthorityActions(sourceSnapshot, actions) {
   const snapshot = cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT);
   for (const action of Array.isArray(actions) ? actions : []) {
