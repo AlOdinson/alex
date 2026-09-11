@@ -189,6 +189,25 @@ async function tryDrawStroke(page, offset = 0) {
   return 'attempted';
 }
 
+async function uploadTestImage(page) {
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="120">',
+    '<rect width="180" height="120" rx="18" fill="#2563eb"/>',
+    '<circle cx="48" cy="58" r="28" fill="#facc15"/>',
+    '<path d="M92 32h60v18H92zm0 36h42v18H92z" fill="#ffffff"/>',
+    '</svg>',
+  ].join('');
+  await page.locator('input.image-file-input').setInputFiles({
+    name: 'authority-e2e.svg',
+    mimeType: 'image/svg+xml',
+    buffer: Buffer.from(svg),
+  });
+}
+
+async function blurActiveElement(page) {
+  await page.evaluate(() => document.activeElement?.blur?.());
+}
+
 const browser = await chromium.launch({
   channel: 'chrome',
   headless: true,
@@ -284,6 +303,50 @@ try {
     (await canvasDigest(student)) === teacherBeforeStudentReconnect
   ));
 
+  // Image upload must remain self-contained and durable through the same authority
+  // path, then undo/redo must each become new authoritative revisions visible remotely.
+  const teacherBeforeImage = await canvasDigest(teacher);
+  const studentBeforeImage = await canvasDigest(student);
+  await uploadTestImage(teacher);
+  const revisionAfterImage = await waitFor('image upload durable revision', async () => {
+    const board = await authorityBoard(teacher, boardId);
+    return Number(board?.revision ?? 0) > revisionAfterStudent ? Number(board.revision) : 0;
+  });
+  const teacherAfterImage = await waitFor('image rendered on teacher', async () => {
+    const digest = await canvasDigest(teacher);
+    return digest !== teacherBeforeImage ? digest : '';
+  });
+  const studentAfterImage = await waitFor('image rendered on student', async () => {
+    const digest = await canvasDigest(student);
+    return digest !== studentBeforeImage ? digest : '';
+  });
+
+  await blurActiveElement(teacher);
+  await teacher.keyboard.press('Control+z');
+  const revisionAfterUndo = await waitFor('undo durable revision', async () => {
+    const board = await authorityBoard(teacher, boardId);
+    return Number(board?.revision ?? 0) > revisionAfterImage ? Number(board.revision) : 0;
+  });
+  await waitFor('teacher canvas restored by undo', async () => (
+    (await canvasDigest(teacher)) === teacherBeforeImage
+  ));
+  await waitFor('student canvas restored by undo', async () => (
+    (await canvasDigest(student)) === studentBeforeImage
+  ));
+
+  await blurActiveElement(teacher);
+  await teacher.keyboard.press('Control+Shift+z');
+  const revisionAfterRedo = await waitFor('redo durable revision', async () => {
+    const board = await authorityBoard(teacher, boardId);
+    return Number(board?.revision ?? 0) > revisionAfterUndo ? Number(board.revision) : 0;
+  });
+  await waitFor('teacher image restored by redo', async () => (
+    (await canvasDigest(teacher)) === teacherAfterImage
+  ));
+  await waitFor('student image restored by redo', async () => (
+    (await canvasDigest(student)) === studentAfterImage
+  ));
+
   // View-only is authoritative at the teacher. Even if a stale guest UI still offers
   // an editing control, the teacher must reject the proposal and restore the peer to
   // the authoritative snapshot without advancing IndexedDB revision.
@@ -325,9 +388,9 @@ try {
   await waitForCanvasOrDump(teacher, 'teacher reload');
   const boardAfterReload = await waitFor('teacher IndexedDB authority after reload', async () => {
     const board = await authorityBoard(teacher, boardId);
-    return Number(board?.revision ?? 0) >= revisionAfterStudent ? board : null;
+    return Number(board?.revision ?? 0) >= revisionAfterRedo ? board : null;
   });
-  assert.ok(Number(boardAfterReload.revision) >= revisionAfterStudent);
+  assert.ok(Number(boardAfterReload.revision) >= revisionAfterRedo);
   assert.equal(boardAfterReload.guestMode, 'view');
 
   console.log(JSON.stringify({
@@ -336,6 +399,9 @@ try {
     revisionAfterTeacher,
     revisionAfterStudent,
     studentReconnect: true,
+    revisionAfterImage,
+    revisionAfterUndo,
+    revisionAfterRedo,
     viewOnlyAttempt,
     viewOnlyRevision: Number(boardAfterReload.revision),
     preview: PREVIEW_URL,
