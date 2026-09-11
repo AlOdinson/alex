@@ -21,7 +21,10 @@ assert.deepEqual(presets.getDrawingPresets(), [
   { color: '#ff0000', opacity: 0.5, width: 12 },
   null,
 ]);
-assert.equal(presets.sliderStepToWidth(presets.widthToSliderStep(12)), 12);
+// Presets can preserve an arbitrary imported/current width, but the editor slider is
+// intentionally discrete. Width 12 therefore maps to its nearest available step, 10.
+assert.equal(presets.sliderStepToWidth(presets.widthToSliderStep(12)), 10);
+assert.equal(presets.sliderStepToWidth(presets.widthToSliderStep(15)), 15);
 assert.equal(presets.sliderStepToWidth(presets.widthToSliderStep(50)), 50);
 
 presets.clearDrawingPreset(1);
