@@ -1,5 +1,23 @@
 export const BOARD_DURABLE_DATA_CHANNEL = 'alex-board-durable-v1';
 
+export const DEFAULT_BROWSER_RTC_CONFIG = Object.freeze({
+  iceServers: Object.freeze([
+    Object.freeze({ urls: Object.freeze(['stun:stun.cloudflare.com:3478']) }),
+  ]),
+});
+
+function resolveRtcConfig(rtcConfig) {
+  const source = rtcConfig && typeof rtcConfig === 'object' ? rtcConfig : {};
+  if (Object.prototype.hasOwnProperty.call(source, 'iceServers')) return source;
+  return {
+    ...source,
+    iceServers: DEFAULT_BROWSER_RTC_CONFIG.iceServers.map((server) => ({
+      ...server,
+      urls: Array.isArray(server.urls) ? [...server.urls] : server.urls,
+    })),
+  };
+}
+
 export function createBrowserPeerConnection({
   initiator = false,
   rtcConfig = {},
@@ -11,7 +29,7 @@ export function createBrowserPeerConnection({
 } = {}) {
   if (typeof sendSignal !== 'function') throw new Error('sendSignal is required');
   const factory = createPeerConnection ?? ((config) => new RTCPeerConnection(config));
-  const peerConnection = factory(rtcConfig);
+  const peerConnection = factory(resolveRtcConfig(rtcConfig));
   if (!peerConnection) throw new Error('Could not create RTCPeerConnection');
 
   let dataChannel = null;
