@@ -52,7 +52,7 @@ test('student waits for owner presence, creates a peer runtime, and applies teac
     async start() { events.push(['start']); },
     async proposeActionAndWait(action) {
       events.push(['proposal', action.actionId, action.baseRevision]);
-      return { actionId: action.actionId, revision: 2, accepted: true, changed: true, appliedOps: action.ops };
+      return { actionId: action.actionId, revision: 3, accepted: true, changed: true, appliedOps: action.ops };
     },
     handleRealtimeSignal(payload) { events.push(['signal', payload]); return true; },
     requestLock: async () => ({ granted: true }),
@@ -96,12 +96,16 @@ test('student waits for owner presence, creates a peer runtime, and applies teac
 
   await studentOptions.installSnapshot({ version: 2, background: 'dots', canvas: { objects: [] } }, 1);
   assert.deepEqual(events.slice(-2), [['replica-snapshot', 1], ['board-snapshot', 1]]);
-  await studentOptions.applyCommit({ actionId: 'teacher-action', revision: 2, ops: [] });
+  await studentOptions.applyCommit({ actionId: 'teacher-action', clientId: 'teacher-a', revision: 2, ops: [] });
   assert.deepEqual(events.slice(-2), [['replica-commit', 2], ['board-commit', 2]]);
+
+  await studentOptions.applyCommit({ actionId: 'student-own-action', clientId: 'student-a', revision: 3, ops: [] });
+  assert.deepEqual(events.at(-1), ['replica-commit', 3]);
+  assert.equal(events.filter((entry) => entry[0] === 'board-commit').length, 1);
 
   const result = await session.sendOps([{ type: 'delete', id: 'x' }], { actionId: 'student-action' });
   assert.equal(result.accepted, true);
-  assert.deepEqual(events.at(-1), ['proposal', 'student-action', 2]);
+  assert.deepEqual(events.at(-1), ['proposal', 'student-action', 3]);
 });
 
 test('student replaces the peer runtime when teacher presence changes and stale cleanup cannot remove the replacement', async () => {
