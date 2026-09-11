@@ -39,6 +39,13 @@ export function createTeacherPeerHub({
     return peer;
   };
 
+  const broadcastCommit = async (commit) => {
+    for (const transport of peers.values()) {
+      // eslint-disable-next-line no-await-in-loop
+      await transport.send('commit', commit);
+    }
+  };
+
   const sendSnapshot = async (peer) => {
     const loaded = await getSnapshot();
     const revision = safeRevision(loaded?.revision ?? authority.getRevision());
@@ -89,6 +96,8 @@ export function createTeacherPeerHub({
       return peers.size;
     },
 
+    broadcastCommit,
+
     async handleMessage(peerId, message) {
       const peer = requirePeer(peerId);
       const type = String(message?.type ?? '');
@@ -116,10 +125,7 @@ export function createTeacherPeerHub({
         if (commit?.duplicate) {
           await peer.send('commit', commit);
         } else {
-          for (const transport of peers.values()) {
-            // eslint-disable-next-line no-await-in-loop
-            await transport.send('commit', commit);
-          }
+          await broadcastCommit(commit);
           onCommit(commit);
         }
         await peer.send('ack', {
