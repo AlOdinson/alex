@@ -14,6 +14,9 @@ function normalizeAction(action) {
     baseRevision: Math.max(0, Number(action?.baseRevision ?? 0) || 0),
     ops,
     background: action?.background ?? null,
+    skippedConflicts: Array.isArray(action?.skippedConflicts)
+      ? cloneValue(action.skippedConflicts)
+      : [],
   };
 }
 
