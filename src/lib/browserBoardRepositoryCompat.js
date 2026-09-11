@@ -12,7 +12,6 @@ import { openBrowserBoardAuthority } from './browserBoardAuthority.js';
 import {
   getReplicaChangesAfter,
   getReplicaState,
-  installReplicaSnapshot as installDefaultReplicaSnapshot,
 } from './browserReplicaStore.js';
 import { getBoardRuntime } from './browserBoardRuntimeRegistry.js';
 import { localBoardLibrary } from './localBoardLibrary.js';
@@ -63,7 +62,6 @@ export function createBrowserBoardRepository({
   saveSnapshot = saveAuthoritySnapshot,
   getReplica = getReplicaState,
   getReplicaChanges = getReplicaChangesAfter,
-  installReplicaSnapshot = installDefaultReplicaSnapshot,
   getRuntime = getBoardRuntime,
 } = {}) {
   const requireOwner = async (boardId, key) => {
@@ -331,13 +329,17 @@ export function createBrowserBoardRepository({
     },
 
     async saveBoardSnapshot(boardId, key, snapshot, revision) {
-      const board = await getBoard(String(boardId ?? '').trim());
+      const id = String(boardId ?? '').trim();
+      const board = await getBoard(id);
       if (!board) {
-        if (String(key ?? '').trim()) installReplicaSnapshot(String(boardId), snapshot, revision);
-        return safeRevision(revision);
+        if (!String(key ?? '').trim()) return 0;
+        // Remote students are read-only with respect to replica durability. Their
+        // compaction lifecycle may call this compatibility API, but the only writers
+        // to a student replica are authoritative teacher snapshots/commits over P2P.
+        return safeRevision(getReplica(id)?.revision);
       }
       await requireOwner(boardId, key);
-      return saveSnapshot(String(boardId), cloneValue(snapshot ?? EMPTY_SNAPSHOT), safeRevision(revision));
+      return saveSnapshot(id, cloneValue(snapshot ?? EMPTY_SNAPSHOT), safeRevision(revision));
     },
   };
 }
