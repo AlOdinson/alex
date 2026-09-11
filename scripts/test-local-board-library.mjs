@@ -4,7 +4,7 @@ import { createLocalBoardLibrary } from '../src/lib/localBoardLibrary.js';
 
 test('creates a board entirely through the browser authority store', async () => {
   const created = [];
-  const tokens = ['board-id', 'owner-key', 'realtime-key'];
+  const tokens = ['board-id', 'owner-key'];
   const library = createLocalBoardLibrary({
     createBoardRecord: async (record) => { created.push(record); return record; },
     listBoardRecords: async () => [],
@@ -20,7 +20,7 @@ test('creates a board entirely through the browser authority store', async () =>
   assert.equal(created[0].boardId, 'board-id');
   assert.equal(created[0].ownerKey, 'owner-key');
   assert.equal(created[0].shareKey, 'share:owner-key');
-  assert.equal(created[0].realtimeKey, 'realtime-key');
+  assert.equal(created[0].realtimeKey, 'share:owner-key');
   assert.equal(created[0].title, 'Алгебра');
   assert.equal(created[0].studentName, 'Анна');
   assert.equal(board.boardId, 'board-id');
