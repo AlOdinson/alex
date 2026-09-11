@@ -48,8 +48,19 @@ export function createBrowserBoardSession({
   let closed = false;
   let startPromise = null;
   let transitionQueue = Promise.resolve();
+  const runtimeWaiters = new Set();
 
   const replicaRevision = () => safeRevision(getReplica(safeBoardId)?.revision);
+
+  const settleRuntimeWaiters = (nextRuntime) => {
+    for (const waiter of runtimeWaiters) waiter.resolve(nextRuntime);
+    runtimeWaiters.clear();
+  };
+
+  const rejectRuntimeWaiters = (error) => {
+    for (const waiter of runtimeWaiters) waiter.reject(error);
+    runtimeWaiters.clear();
+  };
 
   const clearRuntime = () => {
     const previousRuntime = runtime;
@@ -73,6 +84,7 @@ export function createBrowserBoardSession({
       runtime: nextRuntime,
       clientId: safeClientId,
     });
+    settleRuntimeWaiters(nextRuntime);
     return nextRuntime;
   };
 
@@ -154,6 +166,12 @@ export function createBrowserBoardSession({
       return startPromise;
     },
 
+    whenRuntimeReady() {
+      if (runtime) return Promise.resolve(runtime);
+      if (closed) return Promise.reject(new Error('Board session is closed'));
+      return new Promise((resolve, reject) => runtimeWaiters.add({ resolve, reject }));
+    },
+
     updateParticipants(users) {
       if (closed || isOwner) return Promise.resolve(runtime);
       const ownerIds = (Array.isArray(users) ? users : [])
@@ -197,6 +215,7 @@ export function createBrowserBoardSession({
       if (closed) return;
       closed = true;
       teacherId = '';
+      rejectRuntimeWaiters(new Error('Board session is closed'));
       clearRuntime();
     },
   };
