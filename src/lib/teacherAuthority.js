@@ -37,11 +37,24 @@ export function createTeacherAuthority({ initialRevision = 0, persistCommit }) {
       duplicate: false,
     };
 
-    await persistCommit(cloneValue(commit));
+    const persisted = await persistCommit(cloneValue(commit));
+
+    if (persisted?.duplicate && persisted?.commit) {
+      const durableDuplicate = { ...cloneValue(persisted.commit), duplicate: true };
+      committedByActionId.set(action.actionId, cloneValue(durableDuplicate));
+      return durableDuplicate;
+    }
+
+    const durableCommit = persisted?.commit && persisted?.duplicate === false
+      ? { ...cloneValue(persisted.commit), duplicate: false }
+      : commit;
+    if (Number(durableCommit.revision) !== commit.revision) {
+      throw new Error(`Durable revision mismatch: expected ${commit.revision}, received ${durableCommit.revision}`);
+    }
 
     revision = commit.revision;
-    committedByActionId.set(action.actionId, cloneValue(commit));
-    return cloneValue(commit);
+    committedByActionId.set(action.actionId, cloneValue(durableCommit));
+    return cloneValue(durableCommit);
   };
 
   return {
