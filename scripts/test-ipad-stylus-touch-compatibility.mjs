@@ -38,4 +38,29 @@ assert.doesNotMatch(
   'the fix must not globally enable Fabric Pointer Events on iPad',
 );
 
-console.log('iPad stylus TouchEvent compatibility source checks passed.');
+const {
+  startsStylusContact,
+  stylusSafeTouchEvent,
+} = await import('../src/fabricStylusTouchCompatibility.js');
+
+let prevented = 0;
+const stylusEvent = {
+  changedTouches: [{ touchType: 'stylus' }],
+  preventDefault() { prevented += 1; },
+  stopPropagation() {},
+  touches: [{ touchType: 'stylus' }],
+};
+assert.equal(startsStylusContact(stylusEvent), true,
+  'a changed WebKit stylus touch must select the compatibility path');
+const safeStylusEvent = stylusSafeTouchEvent(stylusEvent);
+safeStylusEvent.preventDefault();
+assert.equal(prevented, 0,
+  'Fabric preventDefault must be neutralized only for the stylus wrapper event');
+assert.equal(safeStylusEvent.touches, stylusEvent.touches,
+  'the wrapper must preserve the native TouchEvent data Fabric uses for drawing');
+
+const fingerEvent = { changedTouches: [{ touchType: 'direct' }] };
+assert.equal(startsStylusContact(fingerEvent), false,
+  'finger-only touchstart must stay on Fabric normal touch handling');
+
+console.log('iPad stylus TouchEvent compatibility checks passed.');
