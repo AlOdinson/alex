@@ -37,6 +37,37 @@ class FakePeerConnection {
   emitIce(candidate) { this.onicecandidate?.({ candidate }); }
 }
 
+test('uses the public Cloudflare STUN server when no ICE servers are configured', () => {
+  let receivedConfig = null;
+  createBrowserPeerConnection({
+    sendSignal: async () => {},
+    createPeerConnection: (config) => {
+      receivedConfig = config;
+      return new FakePeerConnection();
+    },
+  });
+  assert.deepEqual(receivedConfig?.iceServers, [
+    { urls: ['stun:stun.cloudflare.com:3478'] },
+  ]);
+});
+
+test('keeps an explicit ICE server configuration instead of injecting the default STUN server', () => {
+  let receivedConfig = null;
+  const rtcConfig = {
+    iceServers: [{ urls: ['stun:custom.example.test:3478'] }],
+    iceCandidatePoolSize: 2,
+  };
+  createBrowserPeerConnection({
+    rtcConfig,
+    sendSignal: async () => {},
+    createPeerConnection: (config) => {
+      receivedConfig = config;
+      return new FakePeerConnection();
+    },
+  });
+  assert.deepEqual(receivedConfig, rtcConfig);
+});
+
 test('initiator creates an ordered durable channel and sends an offer', async () => {
   const signals = [];
   const channels = [];
