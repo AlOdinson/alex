@@ -18,7 +18,7 @@ class FakeElement extends EventTarget {
 
 const fakeWindow = new EventTarget();
 Object.assign(fakeWindow, {
-  location: { search: '?pencilDebug=1', pathname: '/alex/board/gate-board' },
+  location: { search: '', pathname: '/alex/board/gate-board' },
   setInterval: globalThis.setInterval.bind(globalThis),
   clearInterval: globalThis.clearInterval.bind(globalThis),
   setTimeout: globalThis.setTimeout.bind(globalThis),
@@ -58,6 +58,7 @@ Object.defineProperty(globalThis, 'navigator', {
 });
 
 const { installFreezeDiagnostics } = await import('../src/pencilFreezeDiagnostics.js');
+fakeWindow.location.search = '?pencilDebug=1';
 const diagnostics = installFreezeDiagnostics();
 assert.ok(diagnostics, 'pencilDebug=1 must install freeze diagnostics');
 
