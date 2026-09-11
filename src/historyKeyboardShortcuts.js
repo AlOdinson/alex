@@ -1,5 +1,14 @@
+function isNativeTextEditingTarget(target) {
+  const tagName = String(target?.tagName ?? '').toUpperCase();
+  return tagName === 'INPUT'
+    || tagName === 'TEXTAREA'
+    || tagName === 'SELECT'
+    || Boolean(target?.isContentEditable);
+}
+
 export function normalizeHistoryShortcutKey(event = {}) {
   if (!event?.ctrlKey && !event?.metaKey) return null;
+  if (isNativeTextEditingTarget(event?.target)) return null;
   const key = String(event?.key ?? '').toLowerCase();
   const code = String(event?.code ?? '');
 
