@@ -13,11 +13,35 @@ function isSerializedActiveSelection(object) {
   return type === 'ActiveSelection' || type === 'activeSelection';
 }
 
-function applyMutable(snapshot, ops, background = null) {
+function safeTimestamp(value) {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : null;
+}
+
+function operationTimestamp(operations) {
+  let latest = null;
+  for (const operation of Array.isArray(operations) ? operations : []) {
+    const candidates = [operation?.updatedAt, operation?.object?.updatedAt];
+    if (operation?.type === 'transform') {
+      const entries = Array.isArray(operation.objects)
+        ? operation.objects
+        : (operation.id ? [operation] : []);
+      entries.forEach((entry) => candidates.push(entry?.updatedAt));
+    }
+    for (const candidate of candidates) {
+      const timestamp = safeTimestamp(candidate);
+      if (timestamp != null && (latest == null || timestamp > latest)) latest = timestamp;
+    }
+  }
+  return latest;
+}
+
+function applyMutable(snapshot, ops, background = null, committedAt = null) {
   snapshot.version = 2;
   if (!snapshot.canvas || typeof snapshot.canvas !== 'object') snapshot.canvas = { objects: [] };
   if (!Array.isArray(snapshot.canvas.objects)) snapshot.canvas.objects = [];
 
+  const deterministicTimestamp = safeTimestamp(committedAt) ?? operationTimestamp(ops);
   const objects = snapshot.canvas.objects;
   for (let index = objects.length - 1; index >= 0; index -= 1) {
     if (isSerializedActiveSelection(objects[index])) objects.splice(index, 1);
@@ -63,7 +87,14 @@ function applyMutable(snapshot, ops, background = null) {
     if (op?.type === 'patch' && op.id) {
       const id = String(op.id);
       const existing = objectById.get(id);
-      const patched = applySerializedObjectPatch(existing, op);
+      const patchTimestamp = safeTimestamp(op.updatedAt)
+        ?? deterministicTimestamp
+        ?? safeTimestamp(existing?.updatedAt)
+        ?? 0;
+      const patched = applySerializedObjectPatch(existing, {
+        ...op,
+        updatedAt: patchTimestamp,
+      });
       if (!existing || !patched) continue;
       const existingIndex = objects.indexOf(existing);
       if (existingIndex >= 0) objects[existingIndex] = patched;
@@ -91,9 +122,13 @@ function applyMutable(snapshot, ops, background = null) {
         if (!id || !patch?.transform || typeof patch.transform !== 'object') continue;
         const existing = objectById.get(id);
         if (!existing) continue;
+        const patchTimestamp = safeTimestamp(patch.updatedAt)
+          ?? deterministicTimestamp
+          ?? safeTimestamp(existing.updatedAt)
+          ?? 0;
         Object.assign(existing, patch.transform, {
           boardObjectId: id,
-          updatedAt: Number(patch.updatedAt ?? existing.updatedAt ?? Date.now()),
+          updatedAt: patchTimestamp,
           updatedBy: patch.updatedBy ?? existing.updatedBy ?? null,
         });
         if (op.reorder && Number.isInteger(patch.zIndex)) {
@@ -116,23 +151,26 @@ function applyMutable(snapshot, ops, background = null) {
       : (Number.isInteger(op.zIndex) ? op.zIndex : objects.length);
     const targetIndex = Math.max(0, Math.min(objects.length, requestedIndex));
     const nextObject = cloneValue(op.object);
+    if (safeTimestamp(nextObject.updatedAt) == null && deterministicTimestamp != null) {
+      nextObject.updatedAt = deterministicTimestamp;
+    }
     objects.splice(targetIndex, 0, nextObject);
     objectById.set(objectId, nextObject);
   }
 
   if (['grid', 'dots', 'blank'].includes(background)) snapshot.background = background;
-  snapshot.savedAt = new Date().toISOString();
+  if (deterministicTimestamp != null) snapshot.savedAt = new Date(deterministicTimestamp).toISOString();
   return snapshot;
 }
 
-export function applyAuthorityOps(sourceSnapshot, ops, background = null) {
-  return applyMutable(cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT), ops, background);
+export function applyAuthorityOps(sourceSnapshot, ops, background = null, committedAt = null) {
+  return applyMutable(cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT), ops, background, committedAt);
 }
 
 export function applyAuthorityActions(sourceSnapshot, actions) {
   const snapshot = cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT);
   for (const action of Array.isArray(actions) ? actions : []) {
-    applyMutable(snapshot, action?.ops ?? [], action?.background ?? null);
+    applyMutable(snapshot, action?.ops ?? [], action?.background ?? null, action?.committedAt ?? null);
   }
   return snapshot;
 }
