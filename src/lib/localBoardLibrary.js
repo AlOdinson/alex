@@ -6,6 +6,7 @@ import {
   listAuthorityBoards,
   updateAuthorityBoardMetadata,
 } from './browserAuthorityStore.js';
+import { createFreshOwnerBootstrap as defaultCreateFreshOwnerBootstrap } from './freshOwnerBootstrap.js';
 
 function cleanTitle(value) {
   return String(value ?? '').trim() || 'Новая доска';
@@ -19,6 +20,7 @@ export function createLocalBoardLibrary({
   deleteBoardRecord = deleteAuthorityBoard,
   randomToken = defaultRandomToken,
   deriveShareKey = defaultDeriveShareKey,
+  markFreshOwner = defaultCreateFreshOwnerBootstrap,
 } = {}) {
   return {
     async createBoard(title = 'Новая доска', studentName = '') {
@@ -37,6 +39,10 @@ export function createLocalBoardLibrary({
         studentName: String(studentName ?? '').trim(),
         guestMode: 'edit',
       });
+      // Keep a short-lived, same-tab handoff so a hard Pages navigation cannot silently
+      // downgrade a just-created owner to a remote editor if IndexedDB visibility is
+      // momentarily lost. The recovery path still requires the exact owner key.
+      try { markFreshOwner?.(record); } catch { /* best-effort recovery marker */ }
       return record;
     },
 

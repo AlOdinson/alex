@@ -14,6 +14,7 @@ import {
   getReplicaState,
 } from './browserReplicaStore.js';
 import { getBoardRuntime } from './browserBoardRuntimeRegistry.js';
+import { recoverFreshOwnerBootstrap } from './freshOwnerBootstrap.js';
 import { localBoardLibrary } from './localBoardLibrary.js';
 
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
@@ -56,6 +57,7 @@ export function createBrowserBoardRepository({
   getBoard = getAuthorityBoard,
   listBoards = listAuthorityBoards,
   createBoard = (title, studentName) => localBoardLibrary.createBoard(title, studentName),
+  createAuthorityRecord = createAuthorityBoard,
   updateBoard = updateAuthorityBoardMetadata,
   deleteBoardRecord = deleteAuthorityBoard,
   openAuthority = openBrowserBoardAuthority,
@@ -108,9 +110,18 @@ export function createBrowserBoardRepository({
 
   const getAccess = async (boardId, key) => {
     const id = String(boardId ?? '').trim();
+    const secret = String(key ?? '').trim();
     if (!id) return null;
-    const board = await getBoard(id);
-    return board ? localAccess(board, key) : remoteAccess(id, key);
+    let board = await getBoard(id);
+    if (!board && secret) {
+      board = await recoverFreshOwnerBootstrap({
+        boardId: id,
+        ownerKey: secret,
+        getBoard,
+        createBoard: createAuthorityRecord,
+      });
+    }
+    return board ? localAccess(board, secret) : remoteAccess(id, secret);
   };
 
   const activeRuntime = (boardId) => getRuntime(String(boardId ?? '').trim());
