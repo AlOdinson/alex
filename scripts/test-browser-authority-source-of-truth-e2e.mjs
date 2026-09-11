@@ -52,6 +52,40 @@ async function authorityBoard(page, boardId) {
   }), boardId);
 }
 
+async function authorityCommits(page, boardId) {
+  return page.evaluate(async (id) => new Promise((resolve, reject) => {
+    const request = indexedDB.open('alex-board-authority');
+    request.onerror = () => reject(request.error ?? new Error('Could not open authority IndexedDB'));
+    request.onsuccess = () => {
+      const db = request.result;
+      try {
+        const store = db.transaction('commits', 'readonly').objectStore('commits');
+        const index = store.index('boardRevision');
+        const range = IDBKeyRange.bound([id, 0], [id, Number.MAX_SAFE_INTEGER]);
+        const cursorRequest = index.openCursor(range, 'next');
+        const commits = [];
+        cursorRequest.onerror = () => {
+          db.close();
+          reject(cursorRequest.error ?? new Error('Could not read authority commits'));
+        };
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) {
+            db.close();
+            resolve(commits);
+            return;
+          }
+          commits.push(cursor.value);
+          cursor.continue();
+        };
+      } catch (error) {
+        db.close();
+        reject(error);
+      }
+    };
+  }), boardId);
+}
+
 async function enterBoardIfNeeded(page, name) {
   const state = await waitFor('participant name gate or board canvas', async () => {
     if (await page.locator('canvas.upper-canvas').isVisible().catch(() => false)) return 'canvas';
@@ -75,12 +109,35 @@ async function canvasDigest(page) {
   return page.locator('canvas.lower-canvas').evaluate((canvas) => canvas.toDataURL('image/png'));
 }
 
-async function canvasObjectCount(page) {
-  return page.locator('canvas.upper-canvas').evaluate((canvas) => {
-    const instance = canvas?.__fabric;
-    if (instance?.getObjects) return instance.getObjects().filter((object) => !object?.transientPreview).length;
-    return null;
-  }).catch(() => null);
+async function canvasRegionSignature(page, point, radius = 18) {
+  return page.locator('canvas.lower-canvas').evaluate((canvas, args) => {
+    const context = canvas.getContext('2d');
+    const scaleX = canvas.width / Math.max(1, canvas.clientWidth);
+    const scaleY = canvas.height / Math.max(1, canvas.clientHeight);
+    const x = Math.round((args.point.x - args.radius) * scaleX);
+    const y = Math.round((args.point.y - args.radius) * scaleY);
+    const width = Math.max(1, Math.round(args.radius * 2 * scaleX));
+    const height = Math.max(1, Math.round(args.radius * 2 * scaleY));
+    const image = context.getImageData(
+      Math.max(0, x),
+      Math.max(0, y),
+      Math.min(width, canvas.width - Math.max(0, x)),
+      Math.min(height, canvas.height - Math.max(0, y)),
+    );
+    let hash = 2166136261;
+    let alphaSum = 0;
+    let opaquePixels = 0;
+    for (let index = 0; index < image.data.length; index += 1) {
+      const value = image.data[index];
+      hash ^= value;
+      hash = Math.imul(hash, 16777619) >>> 0;
+      if ((index & 3) === 3) {
+        alphaSum += value;
+        if (value > 16) opaquePixels += 1;
+      }
+    }
+    return `${image.width}x${image.height}:${hash}:${alphaSum}:${opaquePixels}`;
+  }, { point, radius });
 }
 
 async function drawStroke(page, { x = 180, y = 180, dx = 150, dy = 60 } = {}) {
@@ -136,6 +193,18 @@ async function waitForMatchingCanvases(teacher, student, label, expectedDigest =
   });
 }
 
+async function waitForRegionOnBoth(teacher, student, point, expected, label) {
+  return waitFor(label, async () => {
+    const [teacherSignature, studentSignature] = await Promise.all([
+      canvasRegionSignature(teacher, point),
+      canvasRegionSignature(student, point),
+    ]);
+    return teacherSignature === expected && studentSignature === expected
+      ? expected
+      : false;
+  });
+}
+
 const browser = await chromium.launch({
   channel: 'chrome',
   headless: true,
@@ -178,6 +247,11 @@ try {
   });
 
   const blankDigest = await canvasDigest(teacher);
+  const expectedFirstPoint = { x: 245, y: 210 };
+  const expectedSecondPoint = { x: 590, y: 287.5 };
+  const blankFirstRegion = await canvasRegionSignature(teacher, expectedFirstPoint);
+  const blankSecondRegion = await canvasRegionSignature(teacher, expectedSecondPoint);
+
   const firstStroke = await drawStroke(teacher, { x: 170, y: 180, dx: 150, dy: 60 });
   await drawStroke(teacher, { x: 520, y: 310, dx: 140, dy: -45 });
   const revisionAfterTeacherDraws = await waitFor('two teacher strokes committed', async () => {
@@ -186,7 +260,11 @@ try {
   });
   assert.ok(revisionAfterTeacherDraws >= 2);
   const populatedDigest = await canvasDigest(teacher);
+  const populatedFirstRegion = await canvasRegionSignature(teacher, firstStroke.midpoint);
+  const populatedSecondRegion = await canvasRegionSignature(teacher, expectedSecondPoint);
   assert.notEqual(populatedDigest, blankDigest, 'teacher board stayed blank after durable strokes');
+  assert.notEqual(populatedFirstRegion, blankFirstRegion, 'first teacher stroke did not paint its target region');
+  assert.notEqual(populatedSecondRegion, blankSecondRegion, 'second teacher stroke did not paint its target region');
 
   // The student first opens only after the teacher board is already populated. This
   // verifies that no cached/empty replica becomes editable before authority bootstrap.
@@ -224,13 +302,46 @@ try {
     const board = await authorityBoard(teacher, boardId);
     return Number(board?.revision ?? 0) > revisionAfterTeacherDraws ? Number(board.revision) : 0;
   });
-  const erasedDigest = await waitForMatchingCanvases(
-    teacher,
-    student,
-    'student eraser deletion converged on teacher and student',
+  const commitsAfterErase = await authorityCommits(teacher, boardId);
+  const eraseCommit = commitsAfterErase.find((entry) => Number(entry?.revision) === revisionAfterStudentErase);
+  assert.ok(
+    eraseCommit?.ops?.some((op) => op?.type === 'delete'),
+    `student eraser revision ${revisionAfterStudentErase} did not persist a delete op`,
   );
-  assert.notEqual(erasedDigest, populatedDigest, 'student eraser did not change the authoritative board');
-  assert.notEqual(erasedDigest, blankDigest, 'student eraser removed more than the targeted teacher object');
+
+  try {
+    await waitForRegionOnBoth(
+      teacher,
+      student,
+      firstStroke.midpoint,
+      blankFirstRegion,
+      'student eraser cleared the teacher stroke region on both replicas',
+    );
+    await waitForRegionOnBoth(
+      teacher,
+      student,
+      expectedSecondPoint,
+      populatedSecondRegion,
+      'student eraser preserved the unrelated teacher stroke on both replicas',
+    );
+  } catch (error) {
+    const diagnostics = {
+      teacherFirst: await canvasRegionSignature(teacher, firstStroke.midpoint),
+      studentFirst: await canvasRegionSignature(student, firstStroke.midpoint),
+      blankFirstRegion,
+      populatedFirstRegion,
+      teacherSecond: await canvasRegionSignature(teacher, expectedSecondPoint),
+      studentSecond: await canvasRegionSignature(student, expectedSecondPoint),
+      populatedSecondRegion,
+      revisionAfterStudentErase,
+      eraseOps: eraseCommit?.ops ?? null,
+      teacherDigestEqualsStudent: (await canvasDigest(teacher)) === (await canvasDigest(student)),
+    };
+    console.error('source-of-truth eraser diagnostic:', JSON.stringify(diagnostics));
+    throw error;
+  }
+
+  const erasedFirstRegion = blankFirstRegion;
 
   const undoButton = student.getByRole('button', { name: /Отменить/ });
   await waitFor('student undo after eraser enabled', async () => !(await undoButton.isDisabled()));
@@ -239,11 +350,12 @@ try {
     const board = await authorityBoard(teacher, boardId);
     return Number(board?.revision ?? 0) > revisionAfterStudentErase ? Number(board.revision) : 0;
   });
-  await waitForMatchingCanvases(
+  await waitForRegionOnBoth(
     teacher,
     student,
+    firstStroke.midpoint,
+    populatedFirstRegion,
     'student undo restored teacher object everywhere',
-    populatedDigest,
   );
 
   const redoButton = student.getByRole('button', { name: /Вернуть/ });
@@ -253,11 +365,12 @@ try {
     const board = await authorityBoard(teacher, boardId);
     return Number(board?.revision ?? 0) > revisionAfterUndo ? Number(board.revision) : 0;
   });
-  await waitForMatchingCanvases(
+  await waitForRegionOnBoth(
     teacher,
     student,
+    firstStroke.midpoint,
+    erasedFirstRegion,
     'student redo deletion converged everywhere',
-    erasedDigest,
   );
 
   // Finally reload the authority browser itself. A legacy Fabric/UI compaction must not
@@ -267,7 +380,8 @@ try {
   await teacher.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
   await waitForDurableReady(teacher, 'teacher reload');
   await waitFor('teacher reload restored complete authority state', async () => (
-    (await canvasDigest(teacher)) === erasedDigest
+    (await canvasRegionSignature(teacher, firstStroke.midpoint)) === erasedFirstRegion
+    && (await canvasRegionSignature(teacher, expectedSecondPoint)) === populatedSecondRegion
   ));
 
   console.log(JSON.stringify({
