@@ -35,8 +35,8 @@ jobs:
       - name: Browser authority regressions
         run: npm run test:browser-authority
 
-      - name: Legacy board and sync regressions
-        run: npm run test:sync
+      - name: Legacy board and sync regressions (hosted-safe)
+        run: npm run test:sync:ci
 
       - name: Type-check stateless Ably token endpoint
         run: deno check --node-modules-dir=auto supabase/functions/ably-browser-token/index.ts
