@@ -14,9 +14,11 @@ import {
   getReplicaState,
   installReplicaSnapshot as installDefaultReplicaSnapshot,
 } from './browserReplicaStore.js';
+import { getBoardRuntime } from './browserBoardRuntimeRegistry.js';
 import { localBoardLibrary } from './localBoardLibrary.js';
 
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
+const LOCK_TTL_MS = 12_000;
 
 function cloneValue(value) {
   if (value == null || typeof value !== 'object') return value;
@@ -62,6 +64,7 @@ export function createBrowserBoardRepository({
   getReplica = getReplicaState,
   getReplicaChanges = getReplicaChangesAfter,
   installReplicaSnapshot = installDefaultReplicaSnapshot,
+  getRuntime = getBoardRuntime,
 } = {}) {
   const requireOwner = async (boardId, key) => {
     const board = await getBoard(String(boardId ?? '').trim());
@@ -111,6 +114,8 @@ export function createBrowserBoardRepository({
     const board = await getBoard(id);
     return board ? localAccess(board, key) : remoteAccess(id, key);
   };
+
+  const activeRuntime = (boardId) => getRuntime(String(boardId ?? '').trim());
 
   return {
     async createBoard(title = 'Новая доска', studentName = '') {
@@ -246,6 +251,38 @@ export function createBrowserBoardRepository({
         shareKey: created.shareKey,
         createdAt: isoTime(created.createdAt),
       };
+    },
+
+    async acquireBoardObjectLocks(boardId, _key, _clientId, lockToken, objectIds) {
+      const runtime = activeRuntime(boardId);
+      if (!runtime?.requestLock) throw new Error('Board runtime is not ready');
+      return runtime.requestLock('acquire', {
+        lockToken: String(lockToken ?? ''),
+        objectIds: [...new Set((Array.isArray(objectIds) ? objectIds : []).filter(Boolean).map(String))],
+        ttlMs: LOCK_TTL_MS,
+      });
+    },
+
+    async refreshBoardObjectLocks(boardId, _key, _clientId, lockToken) {
+      const runtime = activeRuntime(boardId);
+      if (!runtime?.requestLock) return { refreshed: false, objectIds: [] };
+      return runtime.requestLock('refresh', {
+        lockToken: String(lockToken ?? ''),
+        ttlMs: LOCK_TTL_MS,
+      });
+    },
+
+    async releaseBoardObjectLocks(boardId, _key, _clientId, lockToken = null) {
+      const runtime = activeRuntime(boardId);
+      if (!runtime?.requestLock) return 0;
+      const result = await runtime.requestLock('release', {
+        lockToken: lockToken == null ? null : String(lockToken),
+      });
+      return Number(result?.released ?? 0);
+    },
+
+    async getBoardObjectLocks() {
+      return [];
     },
 
     async applyBoardAction(boardId, key, action) {
