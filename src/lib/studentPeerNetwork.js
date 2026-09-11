@@ -117,6 +117,7 @@ export function createStudentPeerNetwork({
     close() {
       if (closed) return;
       closed = true;
+      try { session?.close?.(new Error('Student peer network is closed')); } catch (error) { onError(error); }
       try { transport?.close?.(); } catch (error) { onError(error); }
       transport = null;
       session = null;
