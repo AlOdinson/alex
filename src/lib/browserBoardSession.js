@@ -64,18 +64,16 @@ export function createBrowserBoardSession({
   const installRuntime = (nextRuntime, { getRevision = null } = {}) => {
     if (!nextRuntime || typeof nextRuntime !== 'object') throw new Error('Board runtime is required');
     clearRuntime();
-    const runtimeFacade = typeof nextRuntime.getRevision === 'function' || typeof getRevision !== 'function'
-      ? nextRuntime
-      : Object.assign(Object.create(nextRuntime), {
-        getRevision,
-      });
-    runtime = runtimeFacade;
-    unregisterRuntime = registerRuntime(safeBoardId, runtimeFacade);
+    if (typeof nextRuntime.getRevision !== 'function' && typeof getRevision === 'function') {
+      nextRuntime.getRevision = getRevision;
+    }
+    runtime = nextRuntime;
+    unregisterRuntime = registerRuntime(safeBoardId, nextRuntime);
     durableBridge = createBrowserAuthorityDurableBridge({
-      runtime: runtimeFacade,
+      runtime: nextRuntime,
       clientId: safeClientId,
     });
-    return runtimeFacade;
+    return nextRuntime;
   };
 
   const startTeacher = async () => {
