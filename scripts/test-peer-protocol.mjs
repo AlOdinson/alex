@@ -25,6 +25,9 @@ test('rejects unsupported protocol versions and unknown message types', () => {
     () => decodePeerMessage(JSON.stringify({ v: 999, type: 'head', payload: {} })),
     /protocol version/i,
   );
+  const sync = decodePeerMessage(createPeerMessage('sync-request', { revision: 3 }));
+  assert.equal(sync.type, 'sync-request');
+  assert.equal(sync.payload.revision, 3);
   assert.throws(
     () => createPeerMessage('mystery-message', {}),
     /message type/i,
