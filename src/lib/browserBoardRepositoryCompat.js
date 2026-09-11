@@ -311,11 +311,11 @@ export function createBrowserBoardRepository({
         needsSync: Boolean(commit.needsSync),
         updatedAt: isoTime(commit.committedAt),
         alreadyApplied: Boolean(commit.duplicate),
-        changed: true,
-        appliedOps: cloneValue(commit.ops ?? []),
-        appliedBackground: commit.background ?? null,
-        rejectedObjectIds: [],
-        skippedConflicts: [],
+        changed: commit.changed !== false,
+        appliedOps: cloneValue(commit.appliedOps ?? commit.ops ?? []),
+        appliedBackground: commit.appliedBackground ?? commit.background ?? null,
+        rejectedObjectIds: cloneValue(commit.rejectedObjectIds ?? []),
+        skippedConflicts: cloneValue(commit.skippedConflicts ?? []),
       };
     },
 
