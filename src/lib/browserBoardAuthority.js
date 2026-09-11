@@ -1,5 +1,5 @@
 import { createTeacherAuthority } from './teacherAuthority.js';
-import { applyAuthorityActions, applyAuthorityOps } from './authoritySnapshot.js';
+import { applyAuthorityActions, applyAuthorityOpsInPlace } from './authoritySnapshot.js';
 import { evaluateAuthorityAction } from './authorityOperationEvaluator.js';
 import {
   getAuthorityActionOutcome,
@@ -111,7 +111,7 @@ export async function openBrowserBoardAuthority({
     toRevision: headRevision,
     loadCommitsAfter,
   });
-  let currentSnapshot = applyAuthorityActions(board.snapshot, replay);
+  const currentSnapshot = applyAuthorityActions(board.snapshot, replay);
   let currentTombstones = cloneValue(board.tombstones ?? {});
 
   const authority = createTeacherAuthority({
@@ -120,7 +120,7 @@ export async function openBrowserBoardAuthority({
       const persisted = await persistCommit(safeBoardId, attemptedCommit);
       if (persisted?.duplicate) return persisted;
       const durableCommit = persisted?.commit ?? attemptedCommit;
-      currentSnapshot = applyAuthorityOps(
+      applyAuthorityOpsInPlace(
         currentSnapshot,
         durableCommit?.ops ?? [],
         durableCommit?.background ?? null,
