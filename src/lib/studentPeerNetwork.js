@@ -4,6 +4,16 @@ import { createStudentPeerSession } from './studentPeerSession.js';
 
 const TERMINAL_STATES = new Set(['failed', 'closed']);
 
+function normalizeStudentConnectionState(state) {
+  const normalized = String(state ?? 'unknown');
+  // TeacherPeerNetwork intentionally retires a peer as soon as WebRTC reports
+  // `disconnected`. Keeping the student runtime alive in that state creates an
+  // asymmetric half-connection: Ably live previews can still move while durable
+  // commits/undo have nowhere to go. Enter the existing terminal recovery path
+  // immediately so presence refresh creates a fresh DataChannel and resyncs.
+  return normalized === 'disconnected' ? 'failed' : normalized;
+}
+
 export function createStudentPeerNetwork({
   teacherId,
   signaling,
@@ -60,8 +70,9 @@ export function createStudentPeerNetwork({
     sendSignal: (signal) => signaling.send(targetTeacherId, signal),
     onChannel: attachChannel,
     onConnectionState: (state) => {
-      onState(state);
-      if (TERMINAL_STATES.has(String(state))) {
+      const recoveryState = normalizeStudentConnectionState(state);
+      onState(recoveryState);
+      if (TERMINAL_STATES.has(recoveryState)) {
         try { transport?.close?.(); } catch (error) { onError(error); }
       }
     },
