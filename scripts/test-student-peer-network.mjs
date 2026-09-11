@@ -55,6 +55,7 @@ test('starts student sync when data channel opens and routes messages/transfers'
       async handleMessage(message) { sessionEvents.push(['message', message]); },
       async handleTransfer(transfer) { sessionEvents.push(['transfer', transfer]); },
       async proposeAction(action) { sessionEvents.push(['proposal', action]); return 'sent'; },
+      async proposeActionAndWait(action) { sessionEvents.push(['proposal-wait', action]); return { accepted: true, revision: 6 }; },
       whenIdle: async () => {},
     }),
   });
@@ -75,6 +76,10 @@ test('starts student sync when data channel opens and routes messages/transfers'
   const result = await network.proposeAction({ actionId: 'student-action', ops: [] });
   assert.equal(result, 'sent');
   assert.deepEqual(sessionEvents.at(-1), ['proposal', { actionId: 'student-action', ops: [] }]);
+
+  const ack = await network.proposeActionAndWait({ actionId: 'student-action-wait', ops: [] });
+  assert.deepEqual(ack, { accepted: true, revision: 6 });
+  assert.deepEqual(sessionEvents.at(-1), ['proposal-wait', { actionId: 'student-action-wait', ops: [] }]);
 });
 
 test('accepts only signaling from the configured teacher', async () => {
