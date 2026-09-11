@@ -111,21 +111,38 @@ async function waitForCanvasOrDump(page, label) {
 }
 
 async function clickOwnerShareOrDump(page, authorityRecord) {
-  // On adaptive layouts the visible share control is the compact button named
-  // "Поделиться"; the desktop control with the longer aria-label may stay in the DOM
-  // but be hidden by CSS. Target the user-visible control rather than a layout variant.
-  const shareButton = page.getByRole('button', { name: 'Поделиться', exact: true });
   try {
-    await shareButton.waitFor({ state: 'visible', timeout: 8_000 });
+    const settings = page.getByRole('button', { name: 'Настройки', exact: true });
+    await settings.waitFor({ state: 'visible', timeout: 8_000 });
+    await settings.click();
+
+    const shareItem = page.getByRole('menuitem', { name: 'Поделиться', exact: true });
+    await shareItem.waitFor({ state: 'visible', timeout: 8_000 });
+    await shareItem.click();
   } catch (error) {
     const diagnostic = await page.evaluate(() => ({
       url: window.location.href,
       body: document.body?.innerText?.slice(0, 6000) ?? '',
+      settingsRoot: (() => {
+        const root = document.getElementById('alex-board-settings-root');
+        const menu = root?.querySelector('.alex-settings-menu');
+        return {
+          exists: Boolean(root),
+          menuHidden: menu?.hidden ?? null,
+          gearExpanded: root?.querySelector('.alex-settings-gear')?.getAttribute('aria-expanded') ?? null,
+          shareHidden: root?.querySelector('[data-action="share"]')?.hidden ?? null,
+        };
+      })(),
       buttons: [...document.querySelectorAll('button')].map((button) => ({
         text: button.innerText,
         ariaLabel: button.getAttribute('aria-label'),
         title: button.getAttribute('title'),
         disabled: button.disabled,
+        hidden: button.hidden,
+        rect: (() => {
+          const rect = button.getBoundingClientRect();
+          return { width: rect.width, height: rect.height, x: rect.x, y: rect.y };
+        })(),
       })),
     }));
     const urlKey = new URL(page.url()).searchParams.get('key') ?? '';
@@ -138,7 +155,6 @@ async function clickOwnerShareOrDump(page, authorityRecord) {
     console.error('teacher toolbar diagnostic:', JSON.stringify(diagnostic));
     throw error;
   }
-  await shareButton.click();
 }
 
 async function canvasDigest(page) {
