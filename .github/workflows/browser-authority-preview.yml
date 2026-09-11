@@ -1,0 +1,138 @@
+name: Deploy Browser Authority Preview
+
+on:
+  push:
+    branches:
+      - feature/browser-authority-v1
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  PREVIEW_BASE: /alex/preview-browser-authority/
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout browser-authority branch
+        uses: actions/checkout@v6
+
+      - name: Checkout current main for production root
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          path: main-src
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate Supabase public configuration
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ] || [ -z "$VITE_SUPABASE_PUBLISHABLE_KEY" ]; then
+            echo "::error::VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY are required"
+            exit 1
+          fi
+
+      - name: Build production root from main
+        working-directory: main-src
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Build browser-authority preview
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          npm install --no-audit --no-fund
+          npm run build -- --base="$PREVIEW_BASE"
+
+      - name: Compose production root plus isolated preview
+        run: |
+          rm -rf site
+          mkdir -p site/preview-browser-authority
+          cp -R main-src/dist/. site/
+          cp -R dist/. site/preview-browser-authority/
+          touch site/.nojekyll
+
+      - name: Preserve preview deep links without breaking production routes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          preview_base = '/alex/preview-browser-authority/'
+          preview_index = Path('site/preview-browser-authority/index.html')
+          preview_html = preview_index.read_text()
+          restore_script = f'''<script>
+          (() => {{
+            const params = new URLSearchParams(window.location.search);
+            const previewPath = params.get('__preview_path');
+            if (!previewPath) return;
+            params.delete('__preview_path');
+            const query = params.toString();
+            const target = {preview_base!r}.replace(/\/$/, '') + previewPath + (query ? `?${{query}}` : '') + window.location.hash;
+            window.history.replaceState(null, '', target);
+          }})();
+          </script>'''
+          preview_html = preview_html.replace('<head>', '<head>' + restore_script, 1)
+          preview_index.write_text(preview_html)
+
+          main_index = Path('site/index.html').read_text()
+          redirect_script = f'''<script>
+          (() => {{
+            const base = {preview_base!r};
+            if (!window.location.pathname.startsWith(base)) return;
+            const route = window.location.pathname.slice(base.length - 1) || '/';
+            const params = new URLSearchParams(window.location.search);
+            params.set('__preview_path', route);
+            window.location.replace(base + '?' + params.toString() + window.location.hash);
+          }})();
+          </script>'''
+          smart_404 = main_index.replace('<head>', '<head>' + redirect_script, 1)
+          Path('site/404.html').write_text(smart_404)
+          PY
+
+      - name: Verify preview artifact structure
+        run: |
+          test -f site/index.html
+          test -f site/404.html
+          test -f site/preview-browser-authority/index.html
+          grep -q '/alex/preview-browser-authority/' site/preview-browser-authority/index.html
+          grep -q '__preview_path' site/404.html
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload combined Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+          include-hidden-files: true
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}preview-browser-authority/
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Publish preview alongside production root
+        id: deployment
+        uses: actions/deploy-pages@v4
