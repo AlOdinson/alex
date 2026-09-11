@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   connectBoardRealtime,
+  createAblyBrowserTransport,
   routeBrowserRealtimeEvent,
 } from '../src/lib/browserAuthorityRealtime.js';
 
@@ -58,6 +59,23 @@ test('ignores own echoed transient events', async () => {
     callbacks: { onCursor: () => { calls += 1; } },
   });
   assert.equal(calls, 0);
+});
+
+test('transient Ably publishes are harmless while an owner tab is still waiting for authority', async () => {
+  const transport = createAblyBrowserTransport({
+    boardId: 'board-starting',
+    roomKey: 'room-key-starting-1234567890',
+    clientId: 'teacher-starting',
+    permission: 'owner',
+    AblyRuntime: null,
+  });
+
+  assert.equal(
+    await transport.publish('cursor', { clientId: 'teacher-starting', x: 1, y: 2 }),
+    'starting',
+    'transient UI events before transport startup must be dropped rather than becoming page errors',
+  );
+  await transport.disconnect();
 });
 
 test('Ably continuity recovery wakes durable work and asks Board to reconcile peer authority', async () => {
