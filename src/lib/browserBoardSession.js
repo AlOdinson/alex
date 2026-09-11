@@ -2,6 +2,7 @@ import { createBrowserAuthorityDurableBridge } from './browserAuthorityDurableBr
 import { registerBoardRuntime as registerDefaultBoardRuntime } from './browserBoardRuntimeRegistry.js';
 import {
   applyReplicaCommit as applyDefaultReplicaCommit,
+  getReplicaRevision as getDefaultReplicaRevision,
   getReplicaState as getDefaultReplicaState,
   installReplicaSnapshot as installDefaultReplicaSnapshot,
 } from './browserReplicaStore.js';
@@ -35,6 +36,7 @@ export function createBrowserBoardSession({
   createStudentRuntime = createDefaultStudentRuntime,
   registerRuntime = registerDefaultBoardRuntime,
   getReplica = getDefaultReplicaState,
+  getReplicaRevision = null,
   applyReplicaCommit = applyDefaultReplicaCommit,
   installReplicaSnapshot = installDefaultReplicaSnapshot,
 } = {}) {
@@ -58,7 +60,13 @@ export function createBrowserBoardSession({
   let rejectTeacherTabReady = null;
   const runtimeWaiters = new Set();
 
-  const replicaRevision = () => safeRevision(getReplica(safeBoardId)?.revision);
+  const replicaRevision = () => safeRevision(
+    typeof getReplicaRevision === 'function'
+      ? getReplicaRevision(safeBoardId)
+      : (getReplica === getDefaultReplicaState
+        ? getDefaultReplicaRevision(safeBoardId)
+        : getReplica(safeBoardId)?.revision),
+  );
 
   const settleRuntimeWaiters = (nextRuntime) => {
     for (const waiter of runtimeWaiters) waiter.resolve(nextRuntime);
@@ -142,9 +150,7 @@ export function createBrowserBoardSession({
       teacherTabAuthority = authority;
       Promise.resolve(authority.start()).then(() => {
         if (teacherTabAuthority !== authority) return;
-        if (!teacherTabAuthorityHeld) {
-          rejectOnce(new Error('Teacher tab authority lock was not acquired'));
-        }
+        if (!teacherTabAuthorityHeld) rejectOnce(new Error('Teacher tab authority lock was not acquired'));
       }).catch((error) => {
         if (teacherTabAuthority !== authority) return;
         if (!settled) rejectOnce(error);
@@ -169,10 +175,7 @@ export function createBrowserBoardSession({
     }
     runtime = nextRuntime;
     unregisterRuntime = registerRuntime(safeBoardId, nextRuntime);
-    durableBridge = createBrowserAuthorityDurableBridge({
-      runtime: nextRuntime,
-      clientId: safeClientId,
-    });
+    durableBridge = createBrowserAuthorityDurableBridge({ runtime: nextRuntime, clientId: safeClientId });
     settleRuntimeWaiters(nextRuntime);
     return nextRuntime;
   };
@@ -181,7 +184,6 @@ export function createBrowserBoardSession({
     await ensureTeacherTabAuthority();
     if (closed) return null;
     if (!teacherTabAuthorityHeld) throw new Error('Teacher tab authority lock is not held');
-
     let nextRuntime;
     try {
       nextRuntime = await createTeacherRuntime({
@@ -218,10 +220,6 @@ export function createBrowserBoardSession({
     let nextRuntime = null;
     const handleStudentState = (state) => {
       const normalizedState = String(state ?? '');
-      // A brief WebRTC "disconnected" state can heal without renegotiation. Only
-      // terminal states retire the peer. Clearing only the runtime that emitted this
-      // event also prevents a late callback from an old peer from deleting its newer
-      // replacement for the same teacher.
       if (TERMINAL_STUDENT_STATES.has(normalizedState) && runtime === nextRuntime) {
         teacherId = '';
         clearRuntime();
@@ -238,9 +236,7 @@ export function createBrowserBoardSession({
       applyCommit: async (commit) => {
         const applied = applyReplicaCommit(safeBoardId, commit);
         if (applied?.needsSnapshot) throw new Error('Student replica needs authoritative snapshot');
-        if (applied?.applied && safeId(commit?.clientId) !== safeClientId) {
-          await onAuthoritativeCommit(commit);
-        }
+        if (applied?.applied && safeId(commit?.clientId) !== safeClientId) await onAuthoritativeCommit(commit);
         return applied;
       },
       installSnapshot: async (snapshot, revision) => {
@@ -284,13 +280,11 @@ export function createBrowserBoardSession({
       startPromise = isOwner ? startTeacher() : Promise.resolve(null);
       return startPromise;
     },
-
     whenRuntimeReady() {
       if (runtime) return Promise.resolve(runtime);
       if (closed) return Promise.reject(new Error('Board session is closed'));
       return new Promise((resolve, reject) => runtimeWaiters.add({ resolve, reject }));
     },
-
     updateParticipants(users) {
       if (closed || isOwner) return Promise.resolve(runtime);
       const ownerIds = (Array.isArray(users) ? users : [])
@@ -302,34 +296,23 @@ export function createBrowserBoardSession({
       if (!nextTeacherId) return Promise.resolve(runtime);
       return enqueueTransition(() => startStudent(nextTeacherId));
     },
-
     handleRealtimeSignal(payload) {
       return runtime?.handleRealtimeSignal?.(payload) ?? false;
     },
-
     async sendOps(ops, options = {}) {
       if (!durableBridge) throw new Error('Browser durable runtime is unavailable');
       return durableBridge.sendOps(ops, options);
     },
-
     requestLock(operation, payload = {}) {
       if (!runtime?.requestLock) return Promise.reject(new Error('Board lock runtime is unavailable'));
       return runtime.requestLock(operation, payload);
     },
-
-    getRuntime() {
-      return runtime;
-    },
-
-    getTeacherId() {
-      return teacherId;
-    },
-
+    getRuntime() { return runtime; },
+    getTeacherId() { return teacherId; },
     getRevision() {
       if (typeof runtime?.getRevision === 'function') return safeRevision(runtime.getRevision());
       return isOwner ? 0 : replicaRevision();
     },
-
     close() {
       if (closed) return;
       closed = true;
