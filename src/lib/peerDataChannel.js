@@ -30,6 +30,7 @@ export function createPeerDataChannelTransport({
   channel,
   onMessage = () => {},
   onTransfer = () => {},
+  onClose = () => {},
   onError = () => {},
   highWaterMark = 512_000,
   lowWaterMark = 128_000,
@@ -45,6 +46,7 @@ export function createPeerDataChannelTransport({
   const chunkChars = Math.max(1, Math.floor(Number(messageChunkChars) || 16_384));
   const assembler = createPeerTextAssembler();
   let closed = false;
+  let closeReported = false;
   let sendQueue = Promise.resolve();
 
   const waitForOpen = () => {
@@ -121,7 +123,24 @@ export function createPeerDataChannelTransport({
     }
   };
 
+  const handleChannelClose = () => {
+    if (closed || closeReported) return;
+    closeReported = true;
+    assembler.clear();
+    try { onClose(); } catch (error) { onError(error); }
+  };
+
+  const handleChannelError = (event) => {
+    if (closed) return;
+    const error = event?.error instanceof Error
+      ? event.error
+      : new Error('Peer data channel error');
+    try { onError(error); } catch { /* observer errors are ignored */ }
+  };
+
   const removeMessageListener = addListener(channel, 'message', handleIncoming);
+  const removeCloseListener = addListener(channel, 'close', handleChannelClose);
+  const removeErrorListener = addListener(channel, 'error', handleChannelError);
 
   return {
     send(type, payload = {}) {
@@ -151,6 +170,8 @@ export function createPeerDataChannelTransport({
       closed = true;
       assembler.clear();
       removeMessageListener();
+      removeCloseListener();
+      removeErrorListener();
       if (closeChannel) channel.close?.();
     },
   };
