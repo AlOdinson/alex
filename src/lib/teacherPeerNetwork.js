@@ -20,15 +20,20 @@ export function createTeacherPeerNetwork({
   const peers = new Map();
   let closed = false;
 
-  const closePeer = (peerId) => {
+  const closePeer = (peerId, expectedEntry = null) => {
     const id = String(peerId ?? '');
     const entry = peers.get(id);
-    if (!entry) return;
+    if (!entry) return false;
+    // Connection-state callbacks can arrive after a reconnect has already replaced
+    // the entry for the same stable peer id. A stale callback must never tear down
+    // that newer connection.
+    if (expectedEntry && entry !== expectedEntry) return false;
     peers.delete(id);
     try { entry.transport?.close?.(); } catch (error) { onError(error); }
     try { entry.unregister?.(); } catch (error) { onError(error); }
     try { peerHub.removePeer(id); } catch (error) { onError(error); }
     try { entry.connection?.close?.(); } catch (error) { onError(error); }
+    return true;
   };
 
   const attachTransport = (peerId, channel) => {
@@ -64,7 +69,7 @@ export function createTeacherPeerNetwork({
       onChannel: (channel) => attachTransport(id, channel),
       onConnectionState: (state) => {
         onPeerState(id, state);
-        if (TERMINAL_STATES.has(String(state))) closePeer(id);
+        if (TERMINAL_STATES.has(String(state))) closePeer(id, entry);
       },
       onError,
     });
