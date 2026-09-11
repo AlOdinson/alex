@@ -223,6 +223,11 @@ jobs:
           BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
         run: node scripts/test-browser-authority-preview-e2e.mjs
 
+      - name: Chromium student-originated undo/redo convergence E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-student-history-e2e.mjs
+
       - name: Chromium browser-authority resilience E2E
         env:
           BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
