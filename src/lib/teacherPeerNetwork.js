@@ -44,6 +44,11 @@ export function createTeacherPeerNetwork({
       channel,
       onMessage: (message) => Promise.resolve(peerHub.handleMessage(peerId, message)).catch(onError),
       onTransfer: () => {},
+      onClose: () => {
+        if (peers.get(peerId) !== entry || entry.transport !== transport) return;
+        try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
+        closePeer(peerId, entry);
+      },
       onError,
     });
     entry.transport = transport;
