@@ -37,17 +37,21 @@ function installDurableEditGate() {
   if (window.__alexDurableEditGateInstalled) return;
   window.__alexDurableEditGateInstalled = true;
 
-  const boardId = currentBoardId();
-  if (!boardId) return;
-
-  let state = 'booting';
+  let activeBoardId = '';
+  let state = 'idle';
   let permission = '';
-  let blocked = true;
+  let blocked = false;
   let badge = null;
 
   const updateDataset = () => {
     const root = document.documentElement;
     if (!root?.dataset) return;
+    if (!activeBoardId) {
+      delete root.dataset.alexDurableEditState;
+      delete root.dataset.alexDurableEditPermission;
+      delete root.dataset.alexDurableEditBlocked;
+      return;
+    }
     root.dataset.alexDurableEditState = state;
     if (permission) root.dataset.alexDurableEditPermission = permission;
     else delete root.dataset.alexDurableEditPermission;
@@ -90,8 +94,34 @@ function installDurableEditGate() {
     badge.textContent = gateMessage(state, permission);
   };
 
+  const syncRouteState = () => {
+    const routeBoardId = currentBoardId();
+    if (!routeBoardId) {
+      if (activeBoardId) {
+        activeBoardId = '';
+        state = 'idle';
+        permission = '';
+        blocked = false;
+        updateDataset();
+        removeBadge();
+      }
+      return '';
+    }
+    if (activeBoardId !== routeBoardId) {
+      activeBoardId = routeBoardId;
+      state = 'booting';
+      permission = '';
+      blocked = true;
+      updateDataset();
+      showBadge();
+    }
+    return routeBoardId;
+  };
+
   const applyRuntimeState = (detail = {}) => {
-    if (String(detail.boardId ?? '') !== boardId) return;
+    const routeBoardId = syncRouteState();
+    if (!routeBoardId || String(detail.boardId ?? '') !== routeBoardId) return;
+    activeBoardId = routeBoardId;
     state = String(detail.state ?? 'waiting');
     permission = String(detail.permission ?? '');
     blocked = shouldBlockDurableEdit({ state, permission });
@@ -100,12 +130,13 @@ function installDurableEditGate() {
   };
 
   const blockInput = (event) => {
+    syncRouteState();
     if (!blocked || !isBoardCanvasTarget(event.target)) return;
     if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation?.();
   };
 
-  updateDataset();
+  syncRouteState();
   window.addEventListener(RUNTIME_STATE_EVENT, (event) => applyRuntimeState(event.detail ?? {}));
   BLOCKED_INPUT_EVENTS.forEach((type) => {
     window.addEventListener(type, blockInput, { capture: true, passive: false });
