@@ -52,6 +52,39 @@ test('fresh owner bootstrap can recreate only the just-created empty authority b
   });
 });
 
+test('production board created before the hotfix can recover from recent owner-library v2 entry', async () => {
+  const storage = memoryStorage();
+  const ownerStorage = memoryStorage();
+  ownerStorage.setItem('alex-board:owner-library:v2', JSON.stringify([{
+    boardId: 'fresh-board',
+    ownerKey: 'owner-secret',
+    title: 'Первая доска',
+    studentName: 'Иван',
+    createdAt: new Date(now).toISOString(),
+  }]));
+
+  let created = null;
+  const recovered = await recoverFreshOwnerBootstrap({
+    boardId: 'fresh-board',
+    ownerKey: 'owner-secret',
+    storage,
+    ownerStorage,
+    now: () => now + 5 * 60_000,
+    deriveShareKey: async (key) => `derived:${key}`,
+    getBoard: async () => null,
+    createBoard: async (record) => {
+      created = record;
+      return record;
+    },
+  });
+
+  assert.equal(recovered?.boardId, 'fresh-board');
+  assert.equal(created.shareKey, 'derived:owner-secret');
+  assert.equal(created.realtimeKey, 'derived:owner-secret');
+  assert.equal(created.title, 'Первая доска');
+  assert.equal(created.studentName, 'Иван');
+});
+
 test('share/student key can never use a pending owner bootstrap', async () => {
   const storage = memoryStorage();
   createFreshOwnerBootstrap({
@@ -89,7 +122,7 @@ test('expired or different-board bootstrap cannot create authority', async () =>
     boardId: 'fresh-board',
     ownerKey: 'owner-secret',
     storage,
-    now: () => now + 10 * 60_000,
+    now: () => now + 3 * 60 * 60_000,
     getBoard: async () => null,
     createBoard: async () => { creates += 1; },
   });
