@@ -1,4 +1,4 @@
-import { applyAuthorityOps } from './authoritySnapshot.js';
+import { applyAuthorityOpsInPlace } from './authoritySnapshot.js';
 
 const replicas = new Map();
 const MAX_REPLICA_COMMITS = 512;
@@ -62,7 +62,7 @@ export function applyReplicaCommit(boardId, commit) {
     return { applied: false, duplicate: false, needsSnapshot: true, revision: state.revision };
   }
 
-  state.snapshot = applyAuthorityOps(
+  applyAuthorityOpsInPlace(
     state.snapshot,
     Array.isArray(commit?.ops) ? commit.ops : [],
     commit?.background ?? null,
@@ -74,6 +74,12 @@ export function applyReplicaCommit(boardId, commit) {
   }
   state.updatedAt = Date.now();
   return { applied: true, duplicate: false, needsSnapshot: false, revision: state.revision };
+}
+
+export function getReplicaRevision(boardId) {
+  const key = boardKey(boardId);
+  if (!key) return 0;
+  return safeRevision(replicas.get(key)?.revision);
 }
 
 export function getReplicaState(boardId) {
