@@ -8,6 +8,8 @@ import {
 import { createStudentBoardRuntime as createDefaultStudentRuntime } from './studentBoardRuntime.js';
 import { createTeacherBoardRuntime as createDefaultTeacherRuntime } from './teacherBoardRuntime.js';
 
+const TERMINAL_STUDENT_STATES = new Set(['failed', 'closed']);
+
 function safeId(value) {
   return String(value ?? '').trim();
 }
@@ -110,7 +112,21 @@ export function createBrowserBoardSession({
     if (!resolvedTeacherId) return null;
     if (runtime && teacherId === resolvedTeacherId) return runtime;
 
-    const nextRuntime = createStudentRuntime({
+    let nextRuntime = null;
+    const handleStudentState = (state) => {
+      const normalizedState = String(state ?? '');
+      // A brief WebRTC "disconnected" state can heal without renegotiation. Only
+      // terminal states retire the peer. Clearing only the runtime that emitted this
+      // event also prevents a late callback from an old peer from deleting its newer
+      // replacement for the same teacher.
+      if (TERMINAL_STUDENT_STATES.has(normalizedState) && runtime === nextRuntime) {
+        teacherId = '';
+        clearRuntime();
+      }
+      onPeerState(state);
+    };
+
+    nextRuntime = createStudentRuntime({
       clientId: safeClientId,
       teacherId: resolvedTeacherId,
       sendScreenShareSignal,
@@ -128,7 +144,7 @@ export function createBrowserBoardSession({
         installReplicaSnapshot(safeBoardId, snapshot, revision);
         await onAuthoritativeSnapshot(snapshot, safeRevision(revision));
       },
-      onState: onPeerState,
+      onState: handleStudentState,
       onError,
     });
 
