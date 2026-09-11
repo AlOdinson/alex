@@ -24,6 +24,7 @@ export function createStudentPeerSession({
 
   let applyQueue = Promise.resolve();
   const lockWaiters = new Map();
+  const actionWaiters = new Map();
 
   const requestSync = () => transport.send('sync-request', {
     revision: safeRevision(getRevision()),
@@ -36,6 +37,11 @@ export function createStudentPeerSession({
     });
     return task;
   };
+
+  const actionProposalPayload = (action) => ({
+    ...(action && typeof action === 'object' ? action : {}),
+    baseRevision: safeRevision(getRevision()),
+  });
 
   return {
     start() {
@@ -55,6 +61,12 @@ export function createStudentPeerSession({
 
       if (type === 'ack') {
         onAck(payload);
+        const actionId = String(payload.actionId ?? '').trim();
+        const waiter = actionWaiters.get(actionId);
+        if (waiter) {
+          actionWaiters.delete(actionId);
+          waiter.resolve(payload);
+        }
         return Promise.resolve();
       }
 
@@ -96,11 +108,27 @@ export function createStudentPeerSession({
     },
 
     proposeAction(action) {
-      const payload = {
-        ...(action && typeof action === 'object' ? action : {}),
-        baseRevision: safeRevision(getRevision()),
-      };
-      return transport.send('action-proposal', payload);
+      return transport.send('action-proposal', actionProposalPayload(action));
+    },
+
+    proposeActionAndWait(action) {
+      const payload = actionProposalPayload(action);
+      const actionId = String(payload.actionId ?? '').trim();
+      if (!actionId) return Promise.reject(new Error('actionId is required'));
+      if (actionWaiters.has(actionId)) {
+        return Promise.reject(new Error('Action is already awaiting acknowledgement'));
+      }
+
+      const task = new Promise((resolve, reject) => {
+        actionWaiters.set(actionId, { resolve, reject });
+      });
+      Promise.resolve(transport.send('action-proposal', payload)).catch((error) => {
+        const waiter = actionWaiters.get(actionId);
+        if (!waiter) return;
+        actionWaiters.delete(actionId);
+        waiter.reject(error);
+      });
+      return task;
     },
 
     requestLock(operation, payload = {}) {
