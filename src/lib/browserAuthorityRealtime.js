@@ -327,8 +327,17 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     ),
     onAuthoritativeSnapshot: (_snapshot, revision) => onSyncRequired?.(Number(revision ?? 0)),
     onPeerState: (state) => {
-      if (state === 'failed' || state === 'disconnected') onStatus?.('RECOVERING');
-      if (state === 'connected') onStatus?.('RECOVERED');
+      const peerState = String(state ?? '');
+      if (peerState === 'failed' || peerState === 'closed' || peerState === 'disconnected') {
+        onStatus?.('RECOVERING');
+      }
+      if (permission !== 'owner' && (peerState === 'failed' || peerState === 'closed')) {
+        Promise.resolve(transport?.refreshUsers?.()).catch((error) => {
+          console.warn('Could not refresh owner presence after terminal peer failure', error);
+          onStatus?.('CHANNEL_ERROR');
+        });
+      }
+      if (peerState === 'connected') onStatus?.('RECOVERED');
     },
     onError: (error) => {
       console.warn('Browser board peer runtime error', error);
