@@ -53,8 +53,6 @@ jobs:
     concurrency:
       group: pages
       cancel-in-progress: true
-    environment:
-      name: github-pages
 
     steps:
       - name: Checkout browser-authority branch
