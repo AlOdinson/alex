@@ -60,6 +60,53 @@ test('sends large text transfers as multiple bounded frames', async () => {
   assert.ok(decoded.filter((frame) => frame.type === 'transfer-chunk').every((frame) => frame.payload.chunk.length <= 16));
 });
 
+test('automatically chunks oversized ordinary messages and reconstructs them as onMessage', async () => {
+  const senderChannel = new FakeChannel();
+  const receiverChannel = new FakeChannel();
+  const receivedMessages = [];
+  const receivedTransfers = [];
+  const sender = createPeerDataChannelTransport({
+    channel: senderChannel,
+    maxInlineMessageChars: 80,
+    messageChunkChars: 32,
+    createTransferId: () => 'message-transfer-1',
+  });
+  createPeerDataChannelTransport({
+    channel: receiverChannel,
+    onMessage: (message) => receivedMessages.push(message),
+    onTransfer: (transfer) => receivedTransfers.push(transfer),
+  });
+
+  const payload = {
+    actionId: 'large-action',
+    baseRevision: 12,
+    ops: [{
+      type: 'upsert',
+      object: {
+        boardObjectId: 'image-1',
+        type: 'image',
+        src: `data:image/jpeg;base64,${'x'.repeat(300)}`,
+      },
+    }],
+  };
+
+  await sender.send('action-proposal', payload);
+  const frames = senderChannel.sent.map((value) => JSON.parse(value));
+  assert.equal(frames[0].type, 'transfer-start');
+  assert.equal(frames[0].payload.kind, 'peer-message');
+  assert.equal(frames.at(-1).type, 'transfer-end');
+  assert.ok(frames.filter((frame) => frame.type === 'transfer-chunk').length > 1);
+  assert.ok(frames.filter((frame) => frame.type === 'transfer-chunk')
+    .every((frame) => frame.payload.chunk.length <= 32));
+
+  for (const frame of senderChannel.sent) {
+    receiverChannel.emit('message', { data: frame });
+  }
+
+  assert.deepEqual(receivedMessages, [{ v: 1, type: 'action-proposal', payload }]);
+  assert.deepEqual(receivedTransfers, [], 'internal message chunking must stay transparent to callers');
+});
+
 test('waits for bufferedamountlow before sending more data', async () => {
   const channel = new FakeChannel();
   channel.bufferedAmount = 900_000;
