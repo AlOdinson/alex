@@ -59,3 +59,54 @@ test('application loads the durable edit gate before rendering the board', async
   assert.match(main, /import ['"]\.\/durableEditGate\.js['"]/,
     'main must install the authority edit gate before React renders Board');
 });
+
+test('gate installed on the library route activates after SPA navigation into a board', async () => {
+  const fakeWindow = new EventTarget();
+  fakeWindow.location = { pathname: '/alex/preview-browser-authority/' };
+
+  const root = { dataset: {} };
+  const appended = [];
+  const fakeDocument = {
+    documentElement: root,
+    body: { append: (node) => appended.push(node) },
+    createElement() {
+      return {
+        dataset: {},
+        style: {},
+        textContent: '',
+        remove() {},
+      };
+    },
+  };
+
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: fakeWindow });
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: fakeDocument });
+  Object.defineProperty(globalThis, 'CustomEvent', { configurable: true, value: RuntimeStateEvent });
+
+  await import(`../src/durableEditGate.js?spa-gate-test=${Date.now()}`);
+
+  fakeWindow.location.pathname = '/alex/preview-browser-authority/board/spa-board';
+  fakeWindow.dispatchEvent(new RuntimeStateEvent('alex-board-runtime-state', {
+    detail: {
+      state: 'waiting',
+      boardId: 'spa-board',
+      clientId: 'spa-owner',
+      permission: 'owner',
+    },
+  }));
+
+  assert.equal(root.dataset.alexDurableEditState, 'waiting');
+  assert.equal(root.dataset.alexDurableEditBlocked, 'true');
+  assert.equal(appended.at(-1)?.dataset?.alexDurableEditGate, 'true');
+
+  fakeWindow.dispatchEvent(new RuntimeStateEvent('alex-board-runtime-state', {
+    detail: {
+      state: 'ready',
+      boardId: 'spa-board',
+      clientId: 'spa-owner',
+      permission: 'owner',
+    },
+  }));
+  assert.equal(root.dataset.alexDurableEditState, 'ready');
+  assert.equal(root.dataset.alexDurableEditBlocked, 'false');
+});
