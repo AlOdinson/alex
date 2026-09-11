@@ -83,6 +83,18 @@ async function listAuthorityBoardsInPage(page) {
   }));
 }
 
+async function enterBoardIfNeeded(page, name) {
+  const state = await waitFor('participant name gate or board canvas', async () => {
+    if (await page.locator('canvas.upper-canvas').isVisible().catch(() => false)) return 'canvas';
+    if (await page.getByLabel('Ваше имя').isVisible().catch(() => false)) return 'name';
+    return '';
+  }, 12_000);
+  if (state !== 'name') return false;
+  await page.getByLabel('Ваше имя').fill(name);
+  await page.getByRole('button', { name: 'Войти на доску' }).click();
+  return true;
+}
+
 async function waitForCanvasOrDump(page, label) {
   try {
     await page.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
@@ -152,6 +164,7 @@ try {
     teacher.waitForURL(/\/preview-browser-authority\/board\//, { timeout: TIMEOUT_MS }),
     teacher.getByRole('button', { name: 'Создать доску' }).click(),
   ]);
+  await enterBoardIfNeeded(teacher, 'Teacher E2E');
   await waitForCanvasOrDump(teacher, 'teacher');
 
   const boardId = boardIdFromUrl(teacher.url());
@@ -167,6 +180,7 @@ try {
   });
 
   await student.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
+  await enterBoardIfNeeded(student, 'Student E2E');
   await waitForCanvasOrDump(student, 'student');
 
   await waitFor('teacher/student Ably presence', async () => {
@@ -196,6 +210,7 @@ try {
   await waitFor('student authoritative stroke rendered on teacher', async () => (await canvasDigest(teacher)) !== teacherAfterFirst);
 
   await teacher.reload({ waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
+  await enterBoardIfNeeded(teacher, 'Teacher E2E');
   await waitForCanvasOrDump(teacher, 'teacher reload');
   const boardAfterReload = await waitFor('teacher IndexedDB authority after reload', async () => {
     const board = await authorityBoard(teacher, boardId);
