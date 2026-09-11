@@ -225,6 +225,8 @@ try {
     const value = await shareInput.inputValue();
     return value.includes('/preview-browser-authority/board/') && value.includes('?key=') ? value : '';
   });
+  await teacher.getByRole('button', { name: 'Закрыть', exact: true }).click();
+  await teacher.locator('.share-dialog').waitFor({ state: 'detached', timeout: 8_000 });
 
   await student.goto(shareUrl, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
   await enterBoardIfNeeded(student, 'Student E2E');
