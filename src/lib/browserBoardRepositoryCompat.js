@@ -144,6 +144,7 @@ export function createBrowserBoardRepository({
     async deleteOwnedBoards(entries, { onProgress = null } = {}) {
       const source = Array.isArray(entries) ? entries : [];
       const deletedBoardIds = [];
+      const detachedBoardIds = [];
       const failedBoardIds = [];
       const failures = [];
       for (let index = 0; index < source.length; index += 1) {
@@ -151,18 +152,36 @@ export function createBrowserBoardRepository({
         const boardId = String(entry?.boardId ?? '');
         let deleted = false;
         try {
+          // A library entry may legitimately outlive its local IndexedDB authority
+          // record (manual browser data cleanup, prior deletion, or another tab). In
+          // that case there is nothing left to authorize or delete: detach it from the
+          // visible library as an idempotent success. Existing records still require
+          // the exact owner key before any destructive operation.
           // eslint-disable-next-line no-await-in-loop
-          await requireOwner(boardId, entry?.ownerKey);
-          // eslint-disable-next-line no-await-in-loop
-          deleted = Boolean(await deleteBoardRecord(boardId));
-          if (deleted) deletedBoardIds.push(boardId);
+          const board = await getBoard(boardId);
+          if (!board) {
+            deleted = true;
+            deletedBoardIds.push(boardId);
+            detachedBoardIds.push(boardId);
+          } else {
+            if (String(board.ownerKey ?? '') !== String(entry?.ownerKey ?? '')) {
+              throw new Error('Owner permission required');
+            }
+            // eslint-disable-next-line no-await-in-loop
+            const removed = Boolean(await deleteBoardRecord(boardId));
+            deleted = true;
+            deletedBoardIds.push(boardId);
+            // deleteAuthorityBoard returns false only when the record vanished between
+            // the ownership read and deletion, which is another successful detach.
+            if (!removed) detachedBoardIds.push(boardId);
+          }
         } catch (error) {
           failedBoardIds.push(boardId);
           failures.push({ boardId, error: String(error?.message ?? error) });
         }
         onProgress?.({ boardId, deleted, completed: index + 1, total: source.length });
       }
-      return { deletedBoardIds, detachedBoardIds: [], failedBoardIds, failures };
+      return { deletedBoardIds, detachedBoardIds, failedBoardIds, failures };
     },
 
     getBoardAccess: getAccess,
