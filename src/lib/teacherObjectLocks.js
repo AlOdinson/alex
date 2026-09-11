@@ -7,10 +7,14 @@ function cleanString(value) {
   return String(value ?? '').trim();
 }
 
-function uniqueObjectIds(value) {
-  const ids = [...new Set((Array.isArray(value) ? value : [])
+function normalizedObjectIds(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
     .map(cleanString)
     .filter(Boolean))];
+}
+
+function uniqueObjectIds(value) {
+  const ids = normalizedObjectIds(value);
   if (!ids.length || ids.length > MAX_OBJECT_IDS) {
     throw new Error('Invalid object lock count');
   }
@@ -32,6 +36,21 @@ export function createTeacherObjectLockAuthority({ now = () => Date.now() } = {}
       if (Number(lock?.expiresAt ?? 0) <= timestamp) locks.delete(objectId);
     }
     return timestamp;
+  };
+
+  const conflictsFor = (clientId, objectIds) => {
+    const safeClientId = cleanString(clientId);
+    if (!safeClientId) throw new Error('clientId is required');
+    cleanupExpired();
+    return normalizedObjectIds(objectIds).flatMap((objectId) => {
+      const lock = locks.get(objectId);
+      if (!lock || lock.clientId === safeClientId) return [];
+      return [{
+        objectId,
+        clientId: lock.clientId,
+        expiresAt: lock.expiresAt,
+      }];
+    });
   };
 
   return {
@@ -134,6 +153,10 @@ export function createTeacherObjectLockAuthority({ now = () => Date.now() } = {}
         released: objectIds.length,
         objectIds,
       };
+    },
+
+    getConflicts({ clientId, objectIds } = {}) {
+      return conflictsFor(clientId, objectIds);
     },
   };
 }
