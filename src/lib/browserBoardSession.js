@@ -7,6 +7,7 @@ import {
 } from './browserReplicaStore.js';
 import { createStudentBoardRuntime as createDefaultStudentRuntime } from './studentBoardRuntime.js';
 import { createTeacherBoardRuntime as createDefaultTeacherRuntime } from './teacherBoardRuntime.js';
+import { createTeacherTabAuthority as createDefaultTeacherTabAuthority } from './teacherTabAuthority.js';
 
 const TERMINAL_STUDENT_STATES = new Set(['failed', 'closed']);
 
@@ -29,6 +30,7 @@ export function createBrowserBoardSession({
   onPeerState = () => {},
   onError = () => {},
   rtcConfig = {},
+  createTeacherTabAuthority = createDefaultTeacherTabAuthority,
   createTeacherRuntime = createDefaultTeacherRuntime,
   createStudentRuntime = createDefaultStudentRuntime,
   registerRuntime = registerDefaultBoardRuntime,
@@ -50,6 +52,10 @@ export function createBrowserBoardSession({
   let closed = false;
   let startPromise = null;
   let transitionQueue = Promise.resolve();
+  let teacherTabAuthority = null;
+  let teacherTabAuthorityHeld = false;
+  let teacherTabReadyPromise = null;
+  let rejectTeacherTabReady = null;
   const runtimeWaiters = new Set();
 
   const replicaRevision = () => safeRevision(getReplica(safeBoardId)?.revision);
@@ -74,6 +80,87 @@ export function createBrowserBoardSession({
     try { previousRuntime?.close?.(); } catch (error) { onError(error); }
   };
 
+  const releaseTeacherTabAuthority = (error = new Error('Teacher tab authority was released')) => {
+    const authority = teacherTabAuthority;
+    teacherTabAuthority = null;
+    teacherTabAuthorityHeld = false;
+    const rejectReady = rejectTeacherTabReady;
+    rejectTeacherTabReady = null;
+    teacherTabReadyPromise = null;
+    rejectReady?.(error);
+    try { authority?.stop?.(); } catch (caught) { onError(caught); }
+  };
+
+  const ensureTeacherTabAuthority = () => {
+    if (!isOwner) return Promise.resolve();
+    if (teacherTabAuthorityHeld) return Promise.resolve();
+    if (teacherTabReadyPromise) return teacherTabReadyPromise;
+
+    let settled = false;
+    let resolveReady;
+    let rejectReadyRaw;
+    const ready = new Promise((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReadyRaw = reject;
+    });
+    teacherTabReadyPromise = ready;
+
+    const resolveOnce = () => {
+      if (settled) return;
+      settled = true;
+      rejectTeacherTabReady = null;
+      resolveReady();
+    };
+    const rejectOnce = (error) => {
+      if (settled) return;
+      settled = true;
+      rejectTeacherTabReady = null;
+      rejectReadyRaw(error instanceof Error ? error : new Error(String(error)));
+    };
+    rejectTeacherTabReady = rejectOnce;
+
+    let authority = null;
+    const handleAuthorityChange = (nextAuthority) => {
+      if (teacherTabAuthority !== authority) return;
+      const wasAuthority = teacherTabAuthorityHeld;
+      teacherTabAuthorityHeld = Boolean(nextAuthority);
+      if (teacherTabAuthorityHeld) {
+        resolveOnce();
+        return;
+      }
+      if (wasAuthority && !closed) {
+        clearRuntime();
+        try { onError(new Error('Teacher tab authority was lost')); } catch { /* observer errors are ignored */ }
+      }
+    };
+
+    try {
+      authority = createTeacherTabAuthority({
+        boardId: safeBoardId,
+        onChange: handleAuthorityChange,
+      });
+      teacherTabAuthority = authority;
+      Promise.resolve(authority.start()).then(() => {
+        if (teacherTabAuthority !== authority) return;
+        if (!teacherTabAuthorityHeld) {
+          rejectOnce(new Error('Teacher tab authority lock was not acquired'));
+        }
+      }).catch((error) => {
+        if (teacherTabAuthority !== authority) return;
+        if (!settled) rejectOnce(error);
+        else if (!closed) {
+          try { onError(error); } catch { /* observer errors are ignored */ }
+        }
+      });
+    } catch (error) {
+      teacherTabAuthority = null;
+      teacherTabAuthorityHeld = false;
+      rejectOnce(error);
+    }
+
+    return ready;
+  };
+
   const installRuntime = (nextRuntime, { getRevision = null } = {}) => {
     if (!nextRuntime || typeof nextRuntime !== 'object') throw new Error('Board runtime is required');
     clearRuntime();
@@ -91,18 +178,34 @@ export function createBrowserBoardSession({
   };
 
   const startTeacher = async () => {
-    const nextRuntime = await createTeacherRuntime({
-      boardId: safeBoardId,
-      clientId: safeClientId,
-      sendScreenShareSignal,
-      rtcConfig,
-      onRemoteCommit: (commit) => onAuthoritativeCommit(commit),
-      onPeerState,
-      onError,
-    });
+    await ensureTeacherTabAuthority();
+    if (closed) return null;
+    if (!teacherTabAuthorityHeld) throw new Error('Teacher tab authority lock is not held');
+
+    let nextRuntime;
+    try {
+      nextRuntime = await createTeacherRuntime({
+        boardId: safeBoardId,
+        clientId: safeClientId,
+        sendScreenShareSignal,
+        rtcConfig,
+        onRemoteCommit: (commit) => onAuthoritativeCommit(commit),
+        onPeerState,
+        onError,
+      });
+    } catch (error) {
+      releaseTeacherTabAuthority(error);
+      throw error;
+    }
     if (closed) {
       nextRuntime?.close?.();
       return null;
+    }
+    if (!teacherTabAuthorityHeld) {
+      nextRuntime?.close?.();
+      const error = new Error('Teacher tab authority was lost before runtime startup');
+      releaseTeacherTabAuthority(error);
+      throw error;
     }
     return installRuntime(nextRuntime);
   };
@@ -231,8 +334,10 @@ export function createBrowserBoardSession({
       if (closed) return;
       closed = true;
       teacherId = '';
-      rejectRuntimeWaiters(new Error('Board session is closed'));
+      const closeError = new Error('Board session is closed');
+      rejectRuntimeWaiters(closeError);
       clearRuntime();
+      if (isOwner) releaseTeacherTabAuthority(closeError);
     },
   };
 }
