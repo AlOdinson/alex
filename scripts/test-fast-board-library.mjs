@@ -81,6 +81,10 @@ assert.equal(wrongOwnerBoards.has('protected-board'), true, 'wrong owner must ne
 const homeSource = await readFile(new URL('../src/components/Home.jsx', import.meta.url), 'utf8');
 assert.doesNotMatch(homeSource, /getBoardAccess/);
 assert.match(homeSource, /getOwnedBoardSummaries\(entries\)/);
+assert.match(homeSource, /const missingBoardIds = entries/);
+assert.match(homeSource, /forgetOwnedBoards\(missingBoardIds\)/);
+assert.match(homeSource, /if \(!summary\) return \[\]/);
+assert.doesNotMatch(homeSource, /unavailable: true/);
 assert.match(homeSource, /Выделить все/);
 assert.match(homeSource, /deleteOwnedBoards\(selectedBoards,/);
 assert.match(homeSource, /getOwnedBoardsOverLimit\(OWNED_BOARD_LIMIT/);
@@ -98,4 +102,4 @@ assert.match(compatSource, /onProgress/);
 assert.match(compatSource, /detachedBoardIds/);
 assert.doesNotMatch(compatSource, /supabase\.rpc/);
 
-console.log('Fast local creation, automatic 50-board cleanup, and safe sequential deletion tests passed.');
+console.log('Fast local creation, automatic 50-board cleanup, stale-card pruning, and safe sequential deletion tests passed.');
