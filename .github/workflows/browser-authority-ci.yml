@@ -96,13 +96,39 @@ jobs:
           npm install --no-audit --no-fund
           npm run build -- --base=/alex/preview-browser-authority/
 
+      - name: Smoke live stateless Ably token broker
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createClient } from '@supabase/supabase-js';
+
+          const client = createClient(
+            process.env.VITE_SUPABASE_URL,
+            process.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+            { auth: { persistSession: false, autoRefreshToken: false } },
+          );
+          const { data, error } = await client.functions.invoke('ably-browser-token', {
+            body: {
+              boardId: 'previewSmoke01',
+              roomKey: 'previewSmokeRoomKey0123456789abcdef',
+              clientId: 'preview-smoke',
+            },
+          });
+          if (error) throw error;
+          if (!data || typeof data.token !== 'string' || !data.token) {
+            throw new Error('Live ably-browser-token returned no token');
+          }
+          console.log('Live stateless Ably token broker: ok');
+          NODE
+
       - name: Compose production root plus isolated preview
         run: |
           rm -rf site
           mkdir -p site/preview-browser-authority
           cp -R main-src/dist/. site/
           cp -R dist/. site/preview-browser-authority/
-          touch site/.nojekyll
 
       - name: Preserve preview deep links without breaking production routes
         run: |
@@ -110,6 +136,7 @@ jobs:
           from pathlib import Path
 
           preview_base = '/alex/preview-browser-authority/'
+          preview_root = preview_base[:-1]
           preview_index = Path('site/preview-browser-authority/index.html')
           preview_html = preview_index.read_text()
           restore_script = f'''<script>
@@ -119,7 +146,7 @@ jobs:
             if (!previewPath) return;
             params.delete('__preview_path');
             const query = params.toString();
-            const target = {preview_base!r}.replace(/\/$/, '') + previewPath + (query ? '?' + query : '') + window.location.hash;
+            const target = {preview_root!r} + previewPath + (query ? '?' + query : '') + window.location.hash;
             window.history.replaceState(null, '', target);
           }})();
           </script>'''
@@ -155,8 +182,35 @@ jobs:
         uses: actions/upload-pages-artifact@v4
         with:
           path: site
-          include-hidden-files: true
 
       - name: Publish preview alongside production root
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Smoke published preview over HTTPS
+        env:
+          ROOT_URL: https://alodinson.github.io/alex/
+          PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: |
+          set -e
+          preview_ok=0
+          for attempt in $(seq 1 12); do
+            body="$(curl -fsSL --max-time 15 "$PREVIEW_URL" || true)"
+            if printf '%s' "$body" | grep -q '/alex/preview-browser-authority/assets/'; then
+              preview_ok=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$preview_ok" -ne 1 ]; then
+            echo "::error::Published browser-authority preview did not become reachable"
+            exit 1
+          fi
+
+          root_body="$(curl -fsSL --max-time 15 "$ROOT_URL")"
+          printf '%s' "$root_body" | grep -q '/alex/assets/'
+          if printf '%s' "$root_body" | grep -q '/alex/preview-browser-authority/assets/'; then
+            echo "::error::Production root unexpectedly serves the preview build"
+            exit 1
+          fi
+          echo "Published browser-authority preview and production root: ok"
