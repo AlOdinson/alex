@@ -23,6 +23,7 @@ export function createStudentPeerSession({
   if (typeof installSnapshot !== 'function') throw new Error('installSnapshot is required');
 
   let applyQueue = Promise.resolve();
+  let closed = false;
   const lockWaiters = new Map();
   const actionWaiters = new Map();
 
@@ -112,6 +113,7 @@ export function createStudentPeerSession({
     },
 
     proposeActionAndWait(action) {
+      if (closed) return Promise.reject(new Error('Student peer session is closed'));
       const payload = actionProposalPayload(action);
       const actionId = String(payload.actionId ?? '').trim();
       if (!actionId) return Promise.reject(new Error('actionId is required'));
@@ -158,6 +160,18 @@ export function createStudentPeerSession({
 
     whenIdle() {
       return applyQueue;
+    },
+
+    close(error = new Error('Student peer session is closed')) {
+      if (closed) return;
+      closed = true;
+      const reason = error instanceof Error
+        ? error
+        : new Error(String(error ?? 'Student peer session is closed'));
+      for (const waiter of actionWaiters.values()) waiter.reject(reason);
+      actionWaiters.clear();
+      for (const waiter of lockWaiters.values()) waiter.reject(reason);
+      lockWaiters.clear();
     },
   };
 }
