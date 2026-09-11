@@ -49,10 +49,12 @@ export function createTeacherPeerHub({
   maxJournalCommits = 256,
   onCommit = () => {},
   lockAuthority = createTeacherObjectLockAuthority(),
+  canPeerEdit = async () => true,
 } = {}) {
   if (!authority?.getRevision || !authority?.commitAction) throw new Error('teacher authority is required');
   if (typeof getSnapshot !== 'function') throw new Error('getSnapshot is required');
   if (typeof getCommitsAfter !== 'function') throw new Error('getCommitsAfter is required');
+  if (typeof canPeerEdit !== 'function') throw new Error('canPeerEdit must be a function');
 
   const peers = new Map();
   const journalLimit = Math.max(1, Number(maxJournalCommits) || 256);
@@ -111,6 +113,24 @@ export function createTeacherPeerHub({
     await sendSnapshot(peer);
   };
 
+  const peerMayEdit = async (peerId) => Boolean(await canPeerEdit(String(peerId ?? '').trim()));
+
+  const sendReadOnlyAck = async (peer, actionId) => {
+    await peer.send('ack', {
+      actionId: String(actionId ?? ''),
+      revision: safeRevision(authority.getRevision()),
+      accepted: false,
+      duplicate: false,
+      needsSync: false,
+      changed: false,
+      appliedOps: [],
+      appliedBackground: null,
+      skippedConflicts: [],
+      rejectedObjectIds: [],
+      error: 'Board is view-only',
+    });
+  };
+
   return {
     addPeer(peerId, transport) {
       const id = String(peerId ?? '').trim();
@@ -152,6 +172,19 @@ export function createTeacherPeerHub({
       if (type === 'lock-request') {
         if (!lockAuthority) return;
         const operation = String(payload.operation ?? '');
+        if ((operation === 'acquire' || operation === 'refresh') && !(await peerMayEdit(safePeerId))) {
+          await peer.send('lock-result', {
+            requestId: String(payload.requestId ?? ''),
+            operation,
+            granted: false,
+            objectIds: operation === 'acquire'
+              ? [...new Set((Array.isArray(payload.objectIds) ? payload.objectIds : []).map(String))]
+              : [],
+            conflicts: [],
+            error: 'Board is view-only',
+          });
+          return;
+        }
         let result = null;
         if (operation === 'acquire' && typeof lockAuthority.acquire === 'function') {
           result = await lockAuthority.acquire({
@@ -184,6 +217,11 @@ export function createTeacherPeerHub({
       }
 
       if (type !== 'action-proposal') return;
+
+      if (!(await peerMayEdit(safePeerId))) {
+        await sendReadOnlyAck(peer, payload.actionId);
+        return;
+      }
 
       const proposal = {
         ...payload,
