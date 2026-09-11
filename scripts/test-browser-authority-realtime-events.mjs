@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { routeBrowserRealtimeEvent } from '../src/lib/browserAuthorityRealtime.js';
+import {
+  connectBoardRealtime,
+  routeBrowserRealtimeEvent,
+} from '../src/lib/browserAuthorityRealtime.js';
 
 test('routes transient events and never accepts durable action packets from Ably', async () => {
   const events = [];
@@ -24,8 +27,7 @@ test('routes transient events and never accepts durable action packets from Ably
     clientId: 'teacher-a', revision: 9, ops: [{ type: 'delete', id: 'x' }],
   }, { localClientId: 'student-a', callbacks });
   await routeBrowserRealtimeEvent('sync', { clientId: 'teacher-a', revision: 9 }, {
-    localClientId: 'student-a', callbacks,
-  });
+    localClientId: 'student-a', callbacks });
 
   assert.deepEqual(events, [['cursor', 4], ['mode', 'view'], ['sync', 9]]);
 });
@@ -56,4 +58,46 @@ test('ignores own echoed transient events', async () => {
     callbacks: { onCursor: () => { calls += 1; } },
   });
   assert.equal(calls, 0);
+});
+
+test('Ably continuity recovery wakes durable work and asks Board to reconcile peer authority', async () => {
+  let transportOptions = null;
+  let flushCalls = 0;
+  const syncRevisions = [];
+
+  const realtime = connectBoardRealtime({
+    boardId: 'board-a',
+    realtimeKey: 'room-key-12345678901234567890',
+    clientId: 'student-a',
+    permission: 'edit',
+    getKnownRevision: () => 7,
+    onSyncRequired: (revision) => syncRevisions.push(revision),
+  }, {
+    createSession: () => ({
+      async start() {},
+      async updateParticipants() {},
+      async handleRealtimeSignal() {},
+      close() {},
+    }),
+    createCore: () => ({
+      async flushPending() { flushCalls += 1; },
+      async disconnect() {},
+      async sendScreenShareSignal() {},
+    }),
+    createTransport: (options) => {
+      transportOptions = options;
+      return {
+        async start() {},
+        async publish() { return 'ok'; },
+        async disconnect() {},
+      };
+    },
+  });
+
+  await Promise.resolve();
+  assert.equal(typeof transportOptions?.onRecover, 'function');
+  await transportOptions.onRecover({ reason: 'connection-reconnected' });
+  assert.equal(flushCalls, 1);
+  assert.deepEqual(syncRevisions, [7]);
+  await realtime.disconnect();
 });
