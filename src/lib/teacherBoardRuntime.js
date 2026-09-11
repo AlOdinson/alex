@@ -1,4 +1,5 @@
 import { openBrowserBoardAuthority } from './browserBoardAuthority.js';
+import { getAuthorityBoard } from './browserAuthorityStore.js';
 import { createTeacherPeerHub } from './teacherPeerHub.js';
 import { createBoardPeerSignalingBridge } from './boardPeerSignaling.js';
 import { createTeacherPeerNetwork } from './teacherPeerNetwork.js';
@@ -14,6 +15,7 @@ export async function createTeacherBoardRuntime({
   onPeerState = () => {},
   onError = () => {},
   openAuthority = openBrowserBoardAuthority,
+  getBoardMetadata = getAuthorityBoard,
   createHub = createTeacherPeerHub,
   createSignaling = createBoardPeerSignalingBridge,
   createNetwork = createTeacherPeerNetwork,
@@ -26,6 +28,7 @@ export async function createTeacherBoardRuntime({
   if (typeof sendScreenShareSignal !== 'function') {
     throw new Error('sendScreenShareSignal is required');
   }
+  if (typeof getBoardMetadata !== 'function') throw new Error('getBoardMetadata is required');
 
   const authority = await openAuthority({ boardId: safeBoardId });
   const lockAuthority = createLockAuthority();
@@ -38,6 +41,13 @@ export async function createTeacherBoardRuntime({
     getCommitsAfter: (revision, limit) => authority.getCommitsAfter(revision, limit),
     onCommit: onRemoteCommit,
     lockAuthority,
+    canPeerEdit: async () => {
+      const board = await getBoardMetadata(safeBoardId);
+      // Fail closed for peer mutations if the teacher no longer has the local board
+      // metadata. The owner can still recover/inspect locally, while a remote peer must
+      // never gain edit authority from a missing or spoofed permission record.
+      return Boolean(board) && board.guestMode !== 'view';
+    },
   });
 
   let network = null;
