@@ -90,6 +90,7 @@ export function createAblyBrowserTransport({
   onEvent = () => {},
   onUsers = () => {},
   onStatus = () => {},
+  onRecover = async () => {},
   onError = () => {},
   tokenRequest = async ({ boardId: tokenBoardId, roomKey: tokenRoomKey, clientId: tokenClientId }) => {
     const { data, error } = await supabase.functions.invoke('ably-browser-token', {
@@ -111,6 +112,9 @@ export function createAblyBrowserTransport({
   let closed = false;
   let remoteParticipantCount = 0;
   let presenceRefresh = Promise.resolve();
+  let recoveryPromise = null;
+  let connectedOnce = false;
+  let attachedOnce = false;
 
   const refreshUsers = async () => {
     if (!channel || closed) return [];
@@ -131,6 +135,28 @@ export function createAblyBrowserTransport({
     remoteParticipantCount = list.filter((user) => user.clientId !== safeClientId).length;
     onUsers(list);
     return list;
+  };
+
+  const recoverContinuity = (reason) => {
+    if (closed) return Promise.resolve();
+    if (recoveryPromise) return recoveryPromise;
+    onStatus('RECOVERING');
+    recoveryPromise = Promise.resolve()
+      .then(refreshUsers)
+      .then(() => onRecover({ reason }))
+      .then(() => {
+        if (!closed) onStatus('RECOVERED');
+      })
+      .catch((error) => {
+        if (!closed) {
+          onError(error);
+          onStatus('CHANNEL_ERROR');
+        }
+      })
+      .finally(() => {
+        recoveryPromise = null;
+      });
+    return recoveryPromise;
   };
 
   return {
@@ -154,21 +180,38 @@ export function createAblyBrowserTransport({
 
       client.connection.on((change) => {
         const state = change?.current ?? client?.connection?.state;
-        if (state === 'connected') onStatus('SUBSCRIBED');
-        else if (state === 'disconnected') onStatus('TIMED_OUT');
+        if (state === 'connected') {
+          const shouldRecover = connectedOnce;
+          connectedOnce = true;
+          onStatus('SUBSCRIBED');
+          if (shouldRecover) recoverContinuity('connection-reconnected');
+        } else if (state === 'disconnected') onStatus('TIMED_OUT');
         else if (state === 'suspended' || state === 'failed') onStatus('CHANNEL_ERROR');
         else if (state === 'closed') onStatus('CLOSED');
       });
 
       await withTimeout(client.connection.once('connected'), CONNECT_TIMEOUT_MS, 'Timed out while connecting to Ably');
+      connectedOnce = true;
       if (closed) throw new Error('Ably transport is closed');
 
       channel = client.channels.get(`board:${safeBoardId}:${safeRoomKey}`);
+      channel.on?.('attached', (change) => {
+        const shouldRecover = attachedOnce && change?.resumed === false;
+        attachedOnce = true;
+        if (shouldRecover) recoverContinuity('channel-reattached-without-continuity');
+      });
+      channel.on?.('update', (change) => {
+        if (change?.resumed === false) recoverContinuity('channel-continuity-update');
+      });
+
       await withTimeout(
         channel.subscribe((message) => Promise.resolve(onEvent(message?.name, message?.data)).catch(onError)),
         CONNECT_TIMEOUT_MS,
         'Timed out while attaching Ably board channel',
       );
+      // A resolved subscribe means the initial attach completed. A later ATTACHED event
+      // with resumed=false is therefore a real continuity loss rather than first attach.
+      attachedOnce = true;
       await channel.presence.subscribe(() => {
         presenceRefresh = presenceRefresh.catch(() => undefined).then(refreshUsers).catch(onError);
       });
@@ -330,6 +373,16 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       });
     },
     onStatus,
+    onRecover: async () => {
+      // Presence refresh has already run inside the transport. Wake durable work without
+      // blocking recovery on a possibly-reconnecting DataChannel, then ask Board to
+      // reconcile against the teacher authority / local replica at its current revision.
+      Promise.resolve(core?.flushPending?.()).catch((error) => {
+        console.warn('Could not flush browser authority work after Ably recovery', error);
+      });
+      const revision = Number(session.getRevision?.() ?? getKnownRevision?.() ?? 0);
+      onSyncRequired?.(Number.isFinite(revision) && revision >= 0 ? revision : 0);
+    },
     onError: (error) => {
       console.warn('Ably board transport error', error);
       onStatus?.('CHANNEL_ERROR');
