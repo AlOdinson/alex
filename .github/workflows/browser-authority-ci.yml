@@ -121,7 +121,7 @@ jobs:
             if (!previewPath) return;
             params.delete('__preview_path');
             const query = params.toString();
-            const target = {preview_base!r}.replace(/\/$/, '') + previewPath + (query ? `?${{query}}` : '') + window.location.hash;
+            const target = {preview_base!r}.replace(/\/$/, '') + previewPath + (query ? '?' + query : '') + window.location.hash;
             window.history.replaceState(null, '', target);
           }})();
           </script>'''
