@@ -123,3 +123,43 @@ test('remote student snapshot compaction cannot overwrite the authoritative repl
   assert.equal(replicaInstalls, 0, 'student compaction must never become a second replica writer');
   assert.equal((await repo.getBoardRecovery('student-board', 'remote-share-secret')).snapshot.background, 'dots');
 });
+
+test('compat applyBoardAction preserves an authoritative no-op outcome', async () => {
+  const skippedConflicts = [{ id: 'x', field: 'left' }];
+  const { repo } = makeRepository({
+    openAuthority: async () => ({
+      getRevision: () => 3,
+      getSnapshot: () => ({ version: 2, background: 'grid', canvas: { objects: [{ boardObjectId: 'x' }] } }),
+      getCommitsAfter: async () => [],
+      commitAction: async () => ({
+        actionId: 'noop-1',
+        revision: 3,
+        duplicate: false,
+        needsSync: true,
+        committedAt: 300,
+        changed: false,
+        ops: [],
+        background: null,
+        appliedOps: [],
+        appliedBackground: null,
+        rejectedObjectIds: ['x'],
+        skippedConflicts,
+      }),
+    }),
+  });
+
+  const result = await repo.applyBoardAction('board-a', 'owner-secret', {
+    actionId: 'noop-1',
+    clientId: 'teacher-a',
+    baseRevision: 2,
+    ops: [{ type: 'patch', id: 'x', patch: { left: 20 } }],
+  });
+
+  assert.equal(result.revision, 3);
+  assert.equal(result.changed, false, 'compat layer must not turn an authoritative no-op into a changed commit');
+  assert.equal(result.needsSync, true);
+  assert.deepEqual(result.appliedOps, []);
+  assert.equal(result.appliedBackground, null);
+  assert.deepEqual(result.rejectedObjectIds, ['x']);
+  assert.deepEqual(result.skippedConflicts, skippedConflicts);
+});
