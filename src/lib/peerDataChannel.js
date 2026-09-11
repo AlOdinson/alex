@@ -6,6 +6,12 @@ import {
 } from './peerProtocol.js';
 
 const TRANSFER_TYPES = new Set(['transfer-start', 'transfer-chunk', 'transfer-end']);
+const INTERNAL_MESSAGE_TRANSFER_KIND = 'peer-message';
+
+function defaultTransferId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `message-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function addListener(target, type, listener, options) {
   if (typeof target?.addEventListener === 'function') {
@@ -27,11 +33,16 @@ export function createPeerDataChannelTransport({
   onError = () => {},
   highWaterMark = 512_000,
   lowWaterMark = 128_000,
+  maxInlineMessageChars = 48_000,
+  messageChunkChars = 16_384,
+  createTransferId = defaultTransferId,
 } = {}) {
   if (!channel?.send) throw new Error('RTCDataChannel is required');
 
   const highWater = Math.max(1, Number(highWaterMark) || 512_000);
   const lowWater = Math.max(0, Math.min(highWater, Number(lowWaterMark) || 128_000));
+  const inlineLimit = Math.max(1, Math.floor(Number(maxInlineMessageChars) || 48_000));
+  const chunkChars = Math.max(1, Math.floor(Number(messageChunkChars) || 16_384));
   const assembler = createPeerTextAssembler();
   let closed = false;
   let sendQueue = Promise.resolve();
@@ -96,7 +107,12 @@ export function createPeerDataChannelTransport({
       const message = decodePeerMessage(event.data);
       if (TRANSFER_TYPES.has(message.type)) {
         const completed = assembler.accept(message);
-        if (completed) onTransfer(completed);
+        if (!completed) return;
+        if (completed.kind === INTERNAL_MESSAGE_TRANSFER_KIND) {
+          onMessage(decodePeerMessage(completed.text));
+        } else {
+          onTransfer(completed);
+        }
         return;
       }
       onMessage(message);
@@ -109,7 +125,15 @@ export function createPeerDataChannelTransport({
 
   return {
     send(type, payload = {}) {
-      return enqueueEncodedFrames([createPeerMessage(type, payload)]);
+      const encoded = createPeerMessage(type, payload);
+      if (encoded.length <= inlineLimit) return enqueueEncodedFrames([encoded]);
+      const transferId = String(createTransferId?.() ?? '').trim();
+      if (!transferId) return Promise.reject(new Error('Peer message transfer id is required'));
+      const frames = splitPeerTextTransfer(INTERNAL_MESSAGE_TRANSFER_KIND, encoded, {
+        transferId,
+        chunkChars,
+      }).map((frame) => JSON.stringify(frame));
+      return enqueueEncodedFrames(frames);
     },
 
     sendTextTransfer(kind, text, options = {}) {
