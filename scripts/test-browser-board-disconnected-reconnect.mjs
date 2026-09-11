@@ -1,59 +1,38 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createBrowserBoardSession } from '../src/lib/browserBoardSession.js';
+import { createStudentPeerNetwork } from '../src/lib/studentPeerNetwork.js';
 
-test('student retires a disconnected runtime so the same teacher can reconnect immediately', async () => {
-  const runtimes = [];
-  const closed = [];
-  let currentRegistered = null;
+test('student treats disconnected as terminal failure because teacher already retires that peer', async () => {
+  let connectionOptions = null;
+  const states = [];
 
-  const session = createBrowserBoardSession({
-    boardId: 'board-reconnect',
-    clientId: 'student-a',
-    permission: 'edit',
-    sendScreenShareSignal: async () => {},
-    getReplica: () => ({ revision: 5 }),
-    createStudentRuntime: (options) => {
-      const number = runtimes.length + 1;
-      const runtime = {
-        number,
-        teacherId: options.teacherId,
-        start: async () => {},
-        proposeActionAndWait: async () => ({ accepted: true, revision: 5 }),
-        close() { closed.push(number); },
-      };
-      runtimes.push({ runtime, options });
-      return runtime;
-    },
-    registerRuntime: (_boardId, runtime) => {
-      currentRegistered = runtime;
-      return () => {
-        if (currentRegistered !== runtime) return false;
-        currentRegistered = null;
-        return true;
+  const network = createStudentPeerNetwork({
+    teacherId: 'teacher-a',
+    signaling: { send: async () => {} },
+    getRevision: () => 5,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    onState: (state) => states.push(state),
+    createConnection: (options) => {
+      connectionOptions = options;
+      return {
+        async start() {},
+        async handleSignal() {},
+        close() {},
       };
     },
+    createTransport: () => ({ send: async () => {}, close() {} }),
   });
 
-  const presence = [{ clientId: 'teacher-a', permission: 'owner' }];
-  await session.start();
-  await session.updateParticipants(presence);
-  const first = currentRegistered;
-  assert.equal(first?.number, 1);
+  await network.start();
+  assert.ok(connectionOptions, 'student peer connection was not created');
 
-  runtimes[0].options.onState('disconnected');
-  assert.equal(
-    currentRegistered,
-    null,
-    'disconnected runtime must be retired because teacher already retires that peer state',
+  connectionOptions.onConnectionState('disconnected');
+  assert.deepEqual(
+    states,
+    ['failed'],
+    'student must enter the existing terminal recovery path immediately when teacher has already dropped disconnected peers',
   );
-  assert.deepEqual(closed, [1]);
 
-  await session.updateParticipants(presence);
-  const second = currentRegistered;
-  assert.equal(second?.number, 2);
-  assert.notEqual(second, first);
-  assert.equal(second.teacherId, 'teacher-a');
-
-  session.close();
+  network.close();
 });
