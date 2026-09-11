@@ -2,6 +2,8 @@ import { openBrowserBoardAuthority } from './browserBoardAuthority.js';
 import { createTeacherPeerHub } from './teacherPeerHub.js';
 import { createBoardPeerSignalingBridge } from './boardPeerSignaling.js';
 import { createTeacherPeerNetwork } from './teacherPeerNetwork.js';
+import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
+import { operationObjectIds } from './operationProtocol.js';
 
 export async function createTeacherBoardRuntime({
   boardId,
@@ -15,6 +17,7 @@ export async function createTeacherBoardRuntime({
   createHub = createTeacherPeerHub,
   createSignaling = createBoardPeerSignalingBridge,
   createNetwork = createTeacherPeerNetwork,
+  createLockAuthority = createTeacherObjectLockAuthority,
 } = {}) {
   const safeBoardId = String(boardId ?? '').trim();
   const safeClientId = String(clientId ?? '').trim();
@@ -25,6 +28,7 @@ export async function createTeacherBoardRuntime({
   }
 
   const authority = await openAuthority({ boardId: safeBoardId });
+  const lockAuthority = createLockAuthority();
   const hub = createHub({
     authority,
     getSnapshot: async () => ({
@@ -33,6 +37,7 @@ export async function createTeacherBoardRuntime({
     }),
     getCommitsAfter: (revision, limit) => authority.getCommitsAfter(revision, limit),
     onCommit: onRemoteCommit,
+    lockAuthority,
   });
 
   let network = null;
@@ -50,6 +55,33 @@ export async function createTeacherBoardRuntime({
     onError,
   });
 
+  const requestLock = (operation, payload = {}) => {
+    const safeOperation = String(operation ?? '').trim();
+    const source = payload && typeof payload === 'object' ? payload : {};
+    if (safeOperation === 'acquire' && typeof lockAuthority?.acquire === 'function') {
+      return Promise.resolve(lockAuthority.acquire({
+        clientId: safeClientId,
+        lockToken: String(source.lockToken ?? ''),
+        objectIds: Array.isArray(source.objectIds) ? source.objectIds.map(String) : [],
+        ttlMs: Number(source.ttlMs ?? 0),
+      }));
+    }
+    if (safeOperation === 'refresh' && typeof lockAuthority?.refresh === 'function') {
+      return Promise.resolve(lockAuthority.refresh({
+        clientId: safeClientId,
+        lockToken: String(source.lockToken ?? ''),
+        ttlMs: Number(source.ttlMs ?? 0),
+      }));
+    }
+    if (safeOperation === 'release' && typeof lockAuthority?.release === 'function') {
+      return Promise.resolve(lockAuthority.release({
+        clientId: safeClientId,
+        lockToken: source.lockToken == null ? null : String(source.lockToken),
+      }));
+    }
+    return Promise.reject(new Error('Unsupported lock operation'));
+  };
+
   return {
     boardId: safeBoardId,
 
@@ -66,13 +98,39 @@ export async function createTeacherBoardRuntime({
     },
 
     async commitTeacherAction(action) {
-      const commit = await authority.commitAction({
+      const proposal = {
         ...(action && typeof action === 'object' ? action : {}),
-        clientId: String(action?.clientId ?? safeClientId),
-      });
+        clientId: safeClientId,
+      };
+      const affectedIds = [...operationObjectIds(proposal.ops ?? [])];
+      if (affectedIds.length && typeof lockAuthority?.getConflicts === 'function') {
+        const conflicts = await lockAuthority.getConflicts({
+          clientId: safeClientId,
+          objectIds: affectedIds,
+        });
+        if (Array.isArray(conflicts) && conflicts.length) {
+          return {
+            actionId: String(proposal.actionId ?? ''),
+            revision: Number(authority.getRevision() ?? 0),
+            changed: false,
+            duplicate: false,
+            needsSync: false,
+            appliedOps: [],
+            appliedBackground: null,
+            rejectedObjectIds: [...new Set(conflicts
+              .map((conflict) => String(conflict?.objectId ?? ''))
+              .filter(Boolean))],
+            skippedConflicts: [],
+          };
+        }
+      }
+
+      const commit = await authority.commitAction(proposal);
       if (!commit?.duplicate) await hub.broadcastCommit(commit);
       return commit;
     },
+
+    requestLock,
 
     compactSnapshot() {
       return authority.compactSnapshot();
@@ -88,6 +146,7 @@ export async function createTeacherBoardRuntime({
 
     close() {
       network?.close?.();
+      try { lockAuthority?.release?.({ clientId: safeClientId }); } catch { /* best effort */ }
     },
   };
 }
