@@ -168,3 +168,35 @@ test('returns rejected durable acks to the caller instead of hiding conflicts', 
   assert.equal(result.accepted, false);
   assert.deepEqual(result.rejectedObjectIds, ['locked']);
 });
+
+test('closing a student peer rejects pending durable and lock waiters', async () => {
+  const transport = makeTransport();
+  const session = createStudentPeerSession({
+    transport,
+    getRevision: () => 9,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    createRequestId: () => 'lock-waiter-1',
+  });
+
+  const actionTask = session.proposeActionAndWait({
+    actionId: 'pending-action',
+    ops: [{ type: 'delete', id: 'x' }],
+  });
+  const lockTask = session.requestLock('acquire', {
+    objectIds: ['x'],
+    lockToken: 'lock-token',
+    ttlMs: 5000,
+  });
+  await Promise.resolve();
+
+  const closeError = new Error('Peer connection closed');
+  session.close(closeError);
+
+  await assert.rejects(actionTask, /Peer connection closed/);
+  await assert.rejects(lockTask, /Peer connection closed/);
+  await assert.rejects(
+    session.proposeActionAndWait({ actionId: 'after-close', ops: [{ type: 'delete', id: 'y' }] }),
+    /closed/i,
+  );
+});
