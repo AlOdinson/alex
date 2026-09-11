@@ -67,3 +67,35 @@ test('does not rebroadcast a durable duplicate teacher action', async () => {
   await runtime.commitTeacherAction({ actionId: 'same-action', ops: [] });
   assert.equal(broadcasts, 0);
 });
+
+test('peer edit authorization follows fresh local guest mode and never trusts the student', async () => {
+  let guestMode = 'edit';
+  let hubOptions = null;
+  await createTeacherBoardRuntime({
+    boardId: 'board-a',
+    clientId: 'teacher-a',
+    sendScreenShareSignal: async () => {},
+    openAuthority: async () => ({
+      getRevision: () => 0,
+      getSnapshot: () => ({}),
+      getCommitsAfter: async () => [],
+      compactSnapshot: async () => 0,
+      commitAction: async (action) => ({ ...action, revision: 1 }),
+    }),
+    getBoardMetadata: async (boardId) => ({ boardId, guestMode }),
+    createHub: (options) => {
+      hubOptions = options;
+      return {
+        addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {},
+        broadcastCommit: async () => {},
+      };
+    },
+    createSignaling: ({ onSignal }) => ({ send: async () => {}, handle: onSignal }),
+    createNetwork: () => ({ handleSignal: async () => {}, close() {} }),
+  });
+
+  assert.equal(typeof hubOptions?.canPeerEdit, 'function');
+  assert.equal(await hubOptions.canPeerEdit('student-spoofing-edit'), true);
+  guestMode = 'view';
+  assert.equal(await hubOptions.canPeerEdit('student-spoofing-edit'), false);
+});
