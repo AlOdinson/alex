@@ -148,3 +148,44 @@ test('terminal student peer failure refreshes Ably presence so the same teacher 
   assert.ok(statuses.includes('RECOVERING'));
   await realtime.disconnect();
 });
+
+test('owner Ably transport starts only after exclusive teacher session startup resolves', async () => {
+  let resolveSessionStart;
+  let transportStarts = 0;
+  const sessionStarted = new Promise((resolve) => { resolveSessionStart = resolve; });
+
+  const realtime = connectBoardRealtime({
+    boardId: 'board-exclusive',
+    realtimeKey: 'room-key-exclusive-1234567890',
+    clientId: 'teacher-exclusive',
+    permission: 'owner',
+  }, {
+    createSession: () => ({
+      start() { return sessionStarted; },
+      async updateParticipants() {},
+      async handleRealtimeSignal() {},
+      getRevision: () => 0,
+      close() {},
+    }),
+    createCore: () => ({
+      async flushPending() {},
+      async disconnect() {},
+      async sendScreenShareSignal() {},
+    }),
+    createTransport: () => ({
+      async start() { transportStarts += 1; },
+      async publish() { return 'ok'; },
+      async disconnect() {},
+    }),
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(transportStarts, 0, 'owner presence must not start before this tab owns teacher authority');
+
+  resolveSessionStart();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(transportStarts, 1);
+  await realtime.disconnect();
+});
