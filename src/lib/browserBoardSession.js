@@ -297,7 +297,7 @@ export function createBrowserBoardSession({
       applyCommit: async (commit) => {
         const applied = applyReplicaCommit(safeBoardId, commit);
         if (applied?.needsSnapshot) throw new Error('Student replica needs authoritative snapshot');
-        if (applied?.applied && safeId(commit?.clientId) !== safeClientId) await onAuthoritativeCommit(commit);
+        if (applied?.applied) await onAuthoritativeCommit(commit);
         return applied;
       },
       installSnapshot: async (snapshot, revision) => {
