@@ -5,6 +5,7 @@ const PREVIEW_URL = process.env.BROWSER_AUTHORITY_PREVIEW_URL
   ?? 'https://alodinson.github.io/alex/preview-browser-authority/';
 const TIMEOUT_MS = 120_000;
 const FILLER_STROKES = 260;
+const EXPECTED_TEACHER_REVISIONS = FILLER_STROKES + 1;
 
 async function waitFor(label, check, timeout = TIMEOUT_MS) {
   const deadline = Date.now() + timeout;
@@ -231,9 +232,12 @@ try {
     await drawOneStroke(teacher, { x, y }, { x: x + 13, y: y + 8 }, 2);
   }
 
-  const revisionBeforeStudent = await waitFor('large teacher authority head', async () => {
+  // Drawing is intentionally much faster than durable IndexedDB commits. Wait for
+  // every teacher stroke to reach authority before opening the student; otherwise a
+  // trailing teacher commit can be mistaken for the student's eraser commit below.
+  const revisionBeforeStudent = await waitFor('complete large teacher authority head', async () => {
     const revision = Number((await authorityBoard(teacher, boardId))?.revision ?? 0);
-    return revision > 256 ? revision : 0;
+    return revision >= EXPECTED_TEACHER_REVISIONS ? revision : 0;
   });
   assert.ok(revisionBeforeStudent > 256, 'test did not force the full-snapshot sync threshold');
 
@@ -255,14 +259,16 @@ try {
   );
 
   await eraseAt(student, targetMidpoint);
-  const revisionAfterErase = await waitFor('student deleted teacher object after snapshot bootstrap', async () => {
-    const revision = Number((await authorityBoard(teacher, boardId))?.revision ?? 0);
-    return revision > revisionBeforeStudent ? revision : 0;
+  const eraseCommit = await waitFor('student authoritative delete after full snapshot bootstrap', async () => {
+    const commits = await authorityCommits(teacher, boardId);
+    return commits.find((commit) => (
+      Number(commit?.revision) > revisionBeforeStudent
+      && commit?.ops?.some((op) => op?.type === 'delete')
+    )) ?? null;
   });
-  const eraseCommit = (await authorityCommits(teacher, boardId))
-    .find((commit) => Number(commit?.revision) === revisionAfterErase);
-  assert.ok(eraseCommit?.ops?.some((op) => op?.type === 'delete'),
-    'student eraser did not produce an authoritative delete after full snapshot bootstrap');
+  const revisionAfterErase = Number(eraseCommit?.revision ?? 0);
+  assert.ok(revisionAfterErase > revisionBeforeStudent,
+    'student eraser did not advance authority with a delete after full snapshot bootstrap');
 
   await waitFor('teacher and student both cleared target after student erase', async () => {
     const [teacherRegion, studentRegion] = await Promise.all([
