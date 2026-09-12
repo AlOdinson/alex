@@ -8941,10 +8941,19 @@ function BoardWorkspace({
         return;
       }
 
-      // Reapply edits that are still waiting to reach Supabase, so a recovery response
-      // can never make the user's newest local work disappear.
+      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
+      // A full P2P authority snapshot may have arrived while this older recovery request
+      // was in flight. Reject it before it can seed internal authority state, merge local
+      // actions onto stale data, or repaint Fabric with objects that were already deleted.
+      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {
+        schedulePersistence(700);
+        return;
+      }
+
+      // Reapply edits that are still waiting to reach authority, so a genuinely newer
+      // recovery response can never make the user's newest local work disappear.
       const pendingActions = await getPendingActions(boardId);
-      seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? accessCurrentRevision));
+      seedAuthoritativeSnapshot(recovery.snapshot, recoveryRevision);
       const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);
 
       if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
@@ -8953,13 +8962,6 @@ function BoardWorkspace({
         return;
       }
 
-      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
-      // A full P2P authority snapshot may have arrived while this older recovery request
-      // was in flight. Never let an equal/older bootstrap response resurrect stale objects.
-      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {
-        schedulePersistence(700);
-        return;
-      }
       await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
       if (Number(revisionRef.current ?? 0) === recoveryRevision) {
         snapshotCompactBaseRef.current = applyOpsToSnapshot(recovery.snapshot, []);
