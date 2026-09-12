@@ -1,4 +1,4 @@
-name: Apply Board snapshot gate patch
+name: Apply Board canonical clear patch
 
 on:
   push:
@@ -19,7 +19,7 @@ jobs:
           ref: fix/browser-authority-convergence
           fetch-depth: 0
 
-      - name: Apply exact snapshot gate patch
+      - name: Apply exact canonical clear patch
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -27,34 +27,86 @@ jobs:
           path = Path('src/components/Board.jsx')
           source = path.read_text()
 
-          replacements = [
-            (
-              "import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';\n",
-              "import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';\nimport { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';\n",
-            ),
-            (
-              "    async function loadInitialData() {\n",
-              "    const authoritativeSnapshotGate = createAuthoritativeSnapshotGate({\n      isReady: () => boardReadyRef.current,\n      applySnapshot: applyAuthoritativeSnapshot,\n    });\n\n    async function loadInitialData() {\n",
-            ),
-            (
-              "      boardReadyRef.current = true;\n      syncFromServer(false);\n",
-              "      boardReadyRef.current = true;\n      await authoritativeSnapshotGate.flush();\n      syncFromServer(false);\n",
-            ),
-            (
-              "      onGameLibraryVisibility: handleRemoteGameLibraryVisibility,\n      onScreenShareSignal(payload) {\n",
-              "      onGameLibraryVisibility: handleRemoteGameLibraryVisibility,\n      onSnapshot(snapshot, revision) {\n        return authoritativeSnapshotGate.receive(snapshot, revision);\n      },\n      onScreenShareSignal(payload) {\n",
-            ),
-            (
-              "    return () => {\n      disposed = true;\n      cancelCreationDraft('unmount');\n",
-              "    return () => {\n      disposed = true;\n      authoritativeSnapshotGate.close();\n      cancelCreationDraft('unmount');\n",
-            ),
-          ]
+          old_import = "import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';\n"
+          new_import = old_import + "import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';\n"
+          if source.count(old_import) != 1:
+            raise SystemExit('authoritative snapshot gate import match is not unique')
+          source = source.replace(old_import, new_import, 1)
 
-          for old, new in replacements:
-            count = source.count(old)
-            if count != 1:
-              raise SystemExit(f'Expected exactly one Board.jsx match, got {count}: {old[:80]!r}')
-            source = source.replace(old, new, 1)
+          old_clear = '''  const clearBoard = useCallback(() => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas || !isOwner) return;
+    if (!window.confirm('Удалить все линии и штрихи с доски?')) return;
+    const objects = canvas.getObjects().filter((object) => !object.transientScreenShare);
+    if (!objects.length) return;
+    const records = getObjectRecords(objects);
+    const ids = records.map((record) => record.object.boardObjectId).filter(Boolean);
+    applyingRemoteRef.current = true;
+    const composedDelete = localDeletionCompositorRef.current?.removeObjects?.(objects, { fullCanvas: true });
+    if (!composedDelete) objects.forEach((object) => canvas.remove(object));
+    applyingRemoteRef.current = false;
+    canvas.discardActiveObject();
+    if (!composedDelete) canvas.requestRenderAll();
+    updateSelectionState();
+    updateSelectionStyleState();
+    sendDeletes(ids);
+    recordAction({ type: 'delete', records });
+    schedulePersistence();
+  }, [getObjectRecords, isOwner, recordAction, schedulePersistence, sendDeletes, updateSelectionState]);
+'''
+          new_clear = '''  const clearBoard = useCallback(async () => {
+    const canvas = fabricCanvasRef.current;
+    if (!canvas || !isOwner) return;
+    if (!window.confirm('Удалить все линии и штрихи с доски?')) return;
+
+    const objects = canvas.getObjects().filter((object) => !object.transientScreenShare);
+    const records = getObjectRecords(objects);
+    let authoritySnapshot = null;
+    try {
+      const recovery = await getBoardRecovery(boardId, boardKey);
+      authoritySnapshot = recovery?.snapshot ?? null;
+    } catch (error) {
+      console.warn('Не удалось получить каноническое состояние перед очисткой доски', error);
+    }
+
+    const { deleteIds, undoRecords } = planCanonicalBoardClear({
+      visibleRecords: records,
+      authoritySnapshot,
+    });
+    if (!deleteIds.length && !objects.length) {
+      canvas.requestRenderAll();
+      return;
+    }
+
+    applyingRemoteRef.current = true;
+    const composedDelete = localDeletionCompositorRef.current?.removeObjects?.(objects, { fullCanvas: true });
+    if (!composedDelete) objects.forEach((object) => canvas.remove(object));
+    applyingRemoteRef.current = false;
+    canvas.discardActiveObject();
+    // Cropped deletion patches are only an interaction optimization. A completed
+    // full-board clear must always rebuild pixels from the canonical Fabric object list.
+    canvas.requestRenderAll();
+    updateSelectionState();
+    updateSelectionStyleState();
+
+    if (deleteIds.length) sendDeletes(deleteIds);
+    if (undoRecords.length) recordAction({ type: 'delete', records: undoRecords });
+    schedulePersistence();
+  }, [
+    boardId,
+    boardKey,
+    getObjectRecords,
+    isOwner,
+    recordAction,
+    schedulePersistence,
+    sendDeletes,
+    updateSelectionState,
+    updateSelectionStyleState,
+  ]);
+'''
+          if source.count(old_clear) != 1:
+            raise SystemExit(f'clearBoard exact match count={source.count(old_clear)}')
+          source = source.replace(old_clear, new_clear, 1)
 
           path.write_text(source)
           PY
@@ -67,5 +119,5 @@ jobs:
           git config user.name "Alex Board CI"
           git config user.email "actions@users.noreply.github.com"
           git add src/components/Board.jsx
-          git commit -m "fix: apply teacher snapshot after student bootstrap"
+          git commit -m "fix: clear canonical authority remnants"
           git push origin HEAD:fix/browser-authority-convergence
