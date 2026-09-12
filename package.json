@@ -4,7 +4,7 @@
   "version": "1.35.0",
   "type": "module",
   "scripts": {
-    "dev": "vite build",
+    "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "test:authority": "node --test scripts/test-teacher-authority.mjs",
