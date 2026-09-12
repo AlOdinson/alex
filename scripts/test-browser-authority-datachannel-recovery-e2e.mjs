@@ -53,11 +53,71 @@ async function authorityBoard(page, boardId) {
 }
 
 async function authorityObjectIds(page, boardId) {
-  const board = await authorityBoard(page, boardId);
-  return (board?.snapshot?.canvas?.objects ?? [])
-    .map((object) => String(object?.boardObjectId ?? ''))
-    .filter(Boolean)
-    .sort();
+  return page.evaluate(async (id) => new Promise((resolve, reject) => {
+    const request = indexedDB.open('alex-board-authority');
+    request.onerror = () => reject(request.error ?? new Error('Could not open authority IndexedDB'));
+    request.onsuccess = () => {
+      const db = request.result;
+      try {
+        const tx = db.transaction(['boards', 'commits'], 'readonly');
+        const boardRequest = tx.objectStore('boards').get(id);
+        boardRequest.onerror = () => {
+          db.close();
+          reject(boardRequest.error ?? new Error('Could not read authority board'));
+        };
+        boardRequest.onsuccess = () => {
+          const board = boardRequest.result;
+          if (!board) {
+            db.close();
+            resolve([]);
+            return;
+          }
+
+          const ids = new Set((board?.snapshot?.canvas?.objects ?? [])
+            .map((object) => String(object?.boardObjectId ?? ''))
+            .filter(Boolean));
+          const snapshotRevision = Math.max(0, Number(board.snapshotRevision ?? 0) || 0);
+          const headRevision = Math.max(snapshotRevision, Number(board.revision ?? snapshotRevision) || snapshotRevision);
+          if (snapshotRevision >= headRevision) {
+            db.close();
+            resolve([...ids].sort());
+            return;
+          }
+
+          const index = tx.objectStore('commits').index('boardRevision');
+          const range = IDBKeyRange.bound(
+            [id, snapshotRevision + 1],
+            [id, headRevision],
+          );
+          const cursorRequest = index.openCursor(range, 'next');
+          cursorRequest.onerror = () => {
+            db.close();
+            reject(cursorRequest.error ?? new Error('Could not materialize authority journal'));
+          };
+          cursorRequest.onsuccess = () => {
+            const cursor = cursorRequest.result;
+            if (!cursor) {
+              db.close();
+              resolve([...ids].sort());
+              return;
+            }
+            const commit = cursor.value;
+            for (const op of Array.isArray(commit?.ops) ? commit.ops : []) {
+              if (op?.type === 'delete' && op.id) {
+                ids.delete(String(op.id));
+              } else if (op?.type === 'upsert' && op.object?.boardObjectId) {
+                ids.add(String(op.object.boardObjectId));
+              }
+            }
+            cursor.continue();
+          };
+        };
+      } catch (error) {
+        db.close();
+        reject(error);
+      }
+    };
+  }), boardId);
 }
 
 async function enterBoardIfNeeded(page, name) {
