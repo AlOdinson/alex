@@ -52,6 +52,14 @@ async function authorityBoard(page, boardId) {
   }), boardId);
 }
 
+async function authorityObjectIds(page, boardId) {
+  const board = await authorityBoard(page, boardId);
+  return (board?.snapshot?.canvas?.objects ?? [])
+    .map((object) => String(object?.boardObjectId ?? ''))
+    .filter(Boolean)
+    .sort();
+}
+
 async function enterBoardIfNeeded(page, name) {
   const state = await waitFor('participant name gate or board canvas', async () => {
     if (await page.locator('canvas.upper-canvas').isVisible().catch(() => false)) return 'canvas';
@@ -273,6 +281,7 @@ try {
     );
 
     const beforeStudentEdit = await canvasDigest(teacher);
+    const beforeStudentEditIds = await authorityObjectIds(teacher, boardId);
     await drawStroke(student, 90 + round * 190);
     const studentRevision = await waitFor(`student edit revision after recovery ${round + 1}`, async () => {
       const revision = Number((await authorityBoard(teacher, boardId))?.revision ?? 0);
@@ -285,6 +294,9 @@ try {
     );
     assert.notEqual(afterStudentEdit, beforeStudentEdit, 'post-recovery student edit did not alter authority canvas');
 
+    const afterStudentEditIds = await authorityObjectIds(teacher, boardId);
+    assert.equal(afterStudentEditIds.length, beforeStudentEditIds.length + 1, 'post-recovery student edit did not add one authority object');
+
     const undoButton = student.getByRole('button', { name: /Отменить/ });
     await waitFor(`student undo enabled after recovery ${round + 1}`, async () => !(await undoButton.isDisabled()));
     await undoButton.click();
@@ -292,12 +304,13 @@ try {
       const revision = Number((await authorityBoard(teacher, boardId))?.revision ?? 0);
       return revision > studentRevision ? revision : 0;
     });
-    const afterUndo = await waitForMatchingCanvases(
+    await waitForMatchingCanvases(
       teacher,
       student,
       `student undo converged after recovery ${round + 1}`,
     );
-    assert.equal(afterUndo, beforeStudentEdit, 'post-recovery undo did not restore the pre-edit authority canvas');
+    const afterUndoIds = await authorityObjectIds(teacher, boardId);
+    assert.deepEqual(afterUndoIds, beforeStudentEditIds, 'post-recovery undo did not restore the pre-edit authority object set');
 
     previousRevision = undoRevision;
     previousChannelCount = await totalDataChannelCount(student);
