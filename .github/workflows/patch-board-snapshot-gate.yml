@@ -1,4 +1,4 @@
-name: Apply Board canonical clear patch
+name: Apply stale recovery guard
 
 on:
   push:
@@ -19,31 +19,18 @@ jobs:
           ref: fix/browser-authority-convergence
           fetch-depth: 0
 
-      - name: Apply exact canonical clear patch
-        env:
-          OLD_CLEAR_B64: ICBjb25zdCBjbGVhckJvYXJkID0gdXNlQ2FsbGJhY2soKCkgPT4gewogICAgY29uc3QgY2FudmFzID0gZmFicmljQ2FudmFzUmVmLmN1cnJlbnQ7CiAgICBpZiAoIWNhbnZhcyB8fCAhaXNPd25lcikgcmV0dXJuOwogICAgaWYgKCF3aW5kb3cuY29uZmlybSgn0KPQtNCw0LvQuNGC0Ywg0LLRgdC1INC70LjQvdC40Lgg0Lgg0YjRgtGA0LjRhdC4INGBINC00L7RgdC60Lg/JykpIHJldHVybjsKICAgIGNvbnN0IG9iamVjdHMgPSBjYW52YXMuZ2V0T2JqZWN0cygpLmZpbHRlcigob2JqZWN0KSA9PiAhb2JqZWN0LnRyYW5zaWVudFNjcmVlblNoYXJlKTsKICAgIGlmICghb2JqZWN0cy5sZW5ndGgpIHJldHVybjsKICAgIGNvbnN0IHJlY29yZHMgPSBnZXRPYmplY3RSZWNvcmRzKG9iamVjdHMpOwogICAgY29uc3QgaWRzID0gcmVjb3Jkcy5tYXAoKHJlY29yZCkgPT4gcmVjb3JkLm9iamVjdC5ib2FyZE9iamVjdElkKS5maWx0ZXIoQm9vbGVhbik7CiAgICBhcHBseWluZ1JlbW90ZVJlZi5jdXJyZW50ID0gdHJ1ZTsKICAgIGNvbnN0IGNvbXBvc2VkRGVsZXRlID0gbG9jYWxEZWxldGlvbkNvbXBvc2l0b3JSZWYuY3VycmVudD8ucmVtb3ZlT2JqZWN0cz8uKG9iamVjdHMsIHsgZnVsbENhbnZhczogdHJ1ZSB9KTsKICAgIGlmICghY29tcG9zZWREZWxldGUpIG9iamVjdHMuZm9yRWFjaCgob2JqZWN0KSA9PiBjYW52YXMucmVtb3ZlKG9iamVjdCkpOwogICAgYXBwbHlpbmdSZW1vdGVSZWYuY3VycmVudCA9IGZhbHNlOwogICAgY2FudmFzLmRpc2NhcmRBY3RpdmVPYmplY3QoKTsKICAgIGlmICghY29tcG9zZWREZWxldGUpIGNhbnZhcy5yZXF1ZXN0UmVuZGVyQWxsKCk7CiAgICB1cGRhdGVTZWxlY3Rpb25TdGF0ZSgpOwogICAgdXBkYXRlU2VsZWN0aW9uU3R5bGVTdGF0ZSgpOwogICAgc2VuZERlbGV0ZXMoaWRzKTsKICAgIHJlY29yZEFjdGlvbih7IHR5cGU6ICdkZWxldGUnLCByZWNvcmRzIH0pOwogICAgc2NoZWR1bGVQZXJzaXN0ZW5jZSgpOwogIH0sIFtnZXRPYmplY3RSZWNvcmRzLCBpc093bmVyLCByZWNvcmRBY3Rpb24sIHNjaGVkdWxlUGVyc2lzdGVuY2UsIHNlbmREZWxldGVzLCB1cGRhdGVTZWxlY3Rpb25TdGF0ZV0pOwo=
-          NEW_CLEAR_B64: ICBjb25zdCBjbGVhckJvYXJkID0gdXNlQ2FsbGJhY2soYXN5bmMgKCkgPT4gewogICAgY29uc3QgY2FudmFzID0gZmFicmljQ2FudmFzUmVmLmN1cnJlbnQ7CiAgICBpZiAoIWNhbnZhcyB8fCAhaXNPd25lcikgcmV0dXJuOwogICAgaWYgKCF3aW5kb3cuY29uZmlybSgn0KPQtNCw0LvQuNGC0Ywg0LLRgdC1INC70LjQvdC40Lgg0Lgg0YjRgtGA0LjRhdC4INGBINC00L7RgdC60Lg/JykpIHJldHVybjsKCiAgICBjb25zdCBvYmplY3RzID0gY2FudmFzLmdldE9iamVjdHMoKS5maWx0ZXIoKG9iamVjdCkgPT4gIW9iamVjdC50cmFuc2llbnRTY3JlZW5TaGFyZSk7CiAgICBjb25zdCByZWNvcmRzID0gZ2V0T2JqZWN0UmVjb3JkcyhvYmplY3RzKTsKICAgIGxldCBhdXRob3JpdHlTbmFwc2hvdCA9IG51bGw7CiAgICB0cnkgewogICAgICBjb25zdCByZWNvdmVyeSA9IGF3YWl0IGdldEJvYXJkUmVjb3ZlcnkoYm9hcmRJZCwgYm9hcmRLZXkpOwogICAgICBhdXRob3JpdHlTbmFwc2hvdCA9IHJlY292ZXJ5Py5zbmFwc2hvdCA/PyBudWxsOwogICAgfSBjYXRjaCAoZXJyb3IpIHsKICAgICAgY29uc29sZS53YXJuKCfQndC1INGD0LTQsNC70L7RgdGMINC/0L7Qu9GD0YfQuNGC0Ywg0LrQsNC90L7QvdC40YfQtdGB0LrQvtC1INGB0L7RgdGC0L7Rj9C90LjQtSDQv9C10YDQtdC0INC+0YfQuNGB0YLQutC+0Lkg0LTQvtGB0LrQuCcsIGVycm9yKTsKICAgIH0KCiAgICBjb25zdCB7IGRlbGV0ZUlkcywgdW5kb1JlY29yZHMgfSA9IHBsYW5DYW5vbmljYWxCb2FyZENsZWFyKHsKICAgICAgdmlzaWJsZVJlY29yZHM6IHJlY29yZHMsCiAgICAgIGF1dGhvcml0eVNuYXBzaG90LAogICAgfSk7CiAgICBpZiAoIWRlbGV0ZUlkcy5sZW5ndGggJiYgIW9iamVjdHMubGVuZ3RoKSB7CiAgICAgIGNhbnZhcy5yZXF1ZXN0UmVuZGVyQWxsKCk7CiAgICAgIHJldHVybjsKICAgIH0KCiAgICBhcHBseWluZ1JlbW90ZVJlZi5jdXJyZW50ID0gdHJ1ZTsKICAgIGNvbnN0IGNvbXBvc2VkRGVsZXRlID0gbG9jYWxEZWxldGlvbkNvbXBvc2l0b3JSZWYuY3VycmVudD8ucmVtb3ZlT2JqZWN0cz8uKG9iamVjdHMsIHsgZnVsbENhbnZhczogdHJ1ZSB9KTsKICAgIGlmICghY29tcG9zZWREZWxldGUpIG9iamVjdHMuZm9yRWFjaCgob2JqZWN0KSA9PiBjYW52YXMucmVtb3ZlKG9iamVjdCkpOwogICAgYXBwbHlpbmdSZW1vdGVSZWYuY3VycmVudCA9IGZhbHNlOwogICAgY2FudmFzLmRpc2NhcmRBY3RpdmVPYmplY3QoKTsKICAgIC8vIENyb3BwZWQgZGVsZXRpb24gcGF0Y2hlcyBhcmUgb25seSBhbiBpbnRlcmFjdGlvbiBvcHRpbWl6YXRpb24uIEEgY29tcGxldGVkCiAgICAvLyBmdWxsLWJvYXJkIGNsZWFyIG11c3QgYWx3YXlzIHJlYnVpbGQgcGl4ZWxzIGZyb20gdGhlIGNhbm9uaWNhbCBGYWJyaWMgb2JqZWN0IGxpc3QuCiAgICBjYW52YXMucmVxdWVzdFJlbmRlckFsbCgpOwogICAgdXBkYXRlU2VsZWN0aW9uU3RhdGUoKTsKICAgIHVwZGF0ZVNlbGVjdGlvblN0eWxlU3RhdGUoKTsKCiAgICBpZiAoZGVsZXRlSWRzLmxlbmd0aCkgc2VuZERlbGV0ZXMoZGVsZXRlSWRzKTsKICAgIGlmICh1bmRvUmVjb3Jkcy5sZW5ndGgpIHJlY29yZEFjdGlvbih7IHR5cGU6ICdkZWxldGUnLCByZWNvcmRzOiB1bmRvUmVjb3JkcyB9KTsKICAgIHNjaGVkdWxlUGVyc2lzdGVuY2UoKTsKICB9LCBbCiAgICBib2FyZElkLAogICAgYm9hcmRLZXksCiAgICBnZXRPYmplY3RSZWNvcmRzLAogICAgaXNPd25lciwKICAgIHJlY29yZEFjdGlvbiwKICAgIHNjaGVkdWxlUGVyc2lzdGVuY2UsCiAgICBzZW5kRGVsZXRlcywKICAgIHVwZGF0ZVNlbGVjdGlvblN0YXRlLAogICAgdXBkYXRlU2VsZWN0aW9uU3R5bGVTdGF0ZSwKICBdKTsK
+      - name: Guard bootstrap recovery with peer snapshot high-water mark
         run: |
           python - <<'PY'
-          import base64
-          import os
           from pathlib import Path
 
           path = Path('src/components/Board.jsx')
           source = path.read_text()
-
-          old_import = "import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';\n"
-          new_import = old_import + "import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';\n"
-          if source.count(old_import) != 1:
-            raise SystemExit('authoritative snapshot gate import match is not unique')
-          source = source.replace(old_import, new_import, 1)
-
-          old_clear = base64.b64decode(os.environ['OLD_CLEAR_B64']).decode()
-          new_clear = base64.b64decode(os.environ['NEW_CLEAR_B64']).decode()
-          if source.count(old_clear) != 1:
-            raise SystemExit(f'clearBoard exact match count={source.count(old_clear)}')
-          source = source.replace(old_clear, new_clear, 1)
-          path.write_text(source)
+          old = """      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);\n      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);\n"""
+          new = """      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);\n      // A full P2P authority snapshot may have arrived while this older recovery request\n      // was in flight. Never let an equal/older bootstrap response resurrect stale objects.\n      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {\n        schedulePersistence(700);\n        return;\n      }\n      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);\n"""
+          if source.count(old) != 1:
+            raise SystemExit(f'expected one recovery apply site, got {source.count(old)}')
+          path.write_text(source.replace(old, new, 1))
           PY
 
           git diff --check
@@ -54,5 +41,5 @@ jobs:
           git config user.name "Alex Board CI"
           git config user.email "actions@users.noreply.github.com"
           git add src/components/Board.jsx
-          git commit -m "fix: clear canonical authority remnants"
+          git commit -m "fix: reject stale bootstrap recovery after peer snapshot"
           git push origin HEAD:fix/browser-authority-convergence
