@@ -8954,6 +8954,12 @@ function BoardWorkspace({
       }
 
       const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
+      // A full P2P authority snapshot may have arrived while this older recovery request
+      // was in flight. Never let an equal/older bootstrap response resurrect stale objects.
+      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {
+        schedulePersistence(700);
+        return;
+      }
       await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
       if (Number(revisionRef.current ?? 0) === recoveryRevision) {
         snapshotCompactBaseRef.current = applyOpsToSnapshot(recovery.snapshot, []);
