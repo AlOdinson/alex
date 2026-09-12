@@ -26,53 +26,55 @@ jobs:
 
           path = Path('src/components/Board.jsx')
           source = path.read_text()
-          old = """      // Reapply edits that are still waiting to reach Supabase, so a recovery response
-      // can never make the user's newest local work disappear.
-      const pendingActions = await getPendingActions(boardId);
-      seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? accessCurrentRevision));
-      const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);
-
-      if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
-        syncFromServer(true);
-        schedulePersistence(1_500);
-        return;
-      }
-
-      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
-      // A full P2P authority snapshot may have arrived while this older recovery request
-      // was in flight. Never let an equal/older bootstrap response resurrect stale objects.
-      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {
-        schedulePersistence(700);
-        return;
-      }
-      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
-"""
-          new = """      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
-      // A full P2P authority snapshot may have arrived while this older recovery request
-      // was in flight. Reject it before it can seed internal authority state, merge local
-      // actions onto stale data, or repaint Fabric with objects that were already deleted.
-      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {
-        schedulePersistence(700);
-        return;
-      }
-
-      // Reapply edits that are still waiting to reach authority, so a genuinely newer
-      // recovery response can never make the user's newest local work disappear.
-      const pendingActions = await getPendingActions(boardId);
-      seedAuthoritativeSnapshot(recovery.snapshot, recoveryRevision);
-      const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);
-
-      if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
-        syncFromServer(true);
-        schedulePersistence(1_500);
-        return;
-      }
-
-      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
-"""
+          old = (
+              "      // Reapply edits that are still waiting to reach Supabase, so a recovery response\n"
+              "      // can never make the user's newest local work disappear.\n"
+              "      const pendingActions = await getPendingActions(boardId);\n"
+              "      seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? accessCurrentRevision));\n"
+              "      const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);\n"
+              "\n"
+              "      if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {\n"
+              "        syncFromServer(true);\n"
+              "        schedulePersistence(1_500);\n"
+              "        return;\n"
+              "      }\n"
+              "\n"
+              "      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);\n"
+              "      // A full P2P authority snapshot may have arrived while this older recovery request\n"
+              "      // was in flight. Never let an equal/older bootstrap response resurrect stale objects.\n"
+              "      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {\n"
+              "        schedulePersistence(700);\n"
+              "        return;\n"
+              "      }\n"
+              "      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);\n"
+          )
+          new = (
+              "      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);\n"
+              "      // A full P2P authority snapshot may have arrived while this older recovery request\n"
+              "      // was in flight. Reject it before it can seed internal authority state, merge local\n"
+              "      // actions onto stale data, or repaint Fabric with objects that were already deleted.\n"
+              "      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {\n"
+              "        schedulePersistence(700);\n"
+              "        return;\n"
+              "      }\n"
+              "\n"
+              "      // Reapply edits that are still waiting to reach authority, so a genuinely newer\n"
+              "      // recovery response can never make the user's newest local work disappear.\n"
+              "      const pendingActions = await getPendingActions(boardId);\n"
+              "      seedAuthoritativeSnapshot(recovery.snapshot, recoveryRevision);\n"
+              "      const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);\n"
+              "\n"
+              "      if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {\n"
+              "        syncFromServer(true);\n"
+              "        schedulePersistence(1_500);\n"
+              "        return;\n"
+              "      }\n"
+              "\n"
+              "      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);\n"
+          )
           count = source.count(old)
           if count != 1:
-            raise SystemExit(f'expected exactly one stale recovery block, got {count}')
+              raise SystemExit(f'expected exactly one stale recovery block, got {count}')
           path.write_text(source.replace(old, new, 1))
           PY
 
