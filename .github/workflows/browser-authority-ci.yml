@@ -234,6 +234,11 @@ jobs:
           BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
         run: node scripts/test-browser-authority-source-of-truth-e2e.mjs
 
+      - name: Chromium large-board full-snapshot convergence E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-large-snapshot-e2e.mjs
+
       - name: Chromium silent DataChannel recovery convergence E2E
         env:
           BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
