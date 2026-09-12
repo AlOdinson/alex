@@ -1,4 +1,4 @@
-name: Apply stale recovery guard
+name: Add forced snapshot E2E gate
 
 on:
   push:
@@ -19,27 +19,27 @@ jobs:
           ref: fix/browser-authority-convergence
           fetch-depth: 0
 
-      - name: Guard bootstrap recovery with peer snapshot high-water mark
+      - name: Add large snapshot convergence E2E
         run: |
           python - <<'PY'
           from pathlib import Path
 
-          path = Path('src/components/Board.jsx')
+          path = Path('.github/workflows/browser-authority-ci.yml')
           source = path.read_text()
-          old = """      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);\n      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);\n"""
-          new = """      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);\n      // A full P2P authority snapshot may have arrived while this older recovery request\n      // was in flight. Never let an equal/older bootstrap response resurrect stale objects.\n      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {\n        schedulePersistence(700);\n        return;\n      }\n      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);\n"""
-          if source.count(old) != 1:
-            raise SystemExit(f'expected one recovery apply site, got {source.count(old)}')
-          path.write_text(source.replace(old, new, 1))
+          marker = """      - name: Chromium silent DataChannel recovery convergence E2E\n        env:\n          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/\n        run: node scripts/test-browser-authority-datachannel-recovery-e2e.mjs\n"""
+          replacement = """      - name: Chromium large-board full-snapshot convergence E2E\n        env:\n          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/\n        run: node scripts/test-browser-authority-large-snapshot-e2e.mjs\n\n""" + marker
+          if source.count(marker) != 1:
+            raise SystemExit(f'expected one insertion marker, got {source.count(marker)}')
+          path.write_text(source.replace(marker, replacement, 1))
           PY
 
           git diff --check
-          git diff -- src/components/Board.jsx
+          git diff -- .github/workflows/browser-authority-ci.yml
 
-      - name: Commit patch
+      - name: Commit workflow gate
         run: |
           git config user.name "Alex Board CI"
           git config user.email "actions@users.noreply.github.com"
-          git add src/components/Board.jsx
-          git commit -m "fix: reject stale bootstrap recovery after peer snapshot"
+          git add .github/workflows/browser-authority-ci.yml
+          git commit -m "test: gate large-board snapshot convergence"
           git push origin HEAD:fix/browser-authority-convergence
