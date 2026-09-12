@@ -1,0 +1,93 @@
+name: Patch large snapshot E2E synchronization
+
+on:
+  push:
+    branches:
+      - fix/browser-authority-convergence
+    paths:
+      - .github/workflows/patch-large-snapshot-test.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/browser-authority-convergence
+          fetch-depth: 0
+
+      - name: Make forced snapshot test wait for durable teacher tail
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/test-browser-authority-large-snapshot-e2e.mjs')
+          source = path.read_text()
+
+          source = source.replace(
+              "const FILLER_STROKES = 260;\n",
+              "const FILLER_STROKES = 260;\nconst EXPECTED_TEACHER_REVISIONS = FILLER_STROKES + 1;\n",
+              1,
+          )
+
+          old_head = """  const revisionBeforeStudent = await waitFor('large teacher authority head', async () => {
+    const revision = Number((await authorityBoard(teacher, boardId))?.revision ?? 0);
+    return revision > 256 ? revision : 0;
+  });
+  assert.ok(revisionBeforeStudent > 256, 'test did not force the full-snapshot sync threshold');
+"""
+          new_head = """  // Drawing is intentionally much faster than durable IndexedDB commits. Wait for
+  // every teacher stroke to reach authority before opening the student; otherwise a
+  // trailing teacher commit can be mistaken for the student's eraser commit below.
+  const revisionBeforeStudent = await waitFor('complete large teacher authority head', async () => {
+    const revision = Number((await authorityBoard(teacher, boardId))?.revision ?? 0);
+    return revision >= EXPECTED_TEACHER_REVISIONS ? revision : 0;
+  });
+  assert.ok(revisionBeforeStudent > 256, 'test did not force the full-snapshot sync threshold');
+"""
+          if source.count(old_head) != 1:
+              raise SystemExit(f'expected one teacher-head block, got {source.count(old_head)}')
+          source = source.replace(old_head, new_head, 1)
+
+          old_erase = """  await eraseAt(student, targetMidpoint);
+  const revisionAfterErase = await waitFor('student deleted teacher object after snapshot bootstrap', async () => {
+    const revision = Number((await authorityBoard(teacher, boardId))?.revision ?? 0);
+    return revision > revisionBeforeStudent ? revision : 0;
+  });
+  const eraseCommit = (await authorityCommits(teacher, boardId))
+    .find((commit) => Number(commit?.revision) === revisionAfterErase);
+  assert.ok(eraseCommit?.ops?.some((op) => op?.type === 'delete'),
+    'student eraser did not produce an authoritative delete after full snapshot bootstrap');
+"""
+          new_erase = """  await eraseAt(student, targetMidpoint);
+  const eraseCommit = await waitFor('student authoritative delete after full snapshot bootstrap', async () => {
+    const commits = await authorityCommits(teacher, boardId);
+    return commits.find((commit) => (
+      Number(commit?.revision) > revisionBeforeStudent
+      && commit?.ops?.some((op) => op?.type === 'delete')
+    )) ?? null;
+  });
+  const revisionAfterErase = Number(eraseCommit?.revision ?? 0);
+  assert.ok(revisionAfterErase > revisionBeforeStudent,
+    'student eraser did not advance authority with a delete after full snapshot bootstrap');
+"""
+          if source.count(old_erase) != 1:
+              raise SystemExit(f'expected one eraser assertion block, got {source.count(old_erase)}')
+          source = source.replace(old_erase, new_erase, 1)
+
+          path.write_text(source)
+          PY
+
+          git diff --check
+          git diff -- scripts/test-browser-authority-large-snapshot-e2e.mjs
+
+      - name: Commit test fix
+        run: |
+          git config user.name "Alex Board CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add scripts/test-browser-authority-large-snapshot-e2e.mjs
+          git commit -m "test: drain teacher commits before snapshot eraser assertion"
+          git push origin HEAD:fix/browser-authority-convergence
