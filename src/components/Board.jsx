@@ -87,6 +87,7 @@ import {
 } from '../lib/exportBoard.js';
 import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';
 import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';
+import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';
 
 const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
@@ -6800,26 +6801,55 @@ function BoardWorkspace({
     schedulePersistence();
   }, [getObjectRecords, recordAction, schedulePersistence, sendDeletes, updateSelectionState, updateSelectionStyleState]);
 
-  const clearBoard = useCallback(() => {
+  const clearBoard = useCallback(async () => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !isOwner) return;
     if (!window.confirm('Удалить все линии и штрихи с доски?')) return;
+
     const objects = canvas.getObjects().filter((object) => !object.transientScreenShare);
-    if (!objects.length) return;
     const records = getObjectRecords(objects);
-    const ids = records.map((record) => record.object.boardObjectId).filter(Boolean);
+    let authoritySnapshot = null;
+    try {
+      const recovery = await getBoardRecovery(boardId, boardKey);
+      authoritySnapshot = recovery?.snapshot ?? null;
+    } catch (error) {
+      console.warn('Не удалось получить каноническое состояние перед очисткой доски', error);
+    }
+
+    const { deleteIds, undoRecords } = planCanonicalBoardClear({
+      visibleRecords: records,
+      authoritySnapshot,
+    });
+    if (!deleteIds.length && !objects.length) {
+      canvas.requestRenderAll();
+      return;
+    }
+
     applyingRemoteRef.current = true;
     const composedDelete = localDeletionCompositorRef.current?.removeObjects?.(objects, { fullCanvas: true });
     if (!composedDelete) objects.forEach((object) => canvas.remove(object));
     applyingRemoteRef.current = false;
     canvas.discardActiveObject();
-    if (!composedDelete) canvas.requestRenderAll();
+    // Cropped deletion patches are only an interaction optimization. A completed
+    // full-board clear must always rebuild pixels from the canonical Fabric object list.
+    canvas.requestRenderAll();
     updateSelectionState();
     updateSelectionStyleState();
-    sendDeletes(ids);
-    recordAction({ type: 'delete', records });
+
+    if (deleteIds.length) sendDeletes(deleteIds);
+    if (undoRecords.length) recordAction({ type: 'delete', records: undoRecords });
     schedulePersistence();
-  }, [getObjectRecords, isOwner, recordAction, schedulePersistence, sendDeletes, updateSelectionState]);
+  }, [
+    boardId,
+    boardKey,
+    getObjectRecords,
+    isOwner,
+    recordAction,
+    schedulePersistence,
+    sendDeletes,
+    updateSelectionState,
+    updateSelectionStyleState,
+  ]);
 
   const changeZoom = useCallback((factor) => {
     const canvas = fabricCanvasRef.current;
