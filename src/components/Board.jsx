@@ -10039,6 +10039,10 @@ function BoardWorkspace({
       }
       flushObjectEraserVisualPatches();
       restoreObjectEraserRenderMode();
+      // Cropped patches keep a long eraser drag cheap, but the gesture boundary is
+      // a correctness boundary: repaint once from Fabric's canonical object list so
+      // the lower canvas cannot retain a stale/misaligned raster after a local delete.
+      canvas.requestRenderAll();
       const records = [...objectEraserRecordsRef.current.values()];
       objectEraserRecordsRef.current = new Map();
       updateSelectionState();
