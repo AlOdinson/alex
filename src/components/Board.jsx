@@ -86,6 +86,7 @@ import {
   shareCanvasPng,
 } from '../lib/exportBoard.js';
 import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';
+import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';
 
 const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
@@ -8814,6 +8815,11 @@ function BoardWorkspace({
       retryPendingServerImages();
     }
 
+    const authoritativeSnapshotGate = createAuthoritativeSnapshotGate({
+      isReady: () => boardReadyRef.current,
+      applySnapshot: applyAuthoritativeSnapshot,
+    });
+
     async function loadInitialData() {
       // Start the full recovery request immediately. It runs in parallel with IndexedDB
       // and with the first paint instead of blocking the board behind every old action.
@@ -8877,6 +8883,7 @@ function BoardWorkspace({
       if (disposed) return;
 
       boardReadyRef.current = true;
+      await authoritativeSnapshotGate.flush();
       syncFromServer(false);
 
       if (authoritativeBase && baseSnapshot?.canvas) {
@@ -8956,6 +8963,9 @@ function BoardWorkspace({
       onViewJump: handleRemoteViewJump,
       onViewRequest: handleRemoteViewRequest,
       onGameLibraryVisibility: handleRemoteGameLibraryVisibility,
+      onSnapshot(snapshot, revision) {
+        return authoritativeSnapshotGate.receive(snapshot, revision);
+      },
       onScreenShareSignal(payload) {
         screenShareSignalHandlerRef.current?.(payload);
       },
@@ -13258,6 +13268,7 @@ function BoardWorkspace({
 
     return () => {
       disposed = true;
+      authoritativeSnapshotGate.close();
       cancelCreationDraft('unmount');
       clearCreationPreview();
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
