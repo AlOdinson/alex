@@ -293,7 +293,7 @@ try {
     return teacherRegion === populatedTargetRegion && studentRegion === populatedTargetRegion;
   });
 
-  const redoButton = student.getByRole('button', { name: /Повторить/ });
+  const redoButton = student.getByRole('button', { name: /Вернуть/ });
   await waitFor('student redo enabled after cross-author erase undo', async () => !(await redoButton.isDisabled()));
   await redoButton.click();
   const revisionAfterRedo = await waitFor('student redo re-deleted teacher object authoritatively', async () => {
