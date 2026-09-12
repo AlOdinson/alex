@@ -279,6 +279,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     onGameLibraryVisibility,
     onScreenShareSignal,
     onSyncRequired,
+    onSnapshot,
     onCommit,
     onPendingChange,
     onStatus,
@@ -325,7 +326,11 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       commit?.actionId ?? null,
       commit?.clientId ?? '',
     ),
-    onAuthoritativeSnapshot: (_snapshot, revision) => onSyncRequired?.(Number(revision ?? 0)),
+    onAuthoritativeSnapshot: (snapshot, revision) => {
+      const safeRevision = Number(revision ?? 0);
+      if (typeof onSnapshot === 'function') return onSnapshot(snapshot, safeRevision);
+      return onSyncRequired?.(safeRevision);
+    },
     onPeerState: (state) => {
       const peerState = String(state ?? '');
       if (peerState === 'failed' || peerState === 'closed' || peerState === 'disconnected') {

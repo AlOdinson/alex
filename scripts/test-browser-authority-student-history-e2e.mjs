@@ -63,6 +63,14 @@ async function enterBoardIfNeeded(page, name) {
   await page.getByRole('button', { name: 'Войти на доску' }).click();
 }
 
+async function waitForDurableReady(page, label) {
+  await waitFor(`${label} durable runtime ready`, async () => page.evaluate(() => {
+    const dataset = document.documentElement?.dataset ?? {};
+    return dataset.alexDurableEditState === 'ready'
+      && dataset.alexDurableEditBlocked !== 'true';
+  }));
+}
+
 async function canvasDigest(page) {
   return page.locator('canvas.lower-canvas').evaluate((canvas) => canvas.toDataURL('image/png'));
 }
@@ -121,6 +129,7 @@ try {
   ]);
   await enterBoardIfNeeded(teacher, 'Teacher History');
   await teacher.locator('canvas.upper-canvas').waitFor({ state: 'visible', timeout: TIMEOUT_MS });
+  await waitForDurableReady(teacher, 'teacher');
 
   const boardId = boardIdFromUrl(teacher.url());
   assert.ok(boardId, 'Could not determine board id');
@@ -140,6 +149,9 @@ try {
     const studentCount = Number((await student.locator('.presence-summary').textContent())?.trim());
     return teacherCount >= 2 && studentCount >= 2;
   });
+  // Presence only proves Ably discovery. Durable edits are intentionally gated until
+  // the ordered WebRTC channel has also synchronized the teacher authority head.
+  await waitForDurableReady(student, 'student');
 
   const teacherBlank = await canvasDigest(teacher);
   const studentBlank = await canvasDigest(student);

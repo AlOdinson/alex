@@ -24,12 +24,32 @@ export function createStudentPeerSession({
 
   let applyQueue = Promise.resolve();
   let closed = false;
+  let initialSyncStarted = false;
+  let initialSyncSettled = false;
+  let resolveInitialSync;
+  let rejectInitialSync;
+  const initialSync = new Promise((resolve, reject) => {
+    resolveInitialSync = resolve;
+    rejectInitialSync = reject;
+  });
   const lockWaiters = new Map();
   const actionWaiters = new Map();
 
   const requestSync = () => transport.send('sync-request', {
     revision: safeRevision(getRevision()),
   });
+
+  const markInitialSyncReady = () => {
+    if (initialSyncSettled || closed) return;
+    initialSyncSettled = true;
+    resolveInitialSync();
+  };
+
+  const failInitialSync = (error) => {
+    if (initialSyncSettled) return;
+    initialSyncSettled = true;
+    rejectInitialSync(error instanceof Error ? error : new Error(String(error)));
+  };
 
   const enqueue = (work) => {
     const task = applyQueue.then(work);
@@ -46,7 +66,12 @@ export function createStudentPeerSession({
 
   return {
     start() {
-      return requestSync();
+      if (closed) return Promise.reject(new Error('Student peer session is closed'));
+      if (!initialSyncStarted) {
+        initialSyncStarted = true;
+        Promise.resolve(requestSync()).catch(failInitialSync);
+      }
+      return initialSync;
     },
 
     handleMessage(message) {
@@ -56,8 +81,13 @@ export function createStudentPeerSession({
         : {};
 
       if (type === 'head') {
-        if (safeRevision(payload.revision) > safeRevision(getRevision())) return requestSync();
-        return Promise.resolve();
+        return enqueue(async () => {
+          if (safeRevision(payload.revision) > safeRevision(getRevision())) {
+            await requestSync();
+            return;
+          }
+          markInitialSyncReady();
+        });
       }
 
       if (type === 'ack') {
@@ -103,8 +133,12 @@ export function createStudentPeerSession({
         if (!parsed || typeof parsed !== 'object' || !parsed.snapshot) {
           throw new Error('Invalid authoritative snapshot transfer');
         }
-        if (revision < safeRevision(getRevision())) return;
+        if (revision < safeRevision(getRevision())) {
+          await requestSync();
+          return;
+        }
         await installSnapshot(parsed.snapshot, revision);
+        markInitialSyncReady();
       });
     },
 
@@ -168,6 +202,7 @@ export function createStudentPeerSession({
       const reason = error instanceof Error
         ? error
         : new Error(String(error ?? 'Student peer session is closed'));
+      failInitialSync(reason);
       for (const waiter of actionWaiters.values()) waiter.reject(reason);
       actionWaiters.clear();
       for (const waiter of lockWaiters.values()) waiter.reject(reason);

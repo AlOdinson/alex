@@ -50,6 +50,8 @@ export function createBrowserBoardSession({
   if (typeof sendScreenShareSignal !== 'function') throw new Error('sendScreenShareSignal is required');
 
   let runtime = null;
+  let connectingRuntime = null;
+  let connectingTeacherId = '';
   let unregisterRuntime = null;
   let durableBridge = null;
   let teacherId = '';
@@ -118,6 +120,18 @@ export function createBrowserBoardSession({
     previousUnregister?.();
     try { previousRuntime?.close?.(); } catch (error) { onError(error); }
     reportRuntimeState(nextState);
+  };
+
+  const clearConnectingRuntime = (expectedRuntime = null, { closeRuntime = true } = {}) => {
+    const pending = connectingRuntime;
+    if (!pending) return false;
+    if (expectedRuntime && pending !== expectedRuntime) return false;
+    connectingRuntime = null;
+    connectingTeacherId = '';
+    if (closeRuntime) {
+      try { pending.close?.(); } catch (error) { onError(error); }
+    }
+    return true;
   };
 
   const failRuntimeReadiness = (error) => {
@@ -256,14 +270,20 @@ export function createBrowserBoardSession({
     const resolvedTeacherId = safeId(nextTeacherId);
     if (!resolvedTeacherId) return null;
     if (runtime && teacherId === resolvedTeacherId) return runtime;
+    if (runtime && teacherId !== resolvedTeacherId) clearRuntime();
     reportRuntimeState('waiting');
 
     let nextRuntime = null;
     const handleStudentState = (state) => {
       const normalizedState = String(state ?? '');
-      if (TERMINAL_STUDENT_STATES.has(normalizedState) && runtime === nextRuntime) {
-        teacherId = '';
-        clearRuntime();
+      if (TERMINAL_STUDENT_STATES.has(normalizedState)) {
+        if (runtime === nextRuntime) {
+          teacherId = '';
+          clearRuntime();
+        } else if (connectingRuntime === nextRuntime) {
+          teacherId = '';
+          reportRuntimeState('waiting');
+        }
       }
       onPeerState(state);
     };
@@ -277,7 +297,7 @@ export function createBrowserBoardSession({
       applyCommit: async (commit) => {
         const applied = applyReplicaCommit(safeBoardId, commit);
         if (applied?.needsSnapshot) throw new Error('Student replica needs authoritative snapshot');
-        if (applied?.applied && safeId(commit?.clientId) !== safeClientId) await onAuthoritativeCommit(commit);
+        if (applied?.applied) await onAuthoritativeCommit(commit);
         return applied;
       },
       installSnapshot: async (snapshot, revision) => {
@@ -292,19 +312,27 @@ export function createBrowserBoardSession({
       nextRuntime?.close?.();
       return null;
     }
+
     teacherId = resolvedTeacherId;
-    const installed = installRuntime(nextRuntime, { getRevision: replicaRevision });
+    connectingTeacherId = resolvedTeacherId;
+    connectingRuntime = nextRuntime;
     try {
-      await installed.start();
+      await nextRuntime.start();
     } catch (error) {
-      if (runtime === installed) {
-        teacherId = '';
-        clearRuntime();
-      }
+      clearConnectingRuntime(nextRuntime);
+      if (teacherId === resolvedTeacherId) teacherId = '';
       failRuntimeReadiness(error);
       throw error;
     }
-    return installed;
+
+    if (closed || connectingRuntime !== nextRuntime || connectingTeacherId !== resolvedTeacherId) {
+      try { nextRuntime.close?.(); } catch (error) { onError(error); }
+      return null;
+    }
+
+    connectingRuntime = null;
+    connectingTeacherId = '';
+    return installRuntime(nextRuntime, { getRevision: replicaRevision });
   };
 
   const enqueueTransition = (work) => {
@@ -344,7 +372,9 @@ export function createBrowserBoardSession({
       return enqueueTransition(() => startStudent(nextTeacherId));
     },
     handleRealtimeSignal(payload) {
-      return runtime?.handleRealtimeSignal?.(payload) ?? false;
+      return connectingRuntime?.handleRealtimeSignal?.(payload)
+        ?? runtime?.handleRealtimeSignal?.(payload)
+        ?? false;
     },
     async sendOps(ops, options = {}) {
       if (!durableBridge) throw new Error('Browser durable runtime is unavailable');
@@ -367,6 +397,7 @@ export function createBrowserBoardSession({
       teacherId = '';
       const closeError = new Error('Board session is closed');
       rejectRuntimeWaiters(closeError);
+      clearConnectingRuntime(null, { closeRuntime: true });
       clearRuntime({ nextState: 'closed' });
       if (isOwner) releaseTeacherTabAuthority(closeError);
     },

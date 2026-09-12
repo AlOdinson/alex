@@ -86,6 +86,8 @@ import {
   shareCanvasPng,
 } from '../lib/exportBoard.js';
 import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';
+import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';
+import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';
 
 const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
@@ -6799,26 +6801,55 @@ function BoardWorkspace({
     schedulePersistence();
   }, [getObjectRecords, recordAction, schedulePersistence, sendDeletes, updateSelectionState, updateSelectionStyleState]);
 
-  const clearBoard = useCallback(() => {
+  const clearBoard = useCallback(async () => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !isOwner) return;
     if (!window.confirm('Удалить все линии и штрихи с доски?')) return;
+
     const objects = canvas.getObjects().filter((object) => !object.transientScreenShare);
-    if (!objects.length) return;
     const records = getObjectRecords(objects);
-    const ids = records.map((record) => record.object.boardObjectId).filter(Boolean);
+    let authoritySnapshot = null;
+    try {
+      const recovery = await getBoardRecovery(boardId, boardKey);
+      authoritySnapshot = recovery?.snapshot ?? null;
+    } catch (error) {
+      console.warn('Не удалось получить каноническое состояние перед очисткой доски', error);
+    }
+
+    const { deleteIds, undoRecords } = planCanonicalBoardClear({
+      visibleRecords: records,
+      authoritySnapshot,
+    });
+    if (!deleteIds.length && !objects.length) {
+      canvas.requestRenderAll();
+      return;
+    }
+
     applyingRemoteRef.current = true;
     const composedDelete = localDeletionCompositorRef.current?.removeObjects?.(objects, { fullCanvas: true });
     if (!composedDelete) objects.forEach((object) => canvas.remove(object));
     applyingRemoteRef.current = false;
     canvas.discardActiveObject();
-    if (!composedDelete) canvas.requestRenderAll();
+    // Cropped deletion patches are only an interaction optimization. A completed
+    // full-board clear must always rebuild pixels from the canonical Fabric object list.
+    canvas.requestRenderAll();
     updateSelectionState();
     updateSelectionStyleState();
-    sendDeletes(ids);
-    recordAction({ type: 'delete', records });
+
+    if (deleteIds.length) sendDeletes(deleteIds);
+    if (undoRecords.length) recordAction({ type: 'delete', records: undoRecords });
     schedulePersistence();
-  }, [getObjectRecords, isOwner, recordAction, schedulePersistence, sendDeletes, updateSelectionState]);
+  }, [
+    boardId,
+    boardKey,
+    getObjectRecords,
+    isOwner,
+    recordAction,
+    schedulePersistence,
+    sendDeletes,
+    updateSelectionState,
+    updateSelectionStyleState,
+  ]);
 
   const changeZoom = useCallback((factor) => {
     const canvas = fabricCanvasRef.current;
@@ -8814,6 +8845,11 @@ function BoardWorkspace({
       retryPendingServerImages();
     }
 
+    const authoritativeSnapshotGate = createAuthoritativeSnapshotGate({
+      isReady: () => boardReadyRef.current,
+      applySnapshot: applyAuthoritativeSnapshot,
+    });
+
     async function loadInitialData() {
       // Start the full recovery request immediately. It runs in parallel with IndexedDB
       // and with the first paint instead of blocking the board behind every old action.
@@ -8877,6 +8913,7 @@ function BoardWorkspace({
       if (disposed) return;
 
       boardReadyRef.current = true;
+      await authoritativeSnapshotGate.flush();
       syncFromServer(false);
 
       if (authoritativeBase && baseSnapshot?.canvas) {
@@ -8904,10 +8941,19 @@ function BoardWorkspace({
         return;
       }
 
-      // Reapply edits that are still waiting to reach Supabase, so a recovery response
-      // can never make the user's newest local work disappear.
+      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
+      // A full P2P authority snapshot may have arrived while this older recovery request
+      // was in flight. Reject it before it can seed internal authority state, merge local
+      // actions onto stale data, or repaint Fabric with objects that were already deleted.
+      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {
+        schedulePersistence(700);
+        return;
+      }
+
+      // Reapply edits that are still waiting to reach authority, so a genuinely newer
+      // recovery response can never make the user's newest local work disappear.
       const pendingActions = await getPendingActions(boardId);
-      seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? accessCurrentRevision));
+      seedAuthoritativeSnapshot(recovery.snapshot, recoveryRevision);
       const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);
 
       if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
@@ -8916,7 +8962,6 @@ function BoardWorkspace({
         return;
       }
 
-      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
       await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
       if (Number(revisionRef.current ?? 0) === recoveryRevision) {
         snapshotCompactBaseRef.current = applyOpsToSnapshot(recovery.snapshot, []);
@@ -8956,6 +9001,9 @@ function BoardWorkspace({
       onViewJump: handleRemoteViewJump,
       onViewRequest: handleRemoteViewRequest,
       onGameLibraryVisibility: handleRemoteGameLibraryVisibility,
+      onSnapshot(snapshot, revision) {
+        return authoritativeSnapshotGate.receive(snapshot, revision);
+      },
       onScreenShareSignal(payload) {
         screenShareSignalHandlerRef.current?.(payload);
       },
@@ -10039,6 +10087,10 @@ function BoardWorkspace({
       }
       flushObjectEraserVisualPatches();
       restoreObjectEraserRenderMode();
+      // Cropped patches keep a long eraser drag cheap, but the gesture boundary is
+      // a correctness boundary: repaint once from Fabric's canonical object list so
+      // the lower canvas cannot retain a stale/misaligned raster after a local delete.
+      canvas.requestRenderAll();
       const records = [...objectEraserRecordsRef.current.values()];
       objectEraserRecordsRef.current = new Map();
       updateSelectionState();
@@ -13254,6 +13306,7 @@ function BoardWorkspace({
 
     return () => {
       disposed = true;
+      authoritativeSnapshotGate.close();
       cancelCreationDraft('unmount');
       clearCreationPreview();
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);

@@ -37,8 +37,47 @@ export function createStudentPeerNetwork({
 
   let transport = null;
   let session = null;
+  let connection = null;
   let closed = false;
+  let ready = false;
+  let readinessSettled = false;
   let channelStart = Promise.resolve();
+  let resolveReady;
+  let rejectReady;
+  const readiness = new Promise((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+
+  const settleReady = () => {
+    if (readinessSettled || closed) return;
+    readinessSettled = true;
+    ready = true;
+    resolveReady();
+  };
+
+  const rejectReadiness = (error) => {
+    if (readinessSettled) return;
+    readinessSettled = true;
+    rejectReady(error instanceof Error ? error : new Error(String(error)));
+  };
+
+  const closeResources = (reason, { reportState = null } = {}) => {
+    if (closed) return false;
+    closed = true;
+    ready = false;
+    const error = reason instanceof Error ? reason : new Error(String(reason ?? 'Student peer network closed'));
+    rejectReadiness(error);
+    try { session?.close?.(error); } catch (caught) { onError(caught); }
+    try { transport?.close?.(); } catch (caught) { onError(caught); }
+    transport = null;
+    session = null;
+    try { connection?.close?.(); } catch (caught) { onError(caught); }
+    if (reportState) {
+      try { onState(reportState); } catch { /* observer errors are ignored */ }
+    }
+    return true;
+  };
 
   const attachChannel = (channel) => {
     if (closed || transport) return;
@@ -47,6 +86,11 @@ export function createStudentPeerNetwork({
       channel,
       onMessage: (message) => Promise.resolve(nextSession?.handleMessage?.(message)).catch(onError),
       onTransfer: (transfer) => Promise.resolve(nextSession?.handleTransfer?.(transfer)).catch(onError),
+      onClose: () => {
+        if (closed) return;
+        const error = new Error('Teacher peer data channel closed');
+        closeResources(error, { reportState: 'failed' });
+      },
       onError,
     });
     nextSession = createSession({
@@ -58,31 +102,39 @@ export function createStudentPeerNetwork({
       onError,
     });
     session = nextSession;
-    channelStart = Promise.resolve(session.start()).catch((error) => {
-      onError(error);
-      throw error;
+    channelStart = Promise.resolve(session.start());
+    channelStart.then(settleReady, (error) => {
+      try { onError(error); } catch { /* observer errors are ignored */ }
+      closeResources(error, { reportState: 'failed' });
     });
   };
 
-  const connection = createConnection({
+  connection = createConnection({
     initiator: true,
     rtcConfig,
     sendSignal: (signal) => signaling.send(targetTeacherId, signal),
     onChannel: attachChannel,
     onConnectionState: (state) => {
+      if (closed) return;
       const recoveryState = normalizeStudentConnectionState(state);
       onState(recoveryState);
       if (TERMINAL_STATES.has(recoveryState)) {
-        try { transport?.close?.(); } catch (error) { onError(error); }
+        closeResources(new Error(`Student peer connection ${recoveryState}`));
       }
     },
     onError,
   });
 
   return {
-    start() {
+    async start() {
       if (closed) throw new Error('Student peer network is closed');
-      return connection.start();
+      try {
+        await connection.start();
+        await readiness;
+      } catch (error) {
+        if (!closed) closeResources(error, { reportState: 'failed' });
+        throw error;
+      }
     },
 
     async handleSignal(message) {
@@ -122,17 +174,12 @@ export function createStudentPeerNetwork({
     },
 
     isReady() {
-      return Boolean(session);
+      return ready && !closed;
     },
 
     close() {
       if (closed) return;
-      closed = true;
-      try { session?.close?.(new Error('Student peer network is closed')); } catch (error) { onError(error); }
-      try { transport?.close?.(); } catch (error) { onError(error); }
-      transport = null;
-      session = null;
-      try { connection.close?.(); } catch (error) { onError(error); }
+      closeResources(new Error('Student peer network is closed'));
     },
   };
 }

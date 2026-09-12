@@ -22,10 +22,21 @@ test('student treats disconnected as terminal failure because teacher already re
       };
     },
     createTransport: () => ({ send: async () => {}, close() {} }),
+    // This test is about the connection-state recovery path, not the sync protocol.
+    // Satisfy the new readiness contract explicitly so `start()` means the durable
+    // student runtime is fully usable before we simulate the disconnect.
+    createSession: () => ({
+      async start() {},
+      close() {},
+    }),
   });
 
-  await network.start();
+  const starting = network.start();
+  await Promise.resolve();
   assert.ok(connectionOptions, 'student peer connection was not created');
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  assert.equal(network.isReady(), true);
 
   connectionOptions.onConnectionState('disconnected');
   assert.deepEqual(

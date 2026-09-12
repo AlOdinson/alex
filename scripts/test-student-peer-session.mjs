@@ -9,7 +9,7 @@ function makeTransport() {
   };
 }
 
-test('starts by requesting sync from the current local revision', async () => {
+test('starts by requesting sync and waits for an authoritative head', async () => {
   const transport = makeTransport();
   const session = createStudentPeerSession({
     transport,
@@ -17,8 +17,14 @@ test('starts by requesting sync from the current local revision', async () => {
     applyCommit: async () => {},
     installSnapshot: async () => {},
   });
-  await session.start();
+  let settled = false;
+  const starting = session.start().then(() => { settled = true; });
+  await Promise.resolve();
   assert.deepEqual(transport.sent, [{ type: 'sync-request', payload: { revision: 12 } }]);
+  assert.equal(settled, false);
+  await session.handleMessage({ type: 'head', payload: { revision: 12 } });
+  await starting;
+  assert.equal(settled, true);
 });
 
 test('applies the next contiguous authoritative commit', async () => {
@@ -75,6 +81,28 @@ test('installs an authoritative snapshot transfer', async () => {
     text: JSON.stringify({ snapshot: { version: 2, canvas: { objects: [] } }, revision: 15 }),
   });
   assert.deepEqual(installed, [{ snapshot: { version: 2, canvas: { objects: [] } }, revision: 15 }]);
+});
+
+test('initial sync may complete from an authoritative snapshot without a head packet', async () => {
+  const transport = makeTransport();
+  let revision = 0;
+  const session = createStudentPeerSession({
+    transport,
+    getRevision: () => revision,
+    applyCommit: async () => {},
+    installSnapshot: async (_snapshot, nextRevision) => { revision = nextRevision; },
+  });
+  let settled = false;
+  const starting = session.start().then(() => { settled = true; });
+  await Promise.resolve();
+  assert.equal(settled, false);
+  await session.handleTransfer({
+    kind: 'snapshot',
+    text: JSON.stringify({ snapshot: { version: 2, canvas: { objects: [] } }, revision: 15 }),
+  });
+  await starting;
+  assert.equal(settled, true);
+  assert.equal(revision, 15);
 });
 
 test('proposes local actions against the current authoritative revision', async () => {
@@ -169,7 +197,7 @@ test('returns rejected durable acks to the caller instead of hiding conflicts', 
   assert.deepEqual(result.rejectedObjectIds, ['locked']);
 });
 
-test('closing a student peer rejects pending durable and lock waiters', async () => {
+test('closing a student peer rejects pending initial sync, durable and lock waiters', async () => {
   const transport = makeTransport();
   const session = createStudentPeerSession({
     transport,
@@ -179,6 +207,7 @@ test('closing a student peer rejects pending durable and lock waiters', async ()
     createRequestId: () => 'lock-waiter-1',
   });
 
+  const initialTask = session.start();
   const actionTask = session.proposeActionAndWait({
     actionId: 'pending-action',
     ops: [{ type: 'delete', id: 'x' }],
@@ -193,6 +222,7 @@ test('closing a student peer rejects pending durable and lock waiters', async ()
   const closeError = new Error('Peer connection closed');
   session.close(closeError);
 
+  await assert.rejects(initialTask, /Peer connection closed/);
   await assert.rejects(actionTask, /Peer connection closed/);
   await assert.rejects(lockTask, /Peer connection closed/);
   await assert.rejects(

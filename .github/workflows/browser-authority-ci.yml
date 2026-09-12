@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/browser-authority-v1
+      - fix/browser-authority-convergence
   pull_request:
     branches:
       - main
@@ -47,7 +48,7 @@ jobs:
         run: npm run build
 
   preview:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/feature/browser-authority-v1'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/feature/browser-authority-v1' || github.ref == 'refs/heads/fix/browser-authority-convergence')
     needs: test
     runs-on: ubuntu-latest
     concurrency:
@@ -227,6 +228,21 @@ jobs:
         env:
           BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
         run: node scripts/test-browser-authority-student-history-e2e.mjs
+
+      - name: Chromium source-of-truth reload and eraser convergence E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-source-of-truth-e2e.mjs
+
+      - name: Chromium large-board full-snapshot convergence E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-large-snapshot-e2e.mjs
+
+      - name: Chromium silent DataChannel recovery convergence E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: https://alodinson.github.io/alex/preview-browser-authority/
+        run: node scripts/test-browser-authority-datachannel-recovery-e2e.mjs
 
       - name: Chromium browser-authority resilience E2E
         env:
