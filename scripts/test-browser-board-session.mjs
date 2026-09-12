@@ -126,7 +126,7 @@ test('owner waits for exclusive tab authority before creating the teacher runtim
   assert.equal(leaseStops, 1);
 });
 
-test('student waits for owner presence, creates a peer runtime, and applies teacher commits into replica before the board', async () => {
+test('student waits for owner presence, creates a peer runtime, and applies all authority commits into replica before the board', async () => {
   const events = [];
   let studentOptions;
   let registeredRuntime = null;
@@ -188,8 +188,8 @@ test('student waits for owner presence, creates a peer runtime, and applies teac
   assert.deepEqual(events.slice(-2), [['replica-commit', 2], ['board-commit', 2]]);
 
   await studentOptions.applyCommit({ actionId: 'student-own-action', clientId: 'student-a', revision: 3, ops: [] });
-  assert.deepEqual(events.at(-1), ['replica-commit', 3]);
-  assert.equal(events.filter((entry) => entry[0] === 'board-commit').length, 1);
+  assert.deepEqual(events.slice(-2), [['replica-commit', 3], ['board-commit', 3]]);
+  assert.equal(events.filter((entry) => entry[0] === 'board-commit').length, 2);
 
   const result = await session.sendOps([{ type: 'delete', id: 'x' }], { actionId: 'student-action' });
   assert.equal(result.accepted, true);
