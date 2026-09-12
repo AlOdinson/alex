@@ -11,6 +11,7 @@ export function createAuthoritativeSnapshotGate({
 
   let pending = null;
   let closed = false;
+  let latestRevision = -1;
 
   const apply = async (snapshot, revision) => {
     if (closed || !snapshot?.canvas) return false;
@@ -27,9 +28,19 @@ export function createAuthoritativeSnapshotGate({
   };
 
   return {
+    getLatestRevision() {
+      return latestRevision;
+    },
+
+    shouldApplyRecovery(revision) {
+      return safeRevision(revision) > latestRevision;
+    },
+
     receive(snapshot, revision) {
       const normalizedRevision = safeRevision(revision);
       if (closed || !snapshot?.canvas) return Promise.resolve(false);
+      if (normalizedRevision < latestRevision) return Promise.resolve(false);
+      latestRevision = Math.max(latestRevision, normalizedRevision);
       if (isReady()) return apply(snapshot, normalizedRevision);
 
       if (pending && normalizedRevision < pending.revision) return Promise.resolve(false);
