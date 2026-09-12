@@ -24,6 +24,10 @@ test('snapshot received before board readiness waits and then replaces stale boo
   assert.deepEqual(applied, []);
   assert.equal(gate.getLatestRevision(), 317,
     'the newest peer snapshot revision must be visible even while Board bootstrap is blocked');
+  assert.equal(gate.shouldApplyRecovery(316), false);
+  assert.equal(gate.shouldApplyRecovery(317), false,
+    'an older bootstrap request at the same revision must not overwrite the peer snapshot');
+  assert.equal(gate.shouldApplyRecovery(318), true);
 
   ready = true;
   assert.equal(await gate.flush(), true);
@@ -45,6 +49,7 @@ test('while bootstrap is blocked only the newest authoritative snapshot is appli
 
   assert.equal(await oldResult, false, 'superseded blocked snapshot should be released without applying');
   assert.equal(gate.getLatestRevision(), 25);
+  assert.equal(gate.shouldApplyRecovery(25), false);
   ready = true;
   await gate.flush();
   assert.equal(await latestResult, true);
@@ -65,6 +70,8 @@ test('older snapshot cannot lower the peer snapshot high-water mark', async () =
   assert.equal(gate.getLatestRevision(), 44);
   assert.equal(await gate.receive({ canvas: { objects: [{ boardObjectId: 'old' }] } }, 41), false);
   assert.equal(gate.getLatestRevision(), 44);
+  assert.equal(gate.shouldApplyRecovery(44), false);
+  assert.equal(gate.shouldApplyRecovery(45), true);
   ready = true;
   await gate.flush();
   assert.equal(await newest, true);
@@ -79,7 +86,10 @@ test('snapshot received after readiness is applied immediately', async () => {
   });
 
   assert.equal(gate.getLatestRevision(), -1);
+  assert.equal(gate.shouldApplyRecovery(0), true);
   assert.equal(await gate.receive({ canvas: { objects: [] } }, 9), true);
   assert.deepEqual(applied, [9]);
   assert.equal(gate.getLatestRevision(), 9);
+  assert.equal(gate.shouldApplyRecovery(9), false);
+  assert.equal(gate.shouldApplyRecovery(10), true);
 });
