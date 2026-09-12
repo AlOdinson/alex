@@ -1,0 +1,88 @@
+name: Apply stale recovery ordering patch
+
+on:
+  push:
+    branches:
+      - fix/browser-authority-convergence
+    paths:
+      - .github/workflows/patch-recovery-order.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/browser-authority-convergence
+          fetch-depth: 0
+
+      - name: Move recovery revision guard before authority seeding
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/components/Board.jsx')
+          source = path.read_text()
+          old = """      // Reapply edits that are still waiting to reach Supabase, so a recovery response
+      // can never make the user's newest local work disappear.
+      const pendingActions = await getPendingActions(boardId);
+      seedAuthoritativeSnapshot(recovery.snapshot, Number(recovery.revision ?? accessCurrentRevision));
+      const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);
+
+      if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
+        syncFromServer(true);
+        schedulePersistence(1_500);
+        return;
+      }
+
+      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
+      // A full P2P authority snapshot may have arrived while this older recovery request
+      // was in flight. Never let an equal/older bootstrap response resurrect stale objects.
+      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {
+        schedulePersistence(700);
+        return;
+      }
+      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
+"""
+          new = """      const recoveryRevision = Number(recovery.revision ?? accessCurrentRevision);
+      // A full P2P authority snapshot may have arrived while this older recovery request
+      // was in flight. Reject it before it can seed internal authority state, merge local
+      // actions onto stale data, or repaint Fabric with objects that were already deleted.
+      if (!authoritativeSnapshotGate.shouldApplyRecovery(recoveryRevision)) {
+        schedulePersistence(700);
+        return;
+      }
+
+      // Reapply edits that are still waiting to reach authority, so a genuinely newer
+      // recovery response can never make the user's newest local work disappear.
+      const pendingActions = await getPendingActions(boardId);
+      seedAuthoritativeSnapshot(recovery.snapshot, recoveryRevision);
+      const recoveredSnapshot = applyActionsToSnapshot(recovery.snapshot, pendingActions);
+
+      if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
+        syncFromServer(true);
+        schedulePersistence(1_500);
+        return;
+      }
+
+      await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
+"""
+          count = source.count(old)
+          if count != 1:
+            raise SystemExit(f'expected exactly one stale recovery block, got {count}')
+          path.write_text(source.replace(old, new, 1))
+          PY
+
+          git diff --check
+          git diff -- src/components/Board.jsx
+
+      - name: Commit patch
+        run: |
+          git config user.name "Alex Board CI"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/components/Board.jsx
+          git commit -m "fix: reject stale recovery before authority seeding"
+          git push origin HEAD:fix/browser-authority-convergence
