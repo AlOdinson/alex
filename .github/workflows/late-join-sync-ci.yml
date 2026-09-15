@@ -23,4 +23,4 @@ jobs:
         with:
           node-version: 22
       - name: Clean-device and stalled-sync regressions
-        run: node --test scripts/test-late-join-sync.mjs
+        run: node --test scripts/test-late-join-*.mjs
