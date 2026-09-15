@@ -1,0 +1,17 @@
+name: Collaborative History Verification
+on:
+  push:
+    branches: [fix/collaborative-history-20260915]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: git archive --format=tar.gz --output=history-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: collaborative-history-source
+          path: history-source.tar.gz
+          retention-days: 1
