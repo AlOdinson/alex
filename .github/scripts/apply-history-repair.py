@@ -25,4 +25,5 @@ old = 'node --test scripts/test-filled-board-join.mjs'
 assert old in s
 s = s.replace(old, 'node --test scripts/test-history-dock-layout.mjs scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs scripts/test-history-inverses.mjs scripts/test-filled-board-join.mjs')
 p.write_text(s)
+subprocess.run([sys.executable, '.github/scripts/finish-history-test-setup.py'], check=True)
 subprocess.run(['git', 'diff', '--check'], check=True)
