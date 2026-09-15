@@ -27,6 +27,7 @@ function isBoardCanvasTarget(target) {
 }
 
 function gateMessage(state, permission) {
+  if (state === 'teacher-offline') return 'Откройте эту доску на устройстве владельца — ожидаю содержимое';
   if (state === 'error') return 'Не удалось подключить сохранение — редактирование отключено';
   if (permission === 'owner') return 'Доска открыта в другой вкладке — ожидаю доступ';
   return 'Подключаю редактирование…';

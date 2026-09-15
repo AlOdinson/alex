@@ -103,6 +103,12 @@ export function createStudentPeerNetwork({
     return true;
   };
 
+  const failConnection = (error) => {
+    if (closed) return;
+    try { onError(error); } catch { /* observer errors are ignored */ }
+    closeResources(error, { reportState: 'failed' });
+  };
+
   const recordInitialSyncProgress = () => {
     if (closed || readinessSettled) return;
     clearTimeout(initialSyncTimer);
@@ -121,15 +127,15 @@ export function createStudentPeerNetwork({
     let nextSession;
     transport = createTransport({
       channel,
-      onMessage: (message) => Promise.resolve(nextSession?.handleMessage?.(message)).catch(onError),
-      onTransfer: (transfer) => Promise.resolve(nextSession?.handleTransfer?.(transfer)).catch(onError),
+      onMessage: (message) => Promise.resolve().then(() => nextSession?.handleMessage?.(message)).catch(failConnection),
+      onTransfer: (transfer) => Promise.resolve().then(() => nextSession?.handleTransfer?.(transfer)).catch(failConnection),
       onProgress: recordInitialSyncProgress,
       onClose: () => {
         if (closed) return;
         const error = new Error('Teacher peer data channel closed');
         closeResources(error, { reportState: 'failed' });
       },
-      onError,
+      onError: failConnection,
     });
     nextSession = createSession({
       transport,
@@ -141,10 +147,7 @@ export function createStudentPeerNetwork({
     });
     session = nextSession;
     channelStart = Promise.resolve(session.start());
-    channelStart.then(settleReady, (error) => {
-      try { onError(error); } catch { /* observer errors are ignored */ }
-      closeResources(error, { reportState: 'failed' });
-    });
+    channelStart.then(settleReady, failConnection);
   };
 
   connection = createConnection({

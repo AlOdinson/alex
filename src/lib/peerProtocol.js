@@ -1,4 +1,7 @@
 export const BOARD_PEER_PROTOCOL_VERSION = 1;
+export const MAX_PEER_FRAME_BYTES = 16_384;
+const encoder = new TextEncoder();
+export const peerFrameByteLength = (frame) => encoder.encode(frame).byteLength;
 
 const MESSAGE_TYPES = new Set([
   'hello',
@@ -55,8 +58,23 @@ export function splitPeerTextTransfer(kind, text, { chunkChars = 16_384, transfe
   const source = String(text ?? '');
   const safeChunkChars = Math.max(1, Math.floor(Number(chunkChars) || 16_384));
   const chunks = [];
-  for (let offset = 0; offset < source.length; offset += safeChunkChars) {
-    chunks.push(source.slice(offset, offset + safeChunkChars));
+  const chunkFrame = (chunk, index) => ({
+    v: BOARD_PEER_PROTOCOL_VERSION,
+    type: 'transfer-chunk',
+    payload: { transferId: safeTransferId, index, chunk },
+  });
+  for (let offset = 0; offset < source.length;) {
+    let count = Math.min(safeChunkChars, source.length - offset);
+    let chunk = source.slice(offset, offset + count);
+    let bytes = peerFrameByteLength(JSON.stringify(chunkFrame(chunk, chunks.length)));
+    while (bytes > MAX_PEER_FRAME_BYTES) {
+      if (count === 1) throw new Error('Peer transfer metadata exceeds frame byte limit');
+      count = Math.max(1, Math.min(count - 1, Math.floor(count * MAX_PEER_FRAME_BYTES / bytes)));
+      chunk = source.slice(offset, offset + count);
+      bytes = peerFrameByteLength(JSON.stringify(chunkFrame(chunk, chunks.length)));
+    }
+    chunks.push(chunk);
+    offset += count;
   }
   if (!chunks.length) chunks.push('');
 
