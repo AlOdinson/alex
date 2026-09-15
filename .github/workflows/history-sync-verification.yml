@@ -5,13 +5,65 @@ on:
 permissions:
   contents: read
 jobs:
-  source:
+  verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - run: git archive --format=tar.gz --output=history-source.tar.gz HEAD
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply exact locally tested repair
+        run: |
+          python - <<'PY'
+          import pathlib, base64, gzip, hashlib
+          text = pathlib.Path('.github/scripts/history-implementation.patch.gz.b64').read_text().strip()
+          for start, end, new, old in reversed([[485,486,'g','w'],[607,608,'','2'],[7759,7760,'T','t'],[7996,7998,'','3f'],[17252,17253,'','9']]):
+              assert text[start:end] == old
+              text = text[:start] + new + text[end:]
+          data = gzip.decompress(base64.b64decode(text))
+          assert hashlib.sha256(data).hexdigest() == '0aa0f89325338cea688bfff4f5fa1061e91d3915feb4e0994ee49fe40e99a2b0'
+          pathlib.Path('/tmp/history-implementation.patch').write_bytes(data)
+          PY
+          git apply --check /tmp/history-implementation.patch
+          git apply /tmp/history-implementation.patch
+          git diff --check
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: History behavioral regressions
+        run: node --test scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs
+      - name: Existing authority and synchronization regressions
+        run: |
+          npm run test:browser-authority
+          npm run test:sync:ci
+      - name: Production build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          test -n "$VITE_SUPABASE_URL"
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
+          npm run build
+      - name: Browser test driver
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: Package isolated browser test workspace
+        run: tar -czf /tmp/history-runtime.tar.gz src public scripts dist node_modules package.json package-lock.json index.html vite.config.js
       - uses: actions/upload-artifact@v4
         with:
-          name: collaborative-history-source
-          path: history-source.tar.gz
+          name: collaborative-history-runtime
+          path: /tmp/history-runtime.tar.gz
           retention-days: 1
+      - name: Real Chromium drawing history and reconnect regressions
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/alex-preview.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4173/alex/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/test-browser-authority-large-snapshot-e2e.mjs
+          node scripts/test-browser-authority-source-of-truth-e2e.mjs
+          node scripts/test-browser-authority-datachannel-recovery-e2e.mjs
