@@ -1,74 +1,91 @@
-name: Finalize Verified Collaborative History
+name: Collaborative History Verification
 on:
   push:
     branches: [fix/collaborative-history-20260915]
+  pull_request:
+    branches: [main]
 permissions:
-  contents: write
-  actions: read
+  contents: read
+concurrency:
+  group: collaborative-history-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  finalize:
-    runs-on: ubuntu-latest
-    timeout-minutes: 8
-    env:
-      VERIFIED_RUN: '34929554730'
-      VERIFIED_SHA: '2536c27258f8e0b03f38f8506c76abc44b44d344'
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Check immutable successful browser run and unchanged implementation
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: History behavioral regressions
+        run: node --test scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs scripts/test-history-inverses.mjs scripts/test-history-dock-layout.mjs scripts/test-history-text-input.mjs
+      - name: Existing authority and synchronization regressions
         run: |
-          gh api repos/AlOdinson/alex/actions/runs/$VERIFIED_RUN > /tmp/history-verified-run.json
-          python3 - <<'PY'
-          import json,os
-          data=json.load(open('/tmp/history-verified-run.json'))
-          assert data['head_sha']==os.environ['VERIFIED_SHA']
-          assert data['status']=='completed' and data['conclusion']=='success'
-          PY
-          git merge-base --is-ancestor "$VERIFIED_SHA" HEAD
-          test "$(git diff --name-only "$VERIFIED_SHA" HEAD)" = '.github/workflows/history-sync-verification.yml'
-          test "$(git rev-parse origin/main)" = '9267e4c8e00e1dd7720ec4cbba92fdc389c04e12'
-          git show "$VERIFIED_SHA":.github/workflows/history-sync-verification.yml > /tmp/verified-history-workflow.yml
-      - name: Apply and verify tested source
-        run: |
-          python3 .github/scripts/apply-history-repair.py
-          python3 .github/scripts/enable-history-ci-relay.py
-          npm install --no-audit --no-fund
           npm run test:browser-authority
           npm run test:sync:ci
+          node --test scripts/test-late-join-*.mjs
       - name: Production build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: npm run build
-      - name: Verify source hashes and prepare reviewed files
+      - name: Browser test driver
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: Install WebKit and CI-only TURN fixture
+        if: matrix.engine == 'webkit' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
-          python3 - <<'PY'
-          import subprocess
-          workflow=subprocess.check_output(['git','show','a17fc33965261e8b0a64b50a605333e94c6f704f:.github/workflows/history-sync-verification.yml'],text=True)
-          marker="          python3 - <<'PY'\n          from pathlib import Path\n"
-          start=workflow.index(marker)+len("          python3 - <<'PY'\n")
-          end=workflow.index('\n          PY\n',start)
-          source='\n'.join(line[10:] if line.startswith('          ') else line for line in workflow[start:end].splitlines())
-          exec(compile(source,'verified-history-finalizer','exec'))
-          PY
-          # This runner writes source only. Workflow publication is handled by the
-          # separately authorized repository connector, not by expanding this token.
-          git reset HEAD -- .github/workflows
-          git restore --source=HEAD --worktree -- .github/workflows
-          test -z "$(git diff --cached --name-only -- .github/workflows)"
-          git diff --cached --check
-      - name: Commit verified source to the isolated branch
+          node node_modules/playwright-core/cli.js install webkit
+          brew install coturn
+      - name: Computer phone tablet role and input matrix
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
+          HISTORY_BROWSER: ${{ matrix.engine }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: |
-          git fetch origin fix/collaborative-history-20260915
-          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: reliable collaborative undo redo across device layouts'
-          git push origin HEAD:fix/collaborative-history-20260915
-          git rev-parse HEAD
+          test -n "$VITE_SUPABASE_URL"
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
+          relay_pid=''
+          if [ "$HISTORY_BROWSER" = webkit ]; then
+            export HISTORY_TURN_PASSWORD=$(openssl rand -hex 24)
+            echo "::add-mask::$HISTORY_TURN_PASSWORD"
+            turnserver -n --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=3478 --min-port=49160 --max-port=49260 --realm=history-ci --user="history:$HISTORY_TURN_PASSWORD" --lt-cred-mech --fingerprint --no-tls --no-dtls --no-cli --cli-password="$HISTORY_TURN_PASSWORD" --allow-loopback-peers --no-multicast-peers --pidfile=/tmp/history-turn.pid > /tmp/history-turn.log 2>&1 &
+            relay_pid=$!
+            sleep 2
+            kill -0 "$relay_pid"
+          fi
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/alex-preview.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" ${relay_pid:-} 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4173/alex/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/test-history-device-matrix-e2e.mjs
+          if [ "$HISTORY_BROWSER" = chromium ]; then
+            node scripts/test-browser-authority-large-snapshot-e2e.mjs
+            node scripts/test-browser-authority-source-of-truth-e2e.mjs
+            node scripts/test-browser-authority-datachannel-recovery-e2e.mjs
+          fi
+      - name: Save device test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-device-results-${{ matrix.engine }}
+          path: history-e2e-results
+          if-no-files-found: ignore
+          retention-days: 7
