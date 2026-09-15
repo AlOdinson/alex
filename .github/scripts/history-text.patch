@@ -1,0 +1,57 @@
+diff --git a/src/components/Board.jsx b/src/components/Board.jsx
+--- a/src/components/Board.jsx
++++ b/src/components/Board.jsx
+@@ -13191,7 +13191,9 @@
+         startArrowPan();
+         return;
+       }
+-      if (!canEditRef.current || isTextInput || isCanvasTextEditing) return;
++      const historyButton = event.alexBoardHistoryCommand === true
++        && isShortcut && ['z', 'y'].includes(String(event.key).toLowerCase());
++      if (!canEditRef.current || ((isTextInput || isCanvasTextEditing) && !historyButton)) return;
+ 
+       if (isShortcut && event.key.toLowerCase() === 'z') {
+         event.preventDefault();
+diff --git a/src/dock-style-accessories.js b/src/dock-style-accessories.js
+--- a/src/dock-style-accessories.js
++++ b/src/dock-style-accessories.js
+@@ -302,6 +302,9 @@
+     bubbles: true,
+     cancelable: true,
+   });
++  // A toolbar command must finalize Fabric text editing, not be mistaken for
++  // a native keyboard undo inside the text editor.
++  Object.defineProperty(event, 'alexBoardHistoryCommand', { value: true });
+   window.dispatchEvent(event);
+ }
+ 
+diff --git a/scripts/test-history-text-input.mjs b/scripts/test-history-text-input.mjs
+new file mode 100644
+--- /dev/null
++++ b/scripts/test-history-text-input.mjs
+@@ -0,0 +1,25 @@
++import assert from 'node:assert/strict';
++import fs from 'node:fs';
++import test from 'node:test';
++const board=fs.readFileSync(new URL('../src/components/Board.jsx',import.meta.url),'utf8');
++const start=board.indexOf('    function handleKeyDown(event) {');
++const end=board.indexOf('\n    function handleKeyUp',start);
++assert.ok(start>0 && end>start);
++function run({marked=false,editing=true,permission=true}={}) {
++  class IText {isEditing=editing;}
++  const called=[];
++  const scope={IText,HTMLInputElement:class{},HTMLTextAreaElement:class{},HTMLSelectElement:class{},
++    canvas:{getActiveObject:()=>new IText()},isOwner:false,canEditRef:{current:permission},undo:()=>called.push('undo'),redo:()=>called.push('redo')};
++  const handle=new Function('scope',`with(scope){${board.slice(start,end)};return handleKeyDown;}`)(scope);
++  handle({key:'z',code:'KeyZ',ctrlKey:true,alexBoardHistoryCommand:marked,preventDefault(){}});
++  return called;
++}
++test('visible undo button commits active text editing before board undo instead of ignoring the tap',()=>{
++  assert.deepEqual(run({marked:true}),['undo']);
++});
++test('physical Ctrl/Cmd+Z remains native inside a text editor',()=>{
++  assert.deepEqual(run(),[]);
++});
++test('a history button cannot bypass read-only permission',()=>{
++  assert.deepEqual(run({marked:true,permission:false}),[]);
++});
