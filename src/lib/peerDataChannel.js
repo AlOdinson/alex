@@ -40,6 +40,7 @@ export function createPeerDataChannelTransport({
   maxInlineMessageChars = 48_000,
   messageChunkChars = 16_384,
   createTransferId = defaultTransferId,
+  writeTimeoutMs = 30_000,
 } = {}) {
   if (!channel?.send) throw new Error('RTCDataChannel is required');
 
@@ -65,13 +66,20 @@ export function createPeerDataChannelTransport({
     return new Promise((resolve, reject) => {
       let removeEvent = () => {};
       let removeClose = () => {};
+      let timeout = null;
       const cleanup = () => {
         removeEvent();
         removeClose();
+        clearTimeout(timeout);
         pendingWaits.delete(cancel);
       };
       const finish = () => { cleanup(); resolve(); };
       const cancel = () => { cleanup(); reject(new Error(message)); };
+      const delay = Number(writeTimeoutMs);
+      timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Peer data channel write timed out'));
+      }, Number.isFinite(delay) && delay > 0 ? delay : 30_000);
       pendingWaits.add(cancel);
       removeEvent = addListener(channel, event, finish, { once: true });
       removeClose = addListener(channel, 'close', cancel, { once: true });

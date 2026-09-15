@@ -39,7 +39,7 @@ assert.ok(patch.ifAbsent.includes('opacity'));
 assert.equal(patch.ifZIndex, 4);
 assert.equal(patch.zIndex, 3);
 
-const [conditionalDelete] = createConditionalDeleteOps(before);
+const [conditionalDelete] = createConditionalDeleteOps(before, { matchZIndex: true });
 assert.equal(conditionalDelete.type, 'delete');
 assert.equal(conditionalDelete.ifObjectVersion.left, 10);
 assert.equal(conditionalDelete.ifObjectVersion.fill, '#111111');
@@ -53,7 +53,8 @@ assert.match(boardSource, /object\.isEraserPath\s*\n\s*\|\| object\.pendingImage
 assert.match(boardSource, /acquireLocalSelectionLease\(active\)/);
 assert.match(boardSource, /!ownsSelectionLease\(transform\.target\)/);
 assert.match(boardSource, /refreshBoardObjectLocks\(/);
-assert.match(boardSource, /createConditionalRecordPatchOps\(sourceRecords, records/);
+const historySource = await readFile(new URL('../src/lib/historyOperations.js', import.meta.url), 'utf8');
+assert.match(historySource, /createConditionalRecordPatchOps\(sourceRecords, targetRecords/);
 
 const collaborationSqlSource = await readFile(
   new URL('../supabase/collaboration_safety_v8.sql', import.meta.url),

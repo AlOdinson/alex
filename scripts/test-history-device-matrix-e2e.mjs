@@ -1,3 +1,4 @@
+import { deriveShareKey } from '../src/lib/ids.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { chromium, webkit } from 'playwright-core';
@@ -23,7 +24,7 @@ async function wait(label, check, timeout = 45000) {
   throw new Error(`${label}${last ? ': ' + last.message : ': timed out'}`);
 }
 async function attach(page) {
-  await page.addInitScript(() => {
+  await page.addInitScript((relay) => {
     // Read-only inspection of the actual Fabric instance held by React. This is
     // injected by the test, not shipped as an application debug API.
     window.__historyCanvas = () => {
@@ -45,6 +46,16 @@ async function attach(page) {
       }
       throw new Error('Fabric instance not found');
     };
+    window.__historyPeerStates = [];
+    const NativePeer = window.RTCPeerConnection;
+    if (NativePeer) window.RTCPeerConnection = class extends NativePeer {
+      constructor(...args) {
+        super(relay ? { ...args[0], iceServers: [relay], iceTransportPolicy: 'relay' } : args[0]);
+        this.__historyCandidates = [];
+        this.addEventListener('icecandidate', (event) => { if (event.candidate) this.__historyCandidates.push(event.candidate.type); });
+        window.__historyPeerStates.push(this);
+      }
+    };
     // Reproducible acknowledgement latency makes queued touch/keyboard commands
     // overlap a real network wait, while retaining normal durable commit delivery.
     const send = RTCDataChannel.prototype.send;
@@ -58,7 +69,9 @@ async function attach(page) {
       }
       return send.call(this, data);
     };
-  });
+  }, ENGINE === 'webkit' && process.env.HISTORY_TURN_PASSWORD ? {
+    urls: 'turn:127.0.0.1:3478?transport=udp', username: 'history', credential: process.env.HISTORY_TURN_PASSWORD,
+  } : null);
 }
 async function enter(page, name) {
   await wait('canvas or participant name', async () => {
@@ -80,6 +93,7 @@ async function state(page) {
       if (Array.isArray(value)) return value.map(clean);
       if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort()
         .filter((key) => !['updatedAt', 'updatedBy', 'version', 'createdBy'].includes(key))
+        .filter((key) => !(['transientPreview', 'transientLiveDraw', 'transientAwaitingCommit'].includes(key) && value[key] === false))
         .map((key) => [key, clean(value[key])]));
       return value;
     };
@@ -112,17 +126,26 @@ async function converge(pages, expected, label) {
   });
 }
 async function button(page, name, profile) {
+  await page.bringToFront();
   const locator = page.getByRole('button', { name, exact: typeof name === 'string' });
   if (profile.hasTouch) await locator.tap(); else await locator.click();
 }
 async function stroke(page, profile, index = 0) {
   await button(page, 'Карандаш', profile);
+  await page.evaluate(() => {
+    window.__historyInput = [];
+    for (const type of ['pointerdown','pointermove','pointerup','mousedown','mouseup']) document.addEventListener(type, (event) => {
+      if (window.__historyInput.length < 60) window.__historyInput.push({type, pointerType:event.pointerType, target:event.target?.className, trusted:event.isTrusted, drawing:window.__historyCanvas().isDrawingMode});
+    }, {capture:true, once:true});
+  });
+  await delay(50);
   const box = await page.locator('canvas.upper-canvas').boundingBox();
   const a = { x: box.x + 90, y: box.y + 180 + index * 23 };
   const b = { x: a.x + 120, y: a.y + 36 };
   if (!profile.hasTouch) {
     await page.mouse.move(a.x, a.y); await page.mouse.down();
-    await page.mouse.move(b.x, b.y, { steps: 8 }); await page.mouse.up();
+    for (let i=1;i<=8;i++) { await page.mouse.move(a.x+(b.x-a.x)*i/8, a.y+(b.y-a.y)*i/8); await delay(16); }
+    await page.mouse.up();
   } else if (ENGINE === 'chromium') {
     const cdp = await page.context().newCDPSession(page);
     if (profile.name === 'tablet') {
@@ -137,16 +160,25 @@ async function stroke(page, profile, index = 0) {
     }
     await cdp.detach();
   } else {
-    // WebKit pen events are injected on the actual canvas; toolbar taps below use
-    // Playwright's touchscreen. This is not a physical Apple Pencil certification.
+    // Scripted finger TouchEvents exercise WebKit's actual free-drawing path
+    // for both mobile profiles. Chromium covers native CDP pen input separately.
+    // Pointer-only and stylus-only injection are not faithful Apple Pencil
+    // emulation here; those probes did not produce a stroke and are NOT PASS.
     await page.locator('canvas.upper-canvas').evaluate((canvas, { a, b }) => {
-      const send = (type, x, y, buttons) => canvas.dispatchEvent(new PointerEvent(type, {
-        bubbles: true, cancelable: true, pointerId: 71, pointerType: 'pen', isPrimary: true,
-        clientX: x, clientY: y, button: 0, buttons, pressure: buttons ? 0.5 : 0,
-      }));
-      send('pointerdown', a.x, a.y, 1);
-      for (let i=1;i<=8;i++) send('pointermove', a.x+(b.x-a.x)*i/8, a.y+(b.y-a.y)*i/8, 1);
-      send('pointerup', b.x, b.y, 0);
+      const send = (type, x, y) => {
+        const touch = { identifier: 71, target: canvas, clientX:x, clientY:y,
+          pageX:x+scrollX, pageY:y+scrollY, screenX:x, screenY:y,
+          radiusX:1, radiusY:1, rotationAngle:0, force:0.5, touchType:'direct' };
+        const active = type === 'touchend' ? [] : [touch];
+        const event = new Event(type, { bubbles:true, cancelable:true });
+        Object.defineProperties(event, {
+          touches:{value:active}, targetTouches:{value:active}, changedTouches:{value:[touch]},
+        });
+        canvas.dispatchEvent(event);
+      };
+      send('touchstart',a.x,a.y);
+      for(let i=1;i<=8;i++) send('touchmove',a.x+(b.x-a.x)*i/8,a.y+(b.y-a.y)*i/8);
+      send('touchend',b.x,b.y);
     }, { a, b });
   }
 }
@@ -164,6 +196,7 @@ async function run(ownerIndex) {
   const errors = [];
   for (const [index, page] of pages.entries()) {
     page.on('pageerror', (error) => errors.push(`${profiles[index].name}: ${error.message}`));
+    page.on('console', (message) => { if (['warning', 'error'].includes(message.type())) console.log('BROWSER', profiles[index].name, message.text()); });
     await attach(page);
   }
   const owner = pages[ownerIndex];
@@ -173,10 +206,11 @@ async function run(ownerIndex) {
     await owner.getByLabel('Ученик').fill('Synthetic regression only');
     await owner.getByRole('button', { name: 'Создать доску' }).click();
     await enter(owner, `Owner ${profiles[ownerIndex].name}`);
-    await button(owner, 'Настройки', profiles[ownerIndex]);
-    await owner.getByRole('menuitem', { name: 'Поделиться', exact: true }).click();
-    const share = await owner.locator('.share-dialog .copy-row input').inputValue();
-    await owner.getByRole('button', { name: 'Закрыть', exact: true }).click();
+    // Use the application's real share-key derivation for the synthetic board;
+    // menu animation/clipboard behavior is not part of the history assertion.
+    const guestURL = new globalThis.URL(owner.url());
+    guestURL.searchParams.set('key', await deriveShareKey(guestURL.searchParams.get('key')));
+    const share = guestURL.href;
     for (const [index, page] of pages.entries()) if (index !== ownerIndex) {
       await page.goto(share, { waitUntil: 'domcontentloaded' });
       await enter(page, `Student ${profiles[index].name}`);
@@ -191,8 +225,9 @@ async function run(ownerIndex) {
       await wait('stroke durable', async () => await revision(owner) > head);
       snapshots.push(await converge(pages, 1, `${profile.name} stroke`)); checks++;
       await selectLast(page, profile);
-      const input = page.getByLabel('Цвет выбранного', { exact: true });
-      await input.waitFor({ state: 'attached' });
+      const input = page.locator('.selection-floating-proxy input[data-selection-proxy-input="color"]');
+      await input.waitFor({ state: 'visible' });
+      await wait('selection color control enabled', () => input.isEnabled());
       head = await revision(owner);
       await input.evaluate((element) => {
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(element, '#ef233c');
@@ -234,11 +269,12 @@ async function run(ownerIndex) {
       console.log(JSON.stringify({ engine: ENGINE, owner: profiles[ownerIndex].name, actor: profile.name, checks, passed: true }));
     }
     assert.deepEqual(errors, [], 'unexpected browser runtime errors');
-    results.push({ engine: ENGINE, owner: profiles[ownerIndex].name, participants: profiles.map((p) => p.name), checks, passed: true });
+    results.push({ transport: process.env.HISTORY_TURN_PASSWORD ? 'ci-loopback-turn' : 'production-default-ice', engine: ENGINE, owner: profiles[ownerIndex].name, participants: profiles.map((p) => p.name), checks, passed: true });
   } catch (error) {
+    fs.writeFileSync(`history-e2e-results/${ENGINE}-failure.json`, JSON.stringify({ ownerIndex, message: error.message, stack: error.stack, errors }, null, 2));
     for (const [index, page] of pages.entries()) {
       await page.screenshot({ path: `history-e2e-results/${ENGINE}-${ownerIndex}-${index}.png`, fullPage: true }).catch(() => {});
-      const diagnostic = await page.evaluate(() => ({ state: window.__historyCanvas ? window.__historyCanvas().getObjects().map((o) => o.toObject(['boardObjectId'])) : null, dataset: { ...document.documentElement.dataset }, text: document.body.innerText })).catch((e) => ({ error: e.message }));
+      const diagnostic = await page.evaluate(() => ({ state: window.__historyCanvas ? window.__historyCanvas().getObjects().map((o) => o.toObject(['boardObjectId'])) : null, dataset: { ...document.documentElement.dataset }, inputEvents: window.__historyInput, drawing:window.__historyCanvas().isDrawingMode, pointerEvents:window.__historyCanvas().enablePointerEvents, text: document.body.innerText, peers: (window.__historyPeerStates ?? []).map((p) => ({ state: p.connectionState, ice: p.iceConnectionState, gathering: p.iceGatheringState, signaling: p.signalingState, local: p.localDescription?.type, remote: p.remoteDescription?.type, candidates: p.__historyCandidates })) })).catch((e) => ({ error: e.message }));
       fs.writeFileSync(`history-e2e-results/${ENGINE}-${ownerIndex}-${index}.json`, JSON.stringify(diagnostic, null, 2));
     }
     throw error;

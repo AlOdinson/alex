@@ -33,6 +33,7 @@ export function createStudentPeerNetwork({
   onError = () => {},
   connectTimeoutMs = CONNECT_TIMEOUT_MS,
   initialSyncTimeoutMs = INITIAL_SYNC_IDLE_TIMEOUT_MS,
+  requestTimeoutMs = 30_000,
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
   createSession = createStudentPeerSession,
@@ -117,6 +118,20 @@ export function createStudentPeerNetwork({
     initialSyncTimer = setTimeout(() => {
       closeResources(new Error('Initial board snapshot timed out'), { reportState: 'failed' });
     }, positiveTimeout(initialSyncTimeoutMs, INITIAL_SYNC_IDLE_TIMEOUT_MS));
+  };
+
+  const awaitAcknowledgement = (task) => {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error('Board action acknowledgement timed out');
+        closeResources(error, { reportState: 'failed' });
+        reject(error);
+      }, positiveTimeout(requestTimeoutMs, 30_000));
+    });
+    // A timeout is an unknown outcome, not permission to commit a second action.
+    // The caller retains its actionId and obtains the durable outcome on retry.
+    return Promise.race([task, timeout]).finally(() => clearTimeout(timer));
   };
 
   const attachChannel = (channel) => {
@@ -213,14 +228,14 @@ export function createStudentPeerNetwork({
       if (typeof session.proposeActionAndWait !== 'function') {
         throw new Error('Acknowledged durable action API is unavailable');
       }
-      return session.proposeActionAndWait(action);
+      return awaitAcknowledgement(session.proposeActionAndWait(action));
     },
 
     async requestLock(operation, payload = {}) {
       if (!session) throw new Error('Teacher peer data channel is not ready');
       await channelStart;
       if (typeof session.requestLock !== 'function') throw new Error('Peer lock API is unavailable');
-      return session.requestLock(operation, payload);
+      return awaitAcknowledgement(session.requestLock(operation, payload));
     },
 
     whenIdle() {

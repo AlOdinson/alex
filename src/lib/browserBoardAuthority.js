@@ -1,3 +1,4 @@
+import { isConditionalHistoryOperation, prepareAuthoritativeHistory } from './historyOperations.js';
 import { createTeacherAuthority } from './teacherAuthority.js';
 import { applyAuthorityActions, applyAuthorityOpsInPlace } from './authoritySnapshot.js';
 import { evaluateAuthorityAction } from './authorityOperationEvaluator.js';
@@ -147,6 +148,12 @@ export async function openBrowserBoardAuthority({
       background: action.background,
     });
 
+    const history = (action.ops ?? []).some(isConditionalHistoryOperation);
+    const historyResult = history
+      ? prepareAuthoritativeHistory(currentSnapshot, evaluation.appliedOps, evaluation.appliedBackground, action)
+      : null;
+    if (historyResult) evaluation.appliedOps = historyResult.appliedOps;
+
     if (!evaluation.changed) {
       const currentRevision = authority.getRevision();
       const noop = {
@@ -158,6 +165,7 @@ export async function openBrowserBoardAuthority({
         committedAt: Date.now(),
         duplicate: false,
         changed: false,
+        ...(history ? { historyInverseOps: [] } : {}),
         ops: [],
         background: null,
         appliedOps: [],
@@ -174,6 +182,8 @@ export async function openBrowserBoardAuthority({
       ops: evaluation.appliedOps,
       background: evaluation.appliedBackground,
       skippedConflicts: evaluation.skippedConflicts,
+      // Never accept client-supplied inverse data as authoritative.
+      historyInverseOps: historyResult?.historyInverseOps,
     });
 
     return {

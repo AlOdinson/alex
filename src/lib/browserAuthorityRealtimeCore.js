@@ -104,6 +104,7 @@ export function createBrowserAuthorityRealtimeCore({
       createdAt: Date.now(),
       serializedSize: Number.isFinite(Number(options?.serializedSize)) ? Number(options.serializedSize) : null,
       atomic: Boolean(options?.atomic),
+      ...(options?.history ? { history: true } : {}),
     };
     const task = new Promise((resolve, reject) => {
       const entry = { action, resolve, reject };
