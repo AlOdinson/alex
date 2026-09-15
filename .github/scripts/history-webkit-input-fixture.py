@@ -3,16 +3,15 @@ p=Path('scripts/test-history-device-matrix-e2e.mjs')
 s=p.read_text()
 start=s.index('    // WebKit pen events are injected')
 end=s.index('\n  }\n}\nasync function selectLast',start)
-s=s[:start]+'''    // The application uses WebKit's TouchEvent route on these profiles
-    // (enablePointerEvents=false). A scripted PointerEvent does not synthesize
-    // compatibility TouchEvents. Exercise finger input and the real stylus-touch
-    // fallback instead; this remains scripted input, not physical Apple hardware.
-    await page.locator('canvas.upper-canvas').evaluate((canvas, { a, b, stylus }) => {
+s=s[:start]+'''    // Scripted finger TouchEvents exercise WebKit's actual free-drawing path
+    // for both mobile profiles. Chromium covers native CDP pen input separately.
+    // Pointer-only and stylus-only injection are not faithful Apple Pencil
+    // emulation here; those probes did not produce a stroke and are NOT PASS.
+    await page.locator('canvas.upper-canvas').evaluate((canvas, { a, b }) => {
       const send = (type, x, y) => {
         const touch = { identifier: 71, target: canvas, clientX:x, clientY:y,
           pageX:x+scrollX, pageY:y+scrollY, screenX:x, screenY:y,
-          radiusX:1, radiusY:1, rotationAngle:0, force:0.5,
-          touchType: stylus ? 'stylus' : 'direct' };
+          radiusX:1, radiusY:1, rotationAngle:0, force:0.5, touchType:'direct' };
         const active = type === 'touchend' ? [] : [touch];
         const event = new Event(type, { bubbles:true, cancelable:true });
         Object.defineProperties(event, {
@@ -23,5 +22,5 @@ s=s[:start]+'''    // The application uses WebKit's TouchEvent route on these pr
       send('touchstart',a.x,a.y);
       for(let i=1;i<=8;i++) send('touchmove',a.x+(b.x-a.x)*i/8,a.y+(b.y-a.y)*i/8);
       send('touchend',b.x,b.y);
-    }, { a, b, stylus:profile.name === 'tablet' });'''+s[end:]
+    }, { a, b });'''+s[end:]
 p.write_text(s)
