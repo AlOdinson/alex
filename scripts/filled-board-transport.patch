@@ -1,0 +1,177 @@
+diff --git a/src/lib/peerDataChannel.js b/src/lib/peerDataChannel.js
+index aa480c7..abc0c06 100644
+--- a/src/lib/peerDataChannel.js
++++ b/src/lib/peerDataChannel.js
+@@ -3,6 +3,8 @@ import {
+   decodePeerMessage,
+   splitPeerTextTransfer,
+   createPeerTextAssembler,
++  MAX_PEER_FRAME_BYTES,
++  peerFrameByteLength,
+ } from './peerProtocol.js';
+ 
+ const TRANSFER_TYPES = new Set(['transfer-start', 'transfer-chunk', 'transfer-end']);
+@@ -32,6 +34,7 @@ export function createPeerDataChannelTransport({
+   onTransfer = () => {},
+   onClose = () => {},
+   onError = () => {},
++  onActivity = () => {},
+   highWaterMark = 512_000,
+   lowWaterMark = 128_000,
+   maxInlineMessageChars = 48_000,
+@@ -48,46 +51,45 @@ export function createPeerDataChannelTransport({
+   let closed = false;
+   let closeReported = false;
+   let sendQueue = Promise.resolve();
++  const pendingWaits = new Set();
+ 
+-  const waitForOpen = () => {
+-    if (channel.readyState === 'open') return Promise.resolve();
+-    if (channel.readyState === 'closed' || channel.readyState === 'closing') {
++  const cancelWaits = () => {
++    for (const cancel of [...pendingWaits]) cancel();
++  };
++
++  const waitFor = (event, isSatisfied, message) => {
++    if (closed || channel.readyState === 'closed' || channel.readyState === 'closing') {
+       return Promise.reject(new Error('Peer data channel is closed'));
+     }
++    if (isSatisfied()) return Promise.resolve();
+     return new Promise((resolve, reject) => {
+-      const cleanupOpen = addListener(channel, 'open', () => {
+-        cleanup();
+-        resolve();
+-      }, { once: true });
+-      const cleanupClose = addListener(channel, 'close', () => {
+-        cleanup();
+-        reject(new Error('Peer data channel closed before opening'));
+-      }, { once: true });
++      let removeEvent = () => {};
++      let removeClose = () => {};
+       const cleanup = () => {
+-        cleanupOpen();
+-        cleanupClose();
++        removeEvent();
++        removeClose();
++        pendingWaits.delete(cancel);
+       };
++      const finish = () => { cleanup(); resolve(); };
++      const cancel = () => { cleanup(); reject(new Error(message)); };
++      pendingWaits.add(cancel);
++      removeEvent = addListener(channel, event, finish, { once: true });
++      removeClose = addListener(channel, 'close', cancel, { once: true });
++      // Do not lose a state transition while installing the listeners.
++      if (closed || channel.readyState === 'closed' || channel.readyState === 'closing') cancel();
++      else if (isSatisfied()) finish();
+     });
+   };
+ 
+   const waitForWritable = async () => {
+-    await waitForOpen();
++    await waitFor('open', () => channel.readyState === 'open', 'Peer data channel closed before opening');
+     if (Number(channel.bufferedAmount ?? 0) <= highWater) return;
+     channel.bufferedAmountLowThreshold = lowWater;
+-    await new Promise((resolve, reject) => {
+-      const cleanupLow = addListener(channel, 'bufferedamountlow', () => {
+-        cleanup();
+-        resolve();
+-      }, { once: true });
+-      const cleanupClose = addListener(channel, 'close', () => {
+-        cleanup();
+-        reject(new Error('Peer data channel closed while waiting for buffer space'));
+-      }, { once: true });
+-      const cleanup = () => {
+-        cleanupLow();
+-        cleanupClose();
+-      };
+-    });
++    await waitFor(
++      'bufferedamountlow',
++      () => Number(channel.bufferedAmount ?? 0) <= lowWater,
++      'Peer data channel closed while waiting for buffer space',
++    );
+   };
+ 
+   const enqueueEncodedFrames = (frames) => {
+@@ -96,6 +98,8 @@ export function createPeerDataChannelTransport({
+         if (closed) throw new Error('Peer data channel transport is closed');
+         // eslint-disable-next-line no-await-in-loop
+         await waitForWritable();
++        if (closed) throw new Error('Peer data channel transport is closed');
++        if (peerFrameByteLength(frame) > MAX_PEER_FRAME_BYTES) throw new Error('Peer frame exceeds byte limit');
+         channel.send(frame);
+       }
+     });
+@@ -107,6 +111,7 @@ export function createPeerDataChannelTransport({
+     if (closed || typeof event?.data !== 'string') return;
+     try {
+       const message = decodePeerMessage(event.data);
++      try { onActivity(); } catch { /* progress observers must not affect delivery */ }
+       if (TRANSFER_TYPES.has(message.type)) {
+         const completed = assembler.accept(message);
+         if (!completed) return;
+@@ -126,6 +131,7 @@ export function createPeerDataChannelTransport({
+   const handleChannelClose = () => {
+     if (closed || closeReported) return;
+     closeReported = true;
++    cancelWaits();
+     assembler.clear();
+     try { onClose(); } catch (error) { onError(error); }
+   };
+@@ -145,7 +151,9 @@ export function createPeerDataChannelTransport({
+   return {
+     send(type, payload = {}) {
+       const encoded = createPeerMessage(type, payload);
+-      if (encoded.length <= inlineLimit) return enqueueEncodedFrames([encoded]);
++      if (encoded.length <= inlineLimit && peerFrameByteLength(encoded) <= MAX_PEER_FRAME_BYTES) {
++        return enqueueEncodedFrames([encoded]);
++      }
+       const transferId = String(createTransferId?.() ?? '').trim();
+       if (!transferId) return Promise.reject(new Error('Peer message transfer id is required'));
+       const frames = splitPeerTextTransfer(INTERNAL_MESSAGE_TRANSFER_KIND, encoded, {
+@@ -168,6 +176,7 @@ export function createPeerDataChannelTransport({
+     close({ closeChannel = false } = {}) {
+       if (closed) return;
+       closed = true;
++      cancelWaits();
+       assembler.clear();
+       removeMessageListener();
+       removeCloseListener();
+diff --git a/src/lib/peerProtocol.js b/src/lib/peerProtocol.js
+index c75f851..8e3e739 100644
+--- a/src/lib/peerProtocol.js
++++ b/src/lib/peerProtocol.js
+@@ -1,4 +1,7 @@
+ export const BOARD_PEER_PROTOCOL_VERSION = 1;
++export const MAX_PEER_FRAME_BYTES = 16_384;
++const encoder = new TextEncoder();
++export const peerFrameByteLength = (frame) => encoder.encode(frame).byteLength;
+ 
+ const MESSAGE_TYPES = new Set([
+   'hello',
+@@ -55,8 +58,23 @@ export function splitPeerTextTransfer(kind, text, { chunkChars = 16_384, transfe
+   const source = String(text ?? '');
+   const safeChunkChars = Math.max(1, Math.floor(Number(chunkChars) || 16_384));
+   const chunks = [];
+-  for (let offset = 0; offset < source.length; offset += safeChunkChars) {
+-    chunks.push(source.slice(offset, offset + safeChunkChars));
++  const chunkFrame = (chunk, index) => ({
++    v: BOARD_PEER_PROTOCOL_VERSION,
++    type: 'transfer-chunk',
++    payload: { transferId: safeTransferId, index, chunk },
++  });
++  for (let offset = 0; offset < source.length;) {
++    let count = Math.min(safeChunkChars, source.length - offset);
++    let chunk = source.slice(offset, offset + count);
++    let bytes = peerFrameByteLength(JSON.stringify(chunkFrame(chunk, chunks.length)));
++    while (bytes > MAX_PEER_FRAME_BYTES) {
++      if (count === 1) throw new Error('Peer transfer metadata exceeds frame byte limit');
++      count = Math.max(1, Math.min(count - 1, Math.floor(count * MAX_PEER_FRAME_BYTES / bytes)));
++      chunk = source.slice(offset, offset + count);
++      bytes = peerFrameByteLength(JSON.stringify(chunkFrame(chunk, chunks.length)));
++    }
++    chunks.push(chunk);
++    offset += count;
+   }
+   if (!chunks.length) chunks.push('');
+ 
