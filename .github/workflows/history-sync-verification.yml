@@ -1,90 +1,160 @@
-name: Collaborative History Verification
+name: Finalize Verified Collaborative History
 on:
   push:
     branches: [fix/collaborative-history-20260915]
 permissions:
-  contents: read
-concurrency:
-  group: collaborative-history-verification
-  cancel-in-progress: true
+  contents: write
+  actions: read
 jobs:
-  verify:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            engine: chromium
-          - os: macos-latest
-            engine: webkit
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 18
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    env:
+      VERIFIED_RUN: '34929554730'
+      VERIFIED_SHA: '2536c27258f8e0b03f38f8506c76abc44b44d344'
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Apply exact locally tested repair
+      - name: Verify both browser engines passed on the exact predecessor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api repos/AlOdinson/alex/actions/runs/$VERIFIED_RUN > /tmp/history-verified-run.json
+          python3 - <<'PY'
+          import json,os
+          d=json.load(open('/tmp/history-verified-run.json'))
+          assert d['head_sha']==os.environ['VERIFIED_SHA']
+          assert d['status']=='completed' and d['conclusion']=='success'
+          PY
+          test "$(git rev-parse HEAD^)" = "$VERIFIED_SHA"
+          test "$(git rev-parse origin/main)" = '9267e4c8e00e1dd7720ec4cbba92fdc389c04e12'
+          git show "$VERIFIED_SHA":.github/workflows/history-sync-verification.yml > /tmp/verified-history-workflow.yml
+      - name: Install exactly the tested source and fixtures
         run: |
           python3 .github/scripts/apply-history-repair.py
           python3 .github/scripts/enable-history-ci-relay.py
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-      - name: History behavioral regressions
-        run: node --test scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs scripts/test-history-inverses.mjs scripts/test-history-dock-layout.mjs
-      - name: Existing authority and synchronization regressions
-        run: |
+          npm install --no-audit --no-fund
           npm run test:browser-authority
           npm run test:sync:ci
       - name: Production build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: npm run build
+      - name: Check source hashes and retain permanent tests only
         run: |
-          test -n "$VITE_SUPABASE_URL"
-          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
-          npm run build
-      - name: Browser test driver
-        run: npm install --no-save --no-package-lock playwright-core@1.55.0
-      - name: Install WebKit and CI-only TURN fixture
-        if: matrix.engine == 'webkit'
-        env:
-          HOMEBREW_NO_AUTO_UPDATE: 1
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess,os
+          expected={
+            'src/components/Board.jsx':'53abdc2a9c5923127ceac02683c35c2fdbcc9f7b',
+            'src/dock-layout-modes.css':'6f5c83bbcab0bd0120a1d7155f9e6f6ac001665e',
+            'src/dock-style-accessories.js':'6cee393b5dc8d1ac96acd186ecd16f0e2ae293d4',
+            'src/lib/authorityOperationEvaluator.js':'e3116de68ed06973eb8531d444d111449d355ab6',
+            'src/lib/browserAuthorityDurableBridge.js':'09cea005a78ee62fd2325a3c08fcbb633c02ae8a',
+            'src/lib/browserAuthorityRealtime.js':'35a3503b438b8b13c044bb69e10b9f5c71ff69e9',
+            'src/lib/browserAuthorityRealtimeCore.js':'f1f0ebf8bc0b08720673f22eb62b1eaaddf49c0e',
+            'src/lib/browserBoardAuthority.js':'4e496c95b99e7ddf193fd05e09bf62df936167e9',
+            'src/lib/historyCommandQueue.js':'fc2fb4b08dc857ace79075249d6d13638d800aa7',
+            'src/lib/historyDockLayout.js':'2f1b6a7888d7cfb8ad9663b40acf64b50dfb7b4f',
+            'src/lib/historyOperations.js':'13b340e9e95221e3709206b995486b61413c7e73',
+            'src/lib/operationProtocol.js':'5947a682423f9179863a43067f0be6990315af4d',
+            'src/lib/peerDataChannel.js':'2b36ff1c490511fffd96a8f214db9068b075bd93',
+            'src/lib/studentPeerNetwork.js':'76ec255629e6881c0b6c5ad89eba9a1aa5f3d6f4',
+            'src/lib/teacherAuthority.js':'1d1c108069290e6dffb3012bfa4594550be5526f',
+            'src/lib/teacherPeerHub.js':'84dbd52948a77477616b92f095b3a1ed37ced882',
+          }
+          for name,sha in expected.items():
+            actual=subprocess.check_output(['git','hash-object',name],text=True).strip()
+            assert actual==sha, (name,actual,sha)
+            print(name,'verified')
+          s=Path('/tmp/verified-history-workflow.yml').read_text()
+          body=s[s.index('jobs:\n  verify:'):]
+          a=body.index('      - name: Apply exact locally tested repair\n')
+          b=body.index('      - name: Install dependencies\n',a)
+          body=body[:a]+body[b:]
+          Path('.github/workflows/collaborative-history-e2e.yml').write_text('name: Collaborative History Device Matrix\non:\n  workflow_dispatch:\npermissions:\n  contents: read\n'+body)
+          Path('.github/workflows/history-regressions.yml').write_text('''name: Collaborative History Regressions
+          on:
+            push:
+              branches: [main]
+            pull_request:
+              branches: [main]
+          permissions:
+            contents: read
+          jobs:
+            history:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v6
+                - uses: actions/setup-node@v4
+                  with:
+                    node-version: 22
+                - run: node --test scripts/test-history-text-input.mjs scripts/test-history-dock-layout.mjs scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs scripts/test-history-inverses.mjs
+          ''')
+          temporary=[
+            '.github/scripts/history-implementation.patch.gz.b64',
+            '.github/scripts/apply-history-repair.py',
+            '.github/scripts/refine-history-device-test.py',
+            '.github/scripts/history-dock.patch',
+            '.github/scripts/enable-history-ci-relay.py',
+            '.github/scripts/history-text.patch',
+            '.github/scripts/finish-history-test-setup.py',
+            '.github/scripts/history-webkit-input-fixture.py',
+            '.github/workflows/history-sync-verification.yml',
+          ]
+          for name in temporary: Path(name).unlink()
+          doc=Path('docs/collaborative-history-repair-20260915.md')
+          doc.parent.mkdir(parents=True,exist_ok=True)
+          doc.write_text(f'''# Collaborative undo/redo repair — 2026-09-15
+
+          ## Behavior
+          Each participant undoes their own recorded actions, including their own modifications to other participants' objects. Conflicting later changes by another participant are preserved. This is not a global board rewind.
+
+          Mouse, keyboard and touch history commands share one FIFO queue. Entries stay on their source stack until confirmation. Redo is the authoritative inverse of only the changes actually applied, not an overbroad copy of the original request. Conflict-only entries are skipped without blocking older valid entries or manufacturing redo. New local edits during a pending undo start a new redo branch.
+
+          Unknown outcomes retain stable action IDs for retry. Negative permission/lock acknowledgements do not consume history. Network waits no longer suppress new history recording. Accepted history updates and delayed self-commit verification use the ordered authoritative Canvas queue and revision guards. Independent peer queues stop one slow participant from blocking everyone else. Write/acknowledgement waits are bounded.
+
+          Undo-add no longer depends on unrelated absolute layer indices. Restored selections normalize layer order. Responsive history controls no longer cover the phone Selection button. Toolbar history commands finalize active Fabric text editing, while native text-editor keyboard shortcuts and readonly permissions remain unchanged.
+
+          ## Evidence
+          Both Chromium and WebKit matrix jobs passed before source finalization:
+          https://github.com/AlOdinson/alex/actions/runs/{os.environ['VERIFIED_RUN']}
+
+          33 targeted regressions cover history correctness, retries/deadlines, repeated inverses, responsive hit targets and text command routing. Existing authority and hosted-safe sync suites and production build also pass.
+
+          The matrix uses computer 1280x800, phone 390x844 and tablet 820x1180 profiles in three independent contexts. Every profile takes the teacher role and acts as a student. Nine owner/actor combinations per engine compare actual objects on all three canvases after drawing, color, rotation, deletion, repeated undo/redo and rapid commands. Chromium also runs the existing large-snapshot, source-of-truth and data-channel-recovery scenarios.
+
+          Chromium uses normal production ICE with automated mouse, CDP touch/pen and touchscreen toolbar taps. WebKit on macOS uses actual WebRTC through an authenticated loopback-only test TURN server, automated mouse/touchscreen toolbar taps, and scripted finger TouchEvents for mobile drawing. No test relay is deployed to production. WebKit pointer-only and stylus-only input probes did not produce a stroke and are NOT successful Apple Pencil tests. Physical iPhone/iPad/Pencil and arbitrary real networks were not tested.
+
+          ## Rollout and limits
+          Refresh the teacher and every participant after deployment. An older teacher without authoritative inverse acknowledgements triggers an update message instead of unsafe history replay.
+
+          History is limited to 1000 entries per browser session, previously 100. Reload keeps durable board content but does not restore the local undo/redo stack. The stacks are not shared between the owner's different devices.
+
+          The three existing hosted-safe sync checks requiring pixel Canvas remain excluded by that runner; separate real Chromium render scenarios run. No production TURN, cloud persistence or authority transfer was added. The original owner browser must remain online.
+          ''')
+          files=list(expected)+[
+            'package.json','scripts/test-collaboration-safety.mjs',
+            'scripts/test-history-regressions.mjs','scripts/test-history-deadlines.mjs',
+            'scripts/test-history-inverses.mjs','scripts/test-history-dock-layout.mjs',
+            'scripts/test-history-text-input.mjs','scripts/test-history-device-matrix-e2e.mjs',
+            '.github/workflows/collaborative-history-e2e.yml','.github/workflows/history-regressions.yml',str(doc),
+          ]
+          subprocess.run(['git','add','--',*files,*temporary],check=True)
+          subprocess.run(['git','diff','--cached','--check'],check=True)
+          print(subprocess.check_output(['git','diff','--cached','--stat'],text=True))
+          PY
+      - name: Commit verified code to the isolated branch
         run: |
-          node node_modules/playwright-core/cli.js install webkit
-          brew install coturn
-      - name: Computer phone tablet role and input matrix
-        env:
-          BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
-          HISTORY_BROWSER: ${{ matrix.engine }}
-        run: |
-          relay_pid=''
-          if [ "$HISTORY_BROWSER" = webkit ]; then
-            export HISTORY_TURN_PASSWORD=$(openssl rand -hex 24)
-            echo "::add-mask::$HISTORY_TURN_PASSWORD"
-            turnserver -n --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=3478 --min-port=49160 --max-port=49260 --realm=history-ci --user="history:$HISTORY_TURN_PASSWORD" --lt-cred-mech --fingerprint --no-tls --no-dtls --no-cli --cli-password="$HISTORY_TURN_PASSWORD" --allow-loopback-peers --no-multicast-peers --pidfile=/tmp/history-turn.pid > /tmp/history-turn.log 2>&1 &
-            relay_pid=$!
-            sleep 2
-            kill -0 "$relay_pid"
-          fi
-          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/alex-preview.log 2>&1 &
-          server_pid=$!
-          trap 'kill "$server_pid" ${relay_pid:-} 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4173/alex/ > /dev/null; then break; fi
-            sleep 1
-          done
-          node scripts/test-history-device-matrix-e2e.mjs
-          if [ "$HISTORY_BROWSER" = chromium ]; then
-            node scripts/test-browser-authority-large-snapshot-e2e.mjs
-            node scripts/test-browser-authority-source-of-truth-e2e.mjs
-            node scripts/test-browser-authority-datachannel-recovery-e2e.mjs
-          fi
-      - name: Save device test evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: history-device-results-${{ matrix.engine }}
-          path: history-e2e-results
-          if-no-files-found: ignore
-          retention-days: 7
+          git fetch origin fix/collaborative-history-20260915
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: reliable collaborative undo redo across device layouts'
+          git push origin HEAD:fix/collaborative-history-20260915
+          git rev-parse HEAD
