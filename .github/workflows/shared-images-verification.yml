@@ -1,0 +1,18 @@
+name: Shared Images Verification
+on:
+  push:
+    branches: [fix/shared-images-20260916]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package tracked source for reproducible image investigation
+        run: git archive --format=tar.gz --output=shared-images-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-images-source
+          path: shared-images-source.tar.gz
+          retention-days: 1
