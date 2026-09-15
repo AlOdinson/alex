@@ -25,11 +25,13 @@ jobs:
         with:
           node-version: 22
       - name: Apply exact locally tested repair
-        run: python3 .github/scripts/apply-history-repair.py
+        run: |
+          python3 .github/scripts/apply-history-repair.py
+          python3 .github/scripts/enable-history-ci-relay.py
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: History behavioral regressions
-        run: node --test scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs
+        run: node --test scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs scripts/test-history-inverses.mjs scripts/test-history-dock-layout.mjs
       - name: Existing authority and synchronization regressions
         run: |
           npm run test:browser-authority
@@ -44,17 +46,30 @@ jobs:
           npm run build
       - name: Browser test driver
         run: npm install --no-save --no-package-lock playwright-core@1.55.0
-      - name: Install WebKit
+      - name: Install WebKit and CI-only TURN fixture
         if: matrix.engine == 'webkit'
-        run: node node_modules/playwright-core/cli.js install webkit
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          node node_modules/playwright-core/cli.js install webkit
+          brew install coturn
       - name: Computer phone tablet role and input matrix
         env:
           BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
           HISTORY_BROWSER: ${{ matrix.engine }}
         run: |
+          relay_pid=''
+          if [ "$HISTORY_BROWSER" = webkit ]; then
+            export HISTORY_TURN_PASSWORD=$(openssl rand -hex 24)
+            echo "::add-mask::$HISTORY_TURN_PASSWORD"
+            turnserver -n --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=3478 --min-port=49160 --max-port=49260 --realm=history-ci --user="history:$HISTORY_TURN_PASSWORD" --lt-cred-mech --fingerprint --no-tls --no-dtls --no-cli --cli-password="$HISTORY_TURN_PASSWORD" --allow-loopback-peers --no-multicast-peers --pidfile=/tmp/history-turn.pid > /tmp/history-turn.log 2>&1 &
+            relay_pid=$!
+            sleep 2
+            kill -0 "$relay_pid"
+          fi
           npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/alex-preview.log 2>&1 &
           server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          trap 'kill "$server_pid" ${relay_pid:-} 2>/dev/null || true' EXIT
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:4173/alex/ > /dev/null; then break; fi
             sleep 1
