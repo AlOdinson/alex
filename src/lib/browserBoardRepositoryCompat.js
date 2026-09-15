@@ -16,6 +16,7 @@ import {
 import { getBoardRuntime } from './browserBoardRuntimeRegistry.js';
 import { recoverFreshOwnerBootstrap } from './freshOwnerBootstrap.js';
 import { localBoardLibrary } from './localBoardLibrary.js';
+import { deriveShareKey } from './ids.js';
 
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
 const LOCK_TTL_MS = 12_000;
@@ -121,7 +122,15 @@ export function createBrowserBoardRepository({
         createBoard: createAuthorityRecord,
       });
     }
-    return board ? localAccess(board, secret) : remoteAccess(id, secret);
+    if (board) return localAccess(board, secret);
+    // Local boards generate 28-byte owner keys (38 base64url characters), while
+    // share/room keys are 36 characters. On another device there is no local owner
+    // record: derive the same room secret instead of joining an unrelated room with
+    // the raw owner key. This grants no local authority and creates no empty board.
+    const roomKey = /^[A-Za-z0-9_-]{38}$/.test(secret)
+      ? await deriveShareKey(secret)
+      : secret;
+    return remoteAccess(id, roomKey);
   };
 
   const activeRuntime = (boardId) => getRuntime(String(boardId ?? '').trim());

@@ -34,7 +34,7 @@ export function createPeerDataChannelTransport({
   onTransfer = () => {},
   onClose = () => {},
   onError = () => {},
-  onActivity = () => {},
+  onProgress = () => {},
   highWaterMark = 512_000,
   lowWaterMark = 128_000,
   maxInlineMessageChars = 48_000,
@@ -107,13 +107,17 @@ export function createPeerDataChannelTransport({
     return task;
   };
 
+  const reportProgress = () => {
+    try { onProgress(); } catch { /* watchdog/observer errors must not drop data */ }
+  };
+
   const handleIncoming = (event) => {
     if (closed || typeof event?.data !== 'string') return;
     try {
       const message = decodePeerMessage(event.data);
-      try { onActivity(); } catch { /* progress observers must not affect delivery */ }
       if (TRANSFER_TYPES.has(message.type)) {
         const completed = assembler.accept(message);
+        reportProgress();
         if (!completed) return;
         if (completed.kind === INTERNAL_MESSAGE_TRANSFER_KIND) {
           onMessage(decodePeerMessage(completed.text));
@@ -122,6 +126,7 @@ export function createPeerDataChannelTransport({
         }
         return;
       }
+      reportProgress();
       onMessage(message);
     } catch (error) {
       onError(error);

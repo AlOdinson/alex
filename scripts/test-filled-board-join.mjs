@@ -169,7 +169,7 @@ test('stalled initial snapshot transfer closes and rejects the peer', async (t) 
   const network = createStudentPeerNetwork({
     teacherId: 'teacher', signaling: { send: async () => {} },
     getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
-    connectTimeoutMs: 100, syncTimeoutMs: 200,
+    connectTimeoutMs: 100, initialSyncTimeoutMs: 200,
     createConnection: (input) => { options = input; return { async start() {}, close() {} }; },
     createTransport: () => ({ send: async () => {}, close() {} }),
     createSession: () => ({ start: () => new Promise(() => {}), close() {} }),
@@ -192,7 +192,7 @@ test('healthy slow snapshot progress extends the idle deadline', async (t) => {
   const network = createStudentPeerNetwork({
     teacherId: 'teacher', signaling: { send: async () => {} },
     getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
-    connectTimeoutMs: 100, syncTimeoutMs: 200,
+    connectTimeoutMs: 100, initialSyncTimeoutMs: 200,
     createConnection: (input) => { connectionOptions = input; return { async start() {}, close() {} }; },
     createTransport: (input) => { transportOptions = input; return { send: async () => {}, close() {} }; },
     createSession: () => ({ start: () => new Promise((resolve) => { finish = resolve; }), close() {} }),
@@ -202,7 +202,7 @@ test('healthy slow snapshot progress extends the idle deadline', async (t) => {
   connectionOptions.onChannel(new Channel());
   for (let i = 0; i < 4; i += 1) {
     t.mock.timers.tick(150);
-    transportOptions.onActivity?.();
+    transportOptions.onProgress?.();
     await turn();
     assert.equal(failure, null, 'an actively arriving large snapshot must not be timed out');
   }
@@ -304,3 +304,42 @@ test('teacher teardown retires every connected device and its pending transfer',
   assert.equal(network.getPeerCount(), 0, 'teardown must not leave later devices connected to a retired authority');
   assert.equal(closedPeers, 3);
 });
+
+for (const source of ['frame', 'handler']) {
+  test(`student retires a broken ${source} immediately instead of waiting for the watchdog`, async (t) => {
+    let connectionOptions;
+    let transportOptions;
+    let failure;
+    let closes = 0;
+    const error = new Error(`Broken ${source}`);
+    const network = createStudentPeerNetwork({
+      teacherId: 'teacher', signaling: { send: async () => {} },
+      getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
+      createConnection: (options) => {
+        connectionOptions = options;
+        return { async start() {}, close() { closes += 1; } };
+      },
+      createTransport: (options) => {
+        transportOptions = options;
+        return { send: async () => {}, close() {} };
+      },
+      createSession: () => ({
+        start: () => new Promise(() => {}),
+        handleTransfer() { throw error; },
+        close() {},
+      }),
+    });
+    t.after(() => network.close());
+    network.start().catch((value) => { failure = value; });
+    connectionOptions.onChannel(new Channel());
+    if (source === 'frame') transportOptions.onError(error);
+    else {
+      try { await transportOptions.onTransfer({ kind: 'snapshot' }); }
+      catch { /* old handler throws without rejecting startup */ }
+    }
+    await turn();
+    assert.equal(failure, error);
+    assert.equal(closes, 1);
+    assert.equal(network.isReady(), false);
+  });
+}
