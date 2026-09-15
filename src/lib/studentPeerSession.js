@@ -26,6 +26,8 @@ export function createStudentPeerSession({
   let closed = false;
   let initialSyncStarted = false;
   let initialSyncSettled = false;
+  let awaitingInitialSnapshot = false;
+  let initialSyncTargetRevision = 0;
   let resolveInitialSync;
   let rejectInitialSync;
   const initialSync = new Promise((resolve, reject) => {
@@ -52,8 +54,14 @@ export function createStudentPeerSession({
   };
 
   const enqueue = (work) => {
-    const task = applyQueue.then(work);
+    const task = applyQueue.then(() => {
+      if (closed) return;
+      return work();
+    });
     applyQueue = task.catch((error) => {
+      // Parsing, replica or canvas installation failures must reject startup too.
+      // Logging alone leaves the runtime and every queued edit waiting forever.
+      if (initialSyncStarted) failInitialSync(error);
       try { onError(error); } catch { /* observer errors are ignored */ }
     });
     return task;
@@ -69,12 +77,25 @@ export function createStudentPeerSession({
       if (closed) return Promise.reject(new Error('Student peer session is closed'));
       if (!initialSyncStarted) {
         initialSyncStarted = true;
-        Promise.resolve(requestSync()).catch(failInitialSync);
+        initialSyncTargetRevision = safeRevision(getRevision());
+        awaitingInitialSnapshot = initialSyncTargetRevision === 0;
+        try {
+          // A clean replica needs the full baseline, including imported/copied
+          // objects at revision zero. Replaying every historical stroke is both
+          // expensive to render and insufficient for a populated revision-zero board.
+          const request = awaitingInitialSnapshot
+            ? transport.send('snapshot-request', {})
+            : requestSync();
+          Promise.resolve(request).catch(failInitialSync);
+        } catch (error) {
+          failInitialSync(error);
+        }
       }
       return initialSync;
     },
 
     handleMessage(message) {
+      if (closed) return Promise.resolve();
       const type = String(message?.type ?? '');
       const payload = message?.payload && typeof message.payload === 'object'
         ? message.payload
@@ -82,7 +103,13 @@ export function createStudentPeerSession({
 
       if (type === 'head') {
         return enqueue(async () => {
-          if (safeRevision(payload.revision) > safeRevision(getRevision())) {
+          const headRevision = safeRevision(payload.revision);
+          if (!initialSyncSettled) {
+            initialSyncTargetRevision = Math.max(initialSyncTargetRevision, headRevision);
+          }
+          if (awaitingInitialSnapshot) return;
+          if (headRevision > safeRevision(getRevision())
+            || (!initialSyncSettled && initialSyncTargetRevision > safeRevision(getRevision()))) {
             await requestSync();
             return;
           }
@@ -116,6 +143,13 @@ export function createStudentPeerSession({
       return enqueue(async () => {
         const currentRevision = safeRevision(getRevision());
         const incomingRevision = safeRevision(payload.revision);
+        if (!initialSyncSettled) {
+          initialSyncTargetRevision = Math.max(initialSyncTargetRevision, incomingRevision);
+        }
+        // Do not advance an empty replica before its baseline arrives. The snapshot
+        // either covers these commits or we request the remaining authoritative tail
+        // after installation; no unbounded duplicate commit buffer is needed.
+        if (awaitingInitialSnapshot) return;
         if (incomingRevision <= currentRevision) return;
         if (incomingRevision !== currentRevision + 1) {
           await requestSync();
@@ -126,7 +160,7 @@ export function createStudentPeerSession({
     },
 
     handleTransfer(transfer) {
-      if (transfer?.kind !== 'snapshot') return Promise.resolve();
+      if (closed || transfer?.kind !== 'snapshot') return Promise.resolve();
       return enqueue(async () => {
         const parsed = JSON.parse(String(transfer?.text ?? ''));
         const revision = safeRevision(parsed?.revision);
@@ -138,6 +172,12 @@ export function createStudentPeerSession({
           return;
         }
         await installSnapshot(parsed.snapshot, revision);
+        if (closed) return;
+        awaitingInitialSnapshot = false;
+        if (!initialSyncSettled && initialSyncTargetRevision > revision) {
+          await requestSync();
+          return;
+        }
         markInitialSyncReady();
       });
     },
