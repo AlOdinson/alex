@@ -174,9 +174,15 @@ export function createStudentPeerNetwork({
       }
       startPromise = (async () => {
         try {
-          // Subscribe to readiness while starting signaling, not after it: its
-          // deadline must also release startup if connection.start() gets stuck.
-          await Promise.all([readiness, connection.start()]);
+          // Observe signaling failure, but let actual channel + snapshot readiness
+          // complete startup. A lost signaling receipt must neither block a board
+          // already received over P2P nor tear down that healthy channel later.
+          Promise.resolve(connection.start()).catch((error) => {
+            if (closed) return;
+            try { onError(error); } catch { /* observer errors are ignored */ }
+            if (!ready) closeResources(error, { reportState: 'failed' });
+          });
+          await readiness;
         } catch (error) {
           if (!closed) closeResources(error, { reportState: 'failed' });
           throw error;
