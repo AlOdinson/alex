@@ -63,6 +63,7 @@ export function createBrowserBoardSession({
   let teacherTabReadyPromise = null;
   let rejectTeacherTabReady = null;
   let runtimeState = 'idle';
+  let replicaNeedsSnapshot = false;
   const runtimeWaiters = new Set();
 
   const reportRuntimeState = (nextState, error = null) => {
@@ -93,7 +94,7 @@ export function createBrowserBoardSession({
     }
   };
 
-  const replicaRevision = () => safeRevision(
+  const replicaRevision = () => replicaNeedsSnapshot ? 0 : safeRevision(
     typeof getReplicaRevision === 'function'
       ? getReplicaRevision(safeBoardId)
       : (getReplica === getDefaultReplicaState
@@ -301,8 +302,13 @@ export function createBrowserBoardSession({
         return applied;
       },
       installSnapshot: async (snapshot, revision) => {
+        // The replica is installed before the Canvas callback so repository reads
+        // during painting see the new baseline. Keep startup requesting a full
+        // snapshot if painting fails; a cached head alone cannot repair the Canvas.
+        replicaNeedsSnapshot = true;
         installReplicaSnapshot(safeBoardId, snapshot, revision);
         await onAuthoritativeSnapshot(snapshot, safeRevision(revision));
+        replicaNeedsSnapshot = false;
       },
       onState: handleStudentState,
       onError,
@@ -368,7 +374,10 @@ export function createBrowserBoardSession({
         .filter((id) => id && id !== safeClientId)
         .sort();
       const nextTeacherId = ownerIds[0] ?? '';
-      if (!nextTeacherId) return Promise.resolve(runtime);
+      if (!nextTeacherId) {
+        if (!runtime && !connectingRuntime) reportRuntimeState('teacher-offline');
+        return Promise.resolve(runtime);
+      }
       return enqueueTransition(() => startStudent(nextTeacherId));
     },
     handleRealtimeSignal(payload) {

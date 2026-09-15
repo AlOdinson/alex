@@ -18,6 +18,8 @@ export function createStudentPeerNetwork({
   teacherId,
   signaling,
   rtcConfig = {},
+  connectTimeoutMs = 15_000,
+  syncTimeoutMs = 30_000,
   getRevision,
   applyCommit,
   installSnapshot,
@@ -42,6 +44,8 @@ export function createStudentPeerNetwork({
   let ready = false;
   let readinessSettled = false;
   let channelStart = Promise.resolve();
+  let startTask = null;
+  let startupTimer = null;
   let resolveReady;
   let rejectReady;
   const readiness = new Promise((resolve, reject) => {
@@ -52,6 +56,8 @@ export function createStudentPeerNetwork({
   const settleReady = () => {
     if (readinessSettled || closed) return;
     readinessSettled = true;
+    clearTimeout(startupTimer);
+    startupTimer = null;
     ready = true;
     resolveReady();
   };
@@ -65,6 +71,8 @@ export function createStudentPeerNetwork({
   const closeResources = (reason, { reportState = null } = {}) => {
     if (closed) return false;
     closed = true;
+    clearTimeout(startupTimer);
+    startupTimer = null;
     ready = false;
     const error = reason instanceof Error ? reason : new Error(String(reason ?? 'Student peer network closed'));
     rejectReadiness(error);
@@ -79,20 +87,38 @@ export function createStudentPeerNetwork({
     return true;
   };
 
+  const failConnection = (error) => {
+    if (closed) return;
+    try { onError(error); } catch { /* observer errors are ignored */ }
+    closeResources(error, { reportState: 'failed' });
+  };
+
+  const armStartupDeadline = (milliseconds, message) => {
+    clearTimeout(startupTimer);
+    startupTimer = null;
+    if (closed || readinessSettled) return;
+    const delay = Math.max(1, Number(milliseconds) || 30_000);
+    startupTimer = setTimeout(() => failConnection(new Error(message)), delay);
+  };
+
+  const noteSyncProgress = () => armStartupDeadline(syncTimeoutMs, 'Initial board synchronization timed out');
+
   const attachChannel = (channel) => {
     if (closed || transport) return;
     let nextSession;
     transport = createTransport({
       channel,
-      onMessage: (message) => Promise.resolve(nextSession?.handleMessage?.(message)).catch(onError),
-      onTransfer: (transfer) => Promise.resolve(nextSession?.handleTransfer?.(transfer)).catch(onError),
+      onMessage: (message) => Promise.resolve().then(() => nextSession?.handleMessage?.(message)).catch(failConnection),
+      onTransfer: (transfer) => Promise.resolve().then(() => nextSession?.handleTransfer?.(transfer)).catch(failConnection),
+      onActivity: noteSyncProgress,
       onClose: () => {
         if (closed) return;
         const error = new Error('Teacher peer data channel closed');
         closeResources(error, { reportState: 'failed' });
       },
-      onError,
+      onError: failConnection,
     });
+    noteSyncProgress();
     nextSession = createSession({
       transport,
       getRevision,
@@ -103,10 +129,7 @@ export function createStudentPeerNetwork({
     });
     session = nextSession;
     channelStart = Promise.resolve(session.start());
-    channelStart.then(settleReady, (error) => {
-      try { onError(error); } catch { /* observer errors are ignored */ }
-      closeResources(error, { reportState: 'failed' });
-    });
+    channelStart.then(settleReady, failConnection);
   };
 
   connection = createConnection({
@@ -126,15 +149,18 @@ export function createStudentPeerNetwork({
   });
 
   return {
-    async start() {
-      if (closed) throw new Error('Student peer network is closed');
-      try {
-        await connection.start();
-        await readiness;
-      } catch (error) {
-        if (!closed) closeResources(error, { reportState: 'failed' });
-        throw error;
-      }
+    start() {
+      if (closed) return Promise.reject(new Error('Student peer network is closed'));
+      if (startTask) return startTask;
+      armStartupDeadline(connectTimeoutMs, 'Connection to the board owner timed out');
+      // Promise.all observes readiness immediately: a signaling request that never
+      // resolves must not prevent the inactivity deadline from rejecting start().
+      startTask = Promise.all([Promise.resolve().then(() => connection.start()), readiness])
+        .catch((error) => {
+          if (!closed) closeResources(error, { reportState: 'failed' });
+          throw error;
+        });
+      return startTask;
     },
 
     async handleSignal(message) {

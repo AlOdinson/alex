@@ -36,20 +36,35 @@ export function createTeacherPeerNetwork({
     return true;
   };
 
-  const attachTransport = (peerId, channel) => {
+  const failPeer = (peerId, entry, error) => {
+    if (peers.get(peerId) !== entry) return;
+    try { onError(error); } catch { /* observer errors are ignored */ }
+    try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
+    closePeer(peerId, entry);
+  };
+
+  const attachTransport = (peerId, channel, expectedEntry) => {
     const entry = peers.get(peerId);
-    if (!entry || entry.transport) return entry?.transport ?? null;
+    if (!entry || entry !== expectedEntry) {
+      try { channel?.close?.(); } catch { /* stale channel is already retired */ }
+      return null;
+    }
+    if (entry.transport) return entry.transport;
     let transport;
     transport = createTransport({
       channel,
-      onMessage: (message) => Promise.resolve(peerHub.handleMessage(peerId, message)).catch(onError),
+      onMessage: (message) => Promise.resolve().then(() => {
+        if (peers.get(peerId) !== entry || entry.transport !== transport) return;
+        return peerHub.handleMessage(peerId, message);
+      })
+        .catch((error) => failPeer(peerId, entry, error)),
       onTransfer: () => {},
       onClose: () => {
         if (peers.get(peerId) !== entry || entry.transport !== transport) return;
         try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
         closePeer(peerId, entry);
       },
-      onError,
+      onError: (error) => failPeer(peerId, entry, error),
     });
     entry.transport = transport;
     entry.unregister = peerHub.addPeer(peerId, transport);
@@ -66,13 +81,15 @@ export function createTeacherPeerNetwork({
       connection: null,
       transport: null,
       unregister: null,
+      offerFingerprint: null,
     };
     const connection = createConnection({
       initiator: false,
       rtcConfig,
       sendSignal: (signal) => signaling.send(id, signal),
-      onChannel: (channel) => attachTransport(id, channel),
+      onChannel: (channel) => attachTransport(id, channel, entry),
       onConnectionState: (state) => {
+        if (peers.get(id) !== entry) return;
         onPeerState(id, state);
         if (TERMINAL_STATES.has(String(state))) closePeer(id, entry);
       },
@@ -89,8 +106,22 @@ export function createTeacherPeerNetwork({
       if (closed) return false;
       const peerId = String(message?.sourceId ?? '').trim();
       if (!peerId || !message?.signal) return false;
+      const fingerprint = message.signal.type === 'offer' ? JSON.stringify(message.signal) : null;
+      const previous = peers.get(peerId);
+      // A student may time out/retry before the remote browser declares its old
+      // connection failed. Do not renegotiate the obsolete SCTP association.
+      if (fingerprint && previous?.offerFingerprint && previous.offerFingerprint !== fingerprint) {
+        closePeer(peerId, previous);
+      }
       const entry = ensurePeer(peerId);
-      await entry.connection.handleSignal(message.signal);
+      if (fingerprint && entry.offerFingerprint === fingerprint) return true;
+      if (fingerprint) entry.offerFingerprint = fingerprint;
+      try {
+        await entry.connection.handleSignal(message.signal);
+      } catch (error) {
+        failPeer(peerId, entry, error);
+        throw error;
+      }
       return true;
     },
 
@@ -103,7 +134,7 @@ export function createTeacherPeerNetwork({
     close() {
       if (closed) return;
       closed = true;
-      [...peers.keys()].forEach(closePeer);
+      [...peers.keys()].forEach((peerId) => closePeer(peerId));
     },
   };
 }

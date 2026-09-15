@@ -35,9 +35,15 @@ export function createStudentPeerSession({
   const lockWaiters = new Map();
   const actionWaiters = new Map();
 
-  const requestSync = () => transport.send('sync-request', {
-    revision: safeRevision(getRevision()),
-  });
+  // A revision-zero replica has no authoritative baseline. Ask for the current
+  // board directly instead of replaying every historical stroke/transform (or
+  // accepting a revision-zero head for an imported, already-filled board).
+  const requestSync = () => {
+    const revision = safeRevision(getRevision());
+    return revision === 0
+      ? transport.send('snapshot-request', {})
+      : transport.send('sync-request', { revision });
+  };
 
   const markInitialSyncReady = () => {
     if (initialSyncSettled || closed) return;
@@ -52,8 +58,11 @@ export function createStudentPeerSession({
   };
 
   const enqueue = (work) => {
-    const task = applyQueue.then(work);
+    const task = applyQueue.then(() => (closed ? undefined : work()));
     applyQueue = task.catch((error) => {
+      // A failed decode/install must reject start(), otherwise the UI remains
+      // blocked forever while only the developer console receives the error.
+      if (initialSyncStarted) failInitialSync(error);
       try { onError(error); } catch { /* observer errors are ignored */ }
     });
     return task;
