@@ -1,0 +1,311 @@
+diff --git a/src/durableEditGate.js b/src/durableEditGate.js
+index fb4790a..8fb2915 100644
+--- a/src/durableEditGate.js
++++ b/src/durableEditGate.js
+@@ -27,6 +27,7 @@ function isBoardCanvasTarget(target) {
+ }
+ 
+ function gateMessage(state, permission) {
++  if (state === 'teacher-offline') return 'Откройте эту доску на устройстве владельца — ожидаю содержимое';
+   if (state === 'error') return 'Не удалось подключить сохранение — редактирование отключено';
+   if (permission === 'owner') return 'Доска открыта в другой вкладке — ожидаю доступ';
+   return 'Подключаю редактирование…';
+diff --git a/src/lib/browserBoardSession.js b/src/lib/browserBoardSession.js
+index b7adf2d..8537550 100644
+--- a/src/lib/browserBoardSession.js
++++ b/src/lib/browserBoardSession.js
+@@ -63,6 +63,7 @@ export function createBrowserBoardSession({
+   let teacherTabReadyPromise = null;
+   let rejectTeacherTabReady = null;
+   let runtimeState = 'idle';
++  let replicaNeedsSnapshot = false;
+   const runtimeWaiters = new Set();
+ 
+   const reportRuntimeState = (nextState, error = null) => {
+@@ -93,7 +94,7 @@ export function createBrowserBoardSession({
+     }
+   };
+ 
+-  const replicaRevision = () => safeRevision(
++  const replicaRevision = () => replicaNeedsSnapshot ? 0 : safeRevision(
+     typeof getReplicaRevision === 'function'
+       ? getReplicaRevision(safeBoardId)
+       : (getReplica === getDefaultReplicaState
+@@ -301,8 +302,13 @@ export function createBrowserBoardSession({
+         return applied;
+       },
+       installSnapshot: async (snapshot, revision) => {
++        // The replica is installed before the Canvas callback so repository reads
++        // during painting see the new baseline. Keep startup requesting a full
++        // snapshot if painting fails; a cached head alone cannot repair the Canvas.
++        replicaNeedsSnapshot = true;
+         installReplicaSnapshot(safeBoardId, snapshot, revision);
+         await onAuthoritativeSnapshot(snapshot, safeRevision(revision));
++        replicaNeedsSnapshot = false;
+       },
+       onState: handleStudentState,
+       onError,
+@@ -368,7 +374,10 @@ export function createBrowserBoardSession({
+         .filter((id) => id && id !== safeClientId)
+         .sort();
+       const nextTeacherId = ownerIds[0] ?? '';
+-      if (!nextTeacherId) return Promise.resolve(runtime);
++      if (!nextTeacherId) {
++        if (!runtime && !connectingRuntime) reportRuntimeState('teacher-offline');
++        return Promise.resolve(runtime);
++      }
+       return enqueueTransition(() => startStudent(nextTeacherId));
+     },
+     handleRealtimeSignal(payload) {
+diff --git a/src/lib/studentPeerNetwork.js b/src/lib/studentPeerNetwork.js
+index d629733..5ef7b81 100644
+--- a/src/lib/studentPeerNetwork.js
++++ b/src/lib/studentPeerNetwork.js
+@@ -18,6 +18,8 @@ export function createStudentPeerNetwork({
+   teacherId,
+   signaling,
+   rtcConfig = {},
++  connectTimeoutMs = 15_000,
++  syncTimeoutMs = 30_000,
+   getRevision,
+   applyCommit,
+   installSnapshot,
+@@ -42,6 +44,8 @@ export function createStudentPeerNetwork({
+   let ready = false;
+   let readinessSettled = false;
+   let channelStart = Promise.resolve();
++  let startTask = null;
++  let startupTimer = null;
+   let resolveReady;
+   let rejectReady;
+   const readiness = new Promise((resolve, reject) => {
+@@ -52,6 +56,8 @@ export function createStudentPeerNetwork({
+   const settleReady = () => {
+     if (readinessSettled || closed) return;
+     readinessSettled = true;
++    clearTimeout(startupTimer);
++    startupTimer = null;
+     ready = true;
+     resolveReady();
+   };
+@@ -65,6 +71,8 @@ export function createStudentPeerNetwork({
+   const closeResources = (reason, { reportState = null } = {}) => {
+     if (closed) return false;
+     closed = true;
++    clearTimeout(startupTimer);
++    startupTimer = null;
+     ready = false;
+     const error = reason instanceof Error ? reason : new Error(String(reason ?? 'Student peer network closed'));
+     rejectReadiness(error);
+@@ -79,20 +87,38 @@ export function createStudentPeerNetwork({
+     return true;
+   };
+ 
++  const failConnection = (error) => {
++    if (closed) return;
++    try { onError(error); } catch { /* observer errors are ignored */ }
++    closeResources(error, { reportState: 'failed' });
++  };
++
++  const armStartupDeadline = (milliseconds, message) => {
++    clearTimeout(startupTimer);
++    startupTimer = null;
++    if (closed || readinessSettled) return;
++    const delay = Math.max(1, Number(milliseconds) || 30_000);
++    startupTimer = setTimeout(() => failConnection(new Error(message)), delay);
++  };
++
++  const noteSyncProgress = () => armStartupDeadline(syncTimeoutMs, 'Initial board synchronization timed out');
++
+   const attachChannel = (channel) => {
+     if (closed || transport) return;
+     let nextSession;
+     transport = createTransport({
+       channel,
+-      onMessage: (message) => Promise.resolve(nextSession?.handleMessage?.(message)).catch(onError),
+-      onTransfer: (transfer) => Promise.resolve(nextSession?.handleTransfer?.(transfer)).catch(onError),
++      onMessage: (message) => Promise.resolve().then(() => nextSession?.handleMessage?.(message)).catch(failConnection),
++      onTransfer: (transfer) => Promise.resolve().then(() => nextSession?.handleTransfer?.(transfer)).catch(failConnection),
++      onActivity: noteSyncProgress,
+       onClose: () => {
+         if (closed) return;
+         const error = new Error('Teacher peer data channel closed');
+         closeResources(error, { reportState: 'failed' });
+       },
+-      onError,
++      onError: failConnection,
+     });
++    noteSyncProgress();
+     nextSession = createSession({
+       transport,
+       getRevision,
+@@ -103,10 +129,7 @@ export function createStudentPeerNetwork({
+     });
+     session = nextSession;
+     channelStart = Promise.resolve(session.start());
+-    channelStart.then(settleReady, (error) => {
+-      try { onError(error); } catch { /* observer errors are ignored */ }
+-      closeResources(error, { reportState: 'failed' });
+-    });
++    channelStart.then(settleReady, failConnection);
+   };
+ 
+   connection = createConnection({
+@@ -126,15 +149,18 @@ export function createStudentPeerNetwork({
+   });
+ 
+   return {
+-    async start() {
+-      if (closed) throw new Error('Student peer network is closed');
+-      try {
+-        await connection.start();
+-        await readiness;
+-      } catch (error) {
+-        if (!closed) closeResources(error, { reportState: 'failed' });
+-        throw error;
+-      }
++    start() {
++      if (closed) return Promise.reject(new Error('Student peer network is closed'));
++      if (startTask) return startTask;
++      armStartupDeadline(connectTimeoutMs, 'Connection to the board owner timed out');
++      // Promise.all observes readiness immediately: a signaling request that never
++      // resolves must not prevent the inactivity deadline from rejecting start().
++      startTask = Promise.all([Promise.resolve().then(() => connection.start()), readiness])
++        .catch((error) => {
++          if (!closed) closeResources(error, { reportState: 'failed' });
++          throw error;
++        });
++      return startTask;
+     },
+ 
+     async handleSignal(message) {
+diff --git a/src/lib/studentPeerSession.js b/src/lib/studentPeerSession.js
+index c57b475..7d52b73 100644
+--- a/src/lib/studentPeerSession.js
++++ b/src/lib/studentPeerSession.js
+@@ -35,9 +35,15 @@ export function createStudentPeerSession({
+   const lockWaiters = new Map();
+   const actionWaiters = new Map();
+ 
+-  const requestSync = () => transport.send('sync-request', {
+-    revision: safeRevision(getRevision()),
+-  });
++  // A revision-zero replica has no authoritative baseline. Ask for the current
++  // board directly instead of replaying every historical stroke/transform (or
++  // accepting a revision-zero head for an imported, already-filled board).
++  const requestSync = () => {
++    const revision = safeRevision(getRevision());
++    return revision === 0
++      ? transport.send('snapshot-request', {})
++      : transport.send('sync-request', { revision });
++  };
+ 
+   const markInitialSyncReady = () => {
+     if (initialSyncSettled || closed) return;
+@@ -52,8 +58,11 @@ export function createStudentPeerSession({
+   };
+ 
+   const enqueue = (work) => {
+-    const task = applyQueue.then(work);
++    const task = applyQueue.then(() => (closed ? undefined : work()));
+     applyQueue = task.catch((error) => {
++      // A failed decode/install must reject start(), otherwise the UI remains
++      // blocked forever while only the developer console receives the error.
++      if (initialSyncStarted) failInitialSync(error);
+       try { onError(error); } catch { /* observer errors are ignored */ }
+     });
+     return task;
+diff --git a/src/lib/teacherPeerNetwork.js b/src/lib/teacherPeerNetwork.js
+index fa3d43f..13ebac3 100644
+--- a/src/lib/teacherPeerNetwork.js
++++ b/src/lib/teacherPeerNetwork.js
+@@ -36,20 +36,35 @@ export function createTeacherPeerNetwork({
+     return true;
+   };
+ 
+-  const attachTransport = (peerId, channel) => {
++  const failPeer = (peerId, entry, error) => {
++    if (peers.get(peerId) !== entry) return;
++    try { onError(error); } catch { /* observer errors are ignored */ }
++    try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
++    closePeer(peerId, entry);
++  };
++
++  const attachTransport = (peerId, channel, expectedEntry) => {
+     const entry = peers.get(peerId);
+-    if (!entry || entry.transport) return entry?.transport ?? null;
++    if (!entry || entry !== expectedEntry) {
++      try { channel?.close?.(); } catch { /* stale channel is already retired */ }
++      return null;
++    }
++    if (entry.transport) return entry.transport;
+     let transport;
+     transport = createTransport({
+       channel,
+-      onMessage: (message) => Promise.resolve(peerHub.handleMessage(peerId, message)).catch(onError),
++      onMessage: (message) => Promise.resolve().then(() => {
++        if (peers.get(peerId) !== entry || entry.transport !== transport) return;
++        return peerHub.handleMessage(peerId, message);
++      })
++        .catch((error) => failPeer(peerId, entry, error)),
+       onTransfer: () => {},
+       onClose: () => {
+         if (peers.get(peerId) !== entry || entry.transport !== transport) return;
+         try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
+         closePeer(peerId, entry);
+       },
+-      onError,
++      onError: (error) => failPeer(peerId, entry, error),
+     });
+     entry.transport = transport;
+     entry.unregister = peerHub.addPeer(peerId, transport);
+@@ -66,13 +81,15 @@ export function createTeacherPeerNetwork({
+       connection: null,
+       transport: null,
+       unregister: null,
++      offerFingerprint: null,
+     };
+     const connection = createConnection({
+       initiator: false,
+       rtcConfig,
+       sendSignal: (signal) => signaling.send(id, signal),
+-      onChannel: (channel) => attachTransport(id, channel),
++      onChannel: (channel) => attachTransport(id, channel, entry),
+       onConnectionState: (state) => {
++        if (peers.get(id) !== entry) return;
+         onPeerState(id, state);
+         if (TERMINAL_STATES.has(String(state))) closePeer(id, entry);
+       },
+@@ -89,8 +106,22 @@ export function createTeacherPeerNetwork({
+       if (closed) return false;
+       const peerId = String(message?.sourceId ?? '').trim();
+       if (!peerId || !message?.signal) return false;
++      const fingerprint = message.signal.type === 'offer' ? JSON.stringify(message.signal) : null;
++      const previous = peers.get(peerId);
++      // A student may time out/retry before the remote browser declares its old
++      // connection failed. Do not renegotiate the obsolete SCTP association.
++      if (fingerprint && previous?.offerFingerprint && previous.offerFingerprint !== fingerprint) {
++        closePeer(peerId, previous);
++      }
+       const entry = ensurePeer(peerId);
+-      await entry.connection.handleSignal(message.signal);
++      if (fingerprint && entry.offerFingerprint === fingerprint) return true;
++      if (fingerprint) entry.offerFingerprint = fingerprint;
++      try {
++        await entry.connection.handleSignal(message.signal);
++      } catch (error) {
++        failPeer(peerId, entry, error);
++        throw error;
++      }
+       return true;
+     },
+ 
+@@ -103,7 +134,7 @@ export function createTeacherPeerNetwork({
+     close() {
+       if (closed) return;
+       closed = true;
+-      [...peers.keys()].forEach(closePeer);
++      [...peers.keys()].forEach((peerId) => closePeer(peerId));
+     },
+   };
+ }
