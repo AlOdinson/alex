@@ -1,3 +1,5 @@
+import { historyDockPlacement } from './lib/historyDockLayout.js';
+
 const PRESETS_KEY = 'alex-board:drawing-presets:v1';
 const STROKE_WIDTH_STEPS = [1, 2, 3, 4, 5, 8, 10, 15, 20, 25, 50, 100];
 
@@ -271,6 +273,25 @@ function syncDockMetrics() {
   return true;
 }
 
+function syncHistoryLayout(history) {
+  const dock = document.querySelector('.board-tool-dock');
+  if (!dock || history.hidden) return;
+  const root = document.documentElement;
+  const context = [...document.querySelectorAll('.floating-drawing-controls, .selection-floating-proxy')]
+    .filter((node) => !node.hidden)
+    .map((node) => node.getBoundingClientRect());
+  const placement = historyDockPlacement({
+    dock: dock.getBoundingClientRect(), mode: root.dataset.dockLayout ?? '1',
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    size: history.getBoundingClientRect(), context,
+  });
+  root.dataset.dockHistoryDetached = placement ? 'true' : 'false';
+  if (placement) {
+    root.style.setProperty('--dock-history-safe-left', `${placement.left}px`);
+    root.style.setProperty('--dock-history-safe-top', `${placement.top}px`);
+  }
+}
+
 function dispatchHistoryShortcut(redo = false) {
   const event = new KeyboardEvent('keydown', {
     key: 'z',
@@ -281,6 +302,9 @@ function dispatchHistoryShortcut(redo = false) {
     bubbles: true,
     cancelable: true,
   });
+  // A toolbar command must finalize Fabric text editing, not be mistaken for
+  // a native keyboard undo inside the text editor.
+  Object.defineProperty(event, 'alexBoardHistoryCommand', { value: true });
   window.dispatchEvent(event);
 }
 
@@ -393,6 +417,7 @@ function syncState() {
 
   syncSelectionFloatingProxy(selectionProxy, selectionRoot);
   syncRightAccessories(right, accessoriesVisible, selectionRoot, drawingRoot);
+  syncHistoryLayout(history);
 }
 
 function scheduleSync() {
@@ -503,6 +528,7 @@ if (typeof document !== 'undefined') {
   document.addEventListener('input', handleSelectionProxyInput, true);
   document.addEventListener('contextmenu', handlePresetEditorShortcut, true);
   document.addEventListener('dblclick', handlePresetEditorShortcut, true);
+  document.addEventListener('alex-board:dock-layout-change', scheduleSync);
   window.addEventListener('storage', scheduleSync);
   window.addEventListener('resize', scheduleSync);
   window.addEventListener('orientationchange', scheduleSync);

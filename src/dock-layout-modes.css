@@ -194,3 +194,10 @@ html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
     height: 52px !important;
   }
 }
+
+/* When a horizontal dock fills the viewport, the left-side capsule cannot be
+   clamped into the dock: it would intercept Selection/Pencil taps. */
+html[data-dock-layout][data-dock-history-detached="true"] .dock-history-accessories {
+  left: var(--dock-history-safe-left) !important;
+  top: var(--dock-history-safe-top) !important;
+}

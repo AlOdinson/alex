@@ -141,7 +141,7 @@ export function createConditionalRecordPatchOps(
   });
 }
 
-export function createConditionalDeleteOps(records) {
+export function createConditionalDeleteOps(records, { matchZIndex = false } = {}) {
   return (Array.isArray(records) ? records : []).flatMap((record) => {
     const objectId = String(record?.object?.boardObjectId ?? '');
     if (!objectId) return [];
@@ -152,7 +152,7 @@ export function createConditionalDeleteOps(records) {
       type: 'delete',
       id: objectId,
       ifObjectVersion: expectedObject,
-      ...(Number.isInteger(record.zIndex) ? { ifZIndex: Number(record.zIndex) } : {}),
+      ...(matchZIndex && Number.isInteger(record.zIndex) ? { ifZIndex: Number(record.zIndex) } : {}),
     }];
   });
 }

@@ -218,9 +218,17 @@ export function evaluateAuthorityAction({
   const currentById = objectIndex(snapshot);
   const appliedOps = [];
   const skippedConflicts = [];
+  let appliedBackground = ['grid', 'dots', 'blank'].includes(background) ? background : null;
 
   for (const operation of Array.isArray(ops) ? ops : []) {
     if (!operation || typeof operation !== 'object') continue;
+    if (operation.type === 'background') {
+      if (['grid', 'dots', 'blank'].includes(operation.background)) {
+        if (operation.ifBackground === snapshot?.background) appliedBackground = operation.background;
+        else skippedConflicts.push({ objectId: '__background', reason: 'background_changed' });
+      }
+      continue;
+    }
     if (operation.type === 'upsert') {
       evaluateUpsert(operation, tombstones, appliedOps, skippedConflicts);
       continue;
@@ -238,7 +246,6 @@ export function evaluateAuthorityAction({
     }
   }
 
-  const appliedBackground = ['grid', 'dots', 'blank'].includes(background) ? background : null;
   return {
     changed: appliedOps.length > 0 || appliedBackground !== null,
     appliedOps,

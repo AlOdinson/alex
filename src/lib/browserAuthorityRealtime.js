@@ -321,7 +321,8 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     onAuthoritativeCommit: (commit) => onOps?.(
       Array.isArray(commit?.appliedOps) ? commit.appliedOps : (Array.isArray(commit?.ops) ? commit.ops : []),
       Number(commit?.revision ?? 0),
-      Boolean(commit?.needsSync),
+      // needsSync describes the proposer, not this receiver. onOps checks its own revision.
+      false,
       commit?.appliedBackground ?? commit?.background ?? null,
       commit?.actionId ?? null,
       commit?.clientId ?? '',

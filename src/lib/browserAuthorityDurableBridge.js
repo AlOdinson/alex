@@ -33,6 +33,8 @@ function normalizeDurableResult(result, { actionId, fallbackOps, fallbackBackgro
     appliedBackground,
     rejectedObjectIds,
     skippedConflicts: cloneArray(source.skippedConflicts),
+    ...(Array.isArray(source.historyInverseOps) ? { historyInverseOps: source.historyInverseOps } : {}),
+    ...(source.error ? { error: String(source.error) } : {}),
   };
 }
 

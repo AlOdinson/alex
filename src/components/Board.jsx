@@ -88,13 +88,15 @@ import {
 import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';
 import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';
 import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';
+import { createInitialHistoryOps, refreshHistoryOps } from '../lib/historyOperations.js';
+import { createHistoryCommandQueue } from '../lib/historyCommandQueue.js';
 
 const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 4;
 const MAX_CANVAS_PIXEL_RATIO = 2;
 const DURABLE_OP_CHUNK_TARGET = 150_000;
-const HISTORY_LIMIT = 100;
+const HISTORY_LIMIT = 1000;
 const LIVE_TRANSFORM_INTERVAL = 50;
 const LIVE_TRANSFORM_LOCK_TTL = 7000;
 const DESKTOP_WHEEL_ZOOM_SPEED = 6.25;
@@ -1823,6 +1825,10 @@ function BoardWorkspace({
   const undoStackRef = useRef([]);
   const redoStackRef = useRef([]);
   const historyCommandBusyRef = useRef(false);
+  const historyCommandQueueRef = useRef(null);
+  const historyGenerationRef = useRef(0);
+  const historyHandlersRef = useRef(null);
+  const localDeletionMutationIdsRef = useRef(new Map());
   const remoteLocksRef = useRef(new Map());
   const localLockIdsRef = useRef([]);
   const selectionLeaseRef = useRef({
@@ -2789,8 +2795,9 @@ function BoardWorkspace({
   }, []);
 
   const updateHistoryButtons = useCallback(() => {
-    setCanUndo(undoStackRef.current.length > 0);
-    setCanRedo(redoStackRef.current.length > 0);
+    const availability = historyCommandQueueRef.current?.availability();
+    setCanUndo(availability?.canUndo ?? undoStackRef.current.length > 0);
+    setCanRedo(availability?.canRedo ?? redoStackRef.current.length > 0);
   }, []);
 
   const updateSelectionState = useCallback(() => {
@@ -2830,6 +2837,14 @@ function BoardWorkspace({
 
   const recordAction = useCallback((action) => {
     if (!action || applyingRemoteRef.current || applyingHistoryRef.current) return;
+    historyGenerationRef.current += 1;
+    if (action.type === 'delete') {
+      action.deletionMutationIds = Object.fromEntries((action.records ?? []).flatMap((record) => {
+        const id = String(record?.object?.boardObjectId ?? '');
+        const mutationId = localDeletionMutationIdsRef.current.get(id);
+        return mutationId ? [[id, mutationId]] : [];
+      }));
+    }
     undoStackRef.current.push(action);
     if (undoStackRef.current.length > HISTORY_LIMIT) undoStackRef.current.shift();
     redoStackRef.current = [];
@@ -3442,6 +3457,8 @@ function BoardWorkspace({
     atomic = false,
     skipDeferredFlush = false,
     serializedSize: providedSerializedSize = null,
+    history = false,
+    actionId = null,
   } = {}) => {
     const source = Array.isArray(ops) ? ops.filter(Boolean) : [];
     const run = () => {
@@ -3474,6 +3491,8 @@ function BoardWorkspace({
         return Promise.resolve(realtime.sendOps(chunk, {
           serializedSize,
           atomic: atomic && index === 0,
+          ...(history ? { history: true } : {}),
+          ...(actionId ? { actionId } : {}),
         })).finally(() => {
           objectIds.forEach((objectId) => {
             const key = String(objectId);
@@ -3581,8 +3600,10 @@ function BoardWorkspace({
     const realtime = realtimeRef.current;
     if (!safeIds.length || !realtime) return Promise.resolve([]);
     if (announce) realtime.sendDeletePreview?.(safeIds).catch?.(() => undefined);
+    const mutationId = randomToken(24);
+    safeIds.forEach((id) => localDeletionMutationIdsRef.current.set(id, mutationId));
     return sendDurableOps(
-      safeIds.map((id) => ({ type: 'delete', id })),
+      safeIds.map((id) => ({ type: 'delete', id, mutationId })),
       { atomic },
     );
   }, [sendDurableOps]);
@@ -5151,6 +5172,8 @@ function BoardWorkspace({
             object.updatedBy = patch.updatedBy ?? object.updatedBy ?? clientIdRef.current;
             object.dirty = true;
             object.setCoords();
+            const cached = serializedObjectCacheRef.current.get(object);
+            if (cached) Object.assign(cached, patch.transform, { updatedAt: object.updatedAt, updatedBy: object.updatedBy });
             touched.push(object);
           }
           continue;
@@ -5812,192 +5835,100 @@ function BoardWorkspace({
     syncFromServer,
   ]);
 
-  const refreshHistoryRecords = useCallback((records) => {
-    const baseTimestamp = Date.now();
-    return (Array.isArray(records) ? records : []).map((record, index) => ({
-      ...record,
-      object: {
-        ...record.object,
-        // Restoring a deleted object is a new authoritative mutation. Reusing the
-        // pre-delete timestamp can make server conflict checks or remote tombstones
-        // treat the upsert as stale, even though it was restored locally.
-        updatedAt: baseTimestamp + index,
-        updatedBy: clientIdRef.current,
-      },
-    }));
-  }, []);
-
-  const commitConditionalHistoryOps = useCallback(async (ops) => {
+  const commitConditionalHistoryOps = useCallback(async (ops, actionId) => {
     const safeOps = Array.isArray(ops) ? ops.filter(Boolean) : [];
-    if (!safeOps.length) return { appliedOps: [], skippedConflicts: [] };
-    const results = await sendDurableOps(safeOps, { atomic: true });
+    if (!safeOps.length) return { changed: false, appliedOps: [], historyInverseOps: [] };
+    const results = await sendDurableOps(safeOps, { atomic: true, history: true, actionId });
     const result = Array.isArray(results) ? results.at(-1) : null;
-    if (!result) throw new Error('Сервер не подтвердил безопасную отмену');
-    if (Array.isArray(result.rejectedObjectIds) && result.rejectedObjectIds.length) {
-      throw new Error('Один из объектов сейчас редактирует другой участник');
+    if (!result) throw new Error('Не получено подтверждение отмены');
+    if (result.accepted === false || result.rejectedObjectIds?.length) {
+      throw new Error(result.error || 'Объект сейчас редактирует другой участник');
+    }
+    if (!Array.isArray(result.historyInverseOps)) {
+      throw new Error('Обновите страницу доски на устройстве учителя для синхронизации истории');
     }
     const appliedOps = Array.isArray(result.appliedOps) ? result.appliedOps : [];
-    if (appliedOps.length) await replayPendingActionsLocally([{ ops: appliedOps }]);
-    const skippedConflicts = Array.isArray(result.skippedConflicts)
-      ? result.skippedConflicts
-      : [];
-    if (skippedConflicts.length) {
-      const skippedFieldCount = skippedConflicts.reduce(
-        (count, conflict) => count + Math.max(1, conflict?.fields?.length ?? 0),
-        0,
+    if (result.changed !== false) {
+      // Unlike ordinary drawing, undo is not optimistically painted. Use the same
+      // revision-ordered Canvas path as every receiver, never an unversioned replay
+      // that could overwrite a newer commit received while waiting for the ack.
+      const applied = await applyRemoteOpsRef.current?.(
+        appliedOps, result.revision, false, result.appliedBackground,
+        result.actionId, clientIdRef.current,
       );
-      setSaveStatus(`Отмена выполнена частично: пропущено ${skippedFieldCount} измен.`);
+      if (!applied) await syncFromServer(true);
+    }
+    const skippedConflicts = Array.isArray(result.skippedConflicts) ? result.skippedConflicts : [];
+    if (skippedConflicts.length) {
+      setSaveStatus('Изменения другого участника сохранены; несовместимые шаги пропущены');
       setSyncTone('saved');
       window.clearTimeout(transientStatusTimerRef.current);
       transientStatusTimerRef.current = window.setTimeout(() => setSaveStatus('Сохранено'), 2600);
     }
     return { ...result, appliedOps, skippedConflicts };
-  }, [replayPendingActionsLocally, sendDurableOps]);
+  }, [sendDurableOps, syncFromServer]);
 
   const applyHistoryAction = useCallback(async (action, direction) => {
-    if (!action) return;
-    applyingHistoryRef.current = true;
-    applyingRemoteRef.current = true;
-    try {
-      if (action.type !== 'background') fabricCanvasRef.current?.discardActiveObject();
-      if (action.type === 'add') {
-        if (direction === 'undo') {
-          await commitConditionalHistoryOps(createConditionalDeleteOps(action.records));
-        } else {
-          const restoredRecords = refreshHistoryRecords(action.records);
-          await commitConditionalHistoryOps(restoredRecords.map((record) => ({
-            type: 'upsert',
-            object: record.object,
-            zIndex: record.zIndex,
-            restore: true,
-            reorder: true,
-            ifDeletedBy: clientIdRef.current,
-          })));
-        }
-      }
-
-      if (action.type === 'delete') {
-        if (direction === 'undo') {
-          const restoredRecords = refreshHistoryRecords(action.records);
-          action.lastRestoredRecords = restoredRecords;
-          await commitConditionalHistoryOps(restoredRecords.map((record) => ({
-            type: 'upsert',
-            object: record.object,
-            zIndex: record.zIndex,
-            restore: true,
-            reorder: true,
-            ifDeletedBy: clientIdRef.current,
-          })));
-        } else {
-          await commitConditionalHistoryOps(createConditionalDeleteOps(
-            action.lastRestoredRecords ?? action.records,
-          ));
-        }
-      }
-
-      if (action.type === 'modify') {
-        const sourceRecords = direction === 'undo' ? action.after : action.before;
-        const records = refreshHistoryRecords(direction === 'undo' ? action.before : action.after);
-        const ops = createConditionalRecordPatchOps(sourceRecords, records, {
-          reorder: Boolean(action.reorder),
-        });
-        await commitConditionalHistoryOps(ops);
-      }
-
-      if (action.type === 'replace') {
-        throw new Error('Составная замена больше не поддерживается историей');
-      }
-
-      if (action.type === 'transform') {
-        const sourceRecords = direction === 'undo' ? action.afterRecords : action.beforeRecords;
-        const targetRecords = direction === 'undo' ? action.beforeRecords : action.afterRecords;
-        const sourceById = new Map((sourceRecords ?? []).map((record) => [
-          String(record?.object?.boardObjectId ?? ''),
-          record,
-        ]));
-        const baseTimestamp = Date.now();
-        const entries = (targetRecords ?? []).flatMap((record, index) => {
-          const id = String(record?.object?.boardObjectId ?? '');
-          const source = sourceById.get(id);
-          if (!id || !source) return [];
-          const transform = Object.fromEntries(TRANSFORM_PROPERTY_KEYS
-            .filter((key) => Object.prototype.hasOwnProperty.call(record.object ?? {}, key))
-            .map((key) => [key, record.object[key]]));
-          const ifTransform = Object.fromEntries(TRANSFORM_PROPERTY_KEYS
-            .filter((key) => Object.prototype.hasOwnProperty.call(source.object ?? {}, key))
-            .map((key) => [key, source.object[key]]));
-          return [{
-            id,
-            transform,
-            ifTransform,
-            updatedAt: baseTimestamp + index,
-            updatedBy: clientIdRef.current,
-          }];
-        });
-        if (entries.length) {
-          await commitConditionalHistoryOps([{
-            type: 'transform',
-            version: 1,
-            objects: entries,
-          }]);
-        }
-      }
-
-      if (action.type === 'background') {
-        applyBackground(direction === 'undo' ? action.before : action.after, {
-          broadcast: true,
-          persist: false,
-        });
-      }
-    } finally {
-      applyingRemoteRef.current = false;
-      applyingHistoryRef.current = false;
-      if (action.type !== 'transform') schedulePersistence();
+    if (!action) return { changed: false };
+    // Do not suppress recording/remote updates during network waits. Both teachers
+    // and students may continue drawing while this immutable request is in flight.
+    if (!action.pendingHistoryRequest) {
+      const ops = refreshHistoryOps(createInitialHistoryOps(action, direction, clientIdRef.current), clientIdRef.current);
+      action.pendingHistoryRequest = { actionId: randomToken(24), direction, ops };
     }
-  }, [
-    applyBackground,
-    commitConditionalHistoryOps,
-    refreshHistoryRecords,
-    schedulePersistence,
-  ]);
+    const request = action.pendingHistoryRequest;
+    if (request.direction !== direction) throw new Error('Предыдущая операция истории ещё не подтверждена');
+    const result = await commitConditionalHistoryOps(request.ops, request.actionId);
+    action.nextHistoryOps = result.historyInverseOps;
+    delete action.pendingHistoryRequest;
+    if (action.type !== 'transform') schedulePersistence();
+    return result;
+  }, [commitConditionalHistoryOps, schedulePersistence]);
 
-  const undo = useCallback(async () => {
-    if (historyCommandBusyRef.current || !canEditRef.current || !undoStackRef.current.length) return;
-    const action = undoStackRef.current.pop();
-    redoStackRef.current.push(action);
-    updateHistoryButtons();
-    historyCommandBusyRef.current = true;
-    try {
-      await applyHistoryAction(action, 'undo');
-    } catch (error) {
-      const rollbackIndex = redoStackRef.current.lastIndexOf(action);
-      if (rollbackIndex >= 0) redoStackRef.current.splice(rollbackIndex, 1);
-      undoStackRef.current.push(action);
-      updateHistoryButtons();
-      console.error('Не удалось отменить действие', error);
-    } finally {
-      historyCommandBusyRef.current = false;
-    }
-  }, [applyHistoryAction, updateHistoryButtons]);
+  const prepareHistoryCommand = useCallback(async () => {
+    const canvas = fabricCanvasRef.current;
+    const active = canvas?.getActiveObject?.();
+    if (active?.isEditing) active.exitEditing();
+    if (localSelectionTransactionRef.current) await commitLocalSelectionTransaction();
+    canvas?.discardActiveObject?.();
+    await deferredTransformFlushRef.current?.({ force: true });
+    await realtimeRef.current?.flushPending?.();
+    await authoritativeApplyQueueRef.current;
+  }, [commitLocalSelectionTransaction]);
 
-  const redo = useCallback(async () => {
-    if (historyCommandBusyRef.current || !canEditRef.current || !redoStackRef.current.length) return;
-    const action = redoStackRef.current.pop();
-    undoStackRef.current.push(action);
-    updateHistoryButtons();
-    historyCommandBusyRef.current = true;
-    try {
-      await applyHistoryAction(action, 'redo');
-    } catch (error) {
-      const rollbackIndex = undoStackRef.current.lastIndexOf(action);
-      if (rollbackIndex >= 0) undoStackRef.current.splice(rollbackIndex, 1);
-      redoStackRef.current.push(action);
-      updateHistoryButtons();
-      console.error('Не удалось вернуть действие', error);
-    } finally {
-      historyCommandBusyRef.current = false;
+  historyHandlersRef.current = { apply: applyHistoryAction, prepare: prepareHistoryCommand };
+
+  const enqueueHistoryCommand = useCallback((direction) => {
+    if (!historyCommandQueueRef.current) {
+      historyCommandQueueRef.current = createHistoryCommandQueue({
+        getUndo: () => undoStackRef.current,
+        getRedo: () => redoStackRef.current,
+        getGeneration: () => historyGenerationRef.current,
+        canEdit: () => canEditRef.current,
+        prepare: () => historyHandlersRef.current.prepare(),
+        execute: (action, nextDirection) => historyHandlersRef.current.apply(action, nextDirection),
+        onChange: () => {
+          historyCommandBusyRef.current = historyCommandQueueRef.current?.pendingCount() > 0;
+          updateHistoryButtons();
+        },
+        onError: (error) => {
+          console.error('Ошибка истории', error);
+          setSaveStatus(error?.message || 'Отмена не подтверждена — повторите после подключения');
+          setSyncTone('error');
+        },
+      });
     }
-  }, [applyHistoryAction, updateHistoryButtons]);
+    return historyCommandQueueRef.current.enqueue(direction);
+  }, [updateHistoryButtons]);
+
+  const undo = useCallback(() => enqueueHistoryCommand('undo'), [enqueueHistoryCommand]);
+
+  const redo = useCallback(() => enqueueHistoryCommand('redo'), [enqueueHistoryCommand]);
+
+  useEffect(() => () => {
+    historyCommandQueueRef.current?.close();
+    historyCommandQueueRef.current = null;
+  }, []);
 
   const applyRemoteOps = useCallback((
     ops,
@@ -9025,6 +8956,7 @@ function BoardWorkspace({
           opTypes: committedOpsForDiagnostic.map((operation) => operation?.type ?? 'unknown'),
           objectIds: [...affectedOperationIds(committedOpsForDiagnostic)],
         });
+        if (action?.history) return;
         const currentRevision = Number(revisionRef.current ?? 0);
         const committedRevision = Number(result?.revision ?? currentRevision);
         const rejected = Array.isArray(result?.rejectedObjectIds)
@@ -9074,9 +9006,10 @@ function BoardWorkspace({
             // Promise waiters clear their per-object pending markers immediately after
             // onCommit returns. Verify on the next task so a new user gesture always wins.
             window.setTimeout(() => {
-              authoritativeApplyQueueRef.current
+              authoritativeApplyQueueRef.current = authoritativeApplyQueueRef.current
                 .catch(() => undefined)
                 .then(async () => {
+                  if (Number(revisionRef.current ?? 0) !== committedRevision) return;
                   if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) return;
                   if (verifyAuthoritativeOps(verificationOps, verificationBackground)) return;
                   await replayPendingActionsLocally([{
@@ -13258,7 +13191,9 @@ function BoardWorkspace({
         startArrowPan();
         return;
       }
-      if (!canEditRef.current || isTextInput || isCanvasTextEditing) return;
+      const historyButton = event.alexBoardHistoryCommand === true
+        && isShortcut && ['z', 'y'].includes(String(event.key).toLowerCase());
+      if (!canEditRef.current || ((isTextInput || isCanvasTextEditing) && !historyButton)) return;
 
       if (isShortcut && event.key.toLowerCase() === 'z') {
         event.preventDefault();

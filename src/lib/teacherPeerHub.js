@@ -23,6 +23,7 @@ function journalIsContiguous(commits, fromRevision, toRevision) {
 
 function authoritativeAckFields(commit) {
   const fields = {};
+  if (Array.isArray(commit?.historyInverseOps)) fields.historyInverseOps = commit.historyInverseOps;
   if (Object.prototype.hasOwnProperty.call(commit ?? {}, 'changed')) {
     fields.changed = Boolean(commit.changed);
   }
@@ -80,16 +81,15 @@ export function createTeacherPeerHub({
   };
 
   const broadcastCommit = async (commit) => {
+    // Each transport already serializes its frames. Queue to every peer now;
+    // awaiting one slow device here used to block all others and the writer's ack.
     for (const [peerId, transport] of peers.entries()) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await transport.send('commit', commit);
-      } catch {
-        // A durable teacher commit is already persisted before broadcast. One stale
-        // DataChannel must not prevent healthy peers receiving that authoritative
-        // commit, so retire only the transport that actually failed and continue.
-        removePeer(peerId, transport);
-      }
+      const retire = () => {
+        if (!removePeer(peerId, transport)) return;
+        try { transport.close?.({ closeChannel: true }); } catch { /* retired */ }
+      };
+      try { Promise.resolve(transport.send('commit', commit)).catch(retire); }
+      catch { retire(); }
     }
   };
 
