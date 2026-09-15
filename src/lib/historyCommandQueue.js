@@ -30,6 +30,7 @@ export function createHistoryCommandQueue({
           const action = candidates.shift();
           if (!source.includes(action)) continue;
           const generation = getGeneration();
+          const undoBefore = command.direction === 'redo' ? new Set(getUndo()) : null;
           result = await execute(action, command.direction) ?? { changed: true };
           if (closed) break;
           const index = source.lastIndexOf(action);
@@ -38,6 +39,13 @@ export function createHistoryCommandQueue({
             // A new local edit during an in-flight undo starts a new branch.
             if (generation === getGeneration()) {
               (command.direction === 'undo' ? getRedo() : getUndo()).push(action);
+            } else if (command.direction === 'redo') {
+              // Redo was submitted before edits recorded during its acknowledgement
+              // wait. Keep it undoable, immediately before those newer edits, even
+              // if recording trimmed the old stack or replaced the redo branch.
+              const undo = getUndo();
+              const firstNew = undo.findIndex((entry) => !undoBefore.has(entry));
+              undo.splice(firstNew < 0 ? undo.length : firstNew, 0, action);
             }
             break;
           }
