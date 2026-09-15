@@ -1,0 +1,19 @@
+name: Filled Board Integration
+on:
+  push:
+    branches: [fix/filled-board-join-20260915]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 9f97538f9b7bb45b783d8e2c592cb7694233735a
+      - run: git archive --format=tar.gz --output=main-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: filled-board-main-source
+          path: main-source.tar.gz
+          retention-days: 1
