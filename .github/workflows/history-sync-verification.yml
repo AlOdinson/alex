@@ -4,30 +4,28 @@ on:
     branches: [fix/collaborative-history-20260915]
 permissions:
   contents: read
+concurrency:
+  group: collaborative-history-verification
+  cancel-in-progress: true
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - name: Apply exact locally tested repair
-        run: |
-          python - <<'PY'
-          import pathlib, base64, gzip, hashlib
-          text = pathlib.Path('.github/scripts/history-implementation.patch.gz.b64').read_text().strip()
-          for start, end, new, old in reversed([[485,486,'g','w'],[607,608,'','2'],[7759,7760,'T','t'],[7996,7998,'','3f'],[17252,17253,'','9']]):
-              assert text[start:end] == old
-              text = text[:start] + new + text[end:]
-          data = gzip.decompress(base64.b64decode(text))
-          assert hashlib.sha256(data).hexdigest() == '0aa0f89325338cea688bfff4f5fa1061e91d3915feb4e0994ee49fe40e99a2b0'
-          pathlib.Path('/tmp/history-implementation.patch').write_bytes(data)
-          PY
-          git apply --check /tmp/history-implementation.patch
-          git apply /tmp/history-implementation.patch
-          git diff --check
+        run: python3 .github/scripts/apply-history-repair.py
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: History behavioral regressions
@@ -46,16 +44,13 @@ jobs:
           npm run build
       - name: Browser test driver
         run: npm install --no-save --no-package-lock playwright-core@1.55.0
-      - name: Package isolated browser test workspace
-        run: tar -czf /tmp/history-runtime.tar.gz src public scripts dist node_modules package.json package-lock.json index.html vite.config.js
-      - uses: actions/upload-artifact@v4
-        with:
-          name: collaborative-history-runtime
-          path: /tmp/history-runtime.tar.gz
-          retention-days: 1
-      - name: Real Chromium drawing history and reconnect regressions
+      - name: Install WebKit
+        if: matrix.engine == 'webkit'
+        run: node node_modules/playwright-core/cli.js install webkit
+      - name: Computer phone tablet role and input matrix
         env:
           BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
+          HISTORY_BROWSER: ${{ matrix.engine }}
         run: |
           npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/alex-preview.log 2>&1 &
           server_pid=$!
@@ -64,6 +59,17 @@ jobs:
             if curl -fsS http://127.0.0.1:4173/alex/ > /dev/null; then break; fi
             sleep 1
           done
-          node scripts/test-browser-authority-large-snapshot-e2e.mjs
-          node scripts/test-browser-authority-source-of-truth-e2e.mjs
-          node scripts/test-browser-authority-datachannel-recovery-e2e.mjs
+          node scripts/test-history-device-matrix-e2e.mjs
+          if [ "$HISTORY_BROWSER" = chromium ]; then
+            node scripts/test-browser-authority-large-snapshot-e2e.mjs
+            node scripts/test-browser-authority-source-of-truth-e2e.mjs
+            node scripts/test-browser-authority-datachannel-recovery-e2e.mjs
+          fi
+      - name: Save device test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: history-device-results-${{ matrix.engine }}
+          path: history-e2e-results
+          if-no-files-found: ignore
+          retention-days: 7
