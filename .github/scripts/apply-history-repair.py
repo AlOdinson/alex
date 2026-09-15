@@ -3,6 +3,7 @@ import base64
 import gzip
 import hashlib
 import subprocess
+import sys
 
 text = pathlib.Path('.github/scripts/history-implementation.patch.gz.b64').read_text().strip()
 corrections = [[485,486,'g','w'],[607,608,'','2'],[7759,7760,'T','t'],[7996,7998,'','3f'],[17252,17253,'','9']]
@@ -15,4 +16,11 @@ patch = pathlib.Path('/tmp/history-implementation.patch')
 patch.write_bytes(data)
 subprocess.run(['git', 'apply', '--check', str(patch)], check=True)
 subprocess.run(['git', 'apply', str(patch)], check=True)
+subprocess.run([sys.executable, '.github/scripts/refine-history-device-test.py'], check=True)
+p = pathlib.Path('package.json')
+s = p.read_text()
+old = 'node --test scripts/test-filled-board-join.mjs'
+assert old in s
+s = s.replace(old, 'node --test scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs scripts/test-history-inverses.mjs scripts/test-filled-board-join.mjs')
+p.write_text(s)
 subprocess.run(['git', 'diff', '--check'], check=True)
