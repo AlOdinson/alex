@@ -23,6 +23,36 @@ async function newPage(profile) {
   const page = await context.newPage(); pages.push(page);
   await page.addInitScript((relay) => {
     window.__cloudState = null; window.__cloudPeers = []; window.__captures = 0;
+    window.__testVideos = [];
+    const createElement = document.createElement.bind(document);
+    document.createElement = (...args) => {
+      const element = createElement(...args);
+      if (String(args[0]).toLowerCase() === 'video') window.__testVideos.push(element);
+      return element;
+    };
+    window.__mediaProbe = async () => {
+      const pixel = (source) => {
+        try {
+          const c = createElement('canvas'); c.width = c.height = 100;
+          c.getContext('2d').drawImage(source, 0, 0);
+          return [...c.getContext('2d').getImageData(40,40,1,1).data];
+        } catch { return null; }
+      };
+      const image = window.__boardCanvas?.()?.getObjects().find((o) => o.transientScreenShare);
+      return {
+        green: window.__captureGreen, captures: window.__captures, source: pixel(window.__captureCanvas),
+        visible: document.visibilityState, rendered: pixel(image?.getElement?.()),
+        videos: window.__testVideos.map((v) => ({ paused:v.paused, readyState:v.readyState,
+          currentTime:v.currentTime, width:v.videoWidth, src:v.srcObject?.id,
+          tracks:v.srcObject?.getTracks().map((t) => ({id:t.id,muted:t.muted,enabled:t.enabled,state:t.readyState})),
+          pixel:pixel(v) })),
+        cloud: await Promise.all(window.__cloudPeers.map(async (p) => ({
+          state:p.connectionState,
+          stats:[...(await p.getStats()).values()].filter((r) => ['inbound-rtp','outbound-rtp','media-source'].includes(r.type)),
+          senders:p.getSenders().map((x) => ({enabled:x.track?.enabled,settings:x.track?.getSettings(),parameters:x.getParameters()})),
+        }))),
+      };
+    };
     window.addEventListener('alex-screen-share-cloud-state', (e) => { window.__cloudState = e.detail; });
     const Peer = window.RTCPeerConnection;
     window.RTCPeerConnection = class extends Peer {
@@ -35,7 +65,7 @@ async function newPage(profile) {
     };
     Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', { configurable: true, value: async () => {
       window.__captures++;
-      const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 360;
+      const canvas = document.createElement('canvas'); window.__captureCanvas = canvas; canvas.width = 640; canvas.height = 360;
       const ctx = canvas.getContext('2d'); let tick = 0; window.__captureGreen = false;
       const draw = () => {
         ctx.fillStyle = window.__captureGreen ? 'rgb(30,190,80)' : 'rgb(215,50,30)'; ctx.fillRect(0,0,640,360);
@@ -153,9 +183,9 @@ try {
 } catch (error) {
   for (const [index,page] of pages.entries()) {
     await page.screenshot({ path:`${out}/${ENGINE}-${index}.png` }).catch(() => {});
-    fs.writeFileSync(`${out}/${ENGINE}-${index}.json`, JSON.stringify(await page.evaluate(() => ({
+    fs.writeFileSync(`${out}/${ENGINE}-${index}.json`, JSON.stringify(await page.evaluate(async () => ({
       state:window.__cloudState, text:document.body.innerText, editState:document.documentElement.dataset.alexDurableEditState,
-      peers:window.__cloudPeers.map((p) => ({ state:p.connectionState, ice:p.iceConnectionState })),
+      media:await window.__mediaProbe(),
     })).catch(() => null),null,2));
   }
   throw error;
