@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { chromium, webkit } from 'playwright-core';
 import { deriveShareKey } from '../src/lib/ids.js';
+import { isRecoveredTokenNetworkDiagnostic } from './network-error-evidence.mjs';
 
 const BASE = process.env.BROWSER_AUTHORITY_PREVIEW_URL ?? 'http://127.0.0.1:4173/alex/';
 const ENGINE = process.env.HISTORY_BROWSER ?? 'chromium';
+const TOKEN_URL = new URL('/functions/v1/ably-browser-token', process.env.VITE_SUPABASE_URL).href;
 const profiles = [
   { name: 'computer', viewport: { width: 1280, height: 800 }, hasTouch: false, isMobile: false },
   { name: 'phone', viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true },
@@ -23,6 +25,49 @@ async function wait(label, check, timeout = 60000) {
     await pause(100);
   }
   throw new Error(`${label}: ${last?.message ?? 'timed out'}`);
+}
+async function captureDiagnostics(page, device, errors, networkEvents, networkTasks) {
+  let navigation = 0;
+  const requests = new WeakMap();
+  page.on('framenavigated', (frame) => { if (frame === page.mainFrame()) navigation += 1; });
+  page.on('request', (request) => {
+    if (request.url() === TOKEN_URL && request.method() === 'POST') {
+      requests.set(request, { device, navigation, url: request.url(), method: request.method() });
+    }
+  });
+  page.on('requestfailed', (request) => {
+    const identity = requests.get(request);
+    if (identity) networkEvents.push({ ...identity, kind: 'failed', at: Date.now(), reason: request.failure()?.errorText });
+  });
+  page.on('requestfinished', (request) => {
+    const identity = requests.get(request);
+    if (!identity) return;
+    const at = Date.now();
+    networkTasks.push(request.response().then((response) => {
+      networkEvents.push({ ...identity, kind: 'finished', at, status: response?.status() ?? 0 });
+    }).catch((error) => { errors.push({ device, origin: 'test-observer', error: error.message }); }));
+  });
+  page.on('pageerror', (error) => errors.push({
+    device, navigation, at: Date.now(), origin: 'pageerror', name: error.name,
+    error: error.message, stack: error.stack ?? '',
+  }));
+  // Independent JS exception capture: native WebKit fetch console diagnostics are
+  // not window ErrorEvents. Never suppress actual errors or rejected promises.
+  await page.exposeBinding('__reportImageUncaught', (_source, value) => {
+    errors.push({ ...value, device, navigation, at: Date.now() });
+  });
+  await page.addInitScript(() => {
+    window.addEventListener('error', (event) => {
+      if (event instanceof ErrorEvent) {
+        void window.__reportImageUncaught({ origin: 'window-error', error: event.message,
+          name: event.error?.name, stack: event.error?.stack }).catch(() => {});
+      }
+    });
+    window.addEventListener('unhandledrejection', (event) => {
+      void window.__reportImageUncaught({ origin: 'unhandledrejection',
+        error: String(event.reason?.message ?? event.reason), stack: event.reason?.stack }).catch(() => {});
+    });
+  });
 }
 async function instrument(page) {
   await page.addInitScript((relay) => {
@@ -111,10 +156,10 @@ try {
   for (let ownerIndex = 0; ownerIndex < profiles.length; ownerIndex++) {
     const contexts = await Promise.all(profiles.map(({ name, ...options }) => browser.newContext({ ...options, deviceScaleFactor: 1 })));
     const pages = await Promise.all(contexts.map((context) => context.newPage()));
-    const errors = [];
+    const errors = [], networkEvents = [], networkTasks = [];
     for (const [index, page] of pages.entries()) {
       await instrument(page);
-      page.on('pageerror', (error) => errors.push({ device: profiles[index].name, error: error.message }));
+      await captureDiagnostics(page, profiles[index].name, errors, networkEvents, networkTasks);
       page.on('console', (message) => { if (['error', 'warning'].includes(message.type())) console.log(profiles[index].name, message.text().slice(0, 1000)); });
     }
     const owner = pages[ownerIndex];
@@ -129,16 +174,18 @@ try {
       // The same page must recover its first token request without navigation.
       let tokenRequests = 0;
       const reconnectingPage = pages[(ownerIndex + 1) % pages.length];
-      await reconnectingPage.route('**/functions/v1/ably-browser-token', async (route) => {
+      const failFirstToken = async (route) => {
         if (route.request().method() !== 'POST') return route.continue();
         tokenRequests += 1;
         if (tokenRequests === 1) return route.abort('internetdisconnected');
         return route.continue();
-      });
+      };
+      await reconnectingPage.route(TOKEN_URL, failFirstToken);
       for (const [index, page] of pages.entries()) if (index !== ownerIndex) {
         await page.goto(guest.href, { waitUntil: 'domcontentloaded' }); await enter(page, `Image student ${index}`);
       }
       assert.ok(tokenRequests >= 2, 'failed initial authentication must be retried on the same page');
+      await reconnectingPage.unroute(TOKEN_URL, failFirstToken);
       const data = await owner.evaluate(() => {
         const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 700;
         const ctx = canvas.getContext('2d'); const pixels = ctx.createImageData(1000, 700);
@@ -174,14 +221,23 @@ try {
       const lateContext = await browser.newContext({ viewport: profiles[(ownerIndex + 1) % 3].viewport });
       try {
         const late = await lateContext.newPage(); await instrument(late);
+        await captureDiagnostics(late, 'late', errors, networkEvents, networkTasks);
         await late.goto(guest.href); await enter(late, 'Late image student'); await imagesEqual([...pages, late], 4);
       } finally { await lateContext.close(); }
-      assert.deepEqual(errors, []);
-      results.push({ engine: ENGINE, owner: profiles[ownerIndex].name, actors: profiles.map((p) => p.name), fixtureBase64Chars: data.length, initialTokenFailureRecovered: true, stalledReceiverRecovered: true, clipboard: true, passed: true });
+      await Promise.all(networkTasks);
+      const recovered = (entry) => isRecoveredTokenNetworkDiagnostic(entry, { engine: ENGINE, tokenUrl: TOKEN_URL, events: networkEvents });
+      const recoveredNetworkDiagnostics = errors.filter(recovered);
+      // This runs only AFTER identical decoded images, editing readiness and late
+      // join have succeeded. A native token diagnostic additionally needs its own
+      // failed POST and later successful retry in the same document. Real window
+      // errors / unhandled promises and every other pageerror must still fail.
+      assert.deepEqual(errors.filter((entry) => !recovered(entry)), []);
+      fs.writeFileSync(`${out}/${ENGINE}-${ownerIndex}-network.json`, JSON.stringify({ networkEvents, recoveredNetworkDiagnostics }, null, 2));
+      results.push({ engine: ENGINE, owner: profiles[ownerIndex].name, actors: profiles.map((p) => p.name), fixtureBase64Chars: data.length, initialTokenFailureRecovered: true, stalledReceiverRecovered: true, clipboard: true, recoveredNetworkDiagnostics: recoveredNetworkDiagnostics.length, passed: true });
       console.log(JSON.stringify(results.at(-1)));
     } catch (error) {
       for (const [index, page] of pages.entries()) {
-        const diagnostic = { objects: await state(page).catch(() => null), errors,
+        const diagnostic = { objects: await state(page).catch(() => null), errors, networkEvents,
           details: await page.evaluate(() => ({ loads: window.__imageLoads, dataset: { ...document.documentElement.dataset }, text: document.body.innerText })).catch(() => null) };
         fs.writeFileSync(`${out}/${ENGINE}-${ownerIndex}-${index}.json`, JSON.stringify(diagnostic, null, 2));
         await page.screenshot({ path: `${out}/${ENGINE}-${ownerIndex}-${index}.png` }).catch(() => {});
