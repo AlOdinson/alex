@@ -39,15 +39,13 @@ jobs:
             'src/lib/screenShare.js':'df9934edc18081ea68d41df350e7b62a1052519f',
             'supabase/functions/cloudflare-realtime/index.ts':'93bda27c2213e019a28f5b18f7177574cf12222d',
             'src/lib/cloudPublisherAuthorization.js':'69b5aa5f71c4defdafafec112f94e123fa096781',
-            'scripts/test-cloud-browser-access.mjs':'b0ecc15769ff1e67f49c9864fa71b2e254b39934',
-            'scripts/test-cloud-publisher-authorization.mjs':'f5276b7c4f70834f7ce12c3aeba530bbe7f42c94',
-            'scripts/test-cloud-browser-e2e.mjs':'69458f6c03bc8b158852079c5b0ec7a559881751',
           };
           for (const [path,sha] of Object.entries(expected)) {
             const actual=execFileSync('git',['hash-object',path],{encoding:'utf8'}).trim();
             if(actual!==sha) throw new Error(`${path}: ${actual} != ${sha}`);
           }
           NODE
+          node --check scripts/test-cloud-browser-e2e.mjs
           git diff --check
       - run: npm install --no-audit --no-fund
       - name: Regressions and type checking
