@@ -63,7 +63,7 @@ async function newPage(profile) {
         if (cloud) window.__cloudPeers.push(this);
       }
     };
-    Object.defineProperty(navigator.mediaDevices, 'getDisplayMedia', { configurable: true, value: async () => {
+    Object.defineProperty(Object.getPrototypeOf(navigator.mediaDevices), 'getDisplayMedia', { configurable: true, value: async function cloudFixtureCapture() {
       window.__captures++;
       const canvas = document.createElement('canvas'); window.__captureCanvas = canvas; canvas.width = 640; canvas.height = 360;
       const ctx = canvas.getContext('2d'); let tick = 0; window.__captureGreen = false;
@@ -153,6 +153,7 @@ try {
   for (const actor of [owner,editor]) {
     const viewers = pages.filter((p) => p !== actor);
     console.log('HOST', actor === owner ? 'teacher' : 'student');
+    assert.equal(await actor.evaluate(() => navigator.mediaDevices.getDisplayMedia.name), 'cloudFixtureCapture', 'the source must be the controlled capture fixture, not the runner desktop');
     await toggleScreen(actor);
     await wait('screen session reaches peers', async () => {
       const states = await Promise.all(pages.map((p) => p.evaluate(() => window.__cloudState)));
