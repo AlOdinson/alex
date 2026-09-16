@@ -26,8 +26,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # BEGIN STAGING
+      - name: Apply reviewed source delta and check exact tested bytes
+        run: |
+          git apply --check .github/shared-images-source.patch
+          git apply .github/shared-images-source.patch
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          p=Path('package.json')
+          p.write_text(p.read_text().replace('node --test scripts/test-history-concurrent-redo.mjs', 'node --test scripts/test-image-loading-regressions.mjs scripts/test-history-concurrent-redo.mjs'))
+          for path, expected in {
+            'src/components/Board.jsx':'24bc6cfac845319926fa636132c82b1122cef129',
+            'src/lib/imageStorage.js':'35ada6a24fe35a71ea62d36bcaac80f19cec8d11',
+            'package.json':'8fe000a1d804df58273b646c8daf2863f034054e',
+          }.items():
+            actual=subprocess.check_output(['git','hash-object',path],text=True).strip()
+            assert actual==expected, (path,actual,expected)
+          PY
+          git diff --check
+      # END STAGING
       - name: Install dependencies
         run: npm install --no-audit --no-fund
+      - name: Image loading behavioral regressions
+        run: node --test scripts/test-image-loading-regressions.mjs
       - name: Existing authority and sync regressions
         run: |
           npm run test:browser-authority
@@ -74,11 +96,56 @@ jobs:
             sleep 1
           done
           node scripts/test-shared-images-e2e.mjs
+          node scripts/test-history-device-matrix-e2e.mjs
+          if [ "$HISTORY_BROWSER" = chromium ]; then
+            node scripts/test-browser-authority-large-snapshot-e2e.mjs
+            node scripts/test-browser-authority-source-of-truth-e2e.mjs
+            node scripts/test-browser-authority-datachannel-recovery-e2e.mjs
+          fi
       - name: Save image test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: shared-images-results-${{ matrix.engine }}
-          path: shared-images-results
+          path: |
+            shared-images-results
+            history-e2e-results
           if-no-files-found: ignore
           retention-days: 7
+  finalize:
+    needs: verify
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Commit only the verified implementation on the isolated branch
+        run: |
+          git apply .github/shared-images-source.patch
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess
+          p=Path('package.json')
+          p.write_text(p.read_text().replace('node --test scripts/test-history-concurrent-redo.mjs', 'node --test scripts/test-image-loading-regressions.mjs scripts/test-history-concurrent-redo.mjs'))
+          for path, expected in {
+            'src/components/Board.jsx':'24bc6cfac845319926fa636132c82b1122cef129',
+            'src/lib/imageStorage.js':'35ada6a24fe35a71ea62d36bcaac80f19cec8d11',
+            'package.json':'8fe000a1d804df58273b646c8daf2863f034054e',
+          }.items():
+            actual=subprocess.check_output(['git','hash-object',path],text=True).strip()
+            assert actual==expected, (path,actual,expected)
+          p=Path('.github/workflows/shared-images-verification.yml')
+          text=p.read_text().split('  finalize:\n')[0]
+          start=text.index('      # BEGIN STAGING\n')
+          end=text.index('      # END STAGING\n')+len('      # END STAGING\n')
+          p.write_text(text[:start]+text[end:])
+          PY
+          git rm .github/shared-images-source.patch
+          git add src/components/Board.jsx src/lib/imageStorage.js package.json .github/workflows/shared-images-verification.yml
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: recover shared images without blocking collaborative board revisions'
+          git push origin HEAD:fix/shared-images-20260916
+          git rev-parse HEAD
