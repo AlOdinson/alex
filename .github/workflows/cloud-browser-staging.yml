@@ -41,7 +41,7 @@ jobs:
             'src/lib/cloudPublisherAuthorization.js':'69b5aa5f71c4defdafafec112f94e123fa096781',
             'scripts/test-cloud-browser-access.mjs':'b0ecc15769ff1e67f49c9864fa71b2e254b39934',
             'scripts/test-cloud-publisher-authorization.mjs':'f5276b7c4f70834f7ce12c3aeba530bbe7f42c94',
-            'scripts/test-cloud-browser-e2e.mjs':'afe5853815e17a4961110cfef9aa472c765e47fe',
+            'scripts/test-cloud-browser-e2e.mjs':'346b479943c29a1835562b5082ef2f5a13203157',
           };
           for (const [path,sha] of Object.entries(expected)) {
             const actual=execFileSync('git',['hash-object',path],{encoding:'utf8'}).trim();
