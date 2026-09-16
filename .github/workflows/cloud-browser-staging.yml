@@ -29,11 +29,12 @@ jobs:
           deno-version: v2.x
       - name: Apply isolated source and check tested bytes
         run: |
-          git apply --check scripts/cloud-browser-access.patch
-          git apply scripts/cloud-browser-access.patch
+          git apply --check scripts/cloud-browser-access.patch scripts/cloud-screen-stop.patch
+          git apply scripts/cloud-browser-access.patch scripts/cloud-screen-stop.patch
           node --input-type=module <<'NODE'
           import {execFileSync} from 'node:child_process';
           const expected = {
+            'src/components/ScreenShare.jsx':'4e3c6f1039c95b667e49facc33aaec87c28f69b5',
             'src/components/useCloudScreenShareFallback.js':'c952f3600b97ba6be63b41c9e1e66cd5d1ce5977',
             'src/lib/cloudflareScreenShare.js':'e3da8f8e45fbcbd9273ab69e54ebd7e9794cc857',
             'src/lib/screenShare.js':'df9934edc18081ea68d41df350e7b62a1052519f',
@@ -50,7 +51,7 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Regressions and type checking
         run: |
-          node --test scripts/test-cloud-browser-access.mjs scripts/test-cloud-publisher-authorization.mjs
+          node --test scripts/test-cloud-browser-access.mjs scripts/test-cloud-publisher-authorization.mjs scripts/test-cloud-screen-stop.mjs
           node scripts/test-cloudflare-realtime-edge-function.mjs
           node scripts/test-cloudflare-screen-share-transport.mjs
           node scripts/test-screen-share-cloud-switch.mjs
@@ -114,13 +115,13 @@ jobs:
       - uses: actions/checkout@v6
       - name: Record only verified source on fix branch
         run: |
-          git apply --check scripts/cloud-browser-access.patch
-          git apply scripts/cloud-browser-access.patch
+          git apply --check scripts/cloud-browser-access.patch scripts/cloud-screen-stop.patch
+          git apply scripts/cloud-browser-access.patch scripts/cloud-screen-stop.patch
           git diff --check
-          git add src/components/useCloudScreenShareFallback.js src/lib/cloudflareScreenShare.js src/lib/screenShare.js supabase/functions/cloudflare-realtime/index.ts
-          git rm scripts/cloud-browser-access.patch .github/workflows/cloud-browser-staging.yml
+          git add src/components/ScreenShare.jsx src/components/useCloudScreenShareFallback.js src/lib/cloudflareScreenShare.js src/lib/screenShare.js supabase/functions/cloudflare-realtime/index.ts
+          git rm scripts/cloud-browser-access.patch scripts/cloud-screen-stop.patch .github/workflows/cloud-browser-staging.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: restore authorized Cloud screen sharing for browser-only boards'
+          git commit -m 'fix: restore authorized Cloud sharing and reliably stop capture'
           git push origin HEAD:fix/cloud-browser-access-20260916
           git rev-parse HEAD
