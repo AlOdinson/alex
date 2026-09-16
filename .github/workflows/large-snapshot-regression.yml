@@ -1,0 +1,16 @@
+name: Large Snapshot Regression
+on:
+  push:
+    branches: [fix/shared-images-20260916]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test scripts/test-large-snapshot-timeouts.mjs
