@@ -1,0 +1,108 @@
+diff --git a/src/lib/peerDataChannel.js b/src/lib/peerDataChannel.js
+--- a/src/lib/peerDataChannel.js
++++ b/src/lib/peerDataChannel.js
+@@ -91,7 +91,7 @@ export function createPeerDataChannelTransport({
+     });
+   };
+ 
+-  const waitForBufferSpace = () => {
++  const waitForBufferSpace = (timeoutMs = writeTimeoutMs) => {
+     if (closed || channel.readyState === 'closed' || channel.readyState === 'closing') {
+       return Promise.reject(new Error('Peer data channel is closed'));
+     }
+@@ -105,7 +105,7 @@ export function createPeerDataChannelTransport({
+       let pollTimer = null;
+       let bestAmount = Number(channel.bufferedAmount ?? 0);
+-      const delay = Number(writeTimeoutMs);
++      const delay = Number(timeoutMs);
+       const stallDelay = Number.isFinite(delay) && delay > 0 ? delay : 30_000;
+       const pollDelay = Math.max(10, Math.min(250, Math.floor(stallDelay / 10)));
+       const cleanup = () => {
+@@ -155,16 +155,16 @@ export function createPeerDataChannelTransport({
+     });
+   };
+ 
+-  const waitForWritable = async () => {
++  const waitForWritable = async (timeoutMs = writeTimeoutMs) => {
+     await waitFor('open', () => channel.readyState === 'open', 'Peer data channel closed before opening');
+     if (Number(channel.bufferedAmount ?? 0) <= highWater) return;
+-    await waitForBufferSpace();
++    await waitForBufferSpace(timeoutMs);
+   };
+ 
+-  const enqueueEncodedFrames = (frames) => {
++  const enqueueEncodedFrames = (frames, { writeTimeoutMs: frameWriteTimeoutMs = writeTimeoutMs } = {}) => {
+     const task = sendQueue.then(async () => {
+       for (const frame of frames) {
+         if (closed) throw new Error('Peer data channel transport is closed');
+         // eslint-disable-next-line no-await-in-loop
+-        await waitForWritable();
++        await waitForWritable(frameWriteTimeoutMs);
+         if (closed) throw new Error('Peer data channel transport is closed');
+         if (peerFrameByteLength(frame) > MAX_PEER_FRAME_BYTES) throw new Error('Peer frame exceeds byte limit');
+         channel.send(frame);
+@@ -224,9 +224,13 @@ export function createPeerDataChannelTransport({
+     },
+ 
+     sendTextTransfer(kind, text, options = {}) {
+-      const frames = splitPeerTextTransfer(kind, text, options)
++      const {
++        writeTimeoutMs: transferWriteTimeoutMs = writeTimeoutMs,
++        ...transferOptions
++      } = options;
++      const frames = splitPeerTextTransfer(kind, text, transferOptions)
+         .map((frame) => JSON.stringify(frame));
+-      return enqueueEncodedFrames(frames);
++      return enqueueEncodedFrames(frames, { writeTimeoutMs: transferWriteTimeoutMs });
+     },
+ 
+     whenDrained() {
+diff --git a/src/lib/teacherPeerHub.js b/src/lib/teacherPeerHub.js
+--- a/src/lib/teacherPeerHub.js
++++ b/src/lib/teacherPeerHub.js
+@@ -1,6 +1,7 @@
+ import { operationObjectIds } from './operationProtocol.js';
+ import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
+ 
++const SNAPSHOT_WRITE_TIMEOUT_MS = 120_000;
+ function defaultTransferId() {
+   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+@@ -48,6 +49,7 @@ export function createTeacherPeerHub({
+   getCommitsAfter,
+   createTransferId = defaultTransferId,
+   maxJournalCommits = 256,
++  snapshotWriteTimeoutMs = SNAPSHOT_WRITE_TIMEOUT_MS,
+   onCommit = () => {},
+   lockAuthority = createTeacherObjectLockAuthority(),
+   canPeerEdit = async () => true,
+@@ -60,6 +62,9 @@ export function createTeacherPeerHub({
+ 
+   const peers = new Map();
+   const journalLimit = Math.max(1, Number(maxJournalCommits) || 256);
++  const snapshotTimeout = Number.isFinite(Number(snapshotWriteTimeoutMs)) && Number(snapshotWriteTimeoutMs) > 0
++    ? Number(snapshotWriteTimeoutMs)
++    : SNAPSHOT_WRITE_TIMEOUT_MS;
+ 
+   const requirePeer = (peerId) => {
+     const peer = peers.get(String(peerId ?? ''));
+@@ -99,6 +104,7 @@ export function createTeacherPeerHub({
+     const payload = JSON.stringify({ snapshot: loaded?.snapshot ?? null, revision });
+     await peer.sendTextTransfer('snapshot', payload, {
+       transferId: createTransferId(),
++      writeTimeoutMs: snapshotTimeout,
+     });
+   };
+ 
+diff --git a/src/lib/studentPeerNetwork.js b/src/lib/studentPeerNetwork.js
+--- a/src/lib/studentPeerNetwork.js
++++ b/src/lib/studentPeerNetwork.js
+@@ -3,7 +3,7 @@ import { createStudentPeerSession } from './studentPeerSession.js';
+ 
+ const TERMINAL_STATES = new Set(['failed', 'closed']);
+ const CONNECT_TIMEOUT_MS = 15_000;
+-const INITIAL_SYNC_IDLE_TIMEOUT_MS = 30_000;
++const INITIAL_SYNC_IDLE_TIMEOUT_MS = 90_000;
+ 
+ function positiveTimeout(value, fallback) {
+   const milliseconds = Number(value);
