@@ -20,26 +20,27 @@ jobs:
           - os: macos-latest
             engine: webkit
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 18
+    timeout-minutes: 22
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       # BEGIN STAGING
-      - name: Apply reviewed source delta and check exact tested bytes
+      - name: Apply final reviewed image implementation and verify exact bytes
         run: |
           git apply --check .github/shared-images-source.patch
           git apply .github/shared-images-source.patch
+          git apply --check .github/shared-images-review-delta.patch
+          git apply .github/shared-images-review-delta.patch
           python - <<'PY'
-          from pathlib import Path
           import subprocess
-          p=Path('package.json')
-          p.write_text(p.read_text().replace('node --test scripts/test-history-concurrent-redo.mjs', 'node --test scripts/test-image-loading-regressions.mjs scripts/test-history-concurrent-redo.mjs'))
           for path, expected in {
-            'src/components/Board.jsx':'24bc6cfac845319926fa636132c82b1122cef129',
+            'src/components/Board.jsx':'5b7b6e320911a9c0ccdffeb7d30438391f10c062',
             'src/lib/imageStorage.js':'35ada6a24fe35a71ea62d36bcaac80f19cec8d11',
-            'package.json':'8fe000a1d804df58273b646c8daf2863f034054e',
+            'package.json':'a99c5470d7c00113cb1ec9558909f8191cef350b',
+            'scripts/test-image-loading-regressions.mjs':'d34f5a8b7ee729e038880005d528822fb3160ec6',
+            'scripts/test-image-history-selection-race.mjs':'5b10bfd10b0a7fb2ce2cbcb61a457ee3bae5a387',
           }.items():
             actual=subprocess.check_output(['git','hash-object',path],text=True).strip()
             assert actual==expected, (path,actual,expected)
@@ -48,8 +49,8 @@ jobs:
       # END STAGING
       - name: Install dependencies
         run: npm install --no-audit --no-fund
-      - name: Image loading behavioral regressions
-        run: node --test scripts/test-image-loading-regressions.mjs
+      - name: Image loading and history race regressions
+        run: node --test scripts/test-image-loading-regressions.mjs scripts/test-image-history-selection-race.mjs scripts/test-history-concurrent-redo.mjs
       - name: Existing authority and sync regressions
         run: |
           npm run test:browser-authority
@@ -120,18 +121,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
-      - name: Commit only the verified implementation on the isolated branch
+      - name: Commit only the fully verified image implementation
         run: |
           git apply .github/shared-images-source.patch
+          git apply .github/shared-images-review-delta.patch
           python - <<'PY'
           from pathlib import Path
           import subprocess
-          p=Path('package.json')
-          p.write_text(p.read_text().replace('node --test scripts/test-history-concurrent-redo.mjs', 'node --test scripts/test-image-loading-regressions.mjs scripts/test-history-concurrent-redo.mjs'))
           for path, expected in {
-            'src/components/Board.jsx':'24bc6cfac845319926fa636132c82b1122cef129',
+            'src/components/Board.jsx':'5b7b6e320911a9c0ccdffeb7d30438391f10c062',
             'src/lib/imageStorage.js':'35ada6a24fe35a71ea62d36bcaac80f19cec8d11',
-            'package.json':'8fe000a1d804df58273b646c8daf2863f034054e',
+            'package.json':'a99c5470d7c00113cb1ec9558909f8191cef350b',
+            'scripts/test-image-loading-regressions.mjs':'d34f5a8b7ee729e038880005d528822fb3160ec6',
+            'scripts/test-image-history-selection-race.mjs':'5b10bfd10b0a7fb2ce2cbcb61a457ee3bae5a387',
           }.items():
             actual=subprocess.check_output(['git','hash-object',path],text=True).strip()
             assert actual==expected, (path,actual,expected)
@@ -141,11 +143,11 @@ jobs:
           end=text.index('      # END STAGING\n')+len('      # END STAGING\n')
           p.write_text(text[:start]+text[end:])
           PY
-          git rm .github/shared-images-source.patch
-          git add src/components/Board.jsx src/lib/imageStorage.js package.json .github/workflows/shared-images-verification.yml
+          git rm .github/shared-images-source.patch .github/shared-images-review-delta.patch
+          git add src/components/Board.jsx src/lib/imageStorage.js .github/workflows/shared-images-verification.yml
           git diff --cached --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: recover shared images without blocking collaborative board revisions'
+          git commit -m 'fix: synchronize inserted images across all board participants'
           git push origin HEAD:fix/shared-images-20260916
           git rev-parse HEAD
