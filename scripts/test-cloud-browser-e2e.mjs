@@ -86,6 +86,11 @@ async function enter(page, name) {
   });
   await wait('board ready', () => page.evaluate(() => document.documentElement.dataset.alexDurableEditState === 'ready'));
 }
+async function toggleScreen(page) {
+  // Use the visible settings menu, as the legacy React action is intentionally hidden.
+  await page.locator('.alex-settings-gear').click();
+  await page.locator('.alex-settings-item[data-action="screenShare"]').click();
+}
 async function videoReady(page, { green = false, requireCloud = true } = {}) {
   return page.evaluate(async ({ green, requireCloud }) => {
     if (requireCloud && window.__cloudState?.transport !== 'cloud') return false;
@@ -118,7 +123,7 @@ try {
   for (const actor of [owner,editor]) {
     const viewers = pages.filter((p) => p !== actor);
     console.log('HOST', actor === owner ? 'teacher' : 'student');
-    await actor.locator('.desktop-screen-share button').click();
+    await toggleScreen(actor);
     await wait('screen session reaches peers', async () => {
       const states = await Promise.all(pages.map((p) => p.evaluate(() => window.__cloudState)));
       return states.every((s) => s?.sessionId && s.sessionId === states[0].sessionId);
@@ -129,12 +134,14 @@ try {
     await actor.evaluate(() => { window.__captureGreen = true; });
     await wait('new live frame after Cloud switch', async () => (await Promise.all(viewers.map((p) => videoReady(p,{green:true})))).every(Boolean));
     await toggle.click(); await wait('Cloud off', () => toggle.getAttribute('data-cloud-phase').then((p) => p === 'off'));
-    await wait('warm direct video resumes', async () => (await Promise.all(viewers.map((p) => videoReady(p,{green:true,requireCloud:false})))).every(Boolean));
+    await wait('viewers return to direct transport', async () => (await Promise.all(viewers.map((p) => p.evaluate(() => window.__cloudState?.transport === 'p2p')))).every(Boolean));
+    await actor.evaluate(() => { window.__captureGreen = false; });
+    await wait('new red frame arrives over direct video', async () => (await Promise.all(viewers.map((p) => videoReady(p,{green:false,requireCloud:false})))).every(Boolean));
     await toggle.click(); await wait('Cloud enabled again', () => toggle.getAttribute('data-cloud-phase').then((p) => p === 'on'));
-    await wait('resumed SFU video', async () => (await Promise.all(viewers.map((p) => videoReady(p,{green:true})))).every(Boolean));
+    await wait('resumed SFU video', async () => (await Promise.all(viewers.map((p) => videoReady(p,{green:false})))).every(Boolean));
     assert.equal(await actor.evaluate(() => window.__captures),1,'Cloud switching must reuse the original capture');
     results.push({ engine:ENGINE, host:actor === owner ? 'teacher' : 'student', cloudVideo:true, liveFrame:true, offOn:true, captureRequests:1 });
-    await actor.locator('.desktop-screen-share button').click();
+    await toggleScreen(actor);
     await wait('stopped screen removed', async () => (await Promise.all(pages.map((p) => p.evaluate(() =>
       !window.__boardCanvas()?.getObjects().some((o) => o.transientScreenShare))))).every(Boolean));
   }
