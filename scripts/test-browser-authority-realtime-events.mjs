@@ -207,3 +207,129 @@ test('owner Ably transport starts only after exclusive teacher session startup r
   assert.equal(transportStarts, 1);
   await realtime.disconnect();
 });
+
+const flushStartup = async () => { for (let i = 0; i < 40; i += 1) await Promise.resolve(); };
+function observeStartup(task) {
+  const state = { status: 'pending', error: null };
+  state.done = task.then(() => { state.status = 'fulfilled'; }, (error) => {
+    state.status = 'rejected'; state.error = error;
+  });
+  return state;
+}
+function startupFixture(t, first = {}) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const clients = [], users = [], statuses = [], errors = [];
+  const transport = createAblyBrowserTransport({
+    boardId: 'startup-recovery', roomKey: 'startup-room', clientId: 'student',
+    name: 'Student', permission: 'edit',
+    onUsers: (value) => users.push(value), onStatus: (value) => statuses.push(value),
+    onError: (error) => errors.push(error), tokenRequest: async () => ({ token: 'test' }),
+    AblyRuntime: { Realtime: class {
+      constructor() {
+        const plan = clients.length === 0 ? first : {};
+        this.closes = 0;
+        this.connection = {
+          state: 'connecting',
+          on: (listener) => { this.stateListener = listener; },
+          once: async () => { await plan.connect?.(); this.connection.state = 'connected'; },
+        };
+        this.channel = {
+          on() {}, subscribe: async () => { await plan.subscribe?.(); },
+          presence: {
+            subscribe: async () => { await plan.presenceSubscribe?.(); },
+            enter: async () => { await plan.enter?.(); },
+            get: async () => plan.get ? plan.get() : [{ clientId: 'teacher', data: { permission: 'owner' } }],
+            leave: () => plan.leave?.(),
+          },
+        };
+        this.channels = { get: () => this.channel };
+        clients.push(this);
+      }
+      close() { this.closes += 1; this.connection.state = 'closed'; this.stateListener?.({ current: 'closed' }); }
+    } },
+  });
+  t.after(() => { void transport.disconnect(); });
+  return { transport, clients, users, statuses, errors };
+}
+
+test('failed initial signaling startup recreates its client and joins without a page reload', async (t) => {
+  const failure = new Error('The network connection was lost');
+  const f = startupFixture(t, { connect: async () => { throw failure; } });
+  const starting = observeStartup(f.transport.start());
+  await flushStartup();
+  assert.equal(starting.status, 'pending', 'a temporary network error must not abandon initial startup');
+  assert.equal(f.clients[0].closes, 1, 'retire the failed connection before retrying');
+  assert.ok(f.errors.includes(failure));
+  t.mock.timers.tick(1001);
+  await flushStartup();
+  assert.equal(starting.status, 'fulfilled');
+  assert.equal(f.clients.length, 2);
+  assert.equal(f.users.at(-1)[0].clientId, 'teacher');
+  assert.equal(f.statuses.at(-1), 'SUBSCRIBED');
+});
+
+for (const phase of ['connect', 'subscribe', 'presenceSubscribe', 'enter', 'get']) {
+  test(`silent initial ${phase} has a deadline and recovers on the next client`, async (t) => {
+    let finishOld;
+    const blocked = new Promise((resolve) => { finishOld = resolve; });
+    const f = startupFixture(t, { [phase]: () => blocked });
+    const starting = observeStartup(f.transport.start());
+    await flushStartup();
+    t.mock.timers.tick(10001);
+    await flushStartup();
+    assert.equal(f.clients[0].closes, 1, `${phase} must not leave a half-started SDK client`);
+    t.mock.timers.tick(1001);
+    await flushStartup();
+    assert.equal(starting.status, 'fulfilled');
+    assert.equal(f.clients.length, 2);
+    const count = f.users.length;
+    finishOld(phase === 'get' ? [{ clientId: 'stale-teacher', data: {} }] : undefined);
+    await flushStartup();
+    assert.equal(f.users.length, count, 'late completion from a retired attempt must not publish stale presence');
+    const statusCount = f.statuses.length;
+    f.clients[0].stateListener({ current: 'connected' });
+    await flushStartup();
+    assert.equal(f.statuses.length, statusCount, 'retired SDK state events must be ignored');
+  });
+}
+
+test('simultaneous startup callers share one signaling client', async (t) => {
+  const f = startupFixture(t);
+  await Promise.all([f.transport.start(), f.transport.start()]);
+  assert.equal(f.clients.length, 1);
+});
+
+test('closing a board cancels a pending initial connection immediately', async (t) => {
+  const f = startupFixture(t, { connect: () => new Promise(() => {}) });
+  const starting = observeStartup(f.transport.start());
+  await flushStartup();
+  await f.transport.disconnect();
+  await flushStartup();
+  assert.equal(starting.status, 'rejected');
+  assert.match(starting.error.message, /closed/i);
+  t.mock.timers.tick(60000);
+  await flushStartup();
+  assert.equal(f.clients.length, 1);
+});
+
+test('closing a connected board never waits indefinitely for presence leave', async (t) => {
+  const f = startupFixture(t, { leave: () => new Promise(() => {}) });
+  await f.transport.start();
+  const closing = observeStartup(f.transport.disconnect());
+  await flushStartup();
+  assert.equal(closing.status, 'fulfilled');
+  assert.equal(f.clients[0].closes, 1);
+});
+
+test('closing during startup backoff stops every future reconnect', async (t) => {
+  const f = startupFixture(t, { connect: async () => { throw new Error('offline'); } });
+  const starting = observeStartup(f.transport.start());
+  await flushStartup();
+  await f.transport.disconnect();
+  await flushStartup();
+  t.mock.timers.tick(60000);
+  await flushStartup();
+  assert.equal(starting.status, 'rejected');
+  assert.equal(f.clients.length, 1);
+  assert.equal(f.clients[0].closes, 1);
+});
