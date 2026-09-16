@@ -1,6 +1,8 @@
 import { operationObjectIds } from './operationProtocol.js';
 import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
 
+const SNAPSHOT_WRITE_TIMEOUT_MS = 120_000;
+
 function defaultTransferId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   return `transfer-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -48,6 +50,7 @@ export function createTeacherPeerHub({
   getCommitsAfter,
   createTransferId = defaultTransferId,
   maxJournalCommits = 256,
+  snapshotWriteTimeoutMs = SNAPSHOT_WRITE_TIMEOUT_MS,
   onCommit = () => {},
   lockAuthority = createTeacherObjectLockAuthority(),
   canPeerEdit = async () => true,
@@ -59,6 +62,9 @@ export function createTeacherPeerHub({
 
   const peers = new Map();
   const journalLimit = Math.max(1, Number(maxJournalCommits) || 256);
+  const snapshotTimeout = Number.isFinite(Number(snapshotWriteTimeoutMs)) && Number(snapshotWriteTimeoutMs) > 0
+    ? Number(snapshotWriteTimeoutMs)
+    : SNAPSHOT_WRITE_TIMEOUT_MS;
 
   const requirePeer = (peerId) => {
     const peer = peers.get(String(peerId ?? ''));
@@ -99,6 +105,7 @@ export function createTeacherPeerHub({
     const payload = JSON.stringify({ snapshot: loaded?.snapshot ?? null, revision });
     await peer.sendTextTransfer('snapshot', payload, {
       transferId: createTransferId(),
+      writeTimeoutMs: snapshotTimeout,
     });
   };
 

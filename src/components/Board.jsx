@@ -73,6 +73,8 @@ import {
 } from '../lib/operationProtocol.js';
 import {
   copySerializedBoardImages,
+  enlivenBoardObjects,
+  publishBoardImage,
   isAcceptedImageFile,
   loadImageElement,
   preloadSerializedImages,
@@ -1006,6 +1008,10 @@ function patchSerializedObjectTransform(serialized, object) {
 }
 
 function serializeObject(object) {
+  if (object.pendingImage && object.pendingImageSerialized) {
+    // Loading cards are local render state, never durable picture contents.
+    return structuredClone(object.pendingImageSerialized);
+  }
   const serialized = object.toObject([
     'boardObjectId',
     'updatedAt',
@@ -1294,6 +1300,21 @@ function createPendingImagePlaceholder(serialized) {
   placeholder.creationClientId = serialized?.creationClientId ?? null;
   placeholder.setCoords();
   return placeholder;
+}
+
+function enlivenImageAwareObjects(objects) {
+  return enlivenBoardObjects(util.enlivenObjects, objects);
+}
+
+// Decoding image pixels is not a prerequisite for installing an authoritative
+// revision. Keep the complete source on a placeholder, then hydrate independently.
+function partitionImageRevival(entries, preparedOps) {
+  return entries.filter((entry) => {
+    const payload = serializedImagePayload(entry.serialized);
+    if (!payload) return true;
+    preparedOps[entry.index].revived = createPendingImagePlaceholder(payload);
+    return false;
+  });
 }
 
 function serializedImagePayload(serialized) {
@@ -3519,6 +3540,7 @@ function BoardWorkspace({
 
 
   const sendRecordUpserts = useCallback((records, {
+    actionId = null,
     restore = false,
     reorder = false,
     atomic = true,
@@ -3532,7 +3554,7 @@ function BoardWorkspace({
       restore,
       reorder,
     }));
-    return sendDurableOps(ops, { atomic, skipDeferredFlush });
+    return sendDurableOps(ops, { atomic, skipDeferredFlush, ...(actionId ? { actionId } : {}) });
   }, [sendDurableOps]);
 
   const sendRecordPatches = useCallback((beforeRecords, afterRecords, {
@@ -3645,7 +3667,7 @@ function BoardWorkspace({
         // eslint-disable-next-line no-await-in-loop
         await preloadSerializedImages(record.object);
       }
-      const copiedMembers = await util.enlivenObjects(sourceRecords.map((record) => record.object));
+      const copiedMembers = await enlivenImageAwareObjects(sourceRecords.map((record) => record.object));
       if (copiedMembers.length !== sourceRecords.length) throw new Error('Не удалось создать временную группу');
 
       const minimumZ = Math.min(...sourceRecords.map((record) => Number(record.zIndex ?? 0)));
@@ -3772,7 +3794,7 @@ function BoardWorkspace({
         });
         applyingRemoteRef.current = true;
         canvas.remove(proxy);
-        const restored = await util.enlivenObjects(
+        const restored = await enlivenImageAwareObjects(
           transaction.sourceRecords.map((record) => record.object),
         );
         restored.forEach((object, index) => {
@@ -3805,7 +3827,7 @@ function BoardWorkspace({
         // eslint-disable-next-line no-await-in-loop
         await preloadSerializedImages(serialized);
       }
-      const finalObjects = await util.enlivenObjects(childSerializations);
+      const finalObjects = await enlivenImageAwareObjects(childSerializations);
       if (finalObjects.length !== children.length) throw new Error('Не удалось завершить групповое выделение');
 
       applyingRemoteRef.current = true;
@@ -3888,7 +3910,7 @@ function BoardWorkspace({
       });
       applyingRemoteRef.current = true;
       if (transaction.proxy) canvas.remove(transaction.proxy);
-      const restored = await util.enlivenObjects(transaction.sourceRecords.map((record) => record.object));
+      const restored = await enlivenImageAwareObjects(transaction.sourceRecords.map((record) => record.object));
       restored.forEach((object, index) => {
         canvas.add(object);
         const zIndex = transaction.sourceRecords[index]?.zIndex;
@@ -4154,6 +4176,9 @@ function BoardWorkspace({
 
 
   const selectInsertedObjects = useCallback((objects) => {
+    // History clears selection before waiting for pending uploads. A late upload
+    // completion must not reacquire a lease and block its own undo on this device.
+    if (historyCommandBusyRef.current) return;
     const canvas = fabricCanvasRef.current;
     const inserted = (objects ?? []).filter((object) => object?.canvas === canvas);
     if (!canvas || !inserted.length) return;
@@ -4189,6 +4214,7 @@ function BoardWorkspace({
       const placeholder = createImagePlaceholder(point);
       markObject(placeholder, clientIdRef.current);
       placeholder.set({ selectable: false, evented: false, hasControls: false });
+      placeholder.transientPreview = true;
       canvas.add(placeholder);
       canvas.requestRenderAll();
       const placeholderRecord = getObjectRecords([placeholder]);
@@ -4203,7 +4229,7 @@ function BoardWorkspace({
         // eslint-disable-next-line no-await-in-loop
         const stored = await storeBoardImage(boardId, file);
         // eslint-disable-next-line no-await-in-loop
-        const element = await loadImageElement(stored.url, { retries: 10 });
+        const element = await loadImageElement(stored.url, { retries: 1 });
         const object = new FabricImage(element, {
           left: point.x,
           top: point.y,
@@ -4231,10 +4257,19 @@ function BoardWorkspace({
         object.setCoords();
         canvas.requestRenderAll();
         const records = getObjectRecords([object]);
+        recordAction({ type: 'add', records });
         realtimeRef.current?.sendPreview?.(records);
         // eslint-disable-next-line no-await-in-loop
-        const committedResult = await sendRecordUpserts(records);
-        recordAction({ type: 'add', records });
+        const imageActionId = randomToken(24);
+        const publicationRecords = structuredClone(records);
+        const committedResults = await publishBoardImage(
+          () => sendRecordUpserts(publicationRecords, { actionId: imageActionId }),
+          {
+            isActive: () => fabricCanvasRef.current === canvas && canEditRef.current,
+            onRetry: () => setSaveStatus('Повторяю передачу изображения участникам…'),
+          },
+        );
+        const committedResult = committedResults?.at(-1);
         completed.push(object);
         schedulePersistence();
 
@@ -4565,7 +4600,7 @@ function BoardWorkspace({
     try {
       validRecords.forEach((record) => removeRegisteredObjectsById(record.object.boardObjectId));
       await Promise.all(validRecords.map((record) => preloadSerializedImages(record.object)));
-      const revivedObjects = await util.enlivenObjects(validRecords.map((record) => record.object));
+      const revivedObjects = await enlivenImageAwareObjects(validRecords.map((record) => record.object));
       revivedObjects.forEach((revived, index) => {
         if (!revived) return;
         const record = validRecords[index];
@@ -4789,6 +4824,7 @@ function BoardWorkspace({
       object?.pendingImage
       && object?.pendingImageSerialized
       && object?.boardObjectId
+      && Number(object.pendingImageRetryAt ?? 0) <= Date.now()
     ));
     if (!pending.length) return;
 
@@ -4801,38 +4837,53 @@ function BoardWorkspace({
           const serialized = placeholder?.pendingImageSerialized;
           const objectId = String(placeholder?.boardObjectId ?? '');
           if (!serialized || !objectId || getLocalMutationIds().has(objectId)) continue;
+          const expectedVersion = placeholder.updatedAt;
+          const expectedSource = serialized.src;
           try {
             // Different pictures load independently, so one slow CDN response cannot
             // hold every other image on the board behind it.
             // eslint-disable-next-line no-await-in-loop
-            await preloadSerializedImages(serialized);
-            // eslint-disable-next-line no-await-in-loop
-            const [revived] = await util.enlivenObjects([serialized]);
+            const [revived] = await enlivenImageAwareObjects([structuredClone(serialized)]);
             if (!revived) continue;
             const current = boardObjectsById(canvas, objectId).find((object) => object.pendingImage);
-            if (!current) continue;
-            const zIndex = canvas.getObjects().indexOf(current);
-            applyingRemoteRef.current = true;
-            canvas.remove(current);
-            revived.pendingImage = false;
-            revived.pendingImageSerialized = undefined;
-            revived.transientPreview = false;
-            canvas.add(revived);
-            serializedObjectCacheRef.current.set(revived, serialized);
-            if (zIndex >= 0 && typeof canvas.moveObjectTo === 'function') {
-              canvas.moveObjectTo(revived, clamp(zIndex, 0, canvas.getObjects().length - 1));
+            if (fabricCanvasRef.current !== canvas || current !== placeholder
+              || current.pendingImageSerialized !== serialized
+              || current.updatedAt !== expectedVersion || serialized.src !== expectedSource
+              || getLocalMutationIds().has(objectId)) {
+              revived.dispose?.();
+              continue;
             }
-            revived.setCoords?.();
+            const zIndex = canvas.getObjects().indexOf(current);
+            const wasApplyingRemote = applyingRemoteRef.current;
+            applyingRemoteRef.current = true;
+            try {
+              canvas.remove(current);
+              revived.pendingImage = false;
+              revived.pendingImageSerialized = undefined;
+              revived.transientPreview = false;
+              canvas.add(revived);
+              serializedObjectCacheRef.current.set(revived, serialized);
+              if (zIndex >= 0 && typeof canvas.moveObjectTo === 'function') {
+                canvas.moveObjectTo(revived, clamp(zIndex, 0, canvas.getObjects().length - 1));
+              }
+              revived.setCoords?.();
+            } finally { applyingRemoteRef.current = wasApplyingRemote; }
           } catch {
-            // Storage/CDN can still be warming up. The next retry keeps the same objectId.
-          } finally {
-            applyingRemoteRef.current = false;
+            if (fabricCanvasRef.current !== canvas || !canvas.getObjects().includes(placeholder)) continue;
+            const attempts = Math.min(5, Number(placeholder.pendingImageAttempts ?? 0) + 1);
+            placeholder.pendingImageAttempts = attempts;
+            placeholder.pendingImageRetryAt = Date.now() + Math.min(30_000, 1_000 * (2 ** attempts));
+            const label = placeholder.getObjects?.().find((object) => typeof object.text === 'string');
+            label?.set?.('text', 'Не удалось загрузить изображение. Повторяю…');
+            placeholder.dirty = true;
           }
         }
       });
       await Promise.all(workers);
-      applyObjectInteractivity();
-      canvas.requestRenderAll();
+      if (fabricCanvasRef.current === canvas) {
+        applyObjectInteractivity();
+        canvas.requestRenderAll();
+      }
     } finally {
       pendingImageRetryInFlightRef.current = false;
     }
@@ -5120,7 +5171,7 @@ function BoardWorkspace({
       const serialized = reviveEntries.map((entry) => entry.serialized);
       try {
         await preloadSerializedImages(serialized);
-        const revived = await util.enlivenObjects(serialized);
+        const revived = await enlivenImageAwareObjects(serialized);
         reviveEntries.forEach((entry, index) => {
           prepared[entry.index].revived = revived[index] ?? null;
         });
@@ -5130,7 +5181,7 @@ function BoardWorkspace({
             // eslint-disable-next-line no-await-in-loop
             await preloadSerializedImages(entry.serialized);
             // eslint-disable-next-line no-await-in-loop
-            const [revived] = await util.enlivenObjects([entry.serialized]);
+            const [revived] = await enlivenImageAwareObjects([entry.serialized]);
             prepared[entry.index].revived = revived ?? null;
           } catch {
             const serializedType = String(entry.serialized?.type ?? '').toLowerCase();
@@ -5554,7 +5605,7 @@ function BoardWorkspace({
             // serialized proxy. New clients send only ids and build the group locally.
             if (serialized) {
               await preloadSerializedImages(serialized);
-              [proxy] = await util.enlivenObjects([serialized]);
+              [proxy] = await enlivenImageAwareObjects([serialized]);
             } else {
               const sourceObjects = sourceIds
                 .map((id) => originalSourceObjects.find((object) => (
@@ -5774,7 +5825,7 @@ function BoardWorkspace({
                 // eslint-disable-next-line no-await-in-loop
                 await preloadSerializedImages(serialized);
               }
-              const restored = await util.enlivenObjects(serializations);
+              const restored = await enlivenImageAwareObjects(serializations);
               canvas.remove(transactionProxy);
               restored.forEach((object, index) => {
                 const matrix = absoluteMatrices[index];
@@ -6055,7 +6106,7 @@ function BoardWorkspace({
           serialized: null,
           skipDeleted: false,
         }));
-        const reviveEntries = [];
+        let reviveEntries = [];
         preparedOps.forEach((entry, index) => {
           const op = entry.op;
           const id = String(op?.type === 'patch' ? op.id : op?.object?.boardObjectId ?? '');
@@ -6082,11 +6133,12 @@ function BoardWorkspace({
           entry.serialized = serialized;
           reviveEntries.push({ index, serialized });
         });
+        reviveEntries = partitionImageRevival(reviveEntries, preparedOps);
         if (reviveEntries.length) {
           const serializedBatch = reviveEntries.map((entry) => entry.serialized);
           try {
             await preloadSerializedImages(serializedBatch);
-            const revivedBatch = await util.enlivenObjects(serializedBatch);
+            const revivedBatch = await enlivenImageAwareObjects(serializedBatch);
             reviveEntries.forEach((entry, revivedIndex) => {
               preparedOps[entry.index].revived = revivedBatch[revivedIndex] ?? null;
             });
@@ -6097,7 +6149,7 @@ function BoardWorkspace({
                 // eslint-disable-next-line no-await-in-loop
                 await preloadSerializedImages(entry.serialized);
                 // eslint-disable-next-line no-await-in-loop
-                const [revived] = await util.enlivenObjects([entry.serialized]);
+                const [revived] = await enlivenImageAwareObjects([entry.serialized]);
                 preparedOps[entry.index].revived = revived ?? null;
               } catch (entryError) {
                 const serializedType = String(entry.serialized?.type ?? '').toLowerCase();
@@ -6135,7 +6187,7 @@ function BoardWorkspace({
               await preloadSerializedImages(object);
             }
             // eslint-disable-next-line no-await-in-loop
-            restored = await util.enlivenObjects(serialized);
+            restored = await enlivenImageAwareObjects(serialized);
             if (restored.length !== records.length) {
               throw new Error(`Не удалось восстановить конкурирующую группу ${transactionId}`);
             }
@@ -6272,6 +6324,9 @@ function BoardWorkspace({
                 object.set(patch.transform);
                 object.updatedAt = Number(patch.updatedAt ?? Date.now());
                 object.updatedBy = patch.updatedBy ?? sourceClientId ?? object.updatedBy;
+                if (object.pendingImageSerialized) Object.assign(object.pendingImageSerialized, patch.transform, {
+                  updatedAt: object.updatedAt, updatedBy: object.updatedBy,
+                });
                 object.dirty = true;
                 object.setCoords();
                 reconciledObjects.push(object);
@@ -6357,6 +6412,7 @@ function BoardWorkspace({
             });
           revisionRef.current = incomingRevision;
           bufferSnapshotAction(ops, incomingBackground, incomingRevision);
+          queueMicrotask(() => retryPendingServerImages());
           if (transformOnly) {
             canvas.getActiveObject()?.setCoords?.();
           } else if (actionTouchesSelection) {
@@ -6394,6 +6450,7 @@ function BoardWorkspace({
     updateSelectionState,
     updateSelectionStyleState,
     verifyAuthoritativeOps,
+    retryPendingServerImages,
   ]);
 
   applyRemoteOpsRef.current = applyRemoteOps;
@@ -6444,7 +6501,7 @@ function BoardWorkspace({
       const serialized = objects.map(serializeObject);
       const matrices = objects.map((object) => compactTransformMatrix(object.calcTransformMatrix?.()));
       await preloadSerializedImages(serialized);
-      const absoluteCopies = await util.enlivenObjects(serialized);
+      const absoluteCopies = await enlivenImageAwareObjects(serialized);
       absoluteCopies.forEach((object, index) => {
         const matrix = matrices[index];
         if (matrix) util.applyTransformToObject(object, matrix);
@@ -6604,7 +6661,7 @@ function BoardWorkspace({
         });
       }
       await preloadSerializedImages(clipboardRef.current);
-      const revived = await util.enlivenObjects(clipboardRef.current);
+      const revived = await enlivenImageAwareObjects(clipboardRef.current);
       const pasteTransactionId = `paste:${clientId}:${Date.now()}:${randomToken(6)}`;
       const added = revived.map((object, index) => {
         object.set({
@@ -7802,7 +7859,7 @@ function BoardWorkspace({
 
           const serializedObjects = active.map(({ record }) => record.object);
           await preloadSerializedImages(serializedObjects);
-          const revivedObjects = await util.enlivenObjects(serializedObjects);
+          const revivedObjects = await enlivenImageAwareObjects(serializedObjects);
 
           applyingRemoteRef.current = true;
           const previousRenderOnAddRemove = canvas.renderOnAddRemove;
@@ -7951,7 +8008,7 @@ function BoardWorkspace({
           updatedAt: incomingUpdatedAt,
         })) return;
         await preloadSerializedImages(record.object);
-        const [revived] = await util.enlivenObjects([record.object]);
+        const [revived] = await enlivenImageAwareObjects([record.object]);
         if (!revived || getLocalMutationIds().has(objectId)) return;
 
         const existing = registeredObjectsById(objectId);
@@ -13104,6 +13161,14 @@ function BoardWorkspace({
         activeObject.setCoords();
         canvas.fire('text:changed', { target: activeObject });
         canvas.requestRenderAll();
+        return;
+      }
+
+      const imageFiles = droppedFilesFromDataTransfer(event.clipboardData).filter(isAcceptedImageFile);
+      if (imageFiles.length && !isCanvasTextEditing) {
+        event.preventDefault();
+        internalClipboardArmedRef.current = false;
+        addImageFiles(imageFiles, lastPointerSceneRef.current);
         return;
       }
 
