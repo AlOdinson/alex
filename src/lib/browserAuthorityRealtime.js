@@ -12,14 +12,21 @@ function participantColor(clientId) {
   return palette[Math.abs(hash) % palette.length];
 }
 
-function withTimeout(promise, milliseconds, message) {
+function withTimeout(promise, milliseconds, message, signal = null) {
   let timer = null;
+  let onAbort = null;
   return Promise.race([
     Promise.resolve(promise),
     new Promise((_, reject) => {
+      onAbort = () => reject(new Error('Ably transport is closed'));
+      if (signal?.aborted) { onAbort(); return; }
+      signal?.addEventListener('abort', onAbort, { once: true });
       timer = setTimeout(() => reject(new Error(message)), milliseconds);
     }),
-  ]).finally(() => clearTimeout(timer));
+  ]).finally(() => {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  });
 }
 
 export async function routeBrowserRealtimeEvent(event, payload, {
@@ -115,10 +122,29 @@ export function createAblyBrowserTransport({
   let recoveryPromise = null;
   let connectedOnce = false;
   let attachedOnce = false;
+  let startTask = null;
+  let retryTimer = null;
+  let resumeRetry = null;
+  const lifetime = new AbortController();
+
+  const retireClient = () => {
+    const previous = client;
+    client = null;
+    channel = null;
+    remoteParticipantCount = 0;
+    connectedOnce = false;
+    attachedOnce = false;
+    // close() leaves Ably presence too. Awaiting presence.leave() first can hang
+    // forever on the very connection we are trying to retire.
+    try { previous?.close?.(); } catch { /* already disconnected */ }
+  };
 
   const refreshUsers = async () => {
     if (!channel || closed) return [];
-    const members = await channel.presence.get();
+    const currentChannel = channel;
+    const members = await withTimeout(currentChannel.presence.get(), CONNECT_TIMEOUT_MS,
+      'Timed out while reading Ably board presence', lifetime.signal);
+    if (closed || channel !== currentChannel) return [];
     const users = new Map();
     members.forEach((member) => {
       const data = member?.data ?? {};
@@ -159,72 +185,111 @@ export function createAblyBrowserTransport({
     return recoveryPromise;
   };
 
-  return {
-    async start() {
-      if (closed) throw new Error('Ably transport is closed');
-      if (!AblyRuntime?.Realtime) throw new Error('Ably SDK did not load');
-      client = new AblyRuntime.Realtime({
-        clientId: safeClientId,
-        useTokenAuth: true,
-        echoMessages: false,
-        authCallback: async (_params, callback) => {
-          try {
-            callback(null, await tokenRequest({ boardId: safeBoardId, roomKey: safeRoomKey, clientId: safeClientId }));
-          } catch (error) {
-            callback(error, null);
-          }
-        },
-        disconnectedRetryTimeout: 5000,
-        suspendedRetryTimeout: 15000,
-      });
+  const startAttempt = async () => {
+    const attemptClient = new AblyRuntime.Realtime({
+      clientId: safeClientId,
+      useTokenAuth: true,
+      echoMessages: false,
+      authCallback: async (_params, callback) => {
+        try {
+          const token = await tokenRequest({ boardId: safeBoardId, roomKey: safeRoomKey, clientId: safeClientId });
+          if (closed || client !== attemptClient) throw new Error('Ably transport is closed');
+          callback(null, token);
+        } catch (error) {
+          callback(error, null);
+        }
+      },
+      disconnectedRetryTimeout: 5000,
+      suspendedRetryTimeout: 15000,
+    });
+    client = attemptClient;
+    const current = () => !closed && client === attemptClient;
+    const assertCurrent = () => { if (!current()) throw new Error('Ably transport is closed'); };
+    attemptClient.connection.on((change) => {
+      if (!current()) return;
+      const state = change?.current ?? attemptClient.connection.state;
+      if (state === 'connected') {
+        const shouldRecover = connectedOnce;
+        connectedOnce = true;
+        onStatus('SUBSCRIBED');
+        if (shouldRecover) recoverContinuity('connection-reconnected');
+      } else if (state === 'disconnected') onStatus('TIMED_OUT');
+      else if (state === 'suspended' || state === 'failed') onStatus('CHANNEL_ERROR');
+      else if (state === 'closed') onStatus('CLOSED');
+    });
 
-      client.connection.on((change) => {
-        const state = change?.current ?? client?.connection?.state;
-        if (state === 'connected') {
-          const shouldRecover = connectedOnce;
-          connectedOnce = true;
-          onStatus('SUBSCRIBED');
-          if (shouldRecover) recoverContinuity('connection-reconnected');
-        } else if (state === 'disconnected') onStatus('TIMED_OUT');
-        else if (state === 'suspended' || state === 'failed') onStatus('CHANNEL_ERROR');
-        else if (state === 'closed') onStatus('CLOSED');
-      });
-
-      await withTimeout(client.connection.once('connected'), CONNECT_TIMEOUT_MS, 'Timed out while connecting to Ably');
-      connectedOnce = true;
-      if (closed) throw new Error('Ably transport is closed');
-
-      channel = client.channels.get(`board:${safeBoardId}:${safeRoomKey}`);
-      channel.on?.('attached', (change) => {
-        const shouldRecover = attachedOnce && change?.resumed === false;
-        attachedOnce = true;
-        if (shouldRecover) recoverContinuity('channel-reattached-without-continuity');
-      });
-      channel.on?.('update', (change) => {
-        if (change?.resumed === false) recoverContinuity('channel-continuity-update');
-      });
-
-      await withTimeout(
-        channel.subscribe((message) => Promise.resolve(onEvent(message?.name, message?.data)).catch(onError)),
-        CONNECT_TIMEOUT_MS,
-        'Timed out while attaching Ably board channel',
-      );
-      // A resolved subscribe means the initial attach completed. A later ATTACHED event
-      // with resumed=false is therefore a real continuity loss rather than first attach.
+    await withTimeout(
+      attemptClient.connection.state === 'connected' ? Promise.resolve() : attemptClient.connection.once('connected'),
+      CONNECT_TIMEOUT_MS, 'Timed out while connecting to Ably', lifetime.signal,
+    );
+    assertCurrent();
+    connectedOnce = true;
+    const attemptChannel = attemptClient.channels.get(`board:${safeBoardId}:${safeRoomKey}`);
+    channel = attemptChannel;
+    attemptChannel.on?.('attached', (change) => {
+      if (!current()) return;
+      const shouldRecover = attachedOnce && change?.resumed === false;
       attachedOnce = true;
-      await channel.presence.subscribe(() => {
-        presenceRefresh = presenceRefresh.catch(() => undefined).then(refreshUsers).catch(onError);
-      });
-      await channel.presence.enter({
-        clientId: safeClientId,
-        name,
-        permission,
-        color,
-        joinedAt: Date.now(),
-      });
-      await refreshUsers();
-      onStatus('SUBSCRIBED');
-      return true;
+      if (shouldRecover) recoverContinuity('channel-reattached-without-continuity');
+    });
+    attemptChannel.on?.('update', (change) => {
+      if (current() && change?.resumed === false) recoverContinuity('channel-continuity-update');
+    });
+
+    await withTimeout(
+      attemptChannel.subscribe((message) => {
+        if (!current()) return;
+        return Promise.resolve(onEvent(message?.name, message?.data)).catch(onError);
+      }),
+      CONNECT_TIMEOUT_MS, 'Timed out while attaching Ably board channel', lifetime.signal,
+    );
+    assertCurrent();
+    attachedOnce = true;
+    await withTimeout(attemptChannel.presence.subscribe(() => {
+      if (!current()) return;
+      presenceRefresh = presenceRefresh.catch(() => undefined).then(() => current() ? refreshUsers() : []).catch(onError);
+    }), CONNECT_TIMEOUT_MS, 'Timed out while subscribing to Ably board presence', lifetime.signal);
+    assertCurrent();
+    await withTimeout(attemptChannel.presence.enter({
+      clientId: safeClientId, name, permission, color, joinedAt: Date.now(),
+    }), CONNECT_TIMEOUT_MS, 'Timed out while entering Ably board presence', lifetime.signal);
+    assertCurrent();
+    await refreshUsers();
+    assertCurrent();
+    onStatus('SUBSCRIBED');
+    return true;
+  };
+
+  return {
+    start() {
+      if (closed) return Promise.reject(new Error('Ably transport is closed'));
+      if (startTask) return startTask;
+      if (!AblyRuntime?.Realtime) return Promise.reject(new Error('Ably SDK did not load'));
+      // SDK reconnection alone cannot finish a start() abandoned before channel /
+      // presence setup. Retire that partial client and retry the entire bootstrap.
+      startTask = (async () => {
+        let failures = 0;
+        while (!closed) {
+          try { return await startAttempt(); }
+          catch (error) {
+            retireClient();
+            if (closed) throw error;
+            try { onError(error); } catch { /* observer errors are ignored */ }
+            try { onStatus('CHANNEL_ERROR'); } catch { /* observer errors are ignored */ }
+            const delay = Math.min(15_000, 1000 * (2 ** Math.min(failures++, 4)));
+            await new Promise((resolve) => {
+              resumeRetry = resolve;
+              retryTimer = setTimeout(resolve, delay);
+            });
+            clearTimeout(retryTimer);
+            retryTimer = null;
+            resumeRetry = null;
+            if (!closed) onStatus('RECOVERING');
+          }
+        }
+        throw new Error('Ably transport is closed');
+      })();
+      return startTask;
     },
 
     async publish(event, payload, { force = false } = {}) {
@@ -242,12 +307,11 @@ export function createAblyBrowserTransport({
     async disconnect() {
       if (closed) return;
       closed = true;
-      if (channel) {
-        try { await channel.presence.leave(); } catch { /* connection may already be closed */ }
-      }
-      try { client?.close?.(); } catch { /* ignore close errors */ }
-      channel = null;
-      client = null;
+      lifetime.abort();
+      clearTimeout(retryTimer);
+      resumeRetry?.();
+      resumeRetry = null;
+      retireClient();
     },
   };
 }

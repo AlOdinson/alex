@@ -4,7 +4,7 @@ import { createStudentPeerSession } from './studentPeerSession.js';
 
 const TERMINAL_STATES = new Set(['failed', 'closed']);
 const CONNECT_TIMEOUT_MS = 15_000;
-const INITIAL_SYNC_IDLE_TIMEOUT_MS = 30_000;
+const INITIAL_SYNC_IDLE_TIMEOUT_MS = 90_000;
 
 function positiveTimeout(value, fallback) {
   const milliseconds = Number(value);

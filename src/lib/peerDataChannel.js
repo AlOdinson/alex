@@ -89,23 +89,84 @@ export function createPeerDataChannelTransport({
     });
   };
 
-  const waitForWritable = async () => {
-    await waitFor('open', () => channel.readyState === 'open', 'Peer data channel closed before opening');
-    if (Number(channel.bufferedAmount ?? 0) <= highWater) return;
+  const waitForBufferSpace = (timeoutMs = writeTimeoutMs) => {
+    if (closed || channel.readyState === 'closed' || channel.readyState === 'closing') {
+      return Promise.reject(new Error('Peer data channel is closed'));
+    }
+    if (Number(channel.bufferedAmount ?? 0) <= highWater) return Promise.resolve();
     channel.bufferedAmountLowThreshold = lowWater;
-    await waitFor(
-      'bufferedamountlow',
-      () => Number(channel.bufferedAmount ?? 0) <= lowWater,
-      'Peer data channel closed while waiting for buffer space',
-    );
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let removeLow = () => {};
+      let removeClose = () => {};
+      let stallTimer = null;
+      let pollTimer = null;
+      let bestAmount = Number(channel.bufferedAmount ?? 0);
+      const delay = Number(timeoutMs);
+      const stallDelay = Number.isFinite(delay) && delay > 0 ? delay : 30_000;
+      const pollDelay = Math.max(10, Math.min(250, Math.floor(stallDelay / 10)));
+      const cleanup = () => {
+        removeLow();
+        removeClose();
+        clearTimeout(stallTimer);
+        clearTimeout(pollTimer);
+        pendingWaits.delete(cancel);
+      };
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+      const cancel = () => fail(new Error('Peer data channel closed while waiting for buffer space'));
+      const armStallTimer = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => fail(new Error('Peer data channel write timed out')), stallDelay);
+      };
+      const checkProgress = () => {
+        if (settled) return;
+        if (closed || channel.readyState === 'closed' || channel.readyState === 'closing') {
+          cancel();
+          return;
+        }
+        const amount = Number(channel.bufferedAmount ?? 0);
+        if (amount <= lowWater) {
+          finish();
+          return;
+        }
+        if (amount < bestAmount) {
+          bestAmount = amount;
+          armStallTimer();
+        }
+        pollTimer = setTimeout(checkProgress, pollDelay);
+      };
+      pendingWaits.add(cancel);
+      removeLow = addListener(channel, 'bufferedamountlow', checkProgress);
+      removeClose = addListener(channel, 'close', cancel, { once: true });
+      armStallTimer();
+      pollTimer = setTimeout(checkProgress, pollDelay);
+      checkProgress();
+    });
   };
 
-  const enqueueEncodedFrames = (frames) => {
+  const waitForWritable = async (timeoutMs = writeTimeoutMs) => {
+    await waitFor('open', () => channel.readyState === 'open', 'Peer data channel closed before opening');
+    if (Number(channel.bufferedAmount ?? 0) <= highWater) return;
+    await waitForBufferSpace(timeoutMs);
+  };
+
+  const enqueueEncodedFrames = (frames, { writeTimeoutMs: frameWriteTimeoutMs = writeTimeoutMs } = {}) => {
     const task = sendQueue.then(async () => {
       for (const frame of frames) {
         if (closed) throw new Error('Peer data channel transport is closed');
         // eslint-disable-next-line no-await-in-loop
-        await waitForWritable();
+        await waitForWritable(frameWriteTimeoutMs);
         if (closed) throw new Error('Peer data channel transport is closed');
         if (peerFrameByteLength(frame) > MAX_PEER_FRAME_BYTES) throw new Error('Peer frame exceeds byte limit');
         channel.send(frame);
@@ -177,9 +238,13 @@ export function createPeerDataChannelTransport({
     },
 
     sendTextTransfer(kind, text, options = {}) {
-      const frames = splitPeerTextTransfer(kind, text, options)
+      const {
+        writeTimeoutMs: transferWriteTimeoutMs = writeTimeoutMs,
+        ...transferOptions
+      } = options;
+      const frames = splitPeerTextTransfer(kind, text, transferOptions)
         .map((frame) => JSON.stringify(frame));
-      return enqueueEncodedFrames(frames);
+      return enqueueEncodedFrames(frames, { writeTimeoutMs: transferWriteTimeoutMs });
     },
 
     whenDrained() {

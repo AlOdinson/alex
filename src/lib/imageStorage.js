@@ -52,8 +52,18 @@ function blobToDataUrl(blob) {
   });
 }
 
-function sleep(milliseconds) {
-  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+function abortError() {
+  return new DOMException('Загрузка изображения отменена', 'AbortError');
+}
+
+function sleep(milliseconds, signal) {
+  if (signal?.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const done = () => { signal?.removeEventListener('abort', cancel); resolve(); };
+    const timer = setTimeout(done, milliseconds);
+    const cancel = () => { clearTimeout(timer); reject(abortError()); };
+    signal?.addEventListener('abort', cancel, { once: true });
+  });
 }
 
 function withRetryToken(source, attempt) {
@@ -62,38 +72,78 @@ function withRetryToken(source, attempt) {
   return `${source}${separator}alex_retry=${Date.now()}-${attempt}`;
 }
 
-export async function loadImageElement(source, { retries = 8 } = {}) {
+export async function loadImageElement(source, { retries = 1, timeoutMs = 8_000, signal } = {}) {
   let lastError = null;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
+    if (signal?.aborted) throw abortError();
     try {
       const requestSource = withRetryToken(source, attempt);
       // eslint-disable-next-line no-await-in-loop
       return await new Promise((resolve, reject) => {
         const image = new Image();
+        let settled = false;
+        let timer;
+        const finish = (error = null) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          image.onload = null;
+          image.onerror = null;
+          signal?.removeEventListener('abort', cancel);
+          if (error) {
+            image.removeAttribute?.('src');
+            reject(error);
+          } else resolve(image);
+        };
+        const cancel = () => finish(abortError());
         if (/^https?:/i.test(requestSource)) image.crossOrigin = 'anonymous';
         image.decoding = 'async';
-        image.onload = async () => {
-          try {
-            if (typeof image.decode === 'function') await image.decode();
-          } catch {
-            // onload already confirms that the browser can render the image.
-          }
-          resolve(image);
-        };
-        image.onerror = () => reject(new Error('Не удалось загрузить изображение'));
-        image.src = requestSource;
+        // onload already confirms usable pixels. Waiting for a second decode()
+        // promise here can deadlock the whole authoritative Canvas queue.
+        image.onload = () => finish();
+        image.onerror = () => finish(new Error('Не удалось загрузить изображение'));
+        timer = setTimeout(() => finish(new Error('Истекло время загрузки изображения')),
+          Math.max(1, Number(timeoutMs) || 8_000));
+        signal?.addEventListener('abort', cancel, { once: true });
+        try { image.src = requestSource; } catch (error) { finish(error); }
+        if (signal?.aborted) cancel();
       });
     } catch (caught) {
+      if (caught?.name === 'AbortError' || signal?.aborted) throw caught;
       lastError = caught;
       if (attempt < retries) {
-        // A remote source can be temporarily unavailable. Data/object URLs simply
-        // retry without a cache token, while HTTP sources get a fresh request URL.
         // eslint-disable-next-line no-await-in-loop
-        await sleep(Math.min(1800, 260 * (attempt + 1)));
+        await sleep(Math.min(1800, 260 * (attempt + 1)), signal);
       }
     }
   }
   throw lastError ?? new Error('Не удалось загрузить изображение');
+}
+
+// Fabric has its own image requests. A native pre-load timeout alone cannot
+// release those requests, so propagate cancellation into enlivenObjects too.
+export async function enlivenBoardObjects(enliven, objects, { timeoutMs = 8_000 } = {}) {
+  const sources = new Set();
+  collectImageSources(objects, sources);
+  if (!sources.size) return enliven(objects);
+  const controller = new AbortController();
+  let expired = false;
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      expired = true;
+      const error = new Error('Истекло время отображения изображения');
+      reject(error);
+      controller.abort();
+    }, Math.max(1, Number(timeoutMs) || 8_000));
+  });
+  const task = Promise.resolve().then(() => enliven(objects, { signal: controller.signal }))
+    .then((revived) => {
+      if (expired) revived?.forEach((object) => object?.dispose?.());
+      return revived;
+    });
+  try { return await Promise.race([task, timeout]); }
+  finally { clearTimeout(timer); }
 }
 
 async function decodeBlob(blob) {
@@ -226,7 +276,7 @@ export async function preloadSerializedImages(value) {
       const source = queue.shift();
       if (!source) continue;
       // eslint-disable-next-line no-await-in-loop
-      await loadImageElement(source, { retries: 10 });
+      await loadImageElement(source, { retries: 0 });
     }
   });
   await Promise.all(workers);
@@ -239,4 +289,31 @@ export async function preloadSerializedImages(value) {
 export async function copySerializedBoardImages(value, targetBoardId) {
   void targetBoardId;
   return cloneValue(value);
+}
+
+/** Retry an uncertain transport outcome, never a rejected authoritative result.
+ * The caller closes over a fixed actionId and the exact same serialized bytes.
+ */
+export async function publishBoardImage(publish, {
+  isActive = () => true, delay = (ms) => sleep(ms), onRetry = () => {},
+} = {}) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (!isActive()) throw abortError();
+    let results;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      results = await publish();
+    } catch (error) {
+      if (attempt === 2 || !/timed out|closed|connection|runtime|network|peer/i.test(String(error?.message))) throw error;
+      onRetry(attempt + 1);
+      // eslint-disable-next-line no-await-in-loop
+      await delay(1_000 * (attempt + 1));
+      continue;
+    }
+    if (!Array.isArray(results) || !results.length || results.some((result) => !result || result.accepted === false)) {
+      const reason = results?.find?.((result) => result?.error)?.error;
+      throw new Error(reason || 'Не удалось подтвердить сохранение изображения');
+    }
+    return results;
+  }
 }

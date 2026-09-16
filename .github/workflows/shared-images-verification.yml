@@ -1,0 +1,94 @@
+name: Shared Images Verification
+on:
+  push:
+    branches: [fix/shared-images-20260916]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: shared-images-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Image loading, history race and large snapshot regressions
+        run: node --test scripts/test-network-error-evidence.mjs scripts/test-image-loading-regressions.mjs scripts/test-image-history-selection-race.mjs scripts/test-large-snapshot-timeouts.mjs scripts/test-history-concurrent-redo.mjs scripts/test-history-deadlines.mjs scripts/test-teacher-peer-hub.mjs scripts/test-student-peer-network.mjs
+      - name: Existing authority and sync regressions
+        run: |
+          npm run test:browser-authority
+          npm run test:sync:ci
+          node --test scripts/test-late-join-*.mjs
+      - name: Production build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: npm run build
+      - name: Browser test driver
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: Install WebKit and test-only relay
+        if: matrix.engine == 'webkit' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          node node_modules/playwright-core/cli.js install webkit
+          brew install coturn
+      - name: Actual image insertion, undo, redo, reload and late join
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
+          HISTORY_BROWSER: ${{ matrix.engine }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          test -n "$VITE_SUPABASE_URL"
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
+          relay_pid=''
+          if [ "$HISTORY_BROWSER" = webkit ]; then
+            export HISTORY_TURN_PASSWORD=$(openssl rand -hex 24)
+            echo "::add-mask::$HISTORY_TURN_PASSWORD"
+            turnserver -n --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=3478 --min-port=49160 --max-port=49260 --realm=history-ci --user="history:$HISTORY_TURN_PASSWORD" --lt-cred-mech --fingerprint --no-tls --no-dtls --no-cli --cli-password="$HISTORY_TURN_PASSWORD" --allow-loopback-peers --no-multicast-peers --pidfile=/tmp/images-turn.pid > /tmp/images-turn.log 2>&1 &
+            relay_pid=$!
+            sleep 2
+            kill -0 "$relay_pid"
+          fi
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/alex-preview.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" ${relay_pid:-} 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4173/alex/ > /dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/test-shared-images-e2e.mjs
+          node scripts/test-history-device-matrix-e2e.mjs
+          if [ "$HISTORY_BROWSER" = chromium ]; then
+            node scripts/test-browser-authority-large-snapshot-e2e.mjs
+            node scripts/test-browser-authority-source-of-truth-e2e.mjs
+            node scripts/test-browser-authority-datachannel-recovery-e2e.mjs
+          fi
+      - name: Save image test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-images-results-${{ matrix.engine }}
+          path: |
+            shared-images-results
+            history-e2e-results
+          if-no-files-found: ignore
+          retention-days: 7
