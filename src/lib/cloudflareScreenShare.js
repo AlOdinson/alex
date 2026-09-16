@@ -6,7 +6,12 @@ const CLOUDFLARE_STUN_CONFIGURATION = Object.freeze({
 const ICE_GATHER_TIMEOUT_MS = 5_000;
 const VIDEO_TRACK_TIMEOUT_MS = 12_000;
 
-function normalizeFunctionError(error, data) {
+async function normalizeFunctionError(error, data) {
+  // FunctionsHttpError keeps the useful backend denial in its response body.
+  // Do not flatten authorization/configuration errors to generic network text.
+  if (!data?.error && error?.context?.clone) {
+    try { data = await error.context.clone().json(); } catch { /* non-JSON response */ }
+  }
   if (data?.error) return new Error(String(data.error));
   const message = String(error?.message ?? error ?? 'Cloud relay request failed');
   return new Error(message || 'Cloud relay request failed');
@@ -44,29 +49,38 @@ export function createCloudflareScreenShareApi({
   boardId,
   boardKey,
   screenShareSessionId,
+  roomKey = null,
+  getPublisherGrant = null,
 }) {
   if (!supabase?.functions?.invoke) throw new Error('Supabase Functions are unavailable');
   const base = {
     boardId: requireText(boardId, 'boardId'),
     boardKey: requireText(boardKey, 'boardKey'),
     screenShareSessionId: requireText(screenShareSessionId, 'screenShareSessionId'),
+    ...(roomKey ? { authorityMode: 'browser-v1', roomKey: requireText(roomKey, 'roomKey') } : {}),
   };
 
+  let publisherGrant = null;
   const invoke = async (operation, details = {}) => {
     const { data, error } = await supabase.functions.invoke('cloudflare-realtime', {
       body: {
         ...base,
         operation,
+        ...(publisherGrant ? { publisherGrant } : {}),
         ...details,
       },
     });
-    if (error || data?.error) throw normalizeFunctionError(error, data);
+    if (error || data?.error) throw await normalizeFunctionError(error, data);
     if (!data || typeof data !== 'object') throw new Error('Cloud relay returned no data');
     return data;
   };
 
   return {
-    createPublisherSession() {
+    authorizePublisher() {
+      return invoke('authorize-browser-publisher');
+    },
+    async createPublisherSession() {
+      if (getPublisherGrant) publisherGrant = await getPublisherGrant();
       return invoke('create-publisher-session');
     },
     publishTrack(details) {
