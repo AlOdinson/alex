@@ -15,7 +15,6 @@ jobs:
           node-version: 22
       - name: Apply candidate snapshot deadline fix
         run: |
-          git apply --check .github/large-snapshot-timeout.patch
-          git apply .github/large-snapshot-timeout.patch
+          python .github/apply-large-snapshot-fix.py
           git diff --check
       - run: node --test scripts/test-large-snapshot-timeouts.mjs scripts/test-history-deadlines.mjs scripts/test-teacher-peer-hub.mjs scripts/test-student-peer-network.mjs
