@@ -184,6 +184,20 @@ function useAdaptiveScreenShareBase({
       sessionId,
       ...details,
     };
+    // Native screen sessions use the same room transport as the board. A
+    // successful secondary subscription on this device says nothing about the
+    // viewers' subscriptions; selecting it silently split otherwise-online users.
+    const boardSignal = realtimeRef.current?.sendScreenShareSignal;
+    const nativeScreen = session?.sourceMode !== 'remote-browser'
+      && !String(type).startsWith('remote-browser-');
+    if (nativeScreen && typeof boardSignal === 'function') {
+      try {
+        return Promise.resolve(boardSignal({ ...payload })).catch(() => 'unavailable');
+      } catch {
+        return Promise.resolve('unavailable');
+      }
+    }
+    // The native Mac browser agent still uses its legacy direct channel.
     const direct = directSignalChannelRef.current;
     if (direct) {
       // Stop is idempotent and safety-critical. Notify the independent board
@@ -834,6 +848,8 @@ function useAdaptiveScreenShareBase({
         }
       });
     });
+    // This optional channel may fail even when board signaling is healthy.
+    ready.catch(() => undefined);
     directSignalChannelRef.current = { channel, ready };
     return () => {
       disposed = true;
@@ -1247,6 +1263,7 @@ function useAdaptiveScreenShareBase({
 export function useAdaptiveScreenShare(options) {
   const base = useAdaptiveScreenShareBase(options);
   const cloud = useCloudScreenShareFallback({
+    realtimeRef: options.realtimeRef,
     boardId: options.boardId,
     boardKey: options.boardKey,
     boardRealtimeKey: options.boardRealtimeKey,
@@ -1262,11 +1279,16 @@ export function useAdaptiveScreenShare(options) {
     profileId: base.profileId,
     networkDegraded: base.networkDegraded,
   });
+  const handleSignal = useCallback((payload) => {
+    base.handleSignal(payload);
+    cloud.handleSignal(payload);
+  }, [base.handleSignal, cloud.handleSignal]);
   const cloudViewing = cloud.transport === 'cloud'
     && base.role === 'viewer'
     && Boolean(cloud.stream);
   return {
     ...base,
+    handleSignal,
     stream: cloud.stream,
     phase: cloudViewing ? 'viewing' : base.phase,
     message: cloudViewing ? '' : base.message,

@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - 'src/board-settings-gear.js'
+      - 'src/components/Board.jsx'
       - 'src/components/ScreenShare.jsx'
       - 'src/components/useCloudScreenShareFallback.js'
       - 'src/lib/cloud*.js'
@@ -12,7 +13,10 @@ on:
       - 'scripts/test-cloud-browser*'
       - 'scripts/test-cloud-publisher*'
       - 'scripts/test-cloud-screen-stop.mjs'
+      - 'scripts/test-screen-viewer-*.mjs'
+      - 'scripts/test-screen-cloud-subscriber-race.mjs'
       - 'scripts/test-settings-menu-stability.mjs'
+      - 'package.json'
       - '.github/workflows/cloud-browser-verification.yml'
   workflow_dispatch:
 permissions:
@@ -28,8 +32,13 @@ jobs:
         include:
           - os: ubuntu-latest
             engine: chromium
+            secondary: all
           - os: macos-latest
             engine: webkit
+            secondary: ''
+          - os: macos-latest
+            engine: mixed
+            secondary: receivers
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
@@ -58,24 +67,27 @@ jobs:
         run: npm run build
       - run: npm install --no-save --no-package-lock playwright-core@1.55.0
       - name: WebKit test driver and loopback relay
-        if: matrix.engine == 'webkit' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        if: matrix.engine != 'chromium' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         env:
           HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
           node node_modules/playwright-core/cli.js install webkit
           brew install coturn
-      - name: Actual Cloudflare video and checkbox lifecycle
+      - name: Visible direct and Cloud video, failed secondary signaling, late join and reload
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         env:
           BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
           CLOUD_BROWSER: ${{ matrix.engine }}
+          SCREEN_SECONDARY_FAILURE: ${{ matrix.secondary }}
+          SCREEN_TEST_LATE: '1'
+          SCREEN_TEST_OFFSCREEN: '1'
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: |
           test -n "$VITE_SUPABASE_URL"
           test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
           relay_pid=''
-          if [ "$CLOUD_BROWSER" = webkit ]; then
+          if [ "$CLOUD_BROWSER" != chromium ]; then
             export CLOUD_TURN_PASSWORD=$(openssl rand -hex 24)
             echo "::add-mask::$CLOUD_TURN_PASSWORD"
             turnserver -n --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=3478 --min-port=49160 --max-port=49260 --realm=cloud-ci --user="cloud-ci:$CLOUD_TURN_PASSWORD" --lt-cred-mech --fingerprint --no-tls --no-dtls --no-cli --cli-password="$CLOUD_TURN_PASSWORD" --allow-loopback-peers --no-multicast-peers --pidfile=/tmp/cloud-turn.pid > /tmp/cloud-turn.log 2>&1 &
