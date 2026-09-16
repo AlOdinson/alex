@@ -3,12 +3,16 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'src/board-settings-gear.js'
+      - 'src/components/ScreenShare.jsx'
       - 'src/components/useCloudScreenShareFallback.js'
       - 'src/lib/cloud*.js'
       - 'src/lib/screenShare.js'
       - 'supabase/functions/cloudflare-realtime/**'
       - 'scripts/test-cloud-browser*'
       - 'scripts/test-cloud-publisher*'
+      - 'scripts/test-cloud-screen-stop.mjs'
+      - 'scripts/test-settings-menu-stability.mjs'
       - '.github/workflows/cloud-browser-verification.yml'
   workflow_dispatch:
 permissions:
@@ -39,7 +43,7 @@ jobs:
       - run: npm install --no-audit --no-fund
       - name: Browser access and guest authorization regressions
         run: |
-          node --test scripts/test-cloud-browser-access.mjs scripts/test-cloud-publisher-authorization.mjs
+          node --test scripts/test-cloud-browser-access.mjs scripts/test-cloud-publisher-authorization.mjs scripts/test-cloud-screen-stop.mjs scripts/test-settings-menu-stability.mjs
           node scripts/test-cloudflare-realtime-edge-function.mjs
           node scripts/test-cloudflare-screen-share-transport.mjs
           node scripts/test-screen-share-cloud-switch.mjs
