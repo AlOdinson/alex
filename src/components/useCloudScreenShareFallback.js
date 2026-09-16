@@ -13,13 +13,15 @@ import {
   screenSharePermissionCanHost,
 } from '../lib/screenShare.js';
 import { isSupabaseConfigured, supabase } from '../lib/supabase.js';
+import { getAuthorityBoard } from '../lib/browserAuthorityStore.js';
+import { createCloudPublisherAuthorization } from '../lib/cloudPublisherAuthorization.js';
 
 export const CLOUD_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-cloud-state';
 export const CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-cloud-state-request';
 export const CLOUD_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-cloud-toggle';
 
 const CLOUD_SIGNAL_EVENT = 'screen-share-cloud';
-const CLOUD_SIGNAL_TYPES = new Set(['cloud-track', 'cloud-disable', 'cloud-viewer-ready']);
+const CLOUD_SIGNAL_TYPES = new Set(['cloud-track', 'cloud-disable', 'cloud-viewer-ready', 'cloud-grant-request', 'cloud-publisher-grant']);
 const CLOUD_TRACK_REPEAT_MS = 4_000;
 const CLOUD_DISABLE_GRACE_MS = 250;
 
@@ -30,6 +32,7 @@ function wait(milliseconds) {
 function cloudErrorMessage(error) {
   const message = String(error?.message ?? error ?? '');
   if (/not configured|не настро/i.test(message)) return 'Cloud relay не настроен.';
+  if (/owner authorization timed out/i.test(message)) return 'Откройте доску у владельца для разрешения Cloud.';
   if (/permission|access|403/i.test(message)) return 'Нет доступа к Cloud relay.';
   return 'Cloud relay не подключился.';
 }
@@ -84,12 +87,13 @@ export function useCloudScreenShareFallback({
   const subscriberRef = useRef(null);
   const cloudViewerIdsRef = useRef(new Set());
   const channelRef = useRef(null);
+  const authorizationRef = useRef(null);
   const processSignalRef = useRef(() => undefined);
   const toggleBusyRef = useRef(false);
   const sessionContextRef = useRef(null);
 
   sessionContextRef.current = {
-    boardId,
+    boardId, boardKey, roomKey: boardRealtimeKey, clientId, isOwner, canEdit,
     sessionId,
     hostId,
     role,
@@ -153,8 +157,13 @@ export function useCloudScreenShareFallback({
     supabase,
     boardId,
     boardKey,
+    roomKey: boardRealtimeKey,
     screenShareSessionId,
-  }), [boardId, boardKey]);
+    getPublisherGrant: isOwner ? null : () => {
+      if (!authorizationRef.current) throw new Error('Cloud authorization is not ready');
+      return authorizationRef.current.request();
+    },
+  }), [boardId, boardKey, boardRealtimeKey, isOwner]);
 
   const sendCloudSignal = useCallback(async (type, details = {}) => {
     const currentSessionId = String(details.sessionId ?? sessionContextRef.current?.sessionId ?? '');
@@ -178,6 +187,20 @@ export function useCloudScreenShareFallback({
     });
     return 'sent';
   }, [canEdit, clientId, isOwner, participantName]);
+
+  useEffect(() => {
+    const authorization = createCloudPublisherAuthorization({
+      getContext: () => sessionContextRef.current,
+      getOwnerBoard: getAuthorityBoard,
+      authorizePublisher: (screenSessionId) => cloudApi(screenSessionId).authorizePublisher(),
+      sendSignal: sendCloudSignal,
+    });
+    authorizationRef.current = authorization;
+    return () => {
+      authorization.close();
+      if (authorizationRef.current === authorization) authorizationRef.current = null;
+    };
+  }, [cloudApi, sendCloudSignal, sessionId]);
 
   const announceCloudTrack = useCallback(() => {
     const publisher = publisherRef.current;
@@ -296,6 +319,7 @@ export function useCloudScreenShareFallback({
     if (!signal || !CLOUD_SIGNAL_TYPES.has(signal.type)) return;
     if (signal.clientId === clientId) return;
     if (signal.targetId && signal.targetId !== clientId) return;
+    if (await authorizationRef.current?.handleSignal(signal)) return;
 
     const current = sessionContextRef.current;
     const currentSessionId = String(current?.sessionId ?? '');

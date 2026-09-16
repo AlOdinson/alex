@@ -3,6 +3,7 @@ import { withSupabase } from "jsr:@supabase/server@^1";
 
 type CloudRole = "publisher" | "viewer";
 type CloudOperation =
+  | "authorize-browser-publisher"
   | "create-publisher-session"
   | "publish-track"
   | "create-viewer-session"
@@ -13,6 +14,9 @@ type CloudOperation =
 type RequestBody = {
   boardId?: unknown;
   boardKey?: unknown;
+  authorityMode?: unknown;
+  roomKey?: unknown;
+  publisherGrant?: unknown;
   screenShareSessionId?: unknown;
   operation?: unknown;
   sessionId?: unknown;
@@ -27,6 +31,8 @@ type SessionLeasePayload = {
   screenShareSessionId: string;
   cloudflareSessionId: string;
   role: CloudRole;
+  scope?: string;
+  purpose?: "session" | "publisher-grant";
   exp: number;
 };
 
@@ -46,6 +52,7 @@ const MAX_SDP_LENGTH = 256 * 1024;
 const SESSION_LEASE_TTL_MS = 2 * 60 * 60 * 1000;
 const CLOUDFLARE_API_BASE = "https://rtc.live.cloudflare.com/v1";
 const OPERATIONS = new Set<CloudOperation>([
+  "authorize-browser-publisher",
   "create-publisher-session",
   "publish-track",
   "create-viewer-session",
@@ -91,10 +98,11 @@ async function importLeaseKey(secret: string) {
 async function createSessionLease(
   secret: string,
   payload: Omit<SessionLeasePayload, "exp">,
+  ttlMs = SESSION_LEASE_TTL_MS,
 ) {
   const complete: SessionLeasePayload = {
     ...payload,
-    exp: Date.now() + SESSION_LEASE_TTL_MS,
+    exp: Date.now() + ttlMs,
   };
   const payloadBytes = new TextEncoder().encode(JSON.stringify(complete));
   const payloadB64 = bytesToBase64Url(payloadBytes);
@@ -115,6 +123,8 @@ async function verifySessionLease(
     screenShareSessionId: string;
     cloudflareSessionId: string;
     role?: CloudRole;
+    scope?: string;
+    purpose?: "session" | "publisher-grant";
   },
 ) {
   const [payloadB64, signatureB64, extra] = String(token ?? "").split(".");
@@ -134,6 +144,10 @@ async function verifySessionLease(
       new TextDecoder().decode(base64UrlToBytes(payloadB64)),
     ) as SessionLeasePayload;
     if (!payload || typeof payload !== "object") return null;
+    // Browser and legacy credentials are distinct namespaces. A permit is never
+    // a session lease, and neither can be replayed into a different secret room.
+    if ((payload.scope ?? "") !== (expected.scope ?? "")) return null;
+    if ((payload.purpose ?? "session") !== (expected.purpose ?? "session")) return null;
     if (payload.boardId !== expected.boardId) return null;
     if (payload.screenShareSessionId !== expected.screenShareSessionId) return null;
     if (payload.cloudflareSessionId !== expected.cloudflareSessionId) return null;
@@ -244,34 +258,64 @@ export default {
       }
       if (!OPERATIONS.has(operation)) return jsonError("Invalid operation", 400);
 
-      const keyHash = await sha256(boardKey);
-      const boardAccessClient = ctx.supabase as unknown as BoardAccessRpcClient;
-      const { data: accessData, error: accessError } = await boardAccessClient.rpc(
-        "get_board_access_v8",
-        { p_id: boardId, p_key_hash: keyHash },
-      );
-      if (accessError) {
-        console.error("Cloudflare board access check failed", accessError);
-        return jsonError("Could not verify board access", 500);
+      const authorityMode = text(body.authorityMode);
+      if (authorityMode && authorityMode !== "browser-v1") {
+        return jsonError("Invalid authority mode", 400);
       }
-
-      const accessCandidate = Array.isArray(accessData) ? accessData[0] : accessData;
-      const access = accessCandidate && typeof accessCandidate === "object"
-        ? accessCandidate as BoardAccessRecord
-        : null;
-      if (!access) return jsonError("Board access denied", 403);
-      const permission = String(access.permission ?? "view");
-      if (permission === "closed") return jsonError("Board access is closed", 403);
-      const canPublish = permission === "owner" || permission === "edit";
-
+      const browserMode = authorityMode === "browser-v1";
       const appId = Deno.env.get("CLOUDFLARE_REALTIME_APP_ID") ?? "";
       const appSecret = Deno.env.get("CLOUDFLARE_REALTIME_APP_SECRET") ?? "";
-      if (!appId || !appSecret) {
-        console.error("Cloudflare Realtime server configuration is missing");
-        return jsonError("Cloud relay is not configured", 503);
+      let permission = "view";
+      let scope = "";
+
+      if (browserMode) {
+        const roomKey = text(body.roomKey);
+        if (!/^[A-Za-z0-9_-]{36}$/.test(roomKey)) return jsonError("Invalid roomKey", 400);
+        const ownerRoomKey = (await sha256(`alex-board-share:${boardKey}`)).slice(0, 36);
+        const ownerProof = ownerRoomKey === roomKey;
+        // Link possession grants viewing, not publishing. Only the preimage of
+        // the existing room secret proves ownership; a client-provided role is ignored.
+        if (!ownerProof && boardKey !== roomKey) return jsonError("Board access denied", 403);
+        scope = await sha256(`alex-cloud-room:${roomKey}`);
+        if (ownerProof) permission = "owner";
+        else if (appSecret && await verifySessionLease(appSecret, text(body.publisherGrant), {
+          boardId, screenShareSessionId, cloudflareSessionId: "publisher-grant",
+          role: "publisher", scope, purpose: "publisher-grant",
+        })) permission = "edit";
+      } else {
+        // Preserve legacy authorization. Never turn a missing/denied database row
+        // into a browser grant implicitly; the caller must use a scoped browser route.
+        const keyHash = await sha256(boardKey);
+        const boardAccessClient = ctx.supabase as unknown as BoardAccessRpcClient;
+        const { data: accessData, error: accessError } = await boardAccessClient.rpc(
+          "get_board_access_v8", { p_id: boardId, p_key_hash: keyHash },
+        );
+        if (accessError) {
+          console.error("Cloudflare board access check failed", accessError);
+          return jsonError("Could not verify board access", 500);
+        }
+        const accessCandidate = Array.isArray(accessData) ? accessData[0] : accessData;
+        const access = accessCandidate && typeof accessCandidate === "object"
+          ? accessCandidate as BoardAccessRecord : null;
+        if (!access) return jsonError("Board access denied", 403);
+        permission = String(access.permission ?? "view");
+        if (permission === "closed") return jsonError("Board access is closed", 403);
+      }
+      const canPublish = permission === "owner" || permission === "edit";
+      if (!appId || !appSecret) return jsonError("Cloud relay is not configured", 503);
+
+      if (operation === "authorize-browser-publisher") {
+        if (!browserMode || permission !== "owner") return jsonError("Owner permission required", 403);
+        const publisherGrant = await createSessionLease(appSecret, {
+          boardId, screenShareSessionId, cloudflareSessionId: "publisher-grant",
+          role: "publisher", scope, purpose: "publisher-grant",
+        }, 90_000);
+        return Response.json({ publisherGrant }, { headers: { "Cache-Control": "no-store" } });
       }
 
-      const expectedTrackName = `screen:${boardId}:${screenShareSessionId}`;
+      // Cloudflare tracks are globally addressable inside an app. Bind browser
+      // media names to the secret room so another room cannot pull a known session.
+      const expectedTrackName = `screen:${boardId}:${screenShareSessionId}${scope ? `:${scope}` : ""}`;
 
       try {
         if (operation === "create-publisher-session") {
@@ -285,6 +329,7 @@ export default {
             boardId,
             screenShareSessionId,
             cloudflareSessionId: sessionId,
+            scope,
             role: "publisher",
           });
           return Response.json(
@@ -303,6 +348,7 @@ export default {
             boardId,
             screenShareSessionId,
             cloudflareSessionId: sessionId,
+            scope,
             role: "viewer",
           });
           return Response.json(
@@ -323,6 +369,7 @@ export default {
             boardId,
             screenShareSessionId,
             cloudflareSessionId: sessionId,
+            scope,
             role: "publisher",
           });
           if (!lease) return jsonError("Invalid Cloud session lease", 403);
@@ -347,6 +394,7 @@ export default {
             boardId,
             screenShareSessionId,
             cloudflareSessionId: sessionId,
+            scope,
             role: "viewer",
           });
           if (!lease) return jsonError("Invalid Cloud session lease", 403);
@@ -375,6 +423,7 @@ export default {
             boardId,
             screenShareSessionId,
             cloudflareSessionId: sessionId,
+            scope,
             role: "viewer",
           });
           if (!lease) return jsonError("Invalid Cloud session lease", 403);
@@ -395,9 +444,10 @@ export default {
             boardId,
             screenShareSessionId,
             cloudflareSessionId: sessionId,
+            scope,
           });
           if (!lease) return jsonError("Invalid Cloud session lease", 403);
-          if (lease.role === "publisher" && !canPublish) {
+          if (!browserMode && lease.role === "publisher" && !canPublish) {
             return jsonError("Publisher permission required", 403);
           }
           const mid = text(body.mid);

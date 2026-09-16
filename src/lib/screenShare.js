@@ -36,6 +36,8 @@ const SIGNAL_TYPES = new Set([
   'offer',
   'answer',
   'ice',
+  'cloud-grant-request',
+  'cloud-publisher-grant',
   'cloud-track',
   'cloud-disable',
   'cloud-viewer-ready',

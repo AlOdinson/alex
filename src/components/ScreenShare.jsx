@@ -186,6 +186,12 @@ function useAdaptiveScreenShareBase({
     };
     const direct = directSignalChannelRef.current;
     if (direct) {
+      // Stop is idempotent and safety-critical. Notify the independent board
+      // signaling path too; the screen-only channel may have lost its connection.
+      if (type === 'host-stop') {
+        Promise.resolve().then(() => realtimeRef.current?.sendScreenShareSignal?.({ ...payload }))
+          .catch(() => undefined);
+      }
       return direct.ready.then(() => direct.channel.send({
         type: 'broadcast',
         event: 'screen-share-signal',
@@ -333,11 +339,13 @@ function useAdaptiveScreenShareBase({
   const stopHosting = useCallback(async (reason = 'user', announce = true) => {
     const session = activeSessionRef.current;
     if (!session || session.hostId !== clientId) return;
-    if (announce) await sendSignal('host-stop', { reason }, session);
-    clearHostPeers();
-    stopStream(localStreamRef.current);
+    // Stop capture locally first. A lost signaling receipt must neither leave a
+    // screen recording alive nor let its eventual cleanup erase a newer session.
+    const localStream = localStreamRef.current;
     localStreamRef.current = null;
     activeSessionRef.current = null;
+    clearHostPeers();
+    stopStream(localStream);
     networkDegradedRef.current = false;
     currentProfileRef.current = SCREEN_SHARE_PROFILES.idle;
     if (mountedRef.current) {
@@ -356,6 +364,10 @@ function useAdaptiveScreenShareBase({
         sourceMode: null,
         remoteBrowserState: null,
       });
+    }
+    if (announce) {
+      Promise.resolve().then(() => sendSignal('host-stop', { reason }, session))
+        .catch(() => undefined);
     }
   }, [clearHostPeers, clientId, sendSignal]);
   stopHostingRef.current = stopHosting;
