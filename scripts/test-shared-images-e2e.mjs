@@ -15,7 +15,7 @@ fs.mkdirSync(out, { recursive: true });
 const browser = ENGINE === 'webkit' ? await webkit.launch({ headless: true })
   : await chromium.launch({ channel: 'chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function wait(label, check, timeout = 35000) {
+async function wait(label, check, timeout = 60000) {
   const end = Date.now() + timeout;
   let last;
   while (Date.now() < end) {
@@ -56,6 +56,11 @@ async function instrument(page) {
       ...src, set(value) {
         const entry = { prefix: String(value).slice(0, 48), chars: String(value).length, state: 'loading' };
         window.__imageLoads.push(entry);
+        // Test-only failure injection: exactly one receiver gets neither load nor
+        // error for its first image. Its later retry must recover actual pixels.
+        if (window.__imageBlockOnce && String(value).startsWith('data:image/')) {
+          window.__imageBlockOnce = false; entry.state = 'blocked'; return;
+        }
         this.addEventListener('load', () => { entry.state = 'loaded'; entry.width = this.naturalWidth; }, { once: true });
         this.addEventListener('error', () => { entry.state = 'error'; }, { once: true });
         return src.set.call(this, value);
@@ -82,10 +87,11 @@ async function state(page) {
       const src = o.getSrc?.() ?? o.pendingImageSerialized?.src ?? '';
       const digest = src ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(src))))
         .map((byte) => byte.toString(16).padStart(2, '0')).join('') : null;
+      const round = (value) => Math.round(Number(value) * 1e6) / 1e6;
       return { id: o.boardObjectId, type: o.type, kind: o.objectKind, pending: Boolean(o.pendingImage),
         transient: Boolean(o.transientPreview), loaded: Boolean(element?.complete && element?.naturalWidth),
         width: element?.naturalWidth ?? 0, height: element?.naturalHeight ?? 0,
-        srcChars: src.length, digest, angle: o.angle, scaleX: o.scaleX, scaleY: o.scaleY };
+        srcChars: src.length, digest, angle: round(o.angle), scaleX: round(o.scaleX), scaleY: round(o.scaleY) };
     })));
 }
 async function imagesEqual(pages, count) {
@@ -123,28 +129,44 @@ try {
         await page.goto(guest.href, { waitUntil: 'domcontentloaded' }); await enter(page, `Image student ${index}`);
       }
       const data = await owner.evaluate(() => {
-        const canvas = document.createElement('canvas'); canvas.width = 420; canvas.height = 280;
-        const ctx = canvas.getContext('2d'); const pixels = ctx.createImageData(420, 280);
+        const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 700;
+        const ctx = canvas.getContext('2d'); const pixels = ctx.createImageData(1000, 700);
         let seed = 1789;
         for (let i = 0; i < pixels.data.length; i++) { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; pixels.data[i] = i % 4 === 3 ? 255 : seed >>> 24; }
         ctx.putImageData(pixels, 0, 0); return canvas.toDataURL('image/png').split(',')[1];
       });
-      assert.ok(data.length > 150000, 'fixture must exceed realtime previews and several data-channel frames');
+      assert.ok(data.length > 2000000, 'fixture must require multi-megabyte durable transfer');
+      const blockedReceiver = pages[(ownerIndex + 1) % pages.length];
+      await blockedReceiver.evaluate(() => { window.__imageBlockOnce = true; });
       for (const [index, page] of pages.entries()) {
+        console.log(`INSERT owner=${ownerIndex} actor=${index}`);
         await page.locator('.image-file-input').setInputFiles({ name: `shared-${index}.png`, mimeType: 'image/png', buffer: Buffer.from(data, 'base64') });
         await imagesEqual(pages, index + 1);
+        console.log(`UNDO owner=${ownerIndex} actor=${index}`);
         await press(page, /Отменить —/, profiles[index]); await imagesEqual(pages, index);
+        console.log(`REDO owner=${ownerIndex} actor=${index}`);
         await press(page, /Вернуть —/, profiles[index]); await imagesEqual(pages, index + 1);
       }
+      assert.equal(await blockedReceiver.evaluate(() => window.__imageLoads.filter((entry) => entry.state === 'blocked').length), 1);
+      // Exercise the clipboard event path with real PNG bytes, without using the
+      // test runner host's OS clipboard or changing native text input behavior.
+      await owner.evaluate((base64) => {
+        const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+        const transfer = new DataTransfer(); transfer.items.add(new File([bytes], 'clipboard.png', { type: 'image/png' }));
+        const event = new Event('paste', { bubbles: true, cancelable: true });
+        Object.defineProperty(event, 'clipboardData', { value: transfer });
+        document.dispatchEvent(event);
+      }, data);
+      await imagesEqual(pages, 4);
       for (const [index, page] of pages.entries()) if (index !== ownerIndex) { await page.reload(); await enter(page, `Image student ${index}`); }
-      await imagesEqual(pages, 3);
+      await imagesEqual(pages, 4);
       const lateContext = await browser.newContext({ viewport: profiles[(ownerIndex + 1) % 3].viewport });
       try {
         const late = await lateContext.newPage(); await instrument(late);
-        await late.goto(guest.href); await enter(late, 'Late image student'); await imagesEqual([...pages, late], 3);
+        await late.goto(guest.href); await enter(late, 'Late image student'); await imagesEqual([...pages, late], 4);
       } finally { await lateContext.close(); }
       assert.deepEqual(errors, []);
-      results.push({ engine: ENGINE, owner: profiles[ownerIndex].name, actors: profiles.map((p) => p.name), passed: true });
+      results.push({ engine: ENGINE, owner: profiles[ownerIndex].name, actors: profiles.map((p) => p.name), fixtureBase64Chars: data.length, stalledReceiverRecovered: true, clipboard: true, passed: true });
       console.log(JSON.stringify(results.at(-1)));
     } catch (error) {
       for (const [index, page] of pages.entries()) {
