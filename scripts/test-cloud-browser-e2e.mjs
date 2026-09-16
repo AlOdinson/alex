@@ -28,7 +28,7 @@ async function newPage(profile) {
     window.RTCPeerConnection = class extends Peer {
       constructor(config) {
         // Relay only local test peers on WebKit. Cloudflare SFU keeps its actual ICE config.
-        const cloud = config?.bundlePolicy === 'max-bundle';
+        const cloud = config?.bundlePolicy === 'max-bundle' && config?.iceCandidatePoolSize === undefined;
         super(!cloud && relay ? { ...config, iceServers: [relay], iceTransportPolicy: 'relay' } : config);
         if (cloud) window.__cloudPeers.push(this);
       }
@@ -68,7 +68,7 @@ async function newPage(profile) {
   if (EDGE !== 'cloudflare-realtime') await page.route('**/functions/v1/cloudflare-realtime', (route) =>
     route.continue({ url: route.request().url().replace(/cloudflare-realtime$/, EDGE) }));
   page.on('response', (response) => {
-    if (response.url().endsWith(`/functions/v1/${EDGE}`)) {
+    if ([EDGE, 'cloudflare-realtime'].some((slug) => response.url().endsWith(`/functions/v1/${slug}`))) {
       let operation; try { operation = response.request().postDataJSON()?.operation; } catch {}
       events.push({ page: pages.indexOf(page), operation, status: response.status() });
       console.log('CLOUD_API', operation, response.status());
