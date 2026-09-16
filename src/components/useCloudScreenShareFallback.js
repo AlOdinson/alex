@@ -64,6 +64,7 @@ function defaultCloudState() {
 }
 
 export function useCloudScreenShareFallback({
+  realtimeRef,
   boardId,
   boardKey,
   boardRealtimeKey,
@@ -85,6 +86,7 @@ export function useCloudScreenShareFallback({
   const mountedRef = useRef(true);
   const publisherRef = useRef(null);
   const subscriberRef = useRef(null);
+  const subscriberAttemptRef = useRef(null);
   const cloudViewerIdsRef = useRef(new Set());
   const channelRef = useRef(null);
   const authorizationRef = useRef(null);
@@ -144,6 +146,8 @@ export function useCloudScreenShareFallback({
   }, []);
 
   const clearCloudSubscriber = useCallback(() => {
+    // Retire pending connection work too: it must not re-enable Cloud after Stop.
+    subscriberAttemptRef.current = null;
     const subscriber = subscriberRef.current;
     subscriberRef.current = null;
     if (mountedRef.current) setCloudStream(null);
@@ -168,25 +172,27 @@ export function useCloudScreenShareFallback({
   const sendCloudSignal = useCallback(async (type, details = {}) => {
     const currentSessionId = String(details.sessionId ?? sessionContextRef.current?.sessionId ?? '');
     if (!currentSessionId || !CLOUD_SIGNAL_TYPES.has(type)) return 'ignored';
+    const payload = {
+      protocol: SCREEN_SHARE_PROTOCOL,
+      type,
+      sessionId: currentSessionId,
+      ...details,
+      clientId,
+      name: participantName,
+      permission: isOwner ? 'owner' : (canEdit ? 'edit' : 'view'),
+      timestamp: Date.now(),
+    };
+    if (typeof realtimeRef?.current?.sendScreenShareSignal === 'function') {
+      // Media still goes through Cloudflare; only its small control messages
+      // travel through the existing board room, including owner-issued grants.
+      return realtimeRef.current.sendScreenShareSignal(payload);
+    }
     const channelEntry = channelRef.current;
     if (!channelEntry) throw new Error('Cloud signaling is unavailable');
     await channelEntry.ready;
-    await channelEntry.channel.send({
-      type: 'broadcast',
-      event: CLOUD_SIGNAL_EVENT,
-      payload: {
-        protocol: SCREEN_SHARE_PROTOCOL,
-        type,
-        sessionId: currentSessionId,
-        ...details,
-        clientId,
-        name: participantName,
-        permission: isOwner ? 'owner' : (canEdit ? 'edit' : 'view'),
-        timestamp: Date.now(),
-      },
-    });
+    await channelEntry.channel.send({ type: 'broadcast', event: CLOUD_SIGNAL_EVENT, payload });
     return 'sent';
-  }, [canEdit, clientId, isOwner, participantName]);
+  }, [canEdit, clientId, isOwner, participantName, realtimeRef]);
 
   useEffect(() => {
     const authorization = createCloudPublisherAuthorization({
@@ -348,7 +354,16 @@ export function useCloudScreenShareFallback({
         return;
       }
 
-      await clearCloudSubscriber();
+      const pending = subscriberAttemptRef.current;
+      if (pending?.sessionId === activeCloudSessionId
+        && pending.publisherSessionId === route.publisherSessionId
+        && pending.trackName === route.trackName) return;
+
+      const closing = clearCloudSubscriber();
+      const attempt = { ...route, sessionId: activeCloudSessionId };
+      subscriberAttemptRef.current = attempt;
+      await closing;
+      if (subscriberAttemptRef.current !== attempt || !mountedRef.current) return;
       patchCloudState({ cloudPhase: 'connecting', cloudError: '' });
       try {
         const subscriber = await createCloudflareSubscriber({
@@ -357,7 +372,8 @@ export function useCloudScreenShareFallback({
           api: cloudApi(activeCloudSessionId),
         });
         const latest = sessionContextRef.current;
-        if (latest?.sessionId !== activeCloudSessionId
+        if (subscriberAttemptRef.current !== attempt || !mountedRef.current
+          || latest?.sessionId !== activeCloudSessionId
           || latest?.role !== 'viewer'
           || latest.hostId !== current.hostId) {
           await subscriber.close();
@@ -371,12 +387,14 @@ export function useCloudScreenShareFallback({
           targetId: current.hostId,
         }).catch(() => undefined);
       } catch (error) {
-        await clearCloudSubscriber();
+        if (subscriberAttemptRef.current !== attempt || !mountedRef.current) return;
+        const cleanup = clearCloudSubscriber();
         patchCloudState({
           transport: 'p2p',
           cloudPhase: 'error',
           cloudError: cloudErrorMessage(error),
         });
+        await cleanup;
       }
       return;
     }
@@ -385,8 +403,9 @@ export function useCloudScreenShareFallback({
       if (current.role !== 'viewer'
         || signal.clientId !== current.hostId
         || !screenSharePermissionCanHost(signal.permission)) return;
-      await clearCloudSubscriber();
+      const cleanup = clearCloudSubscriber();
       patchCloudState(defaultCloudState());
+      await cleanup;
       return;
     }
 
@@ -396,6 +415,10 @@ export function useCloudScreenShareFallback({
       patchCloudState({ cloudViewerCount: cloudViewerIdsRef.current.size });
     }
   };
+
+  const handleSignal = useCallback((payload) => {
+    Promise.resolve().then(() => processSignalRef.current(payload)).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (!boardId || !boardRealtimeKey || !isSupabaseConfigured || !supabase) {
@@ -421,6 +444,7 @@ export function useCloudScreenShareFallback({
         }
       });
     });
+    ready.catch(() => undefined);
     channelRef.current = { channel, ready };
     return () => {
       disposed = true;
@@ -497,5 +521,6 @@ export function useCloudScreenShareFallback({
     cloudError: cloudState.cloudError,
     cloudViewerCount: cloudState.cloudViewerCount,
     setCloudEnabled,
+    handleSignal,
   };
 }

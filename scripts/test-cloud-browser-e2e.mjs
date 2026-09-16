@@ -5,9 +5,13 @@ import { deriveShareKey } from '../src/lib/ids.js';
 const BASE = process.env.BROWSER_AUTHORITY_PREVIEW_URL ?? 'http://127.0.0.1:4173/alex/';
 const ENGINE = process.env.CLOUD_BROWSER ?? 'chromium';
 const EDGE = process.env.CLOUD_EDGE_SLUG ?? 'cloudflare-realtime';
+const SECONDARY_FAILURE = process.env.SCREEN_SECONDARY_FAILURE ?? '';
+const LATE = process.env.SCREEN_TEST_LATE === '1';
+const OFFSCREEN = process.env.SCREEN_TEST_OFFSCREEN === '1';
 const out = 'cloud-browser-results'; fs.mkdirSync(out, { recursive: true });
 const browser = ENGINE === 'webkit' ? await webkit.launch({ headless: true })
   : await chromium.launch({ channel: 'chrome', headless: true, args: ['--no-sandbox', '--autoplay-policy=no-user-gesture-required'] });
+const alternateBrowser = ENGINE === 'mixed' ? await webkit.launch({ headless: true }) : null;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 async function wait(label, predicate, timeout = 60000) {
   const deadline = Date.now() + timeout; let last;
@@ -18,9 +22,12 @@ async function wait(label, predicate, timeout = 60000) {
   throw new Error(`${label}: ${last?.message ?? 'timed out'}`);
 }
 const contexts = [], pages = [], events = [], results = [];
-async function newPage(profile) {
-  const context = await browser.newContext({ ...profile, deviceScaleFactor: 1 }); contexts.push(context);
+async function newPage(profile, alternate = false) {
+  const context = await (alternate && alternateBrowser ? alternateBrowser : browser).newContext({ ...profile, deviceScaleFactor: 1 }); contexts.push(context);
   const page = await context.newPage(); pages.push(page);
+  if (SECONDARY_FAILURE === 'all' || (SECONDARY_FAILURE === 'receivers' && pages.length > 1)) {
+    await page.routeWebSocket(/\/realtime\/v1\/websocket/, (socket) => socket.close());
+  }
   await page.addInitScript((relay) => {
     window.__cloudState = null; window.__cloudPeers = []; window.__captures = 0;
     window.__testVideos = [];
@@ -92,7 +99,7 @@ async function newPage(profile) {
         element = element.parentElement;
       }
     };
-  }, ENGINE === 'webkit' && process.env.CLOUD_TURN_PASSWORD ? {
+  }, ['webkit', 'mixed'].includes(ENGINE) && process.env.CLOUD_TURN_PASSWORD ? {
     urls: 'turn:127.0.0.1:3478?transport=udp', username: 'cloud-ci', credential: process.env.CLOUD_TURN_PASSWORD,
   } : null);
   if (EDGE !== 'cloudflare-realtime') await page.route('**/functions/v1/cloudflare-realtime', (route) =>
@@ -129,7 +136,18 @@ async function videoReady(page, { green = false, requireCloud = true } = {}) {
     if (!frame?.getContext) return false;
     const [r,g,b] = frame.getContext('2d').getImageData(40,40,1,1).data;
     const correct = green ? g > 140 && r < 85 && b > 30 : r > 160 && g < 100 && b < 90;
-    if (!correct || !requireCloud) return correct;
+    if (!correct) return false;
+    // Check what the participant actually sees, not only an offscreen media buffer.
+    const canvas = object.canvas;
+    if (!canvas) return false;
+    const center = object.getCenterPoint(), v = canvas.viewportTransform;
+    const x = v[0] * center.x + v[2] * center.y + v[4];
+    const y = v[1] * center.x + v[3] * center.y + v[5];
+    if (x < 1 || y < 1 || x >= canvas.getWidth() || y >= canvas.getHeight()) return false;
+    const ratio = canvas.lowerCanvasEl.width / canvas.getWidth();
+    const [vr, vg, vb] = canvas.lowerCanvasEl.getContext('2d').getImageData(Math.floor(x * ratio), Math.floor(y * ratio), 1, 1).data;
+    if (!(green ? vg > 140 && vr < 85 && vb > 30 : vr > 160 && vg < 100 && vb < 90)) return false;
+    if (!requireCloud) return true;
     for (const peer of window.__cloudPeers) {
       if (peer.connectionState !== 'connected') continue;
       const reports = [...(await peer.getStats()).values()];
@@ -141,27 +159,50 @@ async function videoReady(page, { green = false, requireCloud = true } = {}) {
 }
 try {
   const owner = await newPage({ viewport: { width:1280,height:800 } });
-  const editor = await newPage({ viewport: { width:1280,height:800 } });
-  const phone = await newPage({ viewport: { width:390,height:844 }, isMobile:true, hasTouch:true });
-  const tablet = await newPage({ viewport: { width:820,height:1180 }, isMobile:true, hasTouch:true });
+  const editor = await newPage({ viewport: { width:1280,height:800 } }, true);
+  let phone = null, tablet = null;
+  const openMobileViewers = async (url) => {
+    phone = await newPage({ viewport: { width:390,height:844 }, isMobile:true, hasTouch:true }, true);
+    await phone.goto(url); await enter(phone, 'Cloud phone');
+    tablet = await newPage({ viewport: { width:820,height:1180 }, isMobile:true, hasTouch:true });
+    await tablet.goto(url); await enter(tablet, 'Cloud tablet');
+  };
   await owner.goto(BASE);
   await owner.getByLabel('Название доски').fill(`Cloud live regression ${Date.now()}`);
   await owner.getByLabel('Ученик').fill('Synthetic Cloud test');
   await owner.getByRole('button', { name: 'Создать доску' }).click(); await enter(owner,'Cloud teacher');
   const guest = new URL(owner.url()); guest.searchParams.set('key', await deriveShareKey(guest.searchParams.get('key')));
-  for (const page of [editor,phone,tablet]) { await page.goto(guest.href); await enter(page,'Cloud student'); }
+  await editor.goto(guest.href); await enter(editor, 'Cloud student');
+  if (!LATE) await openMobileViewers(guest.href);
   for (const actor of [owner,editor]) {
-    const viewers = pages.filter((p) => p !== actor);
+    let viewers = pages.filter((p) => p !== actor);
     console.log('HOST', actor === owner ? 'teacher' : 'student');
     assert.equal(await actor.evaluate(() => navigator.mediaDevices.getDisplayMedia.name), 'cloudFixtureCapture', 'the source must be the controlled capture fixture, not the runner desktop');
+    if (OFFSCREEN) await actor.evaluate(() => {
+      const canvas = window.__boardCanvas();
+      canvas.setViewportTransform([0.8, 0, 0, 0.8, -9000, 7000]);
+      canvas.requestRenderAll();
+    });
     await toggleScreen(actor);
     await wait('screen session reaches peers', async () => {
       const states = await Promise.all(pages.map((p) => p.evaluate(() => window.__cloudState)));
       return states.every((s) => s?.sessionId && s.sessionId === states[0].sessionId);
     });
+    await wait('visible direct screen before Cloud', async () => (await Promise.all(viewers.map((p) => videoReady(p, {requireCloud:false})))).every(Boolean));
+    if (LATE && !phone) {
+      await openMobileViewers(guest.href);
+      viewers = pages.filter((p) => p !== actor);
+      await wait('late viewers see the current direct screen', async () => (await Promise.all(viewers.map((p) => videoReady(p, {requireCloud:false})))).every(Boolean));
+      await phone.reload(); await enter(phone, 'Cloud phone');
+      await wait('phone reload restores ongoing direct screen', () => videoReady(phone, {requireCloud:false}));
+    }
     const toggle = actor.locator('.screen-share-cloud-toggle'); await toggle.click();
     await wait('Cloud toggle on', () => toggle.getAttribute('data-cloud-phase').then((p) => p === 'on'));
     await wait('actual SFU video on all viewers', async () => (await Promise.all(viewers.map((p) => videoReady(p)))).every(Boolean));
+    if (LATE && actor === owner) {
+      await tablet.reload(); await enter(tablet, 'Cloud tablet');
+      await wait('tablet reload restores ongoing Cloud screen', () => videoReady(tablet));
+    }
     await actor.evaluate(() => { window.__captureGreen = true; });
     await wait('new live frame after Cloud switch', async () => (await Promise.all(viewers.map((p) => videoReady(p,{green:true})))).every(Boolean));
     await toggle.click(); await wait('Cloud off', () => toggle.getAttribute('data-cloud-phase').then((p) => p === 'off'));
@@ -171,7 +212,7 @@ try {
     await toggle.click(); await wait('Cloud enabled again', () => toggle.getAttribute('data-cloud-phase').then((p) => p === 'on'));
     await wait('resumed SFU video', async () => (await Promise.all(viewers.map((p) => videoReady(p,{green:false})))).every(Boolean));
     assert.equal(await actor.evaluate(() => window.__captures),1,'Cloud switching must reuse the original capture');
-    results.push({ engine:ENGINE, host:actor === owner ? 'teacher' : 'student', cloudVideo:true, liveFrame:true, offOn:true, captureRequests:1 });
+    results.push({ engine:ENGINE, host:actor === owner ? 'teacher' : 'student', cloudVideo:true, liveFrame:true, offOn:true, captureRequests:1, secondaryFailure:SECONDARY_FAILURE, lateViewers:LATE, offscreenStart:OFFSCREEN, visibleCanvas:true });
     await toggleScreen(actor);
     await wait('stopped screen removed', async () => (await Promise.all(pages.map((p) => p.evaluate(() =>
       !window.__boardCanvas()?.getObjects().some((o) => o.transientScreenShare))))).every(Boolean));
@@ -192,5 +233,5 @@ try {
   throw error;
 } finally {
   fs.writeFileSync(`${out}/${ENGINE}-results.json`,JSON.stringify({results,events},null,2));
-  await Promise.allSettled(contexts.map((c) => c.close())); await browser.close();
+  await Promise.allSettled(contexts.map((c) => c.close())); await browser.close(); await alternateBrowser?.close();
 }

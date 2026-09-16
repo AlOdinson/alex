@@ -54,7 +54,7 @@ import { forceExitGameParticipants } from '../lib/gameRealtime.js';
 import { randomToken } from '../lib/ids.js';
 import { getOwnedBoard, rememberOwnedBoard } from '../lib/boardLibrary.js';
 import { createShape } from '../lib/shapes.js';
-import { screenShareBoardLayoutForViewport } from '../lib/screenShare.js';
+import { screenShareBoardLayoutForViewport, screenShareViewportForLayout } from '../lib/screenShare.js';
 import {
   createBoardScreenShareMedia,
   isBoardScreenShareObject,
@@ -1972,6 +1972,7 @@ function BoardWorkspace({
   const viewSendRef = useRef({ lastSentAt: 0, timer: null, pending: false });
   const boardScreenShareRef = useRef(null);
   const screenShareRef = useRef(null);
+  const screenShareViewportSessionRef = useRef('');
   const screenShareLayoutSendRef = useRef({ lastSentAt: 0, timer: null, pending: null });
   const lastTeacherViewRef = useRef(null);
   const autopilotRef = useRef(false);
@@ -2097,9 +2098,11 @@ function BoardWorkspace({
     }, Math.max(0, LIVE_TRANSFORM_INTERVAL - elapsed));
   }, []);
 
-  useEffect(() => {
+  const reconcileBoardScreenShare = useCallback(() => {
     const canvas = fabricCanvasRef.current;
-    const active = Boolean(screenShare.sessionId && screenShare.sourceMode === 'screen');
+    const screenShare = screenShareRef.current;
+    const canEdit = canEditRef.current;
+    const active = Boolean(screenShare?.sessionId && screenShare.sourceMode === 'screen');
     let controller = boardScreenShareRef.current;
 
     const removeController = () => {
@@ -2112,6 +2115,7 @@ function BoardWorkspace({
     };
 
     if (!active || !canvas) {
+      if (!active) screenShareViewportSessionRef.current = '';
       removeController();
       canvas?.requestRenderAll?.();
       return;
@@ -2125,8 +2129,10 @@ function BoardWorkspace({
         canEdit,
       });
       boardScreenShareRef.current = controller;
-      canvas.add(controller.object);
     }
+    // Durable snapshots intentionally exclude live media. Reattach the current
+    // session after a Canvas replacement; never resurrect a stopped session.
+    if (!canvas.getObjects().includes(controller.object)) canvas.add(controller.object);
 
     controller.setInteractive(canEdit);
     controller.setStream(screenShare.stream);
@@ -2134,8 +2140,26 @@ function BoardWorkspace({
     if (screenShare.boardLayout && !locallyTransforming) {
       controller.setLayout(screenShare.boardLayout);
     }
+    if (screenShare.role === 'viewer' && boardReadyRef.current
+      && screenShareViewportSessionRef.current !== screenShare.sessionId) {
+      const nextViewport = screenShareViewportForLayout(
+        screenShareLayoutFromFabricObject(controller.object), canvas.viewportTransform,
+        canvas.getWidth(), canvas.getHeight(),
+      );
+      screenShareViewportSessionRef.current = screenShare.sessionId;
+      if (nextViewport) {
+        canvas.setViewportTransform(nextViewport);
+        setZoom(nextViewport[0]);
+        updateBackgroundTransform();
+      }
+    }
     canvas.requestRenderAll();
-  }, [canEdit, screenShare.boardLayout, screenShare.sessionId, screenShare.sourceMode, screenShare.stream]);
+  }, []);
+
+  useEffect(reconcileBoardScreenShare, [
+    reconcileBoardScreenShare, canEdit, screenShare.boardLayout,
+    screenShare.sessionId, screenShare.sourceMode, screenShare.stream,
+  ]);
 
   useEffect(() => () => {
     const sendState = screenShareLayoutSendRef.current;
@@ -4933,6 +4957,7 @@ function BoardWorkspace({
           penTransformSpatialApiRef.current?.rebuild?.();
           if (BACKGROUNDS.has(effectiveSnapshot.background)) applyBackground(effectiveSnapshot.background);
           canvas.setViewportTransform(viewport);
+          reconcileBoardScreenShare();
           applyObjectInteractivity();
 
           if (activeToolRef.current === 'select' && selectedIds.length) {
@@ -8812,6 +8837,7 @@ function BoardWorkspace({
       applyingRemoteRef.current = true;
       try {
         await loadCanvasJsonProgressively(canvas, snapshot.canvas);
+        reconcileBoardScreenShare();
         const serializedById = new Map((snapshot.canvas.objects ?? [])
           .filter((object) => object?.boardObjectId)
           .map((object) => [String(object.boardObjectId), object]));
@@ -8901,6 +8927,7 @@ function BoardWorkspace({
       if (disposed) return;
 
       boardReadyRef.current = true;
+      reconcileBoardScreenShare();
       await authoritativeSnapshotGate.flush();
       syncFromServer(false);
 

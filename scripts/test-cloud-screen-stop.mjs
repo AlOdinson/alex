@@ -53,13 +53,13 @@ test('a viewer cannot stop someone else’s local capture', async () => {
 function signalFixture(direct) {
   const messages = [];
   const values = {
-    activeSessionRef: { current: { sessionId: 'screen-1' } }, SCREEN_SHARE_PROTOCOL: 'test-protocol',
+    activeSessionRef: { current: { sessionId: 'screen-1', sourceMode: 'remote-browser' } }, SCREEN_SHARE_PROTOCOL: 'test-protocol',
     directSignalChannelRef: { current: direct }, clientId: 'teacher', participantName: 'Teacher', isOwner: true, canEdit: true,
     realtimeRef: { current: { sendScreenShareSignal: async (payload) => { messages.push(payload); return 'ok'; } } },
   };
   const body = source.split('  const sendSignal = useCallback((type, details = {}, explicitSession = null) => {')[1].split('\n  }, [')[0];
   const invoke = new Function('type', 'details', 'explicitSession', ...Object.keys(values), body);
-  return { messages, send: (type) => invoke(type, { reason: 'user' }, { sessionId: 'screen-1' }, ...Object.values(values)) };
+  return { messages, send: (type) => invoke(type, { reason: 'user' }, { sessionId: 'screen-1', sourceMode: 'remote-browser' }, ...Object.values(values)) };
 }
 for (const phase of ['ready', 'send']) test(`host-stop also reaches Ably when direct signaling ${phase} stalls`, async () => {
   const direct = { ready: phase === 'ready' ? new Promise(() => {}) : Promise.resolve(), channel: { send: () => new Promise(() => {}) } };
@@ -67,7 +67,7 @@ for (const phase of ['ready', 'send']) test(`host-stop also reaches Ably when di
   assert.equal(f.messages.length, 1);
   assert.equal(f.messages[0].type, 'host-stop'); assert.equal(f.messages[0].sessionId, 'screen-1');
 });
-test('ordinary screen signals still use only their existing preferred channel', async () => {
+test('Mac-agent signals still use only their existing direct channel', async () => {
   let sends = 0;
   const f = signalFixture({ ready: Promise.resolve(), channel: { send: async () => { sends++; return 'ok'; } } });
   await f.send('host-start'); assert.equal(sends, 1); assert.equal(f.messages.length, 0);

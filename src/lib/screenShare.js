@@ -121,6 +121,26 @@ export function normalizeScreenShareBoardLayout(layout) {
   };
 }
 
+// A shared scene position may be outside a viewer's independently panned or
+// zoomed viewport. Reveal a new session once; callers retain later user panning.
+export function screenShareViewportForLayout(layout, viewport, width, height) {
+  const rect = normalizeScreenShareBoardLayout(layout);
+  const w = Number(width), h = Number(height);
+  if (!rect || !Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+  if (!Array.isArray(viewport) || viewport.length !== 6 || !viewport.every(Number.isFinite)) return null;
+  const [a, b, c, d, e, f] = viewport;
+  const points = [[rect.left, rect.top], [rect.left + rect.width, rect.top],
+    [rect.left, rect.top + rect.height], [rect.left + rect.width, rect.top + rect.height]]
+    .map(([x, y]) => [a * x + c * y + e, b * x + d * y + f]);
+  const margin = Math.min(24, w / 10, h / 10);
+  if (points.every(([x, y]) => x >= margin && x <= w - margin && y >= margin && y <= h - margin)) return null;
+  const zoom = Math.min(Math.hypot(a, b) || 1,
+    (w - margin * 2) / rect.width, (h - margin * 2) / rect.height);
+  return [zoom, 0, 0, zoom,
+    w / 2 - (rect.left + rect.width / 2) * zoom,
+    h / 2 - (rect.top + rect.height / 2) * zoom];
+}
+
 export function screenShareBoardLayoutForViewport({
   centerX = 0,
   centerY = 0,
