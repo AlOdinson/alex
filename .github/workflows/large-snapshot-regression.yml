@@ -13,4 +13,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --test scripts/test-large-snapshot-timeouts.mjs
+      - name: Apply candidate snapshot deadline fix
+        run: |
+          git apply --check .github/large-snapshot-timeout.patch
+          git apply .github/large-snapshot-timeout.patch
+          git diff --check
+      - run: node --test scripts/test-large-snapshot-timeouts.mjs scripts/test-history-deadlines.mjs scripts/test-teacher-peer-hub.mjs scripts/test-student-peer-network.mjs
