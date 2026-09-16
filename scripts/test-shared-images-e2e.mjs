@@ -125,9 +125,20 @@ try {
       await owner.getByRole('button', { name: 'Создать доску' }).click();
       await enter(owner, 'Image owner');
       const guest = new URL(owner.url()); guest.searchParams.set('key', await deriveShareKey(guest.searchParams.get('key')));
+      // Reproduce the observed network failure, not just a lucky clean rerun.
+      // The same page must recover its first token request without navigation.
+      let tokenRequests = 0;
+      const reconnectingPage = pages[(ownerIndex + 1) % pages.length];
+      await reconnectingPage.route('**/functions/v1/ably-browser-token', async (route) => {
+        if (route.request().method() !== 'POST') return route.continue();
+        tokenRequests += 1;
+        if (tokenRequests === 1) return route.abort('internetdisconnected');
+        return route.continue();
+      });
       for (const [index, page] of pages.entries()) if (index !== ownerIndex) {
         await page.goto(guest.href, { waitUntil: 'domcontentloaded' }); await enter(page, `Image student ${index}`);
       }
+      assert.ok(tokenRequests >= 2, 'failed initial authentication must be retried on the same page');
       const data = await owner.evaluate(() => {
         const canvas = document.createElement('canvas'); canvas.width = 1000; canvas.height = 700;
         const ctx = canvas.getContext('2d'); const pixels = ctx.createImageData(1000, 700);
@@ -166,7 +177,7 @@ try {
         await late.goto(guest.href); await enter(late, 'Late image student'); await imagesEqual([...pages, late], 4);
       } finally { await lateContext.close(); }
       assert.deepEqual(errors, []);
-      results.push({ engine: ENGINE, owner: profiles[ownerIndex].name, actors: profiles.map((p) => p.name), fixtureBase64Chars: data.length, stalledReceiverRecovered: true, clipboard: true, passed: true });
+      results.push({ engine: ENGINE, owner: profiles[ownerIndex].name, actors: profiles.map((p) => p.name), fixtureBase64Chars: data.length, initialTokenFailureRecovered: true, stalledReceiverRecovered: true, clipboard: true, passed: true });
       console.log(JSON.stringify(results.at(-1)));
     } catch (error) {
       for (const [index, page] of pages.entries()) {
