@@ -1,0 +1,128 @@
+name: Cloud Browser Candidate
+on:
+  push:
+    branches: [fix/cloud-browser-access-20260916]
+permissions:
+  contents: write
+concurrency:
+  group: cloud-browser-candidate
+  cancel-in-progress: true
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Apply isolated source and check tested bytes
+        run: |
+          git apply --check scripts/cloud-browser-access.patch
+          git apply scripts/cloud-browser-access.patch
+          node --input-type=module <<'NODE'
+          import {execFileSync} from 'node:child_process';
+          const expected = {
+            'src/components/useCloudScreenShareFallback.js':'c952f3600b97ba6be63b41c9e1e66cd5d1ce5977',
+            'src/lib/cloudflareScreenShare.js':'e3da8f8e45fbcbd9273ab69e54ebd7e9794cc857',
+            'src/lib/screenShare.js':'df9934edc18081ea68d41df350e7b62a1052519f',
+            'supabase/functions/cloudflare-realtime/index.ts':'93bda27c2213e019a28f5b18f7177574cf12222d',
+            'src/lib/cloudPublisherAuthorization.js':'69b5aa5f71c4defdafafec112f94e123fa096781',
+            'scripts/test-cloud-browser-access.mjs':'b0ecc15769ff1e67f49c9864fa71b2e254b39934',
+            'scripts/test-cloud-publisher-authorization.mjs':'f5276b7c4f70834f7ce12c3aeba530bbe7f42c94',
+            'scripts/test-cloud-browser-e2e.mjs':'afe5853815e17a4961110cfef9aa472c765e47fe',
+          };
+          for (const [path,sha] of Object.entries(expected)) {
+            const actual=execFileSync('git',['hash-object',path],{encoding:'utf8'}).trim();
+            if(actual!==sha) throw new Error(`${path}: ${actual} != ${sha}`);
+          }
+          NODE
+          git diff --check
+      - run: npm install --no-audit --no-fund
+      - name: Regressions and type checking
+        run: |
+          node --test scripts/test-cloud-browser-access.mjs scripts/test-cloud-publisher-authorization.mjs
+          node scripts/test-cloudflare-realtime-edge-function.mjs
+          node scripts/test-cloudflare-screen-share-transport.mjs
+          node scripts/test-screen-share-cloud-switch.mjs
+          node scripts/test-screen-share-cloud-protocol.mjs
+          node scripts/test-board-screen-share-cloud-control.mjs
+          npm run test:screen-share
+          npm run test:browser-authority
+          npm run test:sync:ci
+          deno check --node-modules-dir=auto supabase/functions/cloudflare-realtime/index.ts
+      - name: Build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: npm run build
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: WebKit and test relay
+        if: matrix.engine == 'webkit'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          node node_modules/playwright-core/cli.js install webkit
+          brew install coturn
+      - name: Actual Cloudflare video on candidate backend
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
+          CLOUD_BROWSER: ${{ matrix.engine }}
+          CLOUD_EDGE_SLUG: cloudflare-realtime-browser-check
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          test -n "$VITE_SUPABASE_URL"
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
+          relay_pid=''
+          if [ "$CLOUD_BROWSER" = webkit ]; then
+            export CLOUD_TURN_PASSWORD=$(openssl rand -hex 24)
+            echo "::add-mask::$CLOUD_TURN_PASSWORD"
+            turnserver -n --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=3478 --min-port=49160 --max-port=49260 --realm=cloud-ci --user="cloud-ci:$CLOUD_TURN_PASSWORD" --lt-cred-mech --fingerprint --no-tls --no-dtls --no-cli --cli-password="$CLOUD_TURN_PASSWORD" --allow-loopback-peers --no-multicast-peers --pidfile=/tmp/cloud-turn.pid > /tmp/cloud-turn.log 2>&1 &
+            relay_pid=$!
+            sleep 2
+            kill -0 "$relay_pid"
+          fi
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/cloud-preview.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" ${relay_pid:-} 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4173/alex/ >/dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/test-cloud-browser-e2e.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cloud-candidate-${{ matrix.engine }}
+          path: cloud-browser-results
+          if-no-files-found: ignore
+          retention-days: 7
+  finalize:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Record only verified source on fix branch
+        run: |
+          git apply --check scripts/cloud-browser-access.patch
+          git apply scripts/cloud-browser-access.patch
+          git diff --check
+          git add src/components/useCloudScreenShareFallback.js src/lib/cloudflareScreenShare.js src/lib/screenShare.js supabase/functions/cloudflare-realtime/index.ts
+          git rm scripts/cloud-browser-access.patch .github/workflows/cloud-browser-staging.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: restore authorized Cloud screen sharing for browser-only boards'
+          git push origin HEAD:fix/cloud-browser-access-20260916
+          git rev-parse HEAD
