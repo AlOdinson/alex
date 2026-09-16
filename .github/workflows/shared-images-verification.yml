@@ -29,7 +29,7 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
       - name: Image loading, history race and large snapshot regressions
-        run: node --test scripts/test-image-loading-regressions.mjs scripts/test-image-history-selection-race.mjs scripts/test-large-snapshot-timeouts.mjs scripts/test-history-concurrent-redo.mjs scripts/test-history-deadlines.mjs scripts/test-teacher-peer-hub.mjs scripts/test-student-peer-network.mjs
+        run: node --test scripts/test-network-error-evidence.mjs scripts/test-image-loading-regressions.mjs scripts/test-image-history-selection-race.mjs scripts/test-large-snapshot-timeouts.mjs scripts/test-history-concurrent-redo.mjs scripts/test-history-deadlines.mjs scripts/test-teacher-peer-hub.mjs scripts/test-student-peer-network.mjs
       - name: Existing authority and sync regressions
         run: |
           npm run test:browser-authority
