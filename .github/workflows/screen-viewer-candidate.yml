@@ -1,0 +1,134 @@
+name: Screen Viewer Candidate
+on:
+  push:
+    branches: [fix/screen-viewer-delivery-20260916]
+permissions:
+  contents: read
+concurrency:
+  group: screen-viewer-candidate
+  cancel-in-progress: true
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+            secondary: all
+          - os: macos-latest
+            engine: mixed
+            secondary: receivers
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply and verify exact candidate bytes
+        run: |
+          git apply --check scripts/screen-viewer-delivery.patch
+          git apply scripts/screen-viewer-delivery.patch
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import {execFileSync} from 'node:child_process';
+          const expected = {
+            'src/components/Board.jsx':'d59e97c9642a787bd493da29f458111126dd310f',
+            'src/components/ScreenShare.jsx':'97a965f4702783b392066e9bb213e2251e3dcb54',
+            'src/components/useCloudScreenShareFallback.js':'9fb80738bd8835b38864774c6858103dda3c6ffc',
+            'src/lib/screenShare.js':'bbf04f6224d2e6781c627267e68a8e047c3d4cf2',
+            'scripts/test-cloud-browser-e2e.mjs':'bbb3f9b1d4a4442bb0f8f5c3bb4fd31220d8d932',
+            'scripts/test-cloud-screen-stop.mjs':'b9113e80907989a13877652bfc4365819879e2ea',
+          };
+          for(const [p,hash] of Object.entries(expected)) {
+            if(execFileSync('git',['hash-object',p],{encoding:'utf8'}).trim()!==hash) throw new Error('Unexpected tested bytes: '+p);
+          }
+          const p='package.json',s=fs.readFileSync(p,'utf8');
+          const from='"test:screen-share": "node scripts/test-screen-share.mjs';
+          if(!s.includes(from)) throw new Error('Unexpected screen test entrypoint');
+          fs.writeFileSync(p,s.replace(from,'"test:screen-share": "node --test scripts/test-screen-viewer-delivery.mjs scripts/test-screen-viewer-viewport.mjs scripts/test-cloud-screen-stop.mjs && node scripts/test-screen-share.mjs'));
+          NODE
+          git diff --check
+      - run: npm install --no-audit --no-fund
+      - name: Regression suites
+        run: |
+          npm run test:screen-share
+          node --test scripts/test-cloud-browser-access.mjs scripts/test-cloud-publisher-authorization.mjs
+          node scripts/test-cloudflare-screen-share-transport.mjs
+          node scripts/test-screen-share-cloud-switch.mjs
+          node scripts/test-screen-share-cloud-protocol.mjs
+          node scripts/test-board-screen-share-cloud-control.mjs
+          npm run test:browser-authority
+          npm run test:sync:ci
+      - name: Production build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: npm run build
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: WebKit and local test relay
+        if: matrix.engine == 'mixed'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          node node_modules/playwright-core/cli.js install webkit
+          brew install coturn
+      - name: Visible direct and Cloud screen on computer phone tablet, including late join and reload
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/
+          CLOUD_BROWSER: ${{ matrix.engine }}
+          SCREEN_SECONDARY_FAILURE: ${{ matrix.secondary }}
+          SCREEN_TEST_LATE: '1'
+          SCREEN_TEST_OFFSCREEN: '1'
+        run: |
+          relay_pid=''
+          if [ "$CLOUD_BROWSER" = mixed ]; then
+            export CLOUD_TURN_PASSWORD=$(openssl rand -hex 24)
+            echo "::add-mask::$CLOUD_TURN_PASSWORD"
+            turnserver -n --listening-ip=127.0.0.1 --relay-ip=127.0.0.1 --listening-port=3478 --min-port=49160 --max-port=49260 --realm=cloud-ci --user="cloud-ci:$CLOUD_TURN_PASSWORD" --lt-cred-mech --fingerprint --no-tls --no-dtls --no-cli --cli-password="$CLOUD_TURN_PASSWORD" --allow-loopback-peers --no-multicast-peers --pidfile=/tmp/screen-turn.pid >/tmp/screen-turn.log 2>&1 &
+            relay_pid=$!
+            sleep 2
+            kill -0 "$relay_pid"
+          fi
+          npm run preview -- --host 127.0.0.1 --port 4173 >/tmp/screen-preview.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" ${relay_pid:-} 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:4173/alex/ >/dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/test-cloud-browser-e2e.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screen-viewer-${{ matrix.engine }}
+          path: cloud-browser-results
+          if-no-files-found: ignore
+          retention-days: 7
+  finalize:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Commit tested source to isolated fix branch
+        run: |
+          git apply --check scripts/screen-viewer-delivery.patch
+          git apply scripts/screen-viewer-delivery.patch
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const p='package.json',s=fs.readFileSync(p,'utf8');
+          const from='"test:screen-share": "node scripts/test-screen-share.mjs';
+          if(!s.includes(from)) throw new Error('Unexpected screen test entrypoint');
+          fs.writeFileSync(p,s.replace(from,'"test:screen-share": "node --test scripts/test-screen-viewer-delivery.mjs scripts/test-screen-viewer-viewport.mjs scripts/test-cloud-screen-stop.mjs && node scripts/test-screen-share.mjs'));
+          NODE
+          git diff --check
+          git add src/components/Board.jsx src/components/ScreenShare.jsx src/components/useCloudScreenShareFallback.js src/lib/screenShare.js scripts/test-cloud-browser-e2e.mjs scripts/test-cloud-screen-stop.mjs package.json
+          git rm scripts/screen-viewer-delivery.patch .github/workflows/screen-viewer-candidate.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: deliver screen sessions over board signaling and restore visible viewer media'
+          git push origin HEAD:fix/screen-viewer-delivery-20260916
+          git rev-parse HEAD
