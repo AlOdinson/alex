@@ -30,13 +30,15 @@ jobs:
         run: |
           git apply --check scripts/screen-viewer-delivery.patch
           git apply scripts/screen-viewer-delivery.patch
+          git apply --check scripts/screen-cloud-subscriber-race.patch
+          git apply scripts/screen-cloud-subscriber-race.patch
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           import {execFileSync} from 'node:child_process';
           const expected = {
             'src/components/Board.jsx':'d59e97c9642a787bd493da29f458111126dd310f',
             'src/components/ScreenShare.jsx':'97a965f4702783b392066e9bb213e2251e3dcb54',
-            'src/components/useCloudScreenShareFallback.js':'9fb80738bd8835b38864774c6858103dda3c6ffc',
+            'src/components/useCloudScreenShareFallback.js':'320df18c35cf5934e700e31591c42173367e9df7',
             'src/lib/screenShare.js':'bbf04f6224d2e6781c627267e68a8e047c3d4cf2',
             'scripts/test-cloud-browser-e2e.mjs':'bbb3f9b1d4a4442bb0f8f5c3bb4fd31220d8d932',
             'scripts/test-cloud-screen-stop.mjs':'b9113e80907989a13877652bfc4365819879e2ea',
@@ -47,7 +49,7 @@ jobs:
           const p='package.json',s=fs.readFileSync(p,'utf8');
           const from='"test:screen-share": "node scripts/test-screen-share.mjs';
           if(!s.includes(from)) throw new Error('Unexpected screen test entrypoint');
-          fs.writeFileSync(p,s.replace(from,'"test:screen-share": "node --test scripts/test-screen-viewer-delivery.mjs scripts/test-screen-viewer-viewport.mjs scripts/test-cloud-screen-stop.mjs && node scripts/test-screen-share.mjs'));
+          fs.writeFileSync(p,s.replace(from,'"test:screen-share": "node --test scripts/test-screen-viewer-delivery.mjs scripts/test-screen-viewer-viewport.mjs scripts/test-screen-cloud-subscriber-race.mjs scripts/test-cloud-screen-stop.mjs && node scripts/test-screen-share.mjs'));
           NODE
           git diff --check
       - run: npm install --no-audit --no-fund
@@ -117,18 +119,20 @@ jobs:
         run: |
           git apply --check scripts/screen-viewer-delivery.patch
           git apply scripts/screen-viewer-delivery.patch
+          git apply --check scripts/screen-cloud-subscriber-race.patch
+          git apply scripts/screen-cloud-subscriber-race.patch
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
           const p='package.json',s=fs.readFileSync(p,'utf8');
           const from='"test:screen-share": "node scripts/test-screen-share.mjs';
           if(!s.includes(from)) throw new Error('Unexpected screen test entrypoint');
-          fs.writeFileSync(p,s.replace(from,'"test:screen-share": "node --test scripts/test-screen-viewer-delivery.mjs scripts/test-screen-viewer-viewport.mjs scripts/test-cloud-screen-stop.mjs && node scripts/test-screen-share.mjs'));
+          fs.writeFileSync(p,s.replace(from,'"test:screen-share": "node --test scripts/test-screen-viewer-delivery.mjs scripts/test-screen-viewer-viewport.mjs scripts/test-screen-cloud-subscriber-race.mjs scripts/test-cloud-screen-stop.mjs && node scripts/test-screen-share.mjs'));
           NODE
           git diff --check
           git add src/components/Board.jsx src/components/ScreenShare.jsx src/components/useCloudScreenShareFallback.js src/lib/screenShare.js scripts/test-cloud-browser-e2e.mjs scripts/test-cloud-screen-stop.mjs package.json
-          git rm scripts/screen-viewer-delivery.patch .github/workflows/screen-viewer-candidate.yml
+          git rm scripts/screen-viewer-delivery.patch scripts/screen-cloud-subscriber-race.patch .github/workflows/screen-viewer-candidate.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: deliver screen sessions over board signaling and restore visible viewer media'
+          git commit -m 'fix: deliver visible screen sessions and retire obsolete Cloud subscribers'
           git push origin HEAD:fix/screen-viewer-delivery-20260916
           git rev-parse HEAD

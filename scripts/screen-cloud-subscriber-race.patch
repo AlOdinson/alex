@@ -1,0 +1,75 @@
+diff --git a/src/components/useCloudScreenShareFallback.js b/src/components/useCloudScreenShareFallback.js
+--- a/src/components/useCloudScreenShareFallback.js
++++ b/src/components/useCloudScreenShareFallback.js
+@@ -86,6 +86,7 @@
+   const mountedRef = useRef(true);
+   const publisherRef = useRef(null);
+   const subscriberRef = useRef(null);
++  const subscriberAttemptRef = useRef(null);
+   const cloudViewerIdsRef = useRef(new Set());
+   const channelRef = useRef(null);
+   const authorizationRef = useRef(null);
+@@ -145,6 +146,8 @@
+   }, []);
+ 
+   const clearCloudSubscriber = useCallback(() => {
++    // Retire pending connection work too: it must not re-enable Cloud after Stop.
++    subscriberAttemptRef.current = null;
+     const subscriber = subscriberRef.current;
+     subscriberRef.current = null;
+     if (mountedRef.current) setCloudStream(null);
+@@ -351,7 +354,16 @@
+         return;
+       }
+ 
+-      await clearCloudSubscriber();
++      const pending = subscriberAttemptRef.current;
++      if (pending?.sessionId === activeCloudSessionId
++        && pending.publisherSessionId === route.publisherSessionId
++        && pending.trackName === route.trackName) return;
++
++      const closing = clearCloudSubscriber();
++      const attempt = { ...route, sessionId: activeCloudSessionId };
++      subscriberAttemptRef.current = attempt;
++      await closing;
++      if (subscriberAttemptRef.current !== attempt || !mountedRef.current) return;
+       patchCloudState({ cloudPhase: 'connecting', cloudError: '' });
+       try {
+         const subscriber = await createCloudflareSubscriber({
+@@ -360,7 +372,8 @@
+           api: cloudApi(activeCloudSessionId),
+         });
+         const latest = sessionContextRef.current;
+-        if (latest?.sessionId !== activeCloudSessionId
++        if (subscriberAttemptRef.current !== attempt || !mountedRef.current
++          || latest?.sessionId !== activeCloudSessionId
+           || latest?.role !== 'viewer'
+           || latest.hostId !== current.hostId) {
+           await subscriber.close();
+@@ -374,12 +387,14 @@
+           targetId: current.hostId,
+         }).catch(() => undefined);
+       } catch (error) {
+-        await clearCloudSubscriber();
++        if (subscriberAttemptRef.current !== attempt || !mountedRef.current) return;
++        const cleanup = clearCloudSubscriber();
+         patchCloudState({
+           transport: 'p2p',
+           cloudPhase: 'error',
+           cloudError: cloudErrorMessage(error),
+         });
++        await cleanup;
+       }
+       return;
+     }
+@@ -388,8 +403,9 @@
+       if (current.role !== 'viewer'
+         || signal.clientId !== current.hostId
+         || !screenSharePermissionCanHost(signal.permission)) return;
+-      await clearCloudSubscriber();
++      const cleanup = clearCloudSubscriber();
+       patchCloudState(defaultCloudState());
++      await cleanup;
+       return;
+     }
+ 
