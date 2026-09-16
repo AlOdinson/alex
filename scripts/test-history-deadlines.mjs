@@ -51,3 +51,34 @@ test('a silent congested channel rejects blocked sends without waiting for close
   await flush();
   assert.match(error?.message ?? '', /timed out/i);
 });
+
+test('steady backpressure drain extends the write inactivity deadline', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const channel = Object.assign(new EventTarget(), {
+    readyState: 'open',
+    bufferedAmount: 900_000,
+    sent: [],
+    send(value) { this.sent.push(value); },
+  });
+  const transport = createPeerDataChannelTransport({
+    channel,
+    highWaterMark: 512_000,
+    lowWaterMark: 128_000,
+    writeTimeoutMs: 100,
+  });
+  t.after(() => transport.close());
+  let failure = null;
+  const sending = transport.send('head', { revision: 1 }).catch((error) => { failure = error; });
+  await flush();
+  for (const amount of [800_000, 700_000, 600_000, 500_000, 300_000]) {
+    t.mock.timers.tick(80);
+    channel.bufferedAmount = amount;
+    await flush();
+    assert.equal(failure, null, `progress at ${amount} bytes must keep the write alive`);
+  }
+  channel.bufferedAmount = 100_000;
+  channel.dispatchEvent(new Event('bufferedamountlow'));
+  await sending;
+  assert.equal(failure, null);
+  assert.equal(channel.sent.length, 1);
+});
