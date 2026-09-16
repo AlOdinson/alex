@@ -38,7 +38,7 @@ test('closing a board cancels an image request without a load event', async (t) 
 
 // Execute the actual production callback with a small Canvas model. This reproduces
 // a delayed hydration being overtaken by snapshot replacement or by a local edit.
-function hydrationFixture() {
+function hydrationFixture(change) {
  const source=readFileSync(new URL('../src/components/Board.jsx',import.meta.url),'utf8');
  const body=source.split('const retryPendingServerImages = useCallback(async () => {')[1].split('\n  }, [')[0];
  const placeholder={boardObjectId:'image',pendingImage:true,pendingImageSerialized:{type:'Image',src:'old',boardObjectId:'image'}};
