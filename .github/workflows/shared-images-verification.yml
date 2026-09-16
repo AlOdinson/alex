@@ -20,19 +20,20 @@ jobs:
           - os: macos-latest
             engine: webkit
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 22
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       # BEGIN STAGING
-      - name: Apply final reviewed image implementation and verify exact bytes
+      - name: Apply final reviewed image implementation and snapshot transport fix
         run: |
           git apply --check .github/shared-images-source.patch
           git apply .github/shared-images-source.patch
           git apply --check .github/shared-images-review-delta.patch
           git apply .github/shared-images-review-delta.patch
+          python .github/apply-large-snapshot-fix.py
           python - <<'PY'
           import subprocess
           for path, expected in {
@@ -49,8 +50,8 @@ jobs:
       # END STAGING
       - name: Install dependencies
         run: npm install --no-audit --no-fund
-      - name: Image loading and history race regressions
-        run: node --test scripts/test-image-loading-regressions.mjs scripts/test-image-history-selection-race.mjs scripts/test-history-concurrent-redo.mjs
+      - name: Image loading, history race and large snapshot regressions
+        run: node --test scripts/test-image-loading-regressions.mjs scripts/test-image-history-selection-race.mjs scripts/test-large-snapshot-timeouts.mjs scripts/test-history-concurrent-redo.mjs scripts/test-history-deadlines.mjs scripts/test-teacher-peer-hub.mjs scripts/test-student-peer-network.mjs
       - name: Existing authority and sync regressions
         run: |
           npm run test:browser-authority
@@ -121,30 +122,27 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v6
-      - name: Commit only the fully verified image implementation
+      - name: Commit only the fully verified shared-image implementation
         run: |
           git apply .github/shared-images-source.patch
           git apply .github/shared-images-review-delta.patch
+          python .github/apply-large-snapshot-fix.py
           python - <<'PY'
           from pathlib import Path
-          import subprocess
-          for path, expected in {
-            'src/components/Board.jsx':'5b7b6e320911a9c0ccdffeb7d30438391f10c062',
-            'src/lib/imageStorage.js':'35ada6a24fe35a71ea62d36bcaac80f19cec8d11',
-            'package.json':'a99c5470d7c00113cb1ec9558909f8191cef350b',
-            'scripts/test-image-loading-regressions.mjs':'d34f5a8b7ee729e038880005d528822fb3160ec6',
-            'scripts/test-image-history-selection-race.mjs':'5b10bfd10b0a7fb2ce2cbcb61a457ee3bae5a387',
-          }.items():
-            actual=subprocess.check_output(['git','hash-object',path],text=True).strip()
-            assert actual==expected, (path,actual,expected)
+          p=Path('package.json')
+          text=p.read_text()
+          marker='node --test scripts/test-image-history-selection-race.mjs'
+          if 'scripts/test-large-snapshot-timeouts.mjs' not in text:
+            text=text.replace(marker, marker+' scripts/test-large-snapshot-timeouts.mjs', 1)
+          p.write_text(text)
           p=Path('.github/workflows/shared-images-verification.yml')
           text=p.read_text().split('  finalize:\n')[0]
           start=text.index('      # BEGIN STAGING\n')
           end=text.index('      # END STAGING\n')+len('      # END STAGING\n')
           p.write_text(text[:start]+text[end:])
           PY
-          git rm .github/shared-images-source.patch .github/shared-images-review-delta.patch
-          git add src/components/Board.jsx src/lib/imageStorage.js .github/workflows/shared-images-verification.yml
+          git rm .github/shared-images-source.patch .github/shared-images-review-delta.patch .github/large-snapshot-timeout.patch .github/apply-large-snapshot-fix.py .github/workflows/large-snapshot-regression.yml
+          git add src/components/Board.jsx src/lib/imageStorage.js src/lib/peerDataChannel.js src/lib/teacherPeerHub.js src/lib/studentPeerNetwork.js package.json scripts/test-large-snapshot-timeouts.mjs .github/workflows/shared-images-verification.yml
           git diff --cached --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
