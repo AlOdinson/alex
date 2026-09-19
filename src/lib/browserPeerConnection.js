@@ -60,12 +60,35 @@ export function createBrowserPeerConnection({
     return true;
   };
 
+  const queueIce = (candidate) => {
+    // Ably can deliver a previous attempt's ICE after a fresh peer was created.
+    // Keep a bounded queue, also preserving candidates for a future SDP/restart.
+    if (pendingIce.length >= 256) pendingIce.shift();
+    pendingIce.push(candidate);
+  };
+
+  const addRemoteIce = async (candidate) => {
+    if (closed) return;
+    const description = peerConnection.remoteDescription;
+    const fragment = String(candidate?.usernameFragment
+      ?? String(candidate?.candidate ?? '').match(/\bufrag\s+(\S+)/)?.[1] ?? '').trim();
+    const fragments = [...String(description?.sdp ?? '').matchAll(/^a=ice-ufrag:([^\r\n]+)/gm)]
+      .map((match) => match[1].trim());
+    if (!description || (fragment && fragments.length && !fragments.includes(fragment))) {
+      queueIce(candidate);
+      return;
+    }
+    // Do not suppress other ICE errors: malformed current-generation candidates
+    // must still be reported. Legacy candidates without ufrag remain supported.
+    await peerConnection.addIceCandidate(candidate);
+  };
+
   const flushPendingIce = async () => {
     if (!peerConnection.remoteDescription) return;
-    while (pendingIce.length) {
-      const candidate = pendingIce.shift();
+    const queued = pendingIce.splice(0);
+    for (const candidate of queued) {
       // eslint-disable-next-line no-await-in-loop
-      await peerConnection.addIceCandidate(candidate);
+      await addRemoteIce(candidate);
     }
   };
 
@@ -104,11 +127,7 @@ export function createBrowserPeerConnection({
       if (closed || !signal || typeof signal !== 'object') return;
       if (signal.type === 'ice') {
         if (!signal.candidate) return;
-        if (!peerConnection.remoteDescription) {
-          pendingIce.push(signal.candidate);
-          return;
-        }
-        await peerConnection.addIceCandidate(signal.candidate);
+        await addRemoteIce(signal.candidate);
         return;
       }
 
