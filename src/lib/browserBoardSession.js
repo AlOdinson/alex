@@ -64,6 +64,27 @@ export function createBrowserBoardSession({
   let rejectTeacherTabReady = null;
   let runtimeState = 'idle';
   let replicaNeedsSnapshot = false;
+  let desiredTeacherId = '';
+  let studentRetryTimer = null;
+  let studentRetryFailures = 0;
+
+  const cancelStudentRetry = () => {
+    clearTimeout(studentRetryTimer);
+    studentRetryTimer = null;
+  };
+
+  const scheduleStudentRetry = () => {
+    if (closed || isOwner || !desiredTeacherId || runtime || connectingRuntime || studentRetryTimer !== null) return;
+    const delay = Math.min(15_000, 1000 * (2 ** Math.min(studentRetryFailures++, 4)));
+    studentRetryTimer = setTimeout(() => {
+      studentRetryTimer = null;
+      if (closed || !desiredTeacherId || runtime || connectingRuntime) return;
+      // Retrying must not require a new presence event. A failed presence refresh
+      // must not leave live Ably previews working with editing blocked forever.
+      enqueueTransition(() => startStudent(desiredTeacherId)).catch(() => undefined);
+    }, delay);
+    studentRetryTimer?.unref?.();
+  };
   const runtimeWaiters = new Set();
 
   const reportRuntimeState = (nextState, error = null) => {
@@ -228,6 +249,8 @@ export function createBrowserBoardSession({
       nextRuntime.getRevision = getRevision;
     }
     runtime = nextRuntime;
+    cancelStudentRetry();
+    studentRetryFailures = 0;
     unregisterRuntime = registerRuntime(safeBoardId, nextRuntime);
     durableBridge = createBrowserAuthorityDurableBridge({ runtime: nextRuntime, clientId: safeClientId });
     reportRuntimeState('ready');
@@ -269,18 +292,20 @@ export function createBrowserBoardSession({
 
   const startStudent = async (nextTeacherId) => {
     const resolvedTeacherId = safeId(nextTeacherId);
-    if (!resolvedTeacherId) return null;
+    if (closed || !resolvedTeacherId || resolvedTeacherId !== desiredTeacherId) return null;
     if (runtime && teacherId === resolvedTeacherId) return runtime;
     if (runtime && teacherId !== resolvedTeacherId) clearRuntime();
     reportRuntimeState('waiting');
 
     let nextRuntime = null;
     const handleStudentState = (state) => {
+      if (closed || !nextRuntime || (runtime !== nextRuntime && connectingRuntime !== nextRuntime)) return;
       const normalizedState = String(state ?? '');
       if (TERMINAL_STUDENT_STATES.has(normalizedState)) {
         if (runtime === nextRuntime) {
           teacherId = '';
           clearRuntime();
+          scheduleStudentRetry();
         } else if (connectingRuntime === nextRuntime) {
           teacherId = '';
           reportRuntimeState('waiting');
@@ -327,7 +352,7 @@ export function createBrowserBoardSession({
     } catch (error) {
       clearConnectingRuntime(nextRuntime);
       if (teacherId === resolvedTeacherId) teacherId = '';
-      failRuntimeReadiness(error);
+      if (!closed) failRuntimeReadiness(error);
       throw error;
     }
 
@@ -342,9 +367,11 @@ export function createBrowserBoardSession({
   };
 
   const enqueueTransition = (work) => {
-    const task = transitionQueue.then(work);
+    const task = transitionQueue.then(() => closed ? null : work());
     transitionQueue = task.catch((error) => {
+      if (closed) return;
       try { onError(error); } catch { /* observer errors are ignored */ }
+      scheduleStudentRetry();
     });
     return task;
   };
@@ -374,6 +401,9 @@ export function createBrowserBoardSession({
         .filter((id) => id && id !== safeClientId)
         .sort();
       const nextTeacherId = ownerIds[0] ?? '';
+      if (desiredTeacherId !== nextTeacherId) studentRetryFailures = 0;
+      desiredTeacherId = nextTeacherId;
+      cancelStudentRetry();
       if (!nextTeacherId) {
         if (!runtime && !connectingRuntime) reportRuntimeState('teacher-offline');
         return Promise.resolve(runtime);
@@ -403,6 +433,8 @@ export function createBrowserBoardSession({
     close() {
       if (closed) return;
       closed = true;
+      desiredTeacherId = '';
+      cancelStudentRetry();
       teacherId = '';
       const closeError = new Error('Board session is closed');
       rejectRuntimeWaiters(closeError);
