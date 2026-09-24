@@ -5,6 +5,15 @@ const COMMIT_STORE = 'commits';
 const ASSET_STORE = 'assets';
 const BOARD_REVISION_INDEX = 'boardRevision';
 const BOARD_ID_INDEX = 'boardId';
+const OPEN_TIMEOUT_MS = 15_000;
+const CREATE_TIMEOUT_MS = 15_000;
+const LIBRARY_TIMEOUT_MS = 30_000;
+
+function storageTimeout(message) {
+  const error = new Error(message);
+  error.name = 'TimeoutError';
+  return error;
+}
 
 const EMPTY_SNAPSHOT = {
   version: 2,
@@ -33,7 +42,22 @@ function requestResult(request) {
 function openDatabase() {
   return new Promise((resolve, reject) => {
     const request = requireIndexedDb().open(DB_NAME, DB_VERSION);
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+    const timer = setTimeout(() => fail(storageTimeout(
+      'Хранилище досок не отвечает. Закройте другие вкладки доски и перезагрузите страницу. Не очищайте данные сайта.',
+    )), OPEN_TIMEOUT_MS);
     request.onupgradeneeded = () => {
+      if (settled) {
+        try { request.transaction?.abort(); } catch { /* already ended */ }
+        request.result.close();
+        return;
+      }
       const db = request.result;
 
       if (!db.objectStoreNames.contains(BOARD_STORE)) {
@@ -51,38 +75,57 @@ function openDatabase() {
         assets.createIndex(BOARD_ID_INDEX, 'boardId', { unique: false });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('Could not open authority database'));
-    request.onblocked = () => reject(new Error('Authority database upgrade is blocked by another tab'));
+    request.onsuccess = () => {
+      const db = request.result;
+      if (settled) {
+        // IndexedDB.open cannot be cancelled. Retire a late result without ever
+        // starting a create transaction or retaining a blocking connection.
+        db.close();
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
+    request.onerror = () => fail(request.error ?? new Error('Could not open authority database'));
+    request.onblocked = () => fail(new Error(
+      'Хранилище досок заблокировано другой вкладкой. Закройте другие вкладки доски и повторите. Не очищайте данные сайта.',
+    ));
   });
 }
 
-async function withTransaction(storeNames, mode, work) {
+async function withTransaction(storeNames, mode, work, timeoutMs = 0) {
   const db = await openDatabase();
-  const transaction = db.transaction(storeNames, mode);
-  const completion = new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error ?? new Error('Authority transaction failed'));
-    transaction.onabort = () => reject(transaction.error ?? new Error('Authority transaction aborted'));
-  });
-
+  let transaction;
+  let timer;
   try {
-    const result = await work(transaction);
-    await completion;
+    transaction = db.transaction(storeNames, mode);
+    let rejectCompletion;
+    const completion = new Promise((resolve, reject) => {
+      rejectCompletion = reject;
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error ?? new Error('Authority transaction failed'));
+      transaction.onabort = () => reject(transaction.error ?? new Error('Authority transaction aborted'));
+    });
+    // A synchronous work failure or abort can occur before Promise.all attaches.
+    // Observe that rejection without changing the result reported to the caller.
+    completion.catch(() => {});
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => rejectCompletion(storageTimeout(
+        'Не удалось дождаться хранилища досок. Перезагрузите страницу и проверьте «Мои доски» перед повтором. Не очищайте данные сайта.',
+      )), timeoutMs);
+    }
+    // Observe transaction failure even if an individual request never settles;
+    // success still requires the transaction's complete event, not just add().
+    const [result] = await Promise.all([work(transaction), completion]);
     return result;
   } catch (error) {
-    try {
-      transaction.abort();
-    } catch {
-      // The transaction may already have completed or aborted.
-    }
-    try {
-      await completion;
-    } catch {
-      // Preserve the original error from the operation.
-    }
+    try { transaction?.abort(); } catch { /* already committed or aborted */ }
+    // Do not wait forever for a broken browser to deliver the abort event.
     throw error;
   } finally {
+    clearTimeout(timer);
     db.close();
   }
 }
@@ -156,7 +199,7 @@ export async function createAuthorityBoard(input) {
   return withTransaction([BOARD_STORE], 'readwrite', async (transaction) => {
     await requestResult(transaction.objectStore(BOARD_STORE).add(board));
     return cloneValue(board);
-  });
+  }, CREATE_TIMEOUT_MS);
 }
 
 export async function getAuthorityBoard(boardId) {
@@ -174,7 +217,7 @@ export async function listAuthorityBoards() {
     return (Array.isArray(boards) ? boards : [])
       .map(cloneValue)
       .sort((left, right) => Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0));
-  });
+  }, LIBRARY_TIMEOUT_MS);
 }
 
 export async function updateAuthorityBoardMetadata(boardId, patch = {}) {

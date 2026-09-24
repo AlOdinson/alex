@@ -1,0 +1,67 @@
+name: Board creation storage recovery
+
+on:
+  push:
+    branches: [fix/board-creation-storage-20260924]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: board-creation-storage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Match the existing deployment install. npm ci fails on the unchanged
+      # baseline lockfile (missing optional @emnapi entries); do not rewrite it.
+      - run: npm install --no-audit --no-fund
+      - name: Storage regression tests
+        run: node --test scripts/test-board-creation-storage.mjs
+      - run: npm run test:browser-authority
+      - run: npm run test:sync:ci
+      - run: npm run test:screen-share
+      - run: npm run build
+      - name: Install browser test driver
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: Install WebKit
+        if: matrix.engine == 'webkit'
+        run: node node_modules/playwright-core/cli.js install webkit
+      - name: Native storage and creation checks
+        env:
+          STORAGE_BROWSER: ${{ matrix.engine }}
+          STORAGE_TEST_URL: http://127.0.0.1:5173/alex/
+        run: |
+          npm run dev -- --host 127.0.0.1 > /tmp/board-storage-vite.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS "$STORAGE_TEST_URL" > /dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/test-board-creation-storage-e2e.mjs
+      - name: Save storage test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: board-creation-results-${{ matrix.engine }}
+          path: storage-e2e-results
+          if-no-files-found: ignore
+          retention-days: 7

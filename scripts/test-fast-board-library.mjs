@@ -93,7 +93,7 @@ assert.equal(wrongOwnerBoards.has('protected-board'), true, 'wrong owner must ne
 
 const homeSource = await readFile(new URL('../src/components/Home.jsx', import.meta.url), 'utf8');
 assert.doesNotMatch(homeSource, /getBoardAccess/);
-assert.match(homeSource, /getOwnedBoardSummaries\(entries\)/);
+assert.match(homeSource, /restoreOwnedBoards\(localBoards\)/);
 assert.match(homeSource, /Выделить все/);
 assert.match(homeSource, /deleteOwnedBoards\(selectedBoards,/);
 assert.match(homeSource, /getOwnedBoardsOverLimit\(OWNED_BOARD_LIMIT/);

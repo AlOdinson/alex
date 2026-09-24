@@ -3,6 +3,10 @@ const LEGACY_LIBRARY_KEY = 'alex-board:owner-library:v1';
 export const OWNED_BOARD_LIMIT = 50;
 
 let legacyLibraryCleared = false;
+// The library is only an index. A failed cache write must never invalidate an
+// IndexedDB board. Keep pending metadata edits, not a stale full-tab snapshot.
+const pendingChanges = new Map();
+let lastReadableEntries = [];
 
 function clearLegacyLibrary() {
   if (legacyLibraryCleared) return;
@@ -18,15 +22,66 @@ function readAll() {
   clearLegacyLibrary();
   try {
     const value = JSON.parse(localStorage.getItem(LIBRARY_KEY) ?? '[]');
-    return Array.isArray(value) ? value : [];
+    lastReadableEntries = Array.isArray(value) ? value.filter((entry) => (
+      entry && typeof entry.boardId === 'string' && entry.boardId
+      && typeof entry.ownerKey === 'string' && entry.ownerKey
+    )) : [];
   } catch {
-    return [];
+    // Security settings or quota errors must not hide this tab's pending edits.
   }
+  const merged = new Map(lastReadableEntries.map((entry) => [entry.boardId, entry]));
+  for (const [boardId, entry] of pendingChanges) {
+    if (entry === null) merged.delete(boardId);
+    else merged.set(boardId, entry);
+  }
+  return [...merged.values()];
 }
 
 function writeAll(entries) {
-  clearLegacyLibrary();
-  localStorage.setItem(LIBRARY_KEY, JSON.stringify(entries));
+  const previous = new Map(readAll().map((entry) => [entry.boardId, entry]));
+  const next = new Map(entries.map((entry) => [entry.boardId, entry]));
+  for (const [boardId, entry] of next) {
+    if (JSON.stringify(previous.get(boardId)) !== JSON.stringify(entry)) {
+      pendingChanges.set(boardId, entry);
+    }
+  }
+  for (const boardId of previous.keys()) {
+    if (!next.has(boardId)) pendingChanges.set(boardId, null);
+  }
+  const merged = readAll();
+  try {
+    localStorage.setItem(LIBRARY_KEY, JSON.stringify(merged));
+    lastReadableEntries = merged;
+    pendingChanges.clear();
+  } catch {
+    // IndexedDB remains authoritative; the Home page restores cards after reload.
+  }
+}
+
+export function restoreOwnedBoards(records) {
+  const entries = new Map(readAll().map((entry) => [entry.boardId, entry]));
+  for (const record of Array.isArray(records) ? records : []) {
+    if (!record?.boardId || !record?.ownerKey) continue;
+    const existing = entries.get(record.boardId);
+    const createdAt = Number(record.createdAt) || Date.now();
+    const updatedAt = Number(record.updatedAt) || createdAt;
+    entries.set(record.boardId, {
+      ...existing,
+      boardId: record.boardId,
+      ownerKey: record.ownerKey,
+      title: record.title ?? 'Новая доска',
+      studentName: record.studentName ?? '',
+      createdAt: new Date(createdAt).toISOString(),
+      updatedAt: new Date(updatedAt).toISOString(),
+      libraryAddedAt: existing?.libraryAddedAt ?? createdAt,
+      lastOpenedAt: existing?.lastOpenedAt ?? updatedAt,
+      // Recovery must not trigger destructive overflow cleanup, even when older
+      // failed attempts left more than 50 durable boards. Manual deletion works.
+      recoveredFromStorage: existing ? Boolean(existing.recoveredFromStorage) : true,
+    });
+  }
+  writeAll([...entries.values()]);
+  return getOwnedBoards();
 }
 
 export function getOwnedBoards() {
@@ -82,7 +137,7 @@ function createdTime(entry) {
 
 export function getOwnedBoardsOverLimit(limit = OWNED_BOARD_LIMIT, preserveBoardId = '') {
   const safeLimit = Math.max(0, Number(limit) || 0);
-  const entries = readAll();
+  const entries = readAll().filter((entry) => !entry.recoveredFromStorage);
   const overflowCount = Math.max(0, entries.length - safeLimit);
   if (!overflowCount) return [];
 
