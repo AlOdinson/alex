@@ -4,7 +4,6 @@ import {
   deleteBoard,
   deleteOwnedBoards,
   duplicateBoard,
-  getOwnedBoardSummaries,
   isSupabaseConfigured,
   setBoardMetadata,
 } from '../lib/boardRepository.js';
@@ -15,8 +14,10 @@ import {
   getOwnedBoardsOverLimit,
   OWNED_BOARD_LIMIT,
   rememberOwnedBoard,
+  restoreOwnedBoards,
   updateOwnedBoard,
 } from '../lib/boardLibrary.js';
+import { listAuthorityBoards } from '../lib/browserAuthorityStore.js';
 import TeacherAccountPanel from './TeacherAccountPanel.jsx';
 import LanguageToggle from './LanguageToggle.jsx';
 import { useLanguage } from './LanguageProvider.jsx';
@@ -48,6 +49,7 @@ export default function Home() {
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [autoPruning, setAutoPruning] = useState(false);
   const [deletionProgress, setDeletionProgress] = useState(null);
+  const creatingRef = useRef(false);
   const refreshSequenceRef = useRef(0);
   const libraryRefreshRef = useRef(Promise.resolve());
   const autoPruneRunningRef = useRef(false);
@@ -65,17 +67,18 @@ export default function Home() {
     const refreshSequence = refreshSequenceRef.current + 1;
     refreshSequenceRef.current = refreshSequence;
     setLoadingBoards(true);
-    const entries = getOwnedBoards();
-    // Show the cached library immediately; server validation no longer blocks the page.
+    let entries = getOwnedBoards();
+    // Show cached cards immediately while validating IndexedDB; never gate creation.
     setBoards(entries);
-    if (!entries.length) {
-      setLoadingBoards(false);
-      return;
-    }
     try {
-      const summaries = await getOwnedBoardSummaries(entries);
+      const localBoards = await listAuthorityBoards();
       if (refreshSequenceRef.current !== refreshSequence) return;
-      const summariesById = new Map(summaries.map((summary) => [summary.boardId, summary]));
+      entries = restoreOwnedBoards(localBoards);
+      const summariesById = new Map(localBoards.map((board) => [board.boardId, {
+        ...board,
+        createdAt: new Date(board.createdAt).toISOString(),
+        updatedAt: new Date(board.updatedAt).toISOString(),
+      }]));
       const hydrated = entries.map((entry) => {
         const summary = summariesById.get(entry.boardId);
         if (!summary) return { ...entry, unavailable: true };
@@ -163,6 +166,8 @@ export default function Home() {
   }, [boards.length, deletingSelected, loadingBoards, refreshBoards, selectionMode]);
 
   async function handleCreate() {
+    if (creatingRef.current) return;
+    creatingRef.current = true;
     setCreating(true);
     setError('');
     try {
@@ -180,6 +185,7 @@ export default function Home() {
       window.location.assign(`${import.meta.env.BASE_URL}board/${created.boardId}?key=${encodeURIComponent(created.ownerKey)}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Не удалось создать доску');
+      creatingRef.current = false;
       setCreating(false);
     }
   }
@@ -351,7 +357,7 @@ export default function Home() {
         <div className="board-library-heading">
           <div>
             <h2 id="board-library-title">Мои доски</h2>
-            <p>До {OWNED_BOARD_LIMIT} досок на этом устройстве. При создании новой удаляется самая старая.</p>
+            <p>До {OWNED_BOARD_LIMIT} обычных досок на этом устройстве. При создании новой удаляется самая старая. Восстановленные доски не удаляются автоматически.</p>
           </div>
           <div className="board-library-heading-actions">
             {selectionMode ? (
