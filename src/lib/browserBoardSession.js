@@ -1,7 +1,10 @@
+import { createBoundedBoardVerifier } from './boundedBoardVerifier.js';
 import { createBrowserAuthorityDurableBridge } from './browserAuthorityDurableBridge.js';
 import { registerBoardRuntime as registerDefaultBoardRuntime } from './browserBoardRuntimeRegistry.js';
 import {
   applyReplicaCommit as applyDefaultReplicaCommit,
+  getReplicaVerificationView,
+  applyReplicaVerificationRecords,
   getReplicaRevision as getDefaultReplicaRevision,
   getReplicaState as getDefaultReplicaState,
   installReplicaSnapshot as installDefaultReplicaSnapshot,
@@ -29,6 +32,11 @@ export function createBrowserBoardSession({
   sendScreenShareSignal,
   onAuthoritativeCommit = async () => {},
   onAuthoritativeSnapshot = async () => {},
+  onVerificationRecords = async () => true,
+  readVerificationCanvasIds = () => ({ ids: [], done: true }),
+  canVerifyCanvas = () => true,
+  createVerifier = createBoundedBoardVerifier,
+  getVerificationReplicaView = getReplicaVerificationView,
   onPeerState = () => {},
   onRuntimeState = () => {},
   onError = () => {},
@@ -50,6 +58,37 @@ export function createBrowserBoardSession({
   if (typeof sendScreenShareSignal !== 'function') throw new Error('sendScreenShareSignal is required');
 
   let runtime = null;
+  let verifier = null;
+  let verifierEpoch = '';
+  // Integrity failures are diagnostic only, never a reason to reject user edits.
+  const verificationError = (error) => {
+    try { console.warn('Additional board verification postponed', error); } catch { /* observer only */ }
+  };
+  const notifyVerification = (commit) => {
+    try { verifier?.notify?.(commit); } catch (error) { verificationError(error); }
+  };
+  const configureVerification = (nextRuntime) => {
+    const mode = nextRuntime?.getVerificationMode?.();
+    if (mode?.version !== 1 || !mode.epoch || nextRuntime !== runtime || closed) return;
+    if (verifier && verifierEpoch === mode.epoch) return;
+    verifier?.close?.();
+    verifier = null; verifierEpoch = mode.epoch;
+    try {
+      const view = isOwner ? nextRuntime.getVerificationView?.() : getVerificationReplicaView(safeBoardId);
+      if (!view) return;
+      verifier = createVerifier({
+        enabled: true, epoch: mode.epoch, view,
+        isCurrentRuntime: () => !closed && runtime === nextRuntime
+          && nextRuntime.getVerificationMode?.().epoch === mode.epoch,
+        request: isOwner ? null : (request) => nextRuntime.verifyObjects(request),
+        runWork: isOwner && typeof nextRuntime.runVerification === 'function'
+          ? (work) => nextRuntime.runVerification(work) : (work) => work(),
+        applyRecords: (records, revision, background) => applyReplicaVerificationRecords(safeBoardId, records, revision, background),
+        checkCanvas: onVerificationRecords, readCanvasIds: readVerificationCanvasIds,
+        canCheck: canVerifyCanvas, onError: verificationError,
+      });
+    } catch (error) { verificationError(error); }
+  };
   let connectingRuntime = null;
   let connectingTeacherId = '';
   let unregisterRuntime = null;
@@ -134,6 +173,8 @@ export function createBrowserBoardSession({
   };
 
   const clearRuntime = ({ nextState = closed ? 'closed' : 'waiting' } = {}) => {
+    try { verifier?.close?.(); } catch (error) { verificationError(error); }
+    verifier = null; verifierEpoch = '';
     const previousRuntime = runtime;
     const previousUnregister = unregisterRuntime;
     runtime = null;
@@ -249,6 +290,7 @@ export function createBrowserBoardSession({
       nextRuntime.getRevision = getRevision;
     }
     runtime = nextRuntime;
+    configureVerification(nextRuntime);
     cancelStudentRetry();
     studentRetryFailures = 0;
     unregisterRuntime = registerRuntime(safeBoardId, nextRuntime);
@@ -269,7 +311,10 @@ export function createBrowserBoardSession({
         clientId: safeClientId,
         sendScreenShareSignal,
         rtcConfig,
-        onRemoteCommit: (commit) => onAuthoritativeCommit(commit),
+        onRemoteCommit: async (commit) => {
+          await onAuthoritativeCommit(commit);
+          if (!closed && runtime === nextRuntime) notifyVerification(commit);
+        },
         onPeerState,
         onError,
       });
@@ -323,7 +368,10 @@ export function createBrowserBoardSession({
       applyCommit: async (commit) => {
         const applied = applyReplicaCommit(safeBoardId, commit);
         if (applied?.needsSnapshot) throw new Error('Student replica needs authoritative snapshot');
-        if (applied?.applied) await onAuthoritativeCommit(commit);
+        if (applied?.applied) {
+          await onAuthoritativeCommit(commit);
+          if (!closed && runtime === nextRuntime) notifyVerification(commit);
+        }
         return applied;
       },
       installSnapshot: async (snapshot, revision) => {
@@ -334,6 +382,10 @@ export function createBrowserBoardSession({
         installReplicaSnapshot(safeBoardId, snapshot, revision);
         await onAuthoritativeSnapshot(snapshot, safeRevision(revision));
         replicaNeedsSnapshot = false;
+        try { verifier?.resume?.(); } catch (error) { verificationError(error); }
+      },
+      onVerificationMode: () => {
+        if (runtime === nextRuntime) configureVerification(nextRuntime);
       },
       onState: handleStudentState,
       onError,
@@ -417,12 +469,19 @@ export function createBrowserBoardSession({
     },
     async sendOps(ops, options = {}) {
       if (!durableBridge) throw new Error('Browser durable runtime is unavailable');
-      return durableBridge.sendOps(ops, options);
+      const activeRuntime = runtime;
+      const result = await durableBridge.sendOps(ops, options);
+      if (!closed && runtime === activeRuntime && result) notifyVerification(result);
+      return result;
     },
     requestLock(operation, payload = {}) {
       if (!runtime?.requestLock) return Promise.reject(new Error('Board lock runtime is unavailable'));
       return runtime.requestLock(operation, payload);
     },
+    resumeVerification() {
+      try { verifier?.resume?.(); } catch (error) { verificationError(error); }
+    },
+    getVerificationStats() { return verifier?.stats?.() ?? { enabled: false }; },
     getRuntime() { return runtime; },
     getRuntimeState() { return runtimeState; },
     getTeacherId() { return teacherId; },

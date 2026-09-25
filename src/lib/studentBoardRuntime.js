@@ -12,6 +12,7 @@ export function createStudentBoardRuntime({
   onAck = () => {},
   onState = () => {},
   onError = () => {},
+  onVerificationMode = () => {},
   createSignaling = createBoardPeerSignalingBridge,
   createNetwork = createStudentPeerNetwork,
 } = {}) {
@@ -31,6 +32,7 @@ export function createStudentBoardRuntime({
   });
 
   network = createNetwork({
+    onVerificationMode,
     teacherId: safeTeacherId,
     signaling,
     rtcConfig,
@@ -61,6 +63,11 @@ export function createStudentBoardRuntime({
 
     requestLock(operation, payload = {}) {
       return network.requestLock(operation, payload);
+    },
+
+    getVerificationMode() { return network?.getVerificationMode?.() ?? { version: 0, epoch: '' }; },
+    verifyObjects(request) {
+      return network?.verifyObjects?.(request) ?? Promise.reject(new Error('Verification session is unavailable'));
     },
 
     whenIdle() {

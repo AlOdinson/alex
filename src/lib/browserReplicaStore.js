@@ -1,3 +1,4 @@
+import { createVerificationView, applyVerificationRecords } from './boundedVerificationState.js';
 import { applyAuthorityOpsInPlace } from './authoritySnapshot.js';
 
 const replicas = new Map();
@@ -110,4 +111,18 @@ export function clearReplicaState(boardId) {
   const key = boardKey(boardId);
   if (!key) return false;
   return replicas.delete(key);
+}
+// Internal opt-in interfaces: no cloning of the whole replica for a small check.
+export function getReplicaVerificationView(boardId) {
+  const key = boardKey(boardId);
+  return createVerificationView({
+    getSnapshot: () => ensureState(key).snapshot,
+    getRevision: () => ensureState(key).revision,
+  });
+}
+
+export function applyReplicaVerificationRecords(boardId, records, revision, background = null) {
+  const state = replicas.get(boardKey(boardId));
+  if (!state || !Number.isInteger(revision) || revision !== state.revision) return false;
+  return applyVerificationRecords(state.snapshot, records, background);
 }

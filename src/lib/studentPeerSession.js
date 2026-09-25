@@ -15,6 +15,7 @@ export function createStudentPeerSession({
   installSnapshot,
   onAck = () => {},
   onError = () => {},
+  onVerificationMode = () => {},
   createRequestId = defaultRequestId,
 } = {}) {
   if (!transport?.send) throw new Error('peer transport is required');
@@ -36,6 +37,20 @@ export function createStudentPeerSession({
   });
   const lockWaiters = new Map();
   const actionWaiters = new Map();
+  let verificationMode = { version: 0, epoch: '' };
+  let verificationWaiter = null;
+  const learnVerificationMode = (payload) => {
+    if (payload?.verificationVersion !== 1 || typeof payload.verificationEpoch !== 'string' || !payload.verificationEpoch) return;
+    const epoch = payload.verificationEpoch;
+    if (verificationMode.version === 1 && verificationMode.epoch === epoch) return;
+    if (verificationWaiter) {
+      const waiter = verificationWaiter; verificationWaiter = null;
+      waiter.reject(new Error('Verification teacher epoch changed'));
+    }
+    verificationMode = { version: 1, epoch };
+    try { onVerificationMode(verificationMode); } catch { /* optional observer */ }
+  };
+
 
   const requestSync = () => transport.send('sync-request', {
     revision: safeRevision(getRevision()),
@@ -102,6 +117,15 @@ export function createStudentPeerSession({
         : {};
 
       if (type === 'head') {
+        learnVerificationMode(payload);
+        const reply = payload.verification;
+        if (verificationWaiter && reply?.requestId === verificationWaiter.requestId
+          && reply?.epoch === verificationWaiter.epoch) {
+          const waiter = verificationWaiter;
+          verificationWaiter = null;
+          waiter.resolve(reply);
+        }
+
         return enqueue(async () => {
           const headRevision = safeRevision(payload.revision);
           if (!initialSyncSettled) {
@@ -172,6 +196,7 @@ export function createStudentPeerSession({
           return;
         }
         await installSnapshot(parsed.snapshot, revision);
+        learnVerificationMode(parsed);
         if (closed) return;
         awaitingInitialSnapshot = false;
         if (!initialSyncSettled && initialSyncTargetRevision > revision) {
@@ -180,6 +205,29 @@ export function createStudentPeerSession({
         }
         markInitialSyncReady();
       });
+    },
+
+    getVerificationMode() { return { ...verificationMode }; },
+
+    verifyObjects(request) {
+      if (closed) return Promise.reject(new Error('Student peer session is closed'));
+      if (verificationMode.version !== 1) return Promise.reject(new Error('Board verification is not enabled'));
+      if (verificationWaiter) return Promise.reject(new Error('Verification request already pending'));
+      const requestId = `verify-${createRequestId()}`;
+      const epoch = verificationMode.epoch;
+      const task = new Promise((resolve, reject) => { verificationWaiter = { requestId, epoch, resolve, reject }; });
+      const fail = (error) => {
+        if (verificationWaiter?.requestId !== requestId) return;
+        const waiter = verificationWaiter; verificationWaiter = null; waiter.reject(error);
+      };
+      try {
+        const payload = { verification: { ...request, version: 1, requestId, epoch } };
+        const sending = typeof transport.sendLowPriorityEncoded === 'function'
+          ? transport.sendLowPriorityEncoded(JSON.stringify({ v: 1, type: 'head-request', payload }))
+          : transport.send('head-request', payload);
+        Promise.resolve(sending).catch(fail);
+      } catch (error) { fail(error); }
+      return task;
     },
 
     proposeAction(action) {
@@ -245,6 +293,8 @@ export function createStudentPeerSession({
       failInitialSync(reason);
       for (const waiter of actionWaiters.values()) waiter.reject(reason);
       actionWaiters.clear();
+      verificationWaiter?.reject(reason);
+      verificationWaiter = null;
       for (const waiter of lockWaiters.values()) waiter.reject(reason);
       lockWaiters.clear();
     },

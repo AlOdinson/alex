@@ -1,3 +1,5 @@
+import { buildVerificationReply } from './boundedVerificationProtocol.js';
+import { verificationJson } from './boundedVerificationDigest.js';
 import { operationObjectIds } from './operationProtocol.js';
 import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
 
@@ -61,6 +63,12 @@ export function createTeacherPeerHub({
   if (typeof canPeerEdit !== 'function') throw new Error('canPeerEdit must be a function');
 
   const peers = new Map();
+  const verificationView = authority.getVerificationView?.() ?? null;
+  const verificationEpoch = verificationView ? defaultTransferId() : '';
+  const verificationPending = new Set();
+  const verificationFields = () => verificationView
+    ? { verificationVersion: 1, verificationEpoch } : {};
+
   const journalLimit = Math.max(1, Number(maxJournalCommits) || 256);
   const snapshotTimeout = Number.isFinite(Number(snapshotWriteTimeoutMs)) && Number(snapshotWriteTimeoutMs) > 0
     ? Number(snapshotWriteTimeoutMs)
@@ -102,7 +110,7 @@ export function createTeacherPeerHub({
   const sendSnapshot = async (peer) => {
     const loaded = await getSnapshot();
     const revision = safeRevision(loaded?.revision ?? authority.getRevision());
-    const payload = JSON.stringify({ snapshot: loaded?.snapshot ?? null, revision });
+    const payload = JSON.stringify({ snapshot: loaded?.snapshot ?? null, revision, ...verificationFields() });
     await peer.sendTextTransfer('snapshot', payload, {
       transferId: createTransferId(),
       writeTimeoutMs: snapshotTimeout,
@@ -113,7 +121,7 @@ export function createTeacherPeerHub({
     const currentRevision = safeRevision(authority.getRevision());
     const knownRevision = safeRevision(fromRevision);
     if (knownRevision >= currentRevision) {
-      await peer.send('head', { revision: currentRevision });
+      await peer.send('head', { revision: currentRevision, ...verificationFields() });
       return;
     }
 
@@ -126,11 +134,44 @@ export function createTeacherPeerHub({
         // eslint-disable-next-line no-await-in-loop
         await peer.send('commit', commit);
       }
-      await peer.send('head', { revision: currentRevision });
+      await peer.send('head', { revision: currentRevision, ...verificationFields() });
       return;
     }
 
     await sendSnapshot(peer);
+  };
+
+  const verifyPeer = async (peerId, peer, request) => {
+    if (!verificationView) return peer.send('head', { revision: safeRevision(authority.getRevision()) });
+    if (verificationPending.has(peer)) return; // Never accumulate duplicate per-peer jobs.
+    verificationPending.add(peer);
+    const live = () => peers.get(peerId) === peer;
+    try {
+      const work = async (signal) => {
+        let reply = await buildVerificationReply(verificationView, request, verificationEpoch, { signal, isCurrent: live });
+        const stamp = verificationView.capture();
+        try {
+          return await verificationJson({ v: 1, type: 'head', payload: {
+            revision: reply.revision, ...verificationFields(), verification: reply,
+          } }, { signal, isCurrent: () => live() && verificationView.isCurrent(stamp)
+            && (reply.status !== 'ok' || reply.revision === verificationView.revision()) });
+        } catch (error) {
+          if (error?.name !== 'AbortError') throw error;
+          reply = { version: 1, requestId: request?.requestId ?? '', epoch: verificationEpoch,
+            revision: verificationView.revision(), status: 'stale' };
+          return JSON.stringify({ v: 1, type: 'head', payload: { revision: reply.revision,
+            ...verificationFields(), verification: reply } });
+        }
+      };
+      const encoded = typeof authority.runVerification === 'function'
+        ? await authority.runVerification(peer, work) : await work();
+      if (!live()) return;
+      if (typeof peer.sendLowPriorityEncoded === 'function') await peer.sendLowPriorityEncoded(encoded);
+      else await peer.send('head', JSON.parse(encoded).payload);
+    } catch {
+      if (live()) await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields(),
+        verification: { version: 1, requestId: request?.requestId ?? '', epoch: verificationEpoch, status: 'error' } });
+    } finally { verificationPending.delete(peer); }
   };
 
   const peerMayEdit = async (peerId) => Boolean(await canPeerEdit(String(peerId ?? '').trim()));
@@ -162,6 +203,8 @@ export function createTeacherPeerHub({
 
     removePeer,
 
+    getVerificationMode() { return verificationView ? { version: 1, epoch: verificationEpoch } : { version: 0, epoch: '' }; },
+
     getPeerCount() {
       return peers.size;
     },
@@ -175,7 +218,8 @@ export function createTeacherPeerHub({
       const payload = message?.payload && typeof message.payload === 'object' ? message.payload : {};
 
       if (type === 'head-request') {
-        await peer.send('head', { revision: safeRevision(authority.getRevision()) });
+        if (payload.verification) return verifyPeer(safePeerId, peer, payload.verification);
+        await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields() });
         return;
       }
 

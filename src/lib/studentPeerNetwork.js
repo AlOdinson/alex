@@ -31,6 +31,7 @@ export function createStudentPeerNetwork({
   onAck = () => {},
   onState = () => {},
   onError = () => {},
+  onVerificationMode = () => {},
   connectTimeoutMs = CONNECT_TIMEOUT_MS,
   initialSyncTimeoutMs = INITIAL_SYNC_IDLE_TIMEOUT_MS,
   requestTimeoutMs = 30_000,
@@ -153,6 +154,7 @@ export function createStudentPeerNetwork({
       onError: failConnection,
     });
     nextSession = createSession({
+      onVerificationMode,
       transport,
       getRevision,
       applyCommit,
@@ -236,6 +238,11 @@ export function createStudentPeerNetwork({
       await channelStart;
       if (typeof session.requestLock !== 'function') throw new Error('Peer lock API is unavailable');
       return awaitAcknowledgement(session.requestLock(operation, payload));
+    },
+
+    getVerificationMode() { return session?.getVerificationMode?.() ?? { version: 0, epoch: '' }; },
+    verifyObjects(request) {
+      return session?.verifyObjects?.(request) ?? Promise.reject(new Error('Verification session is unavailable'));
     },
 
     whenIdle() {

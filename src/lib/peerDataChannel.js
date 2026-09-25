@@ -237,6 +237,32 @@ export function createPeerDataChannelTransport({
       return enqueueEncodedFrames(frames);
     },
 
+    // Verification has no place in the action queue as a whole transfer. Prepare
+    // its JSON cooperatively before calling this method, then yield between small
+    // frames so a new durable action/ack can be sent ahead of the next frame.
+    async sendLowPriorityEncoded(encoded) {
+      if (typeof encoded !== 'string') throw new TypeError('Encoded peer message required');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (closed) throw new Error('Peer data channel transport is closed');
+      if (encoded.length <= 4096 && peerFrameByteLength(encoded) <= MAX_PEER_FRAME_BYTES) {
+        return enqueueEncodedFrames([encoded]);
+      }
+      const transferId = String(createTransferId?.() ?? '').trim();
+      if (!transferId) throw new Error('Peer message transfer id is required');
+      const size = 1024; // Even JSON-escaped control characters fit in one frame.
+      const totalChunks = Math.max(1, Math.ceil(encoded.length / size));
+      await enqueueEncodedFrames([createPeerMessage('transfer-start', {
+        transferId, kind: INTERNAL_MESSAGE_TRANSFER_KIND, totalChunks, totalChars: encoded.length,
+      })]);
+      for (let index = 0; index < totalChunks; index++) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await enqueueEncodedFrames([createPeerMessage('transfer-chunk', {
+          transferId, index, chunk: encoded.slice(index * size, (index + 1) * size),
+        })]);
+      }
+      await enqueueEncodedFrames([createPeerMessage('transfer-end', { transferId })]);
+    },
+
     sendTextTransfer(kind, text, options = {}) {
       const {
         writeTimeoutMs: transferWriteTimeoutMs = writeTimeoutMs,
