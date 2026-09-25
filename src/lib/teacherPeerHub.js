@@ -1,3 +1,5 @@
+import { createIntegrityPeerResponder } from './boardIntegrityPeer.js';
+import { validIntegrityIds } from './boardIntegrityData.js';
 import { operationObjectIds } from './operationProtocol.js';
 import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
 
@@ -52,6 +54,8 @@ export function createTeacherPeerHub({
   maxJournalCommits = 256,
   snapshotWriteTimeoutMs = SNAPSHOT_WRITE_TIMEOUT_MS,
   onCommit = () => {},
+  runIntegrityWork = (work) => work(),
+  onError = () => {},
   lockAuthority = createTeacherObjectLockAuthority(),
   canPeerEdit = async () => true,
 } = {}) {
@@ -61,6 +65,24 @@ export function createTeacherPeerHub({
   if (typeof canPeerEdit !== 'function') throw new Error('canPeerEdit must be a function');
 
   const peers = new Map();
+  const integrityPeers = new Map();
+  const integrityFields = (peer) => {
+    const item = integrityPeers.get(peer);
+    return item ? { integrity: item.info } : {};
+  };
+  const negotiateIntegrity = (peer, payload) => {
+    if (payload.integrityVersion !== 1 || integrityPeers.has(peer)) return;
+    const source = authority.getIntegritySource?.();
+    if (source?.version !== 1 || !source.boardId) return;
+    const info = { version: 1, sessionId: String(createTransferId()), boardId: source.boardId };
+    const responder = createIntegrityPeerResponder({
+      getSource: () => authority.getIntegritySource?.(), ...info,
+      runWork: runIntegrityWork, onError,
+      send: (type, data) => peer.send(type, data),
+      sendTextTransfer: (kind, text) => peer.sendTextTransfer(kind, text, { transferId: createTransferId() }),
+    });
+    integrityPeers.set(peer, { info, responder, hintBusy: false, nextHint: null });
+  };
   const journalLimit = Math.max(1, Number(maxJournalCommits) || 256);
   const snapshotTimeout = Number.isFinite(Number(snapshotWriteTimeoutMs)) && Number(snapshotWriteTimeoutMs) > 0
     ? Number(snapshotWriteTimeoutMs)
@@ -80,6 +102,8 @@ export function createTeacherPeerHub({
     // already been installed under the same stable peer id.
     if (expectedTransport && transport !== expectedTransport) return false;
     peers.delete(id);
+    integrityPeers.get(transport)?.responder.close();
+    integrityPeers.delete(transport);
     if (id && typeof lockAuthority?.release === 'function') {
       Promise.resolve(lockAuthority.release({ clientId: id })).catch(() => undefined);
     }
@@ -102,7 +126,7 @@ export function createTeacherPeerHub({
   const sendSnapshot = async (peer) => {
     const loaded = await getSnapshot();
     const revision = safeRevision(loaded?.revision ?? authority.getRevision());
-    const payload = JSON.stringify({ snapshot: loaded?.snapshot ?? null, revision });
+    const payload = JSON.stringify({ snapshot: loaded?.snapshot ?? null, revision, ...integrityFields(peer) });
     await peer.sendTextTransfer('snapshot', payload, {
       transferId: createTransferId(),
       writeTimeoutMs: snapshotTimeout,
@@ -113,7 +137,7 @@ export function createTeacherPeerHub({
     const currentRevision = safeRevision(authority.getRevision());
     const knownRevision = safeRevision(fromRevision);
     if (knownRevision >= currentRevision) {
-      await peer.send('head', { revision: currentRevision });
+      await peer.send('head', { revision: currentRevision, ...integrityFields(peer) });
       return;
     }
 
@@ -126,7 +150,7 @@ export function createTeacherPeerHub({
         // eslint-disable-next-line no-await-in-loop
         await peer.send('commit', commit);
       }
-      await peer.send('head', { revision: currentRevision });
+      await peer.send('head', { revision: currentRevision, ...integrityFields(peer) });
       return;
     }
 
@@ -156,6 +180,11 @@ export function createTeacherPeerHub({
       const id = String(peerId ?? '').trim();
       if (!id) throw new Error('peerId is required');
       if (!transport?.send || !transport?.sendTextTransfer) throw new Error('peer transport is required');
+      const previous = peers.get(id);
+      if (previous && previous !== transport) {
+        integrityPeers.get(previous)?.responder.close();
+        integrityPeers.delete(previous);
+      }
       peers.set(id, transport);
       return () => removePeer(id, transport);
     },
@@ -168,14 +197,39 @@ export function createTeacherPeerHub({
 
     broadcastCommit,
 
+    broadcastIntegrityHint(ids, revision) {
+      if (!validIntegrityIds(ids)) return;
+      // Each peer has one in-flight hint and one bounded coalesced replacement.
+      // The verifier supplies at most four batches/second; no heartbeat is added.
+      for (const [peer, item] of integrityPeers) {
+        item.nextHint = { revision: safeRevision(revision), integrity: { ...item.info, checkIds: ids } };
+        if (item.hintBusy) continue;
+        item.hintBusy = true;
+        (async () => {
+          try {
+            while (integrityPeers.get(peer) === item && item.nextHint) {
+              const payload = item.nextHint; item.nextHint = null;
+              await peer.send('head', payload);
+            }
+          } catch (error) { try { onError(error); } catch { /* audit observer */ } }
+          finally { item.hintBusy = false; }
+        })();
+      }
+    },
+
     async handleMessage(peerId, message) {
       const safePeerId = String(peerId ?? '').trim();
       const peer = requirePeer(safePeerId);
       const type = String(message?.type ?? '');
       const payload = message?.payload && typeof message.payload === 'object' ? message.payload : {};
 
+      if (type === 'integrity-request') {
+        return integrityPeers.get(peer)?.responder.handle(message);
+      }
+      if (['head-request', 'snapshot-request', 'sync-request'].includes(type)) negotiateIntegrity(peer, payload);
+
       if (type === 'head-request') {
-        await peer.send('head', { revision: safeRevision(authority.getRevision()) });
+        await peer.send('head', { revision: safeRevision(authority.getRevision()), ...integrityFields(peer) });
         return;
       }
 

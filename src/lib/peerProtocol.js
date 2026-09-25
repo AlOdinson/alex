@@ -12,6 +12,8 @@ const MESSAGE_TYPES = new Set([
   'action-proposal',
   'commit',
   'ack',
+  'integrity-request',
+  'integrity-result',
   'lock-request',
   'lock-result',
   'transfer-start',

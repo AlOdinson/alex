@@ -1,3 +1,4 @@
+import { createIntegrityWorkLane } from './boardIntegrityPeer.js';
 import { openBrowserBoardAuthority } from './browserBoardAuthority.js';
 import { getAuthorityBoard } from './browserAuthorityStore.js';
 import { createTeacherPeerHub } from './teacherPeerHub.js';
@@ -32,6 +33,7 @@ export async function createTeacherBoardRuntime({
 
   const authority = await openAuthority({ boardId: safeBoardId });
   const lockAuthority = createLockAuthority();
+  const runIntegrityWork = createIntegrityWorkLane();
   const hub = createHub({
     authority,
     getSnapshot: async () => ({
@@ -40,6 +42,7 @@ export async function createTeacherBoardRuntime({
     }),
     getCommitsAfter: (revision, limit) => authority.getCommitsAfter(revision, limit),
     onCommit: onRemoteCommit,
+    runIntegrityWork, onError,
     lockAuthority,
     canPeerEdit: async () => {
       const board = await getBoardMetadata(safeBoardId);
@@ -98,6 +101,10 @@ export async function createTeacherBoardRuntime({
     getRevision() {
       return authority.getRevision();
     },
+
+    getIntegritySource() { return authority.getIntegritySource?.() ?? null; },
+    runIntegrityWork,
+    broadcastIntegrityHint(ids, revision) { return hub.broadcastIntegrityHint?.(ids, revision); },
 
     getSnapshot() {
       return authority.getSnapshot();

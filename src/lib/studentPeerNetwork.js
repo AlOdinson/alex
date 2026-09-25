@@ -28,6 +28,9 @@ export function createStudentPeerNetwork({
   getRevision,
   applyCommit,
   installSnapshot,
+  integrityVersion = 0,
+  onIntegrityInfo = () => {},
+  onIntegrityHint = () => {},
   onAck = () => {},
   onState = () => {},
   onError = () => {},
@@ -157,6 +160,7 @@ export function createStudentPeerNetwork({
       getRevision,
       applyCommit,
       installSnapshot,
+      integrityVersion, onIntegrityInfo, onIntegrityHint,
       onAck,
       onError,
     });
@@ -237,6 +241,13 @@ export function createStudentPeerNetwork({
       if (typeof session.requestLock !== 'function') throw new Error('Peer lock API is unavailable');
       return awaitAcknowledgement(session.requestLock(operation, payload));
     },
+
+    requestIntegrity(payload) {
+      if (!session?.requestIntegrity) return Promise.resolve({ status: 'disabled' });
+      return session.requestIntegrity(payload);
+    },
+    getIntegrityInfo() { return session?.getIntegrityInfo?.() ?? null; },
+    requestIntegritySync() { return session?.requestIntegritySync?.(); },
 
     whenIdle() {
       return Promise.all([

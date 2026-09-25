@@ -9,6 +9,9 @@ export function createStudentBoardRuntime({
   applyCommit,
   installSnapshot,
   rtcConfig = {},
+  integrityVersion = 0,
+  onIntegrityInfo = () => {},
+  onIntegrityHint = () => {},
   onAck = () => {},
   onState = () => {},
   onError = () => {},
@@ -37,6 +40,7 @@ export function createStudentBoardRuntime({
     getRevision,
     applyCommit,
     installSnapshot,
+    integrityVersion, onIntegrityInfo, onIntegrityHint,
     onAck,
     onState,
     onError,
@@ -62,6 +66,13 @@ export function createStudentBoardRuntime({
     requestLock(operation, payload = {}) {
       return network.requestLock(operation, payload);
     },
+
+    requestIntegrity(payload) {
+      if (!network?.requestIntegrity) return Promise.resolve({ status: 'disabled' });
+      return network.requestIntegrity(payload);
+    },
+    getIntegrityInfo() { return network?.getIntegrityInfo?.() ?? null; },
+    requestIntegritySync() { return network?.requestIntegritySync?.(); },
 
     whenIdle() {
       return network.whenIdle();

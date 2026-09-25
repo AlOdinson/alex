@@ -75,6 +75,7 @@ export function createFreshOwnerBootstrap(board, {
     studentName: String(board?.studentName ?? '').trim(),
     createdAt,
     markedAt: now(),
+    ...(board?.integrityVersion === 1 ? { integrityVersion: 1 } : {}),
   };
   try {
     storage.setItem(SESSION_KEY, JSON.stringify(payload));
@@ -142,6 +143,7 @@ export async function recoverFreshOwnerBootstrap({
     guestMode: 'edit',
     createdAt: timestamp(ownerCandidate.createdAt) || currentTime,
     snapshot: EMPTY_SNAPSHOT,
+    ...(ownerCandidate.integrityVersion === 1 ? { integrityVersion: 1 } : {}),
   };
 
   try {

@@ -1,3 +1,4 @@
+import { createCanvasIntegrityAdapter, projectFabricIntegrityObject } from '../lib/boardIntegrityCanvas.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActiveSelection,
@@ -1744,6 +1745,7 @@ function BoardWorkspace({
   const fabricCanvasRef = useRef(null);
   const fabricInputModeSwitchRef = useRef(null);
   const realtimeRef = useRef(null);
+  const integrityWakeRef = useRef(null);
   const screenShareSignalHandlerRef = useRef(null);
   const gameLibraryVisibleRef = useRef(Boolean(initialAccess.gameLibraryVisible));
   const gameLibraryVisibilityBusyRef = useRef(false);
@@ -5151,7 +5153,7 @@ function BoardWorkspace({
     seedAuthoritativeSnapshot,
   ]);
 
-  const replayPendingActionsLocally = useCallback(async (actions) => {
+  const replayPendingActionsLocally = useCallback(async (actions, { isCurrent = () => true } = {}) => {
     const canvas = fabricCanvasRef.current;
     const pendingActions = Array.isArray(actions) ? actions : [];
     const ops = pendingActions.flatMap((action) => (
@@ -5217,6 +5219,15 @@ function BoardWorkspace({
       }
     }
 
+    // Integrity loading happens outside the operation/history queues. Recheck
+    // after every asynchronous enliven stage before entering this synchronous
+    // install section, so a newer edit/gesture can never be overwritten.
+    if (!isCurrent() || canvas !== fabricCanvasRef.current) {
+      for (const entry of prepared) {
+        try { entry.revived?.dispose?.(); } catch { /* detached loaded object */ }
+      }
+      return false;
+    }
     applyingRemoteRef.current = true;
     const previousRenderOnAddRemove = canvas.renderOnAddRemove;
     canvas.renderOnAddRemove = false;
@@ -5295,6 +5306,7 @@ function BoardWorkspace({
       canvas.renderOnAddRemove = previousRenderOnAddRemove;
       canvas.requestRenderAll();
     }
+    return true;
   }, [
     applyBackground,
     applyObjectInteractivityToObjects,
@@ -5986,6 +5998,7 @@ function BoardWorkspace({
         onChange: () => {
           historyCommandBusyRef.current = historyCommandQueueRef.current?.pendingCount() > 0;
           updateHistoryButtons();
+          if (!historyCommandBusyRef.current) realtimeRef.current?.wakeIntegrity?.();
         },
         onError: (error) => {
           console.error('Ошибка истории', error);
@@ -6898,6 +6911,7 @@ function BoardWorkspace({
     if (!ids.length) return;
     if (message.locked === false) {
       ids.forEach((id) => remoteLocksRef.current.delete(id));
+      realtimeRef.current?.wakeIntegrity?.();
     } else {
       ids.forEach((id) => remoteLocksRef.current.set(id, message));
     }
@@ -8927,6 +8941,7 @@ function BoardWorkspace({
       if (disposed) return;
 
       boardReadyRef.current = true;
+      integrityWakeRef.current?.();
       reconcileBoardScreenShare();
       await authoritativeSnapshotGate.flush();
       syncFromServer(false);
@@ -8991,6 +9006,73 @@ function BoardWorkspace({
       setFatalError('Не удалось восстановить сохранённое состояние доски.');
     });
 
+    const integrityBusy = () => !boardReadyRef.current || applyingRemoteRef.current
+      || applyingHistoryRef.current || historyCommandBusyRef.current
+      || pendingServerWritesRef.current > 0 || pendingLocalBackgroundMutationCountRef.current > 0
+      || rebasingPendingActionsRef.current || snapshotPersistInFlightRef.current
+      || Boolean(activePencilRef.current) || liveDrawSendRef.current.acceptingPoints
+      || Boolean(liveTransformSendRef.current.sessionId) || Boolean(lineRef.current)
+      || Boolean(shapeDraftRef.current) || erasingRef.current || Boolean(selectionDragRef.current)
+      || Boolean(localSelectionTransactionRef.current) || textBeforeRef.current.size > 0;
+    const integrityProtected = (id) => {
+      // Active gestures are guarded above; a completed move stays auditable even
+      // while the unchanged object remains selected and holds its local lease.
+      if (pendingLocalObjectMutationCountsRef.current.has(id)) return true;
+      const remote = remoteLocksRef.current.get(id);
+      return Boolean(remote && Number(remote.expiresAt ?? 0) > Date.now());
+    };
+    let invalidatedIntegrityCache = false;
+    const invalidateIntegrityCache = () => {
+      // A same-revision repair must not later be replaced by a stale render cache.
+      // Canonical durability remains owned by the teacher runtime, not this cache.
+      snapshotCompactBaseRef.current = null;
+      if (!invalidatedIntegrityCache) {
+        invalidatedIntegrityCache = true;
+        Promise.resolve(setCachedSnapshot(boardId, null)).catch(() => undefined);
+      }
+    };
+    const integrityCanvas = createCanvasIntegrityAdapter({
+      getCanvas: () => fabricCanvasRef.current,
+      getRevision: () => Number(revisionRef.current ?? 0),
+      isReady: () => boardReadyRef.current && !disposed,
+      isBusy: integrityBusy,
+      isProtected: integrityProtected,
+      getBackground: () => backgroundRef.current,
+      projectObject: (object, budget) => projectFabricIntegrityObject(object, budget, captureSerializedObjectTransform),
+      async applyRecord(record, guard) {
+        const op = record.count === 0
+          ? { type: 'delete', id: record.id }
+          : { type: 'upsert', object: record.object, zIndex: record.zIndex, reorder: true };
+        // Do NOT enqueue behind/in front of undo commands. Async preparation is
+        // independent; only the guarded synchronous Canvas install changes pixels.
+        const applied = await replayPendingActionsLocally([{ ops: [op] }], { isCurrent: guard });
+        if (!applied || !guard()) return false;
+        rememberAuthoritativeOps([op], revisionRef.current);
+        invalidateIntegrityCache();
+        return true;
+      },
+      applyBackground(value, guard) {
+        if (!guard()) return;
+        applyBackground(value);
+        authoritativeBackgroundStateRef.current = { revision: revisionRef.current, background: value };
+        invalidateIntegrityCache();
+      },
+      subscribeWake(wake) {
+        integrityWakeRef.current = wake;
+        const currentCanvas = fabricCanvasRef.current;
+        const events = ['mouse:up', 'selection:cleared', 'text:editing:exited'];
+        events.forEach((event) => currentCanvas?.on(event, wake));
+        window.addEventListener('pointerup', wake);
+        window.addEventListener('touchend', wake);
+        return () => {
+          if (integrityWakeRef.current === wake) integrityWakeRef.current = null;
+          events.forEach((event) => currentCanvas?.off(event, wake));
+          window.removeEventListener('pointerup', wake);
+          window.removeEventListener('touchend', wake);
+        };
+      },
+    });
+
     realtimeRef.current = connectBoardRealtime({
       boardId,
       boardKey,
@@ -8999,6 +9081,7 @@ function BoardWorkspace({
       name: participantName,
       permission,
       getKnownRevision: () => Number(revisionRef.current ?? 0),
+      integrityCanvas,
       onOps: applyRemoteOps,
       onUsers: setUsers,
       onMode: handleRemoteMode,
@@ -9124,6 +9207,7 @@ function BoardWorkspace({
           setSyncTone('saving');
         }
         if (count === 0) {
+          integrityWakeRef.current?.();
           if (snapshotCompactionNeededRef.current) schedulePersistence();
           if (syncRequestedRef.current) {
             const force = syncForceRef.current;
@@ -9229,6 +9313,7 @@ function BoardWorkspace({
         }
       }
       if (expiredLockIds.length) {
+        realtimeRef.current?.wakeIntegrity?.();
         setRemoteLocks([...remoteLocksRef.current.entries()].map(([objectId, lock]) => ({ objectId, ...lock })));
         applyObjectInteractivityToObjects(
           expiredLockIds.flatMap((objectId) => registeredObjectsById(objectId)),

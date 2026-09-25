@@ -166,6 +166,7 @@ function normalizeBoardInput(input) {
     snapshot: cloneValue(input?.snapshot ?? EMPTY_SNAPSHOT),
     tombstones: cloneValue(input?.tombstones ?? {}),
     protocolVersion: 1,
+    integrityVersion: input?.integrityVersion === 1 ? 1 : 0,
     createdAt: now,
     updatedAt: now,
   };

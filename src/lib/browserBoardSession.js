@@ -1,9 +1,12 @@
+import { createBoardIntegritySession } from './boardIntegritySession.js';
 import { createBrowserAuthorityDurableBridge } from './browserAuthorityDurableBridge.js';
 import { registerBoardRuntime as registerDefaultBoardRuntime } from './browserBoardRuntimeRegistry.js';
 import {
   applyReplicaCommit as applyDefaultReplicaCommit,
   getReplicaRevision as getDefaultReplicaRevision,
   getReplicaState as getDefaultReplicaState,
+  getReplicaIntegritySource,
+  repairReplicaIntegrityRecords,
   installReplicaSnapshot as installDefaultReplicaSnapshot,
 } from './browserReplicaStore.js';
 import { createStudentBoardRuntime as createDefaultStudentRuntime } from './studentBoardRuntime.js';
@@ -33,6 +36,7 @@ export function createBrowserBoardSession({
   onRuntimeState = () => {},
   onError = () => {},
   rtcConfig = {},
+  integrityCanvas = null,
   createTeacherTabAuthority = createDefaultTeacherTabAuthority,
   createTeacherRuntime = createDefaultTeacherRuntime,
   createStudentRuntime = createDefaultStudentRuntime,
@@ -67,6 +71,44 @@ export function createBrowserBoardSession({
   let desiredTeacherId = '';
   let studentRetryTimer = null;
   let studentRetryFailures = 0;
+  let integrity = null;
+  let integrityEpoch = '';
+  let unsubscribeIntegrityWake = null;
+  const reportIntegrityError = (error) => {
+    // Additional auditing must not change durable connection/readiness status.
+    console.warn('Additional board integrity check deferred', error);
+  };
+  const stopIntegrity = () => {
+    integrity?.close(); integrity = null; integrityEpoch = '';
+    try { unsubscribeIntegrityWake?.(); } catch { /* view may already be disposed */ }
+    unsubscribeIntegrityWake = null;
+  };
+  const markIntegrity = (commit) => {
+    try { integrity?.markCommit(commit); } catch (error) { reportIntegrityError(error); }
+  };
+  const setupIntegrity = (nextRuntime, info = null) => {
+    if (closed || runtime !== nextRuntime) return;
+    const source = isOwner ? nextRuntime.getIntegritySource?.() : null;
+    const enabled = isOwner ? source?.version === 1 : info?.version === 1 && info.boardId === safeBoardId;
+    const epoch = isOwner ? 'owner' : String(info?.sessionId ?? '');
+    if (!enabled) { stopIntegrity(); return; }
+    if (integrity && integrityEpoch === epoch) return;
+    stopIntegrity(); integrityEpoch = epoch;
+    integrity = createBoardIntegritySession({
+      getSource: isOwner ? () => nextRuntime.getIntegritySource?.() : () => getReplicaIntegritySource(safeBoardId),
+      canvas: integrityCanvas,
+      runWork: isOwner ? nextRuntime.runIntegrityWork : undefined,
+      requestCheck: isOwner ? null : (payload) => nextRuntime.requestIntegrity(payload),
+      repairSource: isOwner ? null : (revision, records, background) => repairReplicaIntegrityRecords(safeBoardId, revision, records, background),
+      onAhead: isOwner ? undefined : () => nextRuntime.requestIntegritySync?.(),
+      onBatch: isOwner ? (ids, revision) => nextRuntime.broadcastIntegrityHint?.(ids, revision) : undefined,
+      onError: reportIntegrityError,
+    });
+    unsubscribeIntegrityWake = integrityCanvas?.subscribeWake?.(() => integrity?.wake());
+    // One event-created initial sample, not a periodic scan. Existing boards never
+    // create this coordinator, subscribe wake listeners, or schedule audit timers.
+    integrity.markHint([]);
+  };
 
   const cancelStudentRetry = () => {
     clearTimeout(studentRetryTimer);
@@ -134,6 +176,7 @@ export function createBrowserBoardSession({
   };
 
   const clearRuntime = ({ nextState = closed ? 'closed' : 'waiting' } = {}) => {
+    stopIntegrity();
     const previousRuntime = runtime;
     const previousUnregister = unregisterRuntime;
     runtime = null;
@@ -242,7 +285,7 @@ export function createBrowserBoardSession({
     return ready;
   };
 
-  const installRuntime = (nextRuntime, { getRevision = null } = {}) => {
+  const installRuntime = (nextRuntime, { getRevision = null, integrityInfo = null } = {}) => {
     if (!nextRuntime || typeof nextRuntime !== 'object') throw new Error('Board runtime is required');
     clearRuntime();
     if (typeof nextRuntime.getRevision !== 'function' && typeof getRevision === 'function') {
@@ -253,6 +296,7 @@ export function createBrowserBoardSession({
     studentRetryFailures = 0;
     unregisterRuntime = registerRuntime(safeBoardId, nextRuntime);
     durableBridge = createBrowserAuthorityDurableBridge({ runtime: nextRuntime, clientId: safeClientId });
+    try { setupIntegrity(nextRuntime, integrityInfo); } catch (error) { stopIntegrity(); reportIntegrityError(error); }
     reportRuntimeState('ready');
     settleRuntimeWaiters(nextRuntime);
     return nextRuntime;
@@ -269,7 +313,10 @@ export function createBrowserBoardSession({
         clientId: safeClientId,
         sendScreenShareSignal,
         rtcConfig,
-        onRemoteCommit: (commit) => onAuthoritativeCommit(commit),
+        onRemoteCommit: async (commit) => {
+          try { await onAuthoritativeCommit(commit); }
+          finally { if (runtime === nextRuntime) markIntegrity(commit); }
+        },
         onPeerState,
         onError,
       });
@@ -298,6 +345,7 @@ export function createBrowserBoardSession({
     reportRuntimeState('waiting');
 
     let nextRuntime = null;
+    let nextIntegrityInfo = null;
     const handleStudentState = (state) => {
       if (closed || !nextRuntime || (runtime !== nextRuntime && connectingRuntime !== nextRuntime)) return;
       const normalizedState = String(state ?? '');
@@ -320,10 +368,25 @@ export function createBrowserBoardSession({
       sendScreenShareSignal,
       rtcConfig,
       getRevision: replicaRevision,
+      integrityVersion: 1,
+      onIntegrityInfo: (info) => {
+        nextIntegrityInfo = info;
+        if (runtime === nextRuntime) {
+          try { setupIntegrity(nextRuntime, info); } catch (error) { reportIntegrityError(error); }
+        }
+      },
+      onIntegrityHint: (ids) => {
+        if (runtime === nextRuntime) {
+          try { integrity?.markHint(ids); } catch (error) { reportIntegrityError(error); }
+        }
+      },
       applyCommit: async (commit) => {
         const applied = applyReplicaCommit(safeBoardId, commit);
         if (applied?.needsSnapshot) throw new Error('Student replica needs authoritative snapshot');
-        if (applied?.applied) await onAuthoritativeCommit(commit);
+        if (applied?.applied) {
+          try { await onAuthoritativeCommit(commit); }
+          finally { if (runtime === nextRuntime) markIntegrity(commit); }
+        }
         return applied;
       },
       installSnapshot: async (snapshot, revision) => {
@@ -334,6 +397,7 @@ export function createBrowserBoardSession({
         installReplicaSnapshot(safeBoardId, snapshot, revision);
         await onAuthoritativeSnapshot(snapshot, safeRevision(revision));
         replicaNeedsSnapshot = false;
+        if (runtime === nextRuntime) integrity?.markHint([]);
       },
       onState: handleStudentState,
       onError,
@@ -363,7 +427,7 @@ export function createBrowserBoardSession({
 
     connectingRuntime = null;
     connectingTeacherId = '';
-    return installRuntime(nextRuntime, { getRevision: replicaRevision });
+    return installRuntime(nextRuntime, { getRevision: replicaRevision, integrityInfo: nextIntegrityInfo });
   };
 
   const enqueueTransition = (work) => {
@@ -417,13 +481,18 @@ export function createBrowserBoardSession({
     },
     async sendOps(ops, options = {}) {
       if (!durableBridge) throw new Error('Browser durable runtime is unavailable');
-      return durableBridge.sendOps(ops, options);
+      const currentRuntime = runtime;
+      const result = await durableBridge.sendOps(ops, options);
+      if (runtime === currentRuntime) markIntegrity(result);
+      return result;
     },
     requestLock(operation, payload = {}) {
       if (!runtime?.requestLock) return Promise.reject(new Error('Board lock runtime is unavailable'));
       return runtime.requestLock(operation, payload);
     },
     getRuntime() { return runtime; },
+    getIntegrityStatus() { return integrity?.inspect() ?? null; },
+    wakeIntegrity() { integrity?.wake(); },
     getRuntimeState() { return runtimeState; },
     getTeacherId() { return teacherId; },
     getRevision() {

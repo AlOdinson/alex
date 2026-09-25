@@ -1,3 +1,6 @@
+import { createIntegrityPeerClient } from './boardIntegrityPeer.js';
+import { validIntegrityIds } from './boardIntegrityData.js';
+
 function safeRevision(value) {
   const revision = Number(value ?? 0);
   return Number.isInteger(revision) && revision >= 0 ? revision : 0;
@@ -13,6 +16,9 @@ export function createStudentPeerSession({
   getRevision,
   applyCommit,
   installSnapshot,
+  integrityVersion = 0,
+  onIntegrityInfo = () => {},
+  onIntegrityHint = () => {},
   onAck = () => {},
   onError = () => {},
   createRequestId = defaultRequestId,
@@ -36,9 +42,20 @@ export function createStudentPeerSession({
   });
   const lockWaiters = new Map();
   const actionWaiters = new Map();
+  const integrity = createIntegrityPeerClient({ send: (type, data) => transport.send(type, data) });
+  const capability = integrityVersion === 1 ? { integrityVersion: 1 } : {};
+  const configureIntegrity = (payload) => {
+    if (integrityVersion !== 1) return;
+    const info = integrity.configure(payload?.integrity);
+    try { onIntegrityInfo(info); } catch { /* optional audit observer */ }
+    const ids = payload?.integrity?.checkIds;
+    if (info && validIntegrityIds(ids)) {
+      try { onIntegrityHint(ids); } catch { /* optional audit observer */ }
+    }
+  };
 
   const requestSync = () => transport.send('sync-request', {
-    revision: safeRevision(getRevision()),
+    revision: safeRevision(getRevision()), ...capability,
   });
 
   const markInitialSyncReady = () => {
@@ -84,7 +101,7 @@ export function createStudentPeerSession({
           // objects at revision zero. Replaying every historical stroke is both
           // expensive to render and insufficient for a populated revision-zero board.
           const request = awaitingInitialSnapshot
-            ? transport.send('snapshot-request', {})
+            ? transport.send('snapshot-request', capability)
             : requestSync();
           Promise.resolve(request).catch(failInitialSync);
         } catch (error) {
@@ -101,8 +118,11 @@ export function createStudentPeerSession({
         ? message.payload
         : {};
 
+      if (type === 'integrity-result') { integrity.handleMessage(message); return Promise.resolve(); }
+
       if (type === 'head') {
         return enqueue(async () => {
+          configureIntegrity(payload);
           const headRevision = safeRevision(payload.revision);
           if (!initialSyncSettled) {
             initialSyncTargetRevision = Math.max(initialSyncTargetRevision, headRevision);
@@ -160,7 +180,9 @@ export function createStudentPeerSession({
     },
 
     handleTransfer(transfer) {
-      if (closed || transfer?.kind !== 'snapshot') return Promise.resolve();
+      if (closed) return Promise.resolve();
+      if (transfer?.kind === 'integrity-result') { integrity.handleTransfer(transfer); return Promise.resolve(); }
+      if (transfer?.kind !== 'snapshot') return Promise.resolve();
       return enqueue(async () => {
         const parsed = JSON.parse(String(transfer?.text ?? ''));
         const revision = safeRevision(parsed?.revision);
@@ -173,6 +195,7 @@ export function createStudentPeerSession({
         }
         await installSnapshot(parsed.snapshot, revision);
         if (closed) return;
+        configureIntegrity(parsed);
         awaitingInitialSnapshot = false;
         if (!initialSyncSettled && initialSyncTargetRevision > revision) {
           await requestSync();
@@ -181,6 +204,10 @@ export function createStudentPeerSession({
         markInitialSyncReady();
       });
     },
+
+    requestIntegrity(payload) { return integrity.request(payload); },
+    getIntegrityInfo() { return integrity.getInfo(); },
+    requestIntegritySync() { return requestSync(); },
 
     proposeAction(action) {
       return transport.send('action-proposal', actionProposalPayload(action));
@@ -239,6 +266,7 @@ export function createStudentPeerSession({
     close(error = new Error('Student peer session is closed')) {
       if (closed) return;
       closed = true;
+      integrity.close();
       const reason = error instanceof Error
         ? error
         : new Error(String(error ?? 'Student peer session is closed'));

@@ -38,6 +38,8 @@ export function createLocalBoardLibrary({
         title: cleanTitle(title),
         studentName: String(studentName ?? '').trim(),
         guestMode: 'edit',
+        // Only this new-board creation path opts in. Existing records are never migrated.
+        integrityVersion: 1,
       });
       // Keep a short-lived, same-tab handoff so a hard Pages navigation cannot silently
       // downgrade a just-created owner to a remote editor if IndexedDB visibility is

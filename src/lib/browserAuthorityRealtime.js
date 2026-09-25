@@ -324,6 +324,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     name = 'Участник',
     permission = 'view',
     getKnownRevision = () => 0,
+    integrityCanvas = null,
     onOps,
     onUsers,
     onMode,
@@ -381,6 +382,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     boardId,
     clientId,
     permission,
+    integrityCanvas,
     sendScreenShareSignal: (signal) => core?.sendScreenShareSignal?.(signal) ?? Promise.reject(new Error('Realtime core is not ready')),
     onAuthoritativeCommit: (commit) => onOps?.(
       Array.isArray(commit?.appliedOps) ? commit.appliedOps : (Array.isArray(commit?.ops) ? commit.ops : []),
@@ -485,6 +487,8 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
 
   return {
     ...core,
+    getIntegrityStatus: () => session.getIntegrityStatus?.() ?? null,
+    wakeIntegrity: () => session.wakeIntegrity?.(),
     async disconnect() {
       if (disconnected) return;
       disconnected = true;

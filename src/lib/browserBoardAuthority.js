@@ -203,6 +203,12 @@ export async function openBrowserBoardAuthority({
     getSnapshot() {
       return cloneValue(currentSnapshot);
     },
+    // Internal read-only audit view: no whole-board clone on every check.
+    getIntegritySource() {
+      return board.integrityVersion === 1 ? {
+        version: 1, boardId: safeBoardId, revision: authority.getRevision(), snapshot: currentSnapshot,
+      } : null;
+    },
     getTombstones() {
       return cloneValue(currentTombstones);
     },
