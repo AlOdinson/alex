@@ -333,3 +333,23 @@ test('closing during startup backoff stops every future reconnect', async (t) =>
   assert.equal(f.clients.length, 1);
   assert.equal(f.clients[0].closes, 1);
 });
+
+test('a preview publish interrupted by deliberate board shutdown settles as closed', async (t) => {
+  const f = startupFixture(t);
+  await f.transport.start();
+  let rejectPublish;
+  f.clients[0].channel.publish = () => new Promise((_resolve, reject) => { rejectPublish = reject; });
+  const result = f.transport.publish('cursor', { x: 1, y: 2 })
+    .then(value => ({ value }), error => ({ error }));
+  await f.transport.disconnect();
+  rejectPublish(new Error('Connection closed'));
+  assert.deepEqual(await result, { value: 'closed' }, 'intentional route teardown must not leak an unhandled preview rejection');
+});
+
+test('a live Ably publication failure is still rejected, not hidden as shutdown', async (t) => {
+  const f = startupFixture(t);
+  await f.transport.start();
+  const error = new Error('Connection closed');
+  f.clients[0].channel.publish = async () => { throw error; };
+  await assert.rejects(f.transport.publish('cursor', { x: 1, y: 2 }), failure => failure === error);
+});

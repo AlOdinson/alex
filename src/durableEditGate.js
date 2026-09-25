@@ -26,11 +26,15 @@ function isBoardCanvasTarget(target) {
   return Boolean(target.closest('.canvas-container, canvas.upper-canvas, canvas.lower-canvas'));
 }
 
-function gateMessage(state, permission) {
-  if (state === 'teacher-offline') return 'Откройте эту доску на устройстве владельца — ожидаю содержимое';
-  if (state === 'error') return 'Не удалось подключить сохранение — редактирование отключено';
+function gateMessage(state, permission, hasSnapshot) {
+  if (state === 'teacher-offline') return hasSnapshot
+    ? 'Владелец офлайн — сохранённая копия, только просмотр'
+    : 'Владелец офлайн — на этом устройстве пока нет сохранённой копии';
+  if (state === 'error') return hasSnapshot
+    ? 'Нет связи с владельцем — сохранённая копия, только просмотр'
+    : 'Нет связи с владельцем — ожидаю содержимое доски';
   if (permission === 'owner') return 'Доска открыта в другой вкладке — ожидаю доступ';
-  return 'Подключаю редактирование…';
+  return 'Подключаю редактирование… Просмотр доступен';
 }
 
 function installDurableEditGate() {
@@ -41,6 +45,7 @@ function installDurableEditGate() {
   let activeBoardId = '';
   let state = 'idle';
   let permission = '';
+  let hasSnapshot = false;
   let blocked = false;
   let badge = null;
 
@@ -48,11 +53,13 @@ function installDurableEditGate() {
     const root = document.documentElement;
     if (!root?.dataset) return;
     if (!activeBoardId) {
+      delete root.dataset.alexDurableEditBoardId;
       delete root.dataset.alexDurableEditState;
       delete root.dataset.alexDurableEditPermission;
       delete root.dataset.alexDurableEditBlocked;
       return;
     }
+    root.dataset.alexDurableEditBoardId = activeBoardId;
     root.dataset.alexDurableEditState = state;
     if (permission) root.dataset.alexDurableEditPermission = permission;
     else delete root.dataset.alexDurableEditPermission;
@@ -65,7 +72,7 @@ function installDurableEditGate() {
   };
 
   const showBadge = () => {
-    if (!blocked || state === 'booting') {
+    if ((!blocked && !(permission === 'view' && state !== 'ready')) || state === 'booting') {
       removeBadge();
       return;
     }
@@ -92,7 +99,7 @@ function installDurableEditGate() {
       });
       document.body?.append?.(badge);
     }
-    badge.textContent = gateMessage(state, permission);
+    badge.textContent = gateMessage(state, permission, hasSnapshot);
   };
 
   const syncRouteState = () => {
@@ -110,6 +117,7 @@ function installDurableEditGate() {
     }
     if (activeBoardId !== routeBoardId) {
       activeBoardId = routeBoardId;
+      hasSnapshot = false;
       state = 'booting';
       permission = '';
       blocked = true;
@@ -133,12 +141,20 @@ function installDurableEditGate() {
   const blockInput = (event) => {
     syncRouteState();
     if (!blocked || !isBoardCanvasTarget(event.target)) return;
+    // Board sets this marker only after disabling drawing, object transforms,
+    // text editing and all durable commands. Never bypass the owner's tab lock.
+    if (permission !== 'owner' && event.target?.closest?.('[data-readonly-navigation="true"]')) return;
     if (event.cancelable) event.preventDefault();
     event.stopImmediatePropagation?.();
   };
 
   syncRouteState();
   window.addEventListener(RUNTIME_STATE_EVENT, (event) => applyRuntimeState(event.detail ?? {}));
+  window.addEventListener('alex-board-readonly-view', (event) => {
+    if (!syncRouteState() || String(event.detail?.boardId ?? '') !== activeBoardId) return;
+    hasSnapshot = event.detail.hasSnapshot === true;
+    showBadge();
+  });
   BLOCKED_INPUT_EVENTS.forEach((type) => {
     window.addEventListener(type, blockInput, { capture: true, passive: false });
   });
