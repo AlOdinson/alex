@@ -169,6 +169,7 @@ export function createStudentPeerNetwork({
 
   connection = createConnection({
     initiator: true,
+    assistSignaling: true,
     rtcConfig,
     sendSignal: (signal) => signaling.send(targetTeacherId, signal),
     onChannel: attachChannel,
