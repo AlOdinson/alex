@@ -62,7 +62,7 @@ def configure(context):
 
 
 def enter(page, name):
-    page.wait_for_function("document.querySelector('canvas.upper-canvas') || document.querySelector('#board-access-name')")
+    page.wait_for_function("document.querySelector('canvas.upper-canvas') || document.querySelector('.gate-card input')")
     if not page.locator('canvas.upper-canvas').count():
         label=page.get_by_label('Ваше имя')
         if label.count():
