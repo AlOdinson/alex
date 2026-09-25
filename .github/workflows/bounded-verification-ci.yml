@@ -1,0 +1,56 @@
+name: Bounded board verification
+
+on:
+  push:
+    branches: [feature/bounded-board-verification-20260925]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/test-bounded*'
+      - '.github/workflows/bounded-verification-ci.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bounded-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Capture exact source before dependency installation
+        run: |
+          mkdir -p verification-evidence
+          git archive --format=tar.gz HEAD > verification-evidence/source.tar.gz
+          git rev-parse HEAD > verification-evidence/commit.txt
+      - name: Upload exact source
+        uses: actions/upload-artifact@v4
+        with:
+          name: bounded-source-${{ github.sha }}
+          path: verification-evidence/
+          retention-days: 3
+      - name: Install existing dependencies
+        run: npm install --no-audit --no-fund
+      - name: Bounded feature tests when present
+        run: |
+          if compgen -G 'scripts/test-bounded*.mjs' > /dev/null; then
+            node --test scripts/test-bounded*.mjs
+          else
+            echo 'Feature tests not yet added; baseline run only.'
+          fi
+      - name: Existing browser authority regressions
+        run: npm run test:browser-authority
+      - name: Existing sync regressions
+        run: npm run test:sync:ci
+      - name: Existing screen-share regressions
+        run: npm run test:screen-share
+      - name: Production build
+        run: npm run build
