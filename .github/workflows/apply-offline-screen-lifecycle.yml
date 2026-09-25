@@ -1,0 +1,57 @@
+name: Apply offline screen lifecycle fix
+on:
+  push:
+    branches: [fix/student-offline-view-20260925]
+    paths: [.github/workflows/apply-offline-screen-lifecycle.yml]
+permissions:
+  contents: write
+jobs:
+  apply-tested-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm install --no-audit --no-fund
+      - name: Reproduce permission-triggered unmount before the fix
+        run: |
+          if node --test scripts/test-screen-runtime-readiness.mjs > /tmp/screen-red.txt 2>&1; then
+            cat /tmp/screen-red.txt; exit 1
+          fi
+          cat /tmp/screen-red.txt
+          grep 'readiness must not impersonate component unmount' /tmp/screen-red.txt
+      - name: Apply precisely reviewed sender-identity fix
+        run: |
+          python3 - <<'PY'
+          import pathlib,subprocess
+          path=pathlib.Path('src/components/ScreenShare.jsx')
+          assert subprocess.check_output(['git','hash-object',str(path)],text=True).strip()=='97a965f4702783b392066e9bb213e2251e3dcb54'
+          source=path.read_text()
+          anchor='  const sendSignal = useCallback((type, details = {}, explicitSession = null) => {'
+          assert source.count(anchor)==1
+          source=source.replace(anchor,'  // Runtime readiness and guest mode can change without unmounting this hook.\n  // Keep the sender identity stable: it participates in viewer/teardown effects.\n  const signalingPermissionRef = useRef(canEdit);\n  signalingPermissionRef.current = canEdit;\n\n'+anchor)
+          source=source.replace("permission: isOwner ? 'owner' : (canEdit ? 'edit' : 'view'),", "permission: isOwner ? 'owner' : (signalingPermissionRef.current ? 'edit' : 'view'),",1)
+          source=source.replace('}, [canEdit, clientId, isOwner, participantName, realtimeRef]);','}, [clientId, isOwner, participantName, realtimeRef]);',1)
+          path.write_text(source)
+          assert subprocess.check_output(['git','hash-object',str(path)],text=True).strip()=='ebc98a2f098acc1a1170f3ff7de565ecb1c017c1'
+          workflow=pathlib.Path('.github/workflows/student-offline-view-ci.yml')
+          source=workflow.read_text()
+          anchor='          mkdir -p offline-verification\n'
+          assert source.count(anchor)==1
+          workflow.write_text(source.replace(anchor,anchor+'          node --test scripts/test-screen-runtime-readiness.mjs > offline-verification/screen-readiness.txt 2>&1\n'))
+          PY
+      - name: Verify lifecycle and existing suites before recording feature fix
+        run: |
+          node --test scripts/test-screen-runtime-readiness.mjs
+          npm run test:screen-share
+          npm run test:browser-authority
+          npm run test:sync:ci
+          npm run build
+          git diff --check
+      - name: Commit only the checked feature-branch sources
+        run: |
+          git add src/components/ScreenShare.jsx .github/workflows/student-offline-view-ci.yml
+          git config user.name 'AlOdinson'
+          git config user.email '309169678+AlOdinson@users.noreply.github.com'
+          git commit -m 'fix: keep screen signaling stable when offline viewing becomes editable'
+          git push origin HEAD:fix/student-offline-view-20260925
