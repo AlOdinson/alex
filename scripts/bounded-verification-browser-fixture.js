@@ -1,4 +1,4 @@
-import { Canvas, Path, Line, Rect, Circle, Ellipse, Triangle, Textbox, Group, FabricImage, util } from 'fabric';
+import { Canvas, ActiveSelection, Path, Line, Rect, Circle, Ellipse, Triangle, Textbox, Group, FabricImage, util } from 'fabric';
 import { createBoundedCanvasVerifier } from '../src/lib/boundedCanvasVerifier.js';
 import { createVerificationBudget, verificationDigest } from '../src/lib/boundedVerificationDigest.js';
 
@@ -51,14 +51,45 @@ window.runBoundedFabricChecks = async () => {
   const timings = [];
   for (const count of [100, 1000, 5000]) {
     const objects = Array.from({ length: count }, (_, i) => ({ id: `bench-${i}`, path: Array.from({ length: 100 }, (_, j) => ['L', j, i + j]) }));
-    const selected = objects.slice(-100); let yields = 0; let maximumSlice = 0;
+    // Awaited WebCrypto time is not continuous main-thread execution. The old
+    // "maximumSlice" included that wait and could report an 80ms CPU block even
+    // while the browser was processing other tasks. Keep wall time explicitly
+    // named and measure actual long tasks + an independent event-loop heartbeat.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const selected = objects.slice(-100); let yields = 0; let maximumWallGapBetweenYieldsMs = 0;
+    const longTasks = [];
+    const supportsLongTasks = globalThis.PerformanceObserver?.supportedEntryTypes?.includes('longtask');
+    const observer = supportsLongTasks ? new PerformanceObserver((list) => {
+      longTasks.push(...list.getEntries().map((e) => ({ durationMs: e.duration, startTime: e.startTime })));
+    }) : null;
+    observer?.observe({ type: 'longtask' });
+    let heartbeatAt = performance.now(); let maxEventLoopDelayMs = 0; let heartbeatTicks = 0;
+    const heartbeat = setInterval(() => {
+      const now = performance.now();
+      maxEventLoopDelayMs = Math.max(maxEventLoopDelayMs, now - heartbeatAt - 10);
+      heartbeatAt = now; heartbeatTicks++;
+    }, 10);
     let began = performance.now(); const start = began;
     const budget = createVerificationBudget({ yieldControl: async () => {
-      maximumSlice = Math.max(maximumSlice, performance.now() - began); yields++;
+      maximumWallGapBetweenYieldsMs = Math.max(maximumWallGapBetweenYieldsMs, performance.now() - began); yields++;
       await new Promise((resolve) => setTimeout(resolve, 0)); began = performance.now();
     } });
-    for (const object of selected) await verificationDigest(object, { budget });
-    timings.push({ totalBoardObjects: count, checkedObjects: selected.length, elapsedMs: performance.now() - start, yields, maximumSlice });
+    try {
+      for (const object of selected) await verificationDigest(object, { budget });
+      const elapsedMs = performance.now() - start;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      longTasks.push(...(observer?.takeRecords() ?? []).map((e) => ({ durationMs: e.duration, startTime: e.startTime })));
+      timings.push({ totalBoardObjects: count, checkedObjects: selected.length, elapsedMs, yields,
+        maximumWallGapBetweenYieldsMs, maxEventLoopDelayMs, heartbeatTicks,
+        longTaskMeasurementSupported: Boolean(supportsLongTasks), longTasks });
+    } finally { clearInterval(heartbeat); observer?.disconnect(); }
   }
   canvas.dispose(); element.remove(); return { results, timings, stylesToArray: typeof util.stylesToArray };
 };
+
+export function selectTestObjects(canvas) {
+  canvas.discardActiveObject();
+  const objects = canvas.getObjects().filter((o) => o.boardObjectId && !o.transientPreview && !o.transientScreenShare);
+  canvas.setActiveObject(new ActiveSelection(objects, { canvas }));
+  canvas.requestRenderAll();
+}

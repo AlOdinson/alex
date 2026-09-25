@@ -1,9 +1,9 @@
 {
-  "version": "1.35.0",
-  "packageVersion": "1.35.0",
-  "base": "1.32.0",
-  "release": "Password accounts and background Mac browser service",
-  "date": "2026-08-25",
-  "name": "background-mac-service",
-  "label": "Alex Board 1.35.0"
+  "version": "1.36.0",
+  "packageVersion": "1.36.0",
+  "base": "1.35.0",
+  "release": "Event-driven bounded verification for new boards only",
+  "date": "2026-09-25",
+  "name": "bounded-new-board-verification",
+  "label": "Alex Board 1.36.0"
 }

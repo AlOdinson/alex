@@ -95,3 +95,14 @@ feature('fresh owner recovery preserves explicit marker but does not upgrade an 
     assert.equal(restored.verificationVersion, version);
   }
 });
+feature('repairs preserve exact canonical fields without manufacturing timestamps', () => {
+  const snapshot = sample();
+  const expected = { boardObjectId: 'a', stroke: 'blue' };
+  const view = helpers.createVerificationView({ getSnapshot: () => snapshot, getRevision: () => 7 });
+  const stamp = view.capture();
+  assert.equal(helpers.applyVerificationRecords(snapshot, [{ id: 'a', object: expected, zIndex: 0 }]), true);
+  assert.deepEqual(view.read('a').object, expected);
+  assert.notEqual(view.read('a').object, expected);
+  assert.equal(Object.hasOwn(snapshot, 'savedAt'), false);
+  assert.equal(view.isCurrent(stamp), false);
+});

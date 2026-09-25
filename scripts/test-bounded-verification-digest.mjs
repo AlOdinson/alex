@@ -65,3 +65,15 @@ feature('fingerprint is stable across JSON transport dropping undefined object p
   const source = { boardObjectId: 'a', unused: undefined, path: [['M', 0, 0]], nested: { empty: undefined, x: 1 } };
   assert.equal(await module.verificationDigest(source), await module.verificationDigest(JSON.parse(JSON.stringify(source))));
 });
+
+feature('a cheap budget checkpoint does not allocate a microtask for every coordinate', async () => {
+  let clock = 0; let yields = 0;
+  const budget = module.createVerificationBudget({ now: () => clock, yieldControl: async () => { yields++; } });
+  assert.equal(budget.checkpoint(), null, 'within-budget work stays synchronous');
+  clock = 4;
+  const pending = budget.checkpoint();
+  assert.equal(typeof pending?.then, 'function', 'expired budget yields to a task');
+  await pending;
+  assert.equal(yields, 1);
+  assert.equal(budget.checkpoint(), null);
+});

@@ -68,13 +68,17 @@ export function createVerificationBudget({
   };
   return {
     assertCurrent,
-    async checkpoint() {
+    checkpoint() {
       assertCurrent();
-      if (now() - began < limit) return;
-      // A task yield, not only a resolved Promise: input/rendering must get a turn.
-      await yieldControl();
-      assertCurrent();
-      began = now();
+      // Most coordinates fit the current slice. Avoid creating/awaiting a Promise
+      // for every scalar: that only builds a microtask chain, not an input turn.
+      if (now() - began < limit) return null;
+      return (async () => {
+        // A task yield, not only a resolved Promise: input/rendering gets a turn.
+        await yieldControl();
+        assertCurrent();
+        began = now();
+      })();
     },
   };
 }
@@ -98,7 +102,8 @@ export async function verificationDigest(value, options = {}) {
       await fold(pending.slice(0, CHUNK_CHARS));
       pending = pending.slice(CHUNK_CHARS);
     }
-    await budget.checkpoint();
+    const pause = budget.checkpoint();
+    if (pause) await pause;
   }
   if (pending.length) await fold(pending);
   budget.assertCurrent();
@@ -149,7 +154,8 @@ export async function verificationJson(value, options = {}) {
   for (const token of jsonTokens(value)) {
     part += token;
     if (part.length >= CHUNK_CHARS) { parts.push(part); part = ''; }
-    await budget.checkpoint();
+    const pause = budget.checkpoint();
+    if (pause) await pause;
   }
   if (part) parts.push(part);
   budget.assertCurrent();

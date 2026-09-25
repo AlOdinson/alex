@@ -11,7 +11,7 @@ const normalizedType = (value) => String(value?.type ?? value?.constructor?.type
 // stay by reference and long text/paths yield; toObject() on a full path/group would
 // defeat the CPU limit. Null means an opaque/loading representation is inconclusive.
 async function contentMatches(actual, expected, budget, options, depth = 0) {
-  await budget.checkpoint();
+  { const pause = budget.checkpoint(); if (pause) await pause; }
   if (depth > 128) return null;
   if (typeof expected === 'number') {
     return Number.isFinite(actual) && Number.isFinite(expected) && Math.abs(actual - expected) <= 0.002;
@@ -20,7 +20,7 @@ async function contentMatches(actual, expected, budget, options, depth = 0) {
     if (typeof actual !== 'string' || actual.length !== expected.length) return false;
     for (let i = 0; i < expected.length; i += 1024) {
       if (actual.slice(i, i + 1024) !== expected.slice(i, i + 1024)) return false;
-      await budget.checkpoint();
+      { const pause = budget.checkpoint(); if (pause) await pause; }
     }
     return true;
   }
@@ -128,7 +128,7 @@ export function createBoundedCanvasVerifier({
           if (singles.has(object)) ranks.set(object, rank);
           rank++;
         }
-        await context.budget.checkpoint();
+        { const pause = context.budget.checkpoint(); if (pause) await pause; }
         if (!current()) return false;
       }
       for (const [actual, record] of singles) {
@@ -148,7 +148,9 @@ export function createBoundedCanvasVerifier({
       if (!repairs.length && !backgroundChanged) return true;
       // apply must check this fence again AFTER asynchronous revival and immediately
       // before touching the Canvas; it must not enter the user history queue.
-      const applied = await apply(repairs, { ...context, isCurrent: current }) !== false;
+      // Keep checked neighbours anchored when adding/removing/reordering others.
+      // This still contains at most this batch's 100 records, not the whole board.
+      const applied = await apply(structuralRepair ? records : repairs, { ...context, isCurrent: current }) !== false;
       if (applied && structuralRepair) context.onStructuralRepair?.();
       return applied;
       } catch (error) {

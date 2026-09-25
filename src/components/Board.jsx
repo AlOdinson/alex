@@ -5342,6 +5342,13 @@ function BoardWorkspace({
   const runTargetedReconciliation = useCallback(async () => {
     const state = targetedReconcileStateRef.current;
     state.timer = null;
+    if (realtimeRef.current?.getVerificationStats?.()?.enabled) {
+      // Capability can arrive after a preview scheduled legacy work. New boards
+      // must not run that retry loop alongside their bounded committed verifier.
+      state.pending.clear();
+      realtimeRef.current?.resumeVerification?.();
+      return;
+    }
     if (state.running || !state.pending.size) return;
     state.running = true;
     const batch = [...state.pending.entries()];
@@ -5423,6 +5430,12 @@ function BoardWorkspace({
       delay = TARGETED_RECONCILE_DELAY,
     } = {},
   ) => {
+    if (realtimeRef.current?.getVerificationStats?.()?.enabled) {
+      // A preview is not a commit: only resume already queued confirmed work.
+      // The authoritative commit supplies its own affected ids and revision.
+      realtimeRef.current?.resumeVerification?.();
+      return;
+    }
     const state = targetedReconcileStateRef.current;
     const ids = [...new Set((Array.isArray(objectIds) ? objectIds : [...(objectIds ?? [])])
       .filter(Boolean)
@@ -6167,7 +6180,15 @@ function BoardWorkspace({
               ?? serializedObjectCacheRef.current.get(current)
               ?? (current ? serializeObject(current) : null);
             serialized = applySerializedObjectPatch(source, op);
-            if (!serialized) throw new Error(`Не найден объект для patch: ${id}`);
+            if (!serialized) {
+              if (realtimeRef.current?.getVerificationStats?.()?.enabled) {
+                // Advance the confirmed revision; the bounded checker restores the
+                // authoritative full object even when this patch has no local base.
+                entry.skipDeleted = true;
+                return;
+              }
+              throw new Error(`Не найден объект для patch: ${id}`);
+            }
           }
           entry.serialized = serialized;
           reviveEntries.push({ index, serialized });
@@ -6359,7 +6380,10 @@ function BoardWorkspace({
                 const candidates = registered
                   .filter((object) => !object.transientPreview && !object.transientTransformFallback);
                 const object = candidates[0] ?? registered[0] ?? null;
-                if (!object) throw new Error(`Не найден объект для transform: ${id}`);
+                if (!object) {
+                  if (realtimeRef.current?.getVerificationStats?.()?.enabled) continue;
+                  throw new Error(`Не найден объект для transform: ${id}`);
+                }
                 object.set(patch.transform);
                 object.updatedAt = Number(patch.updatedAt ?? Date.now());
                 object.updatedBy = patch.updatedBy ?? sourceClientId ?? object.updatedBy;
@@ -9513,15 +9537,19 @@ function BoardWorkspace({
       if (!entry?.object || !entry?.transform) return;
       const cached = entry.cached ?? serializedObjectCacheRef.current.get(entry.object);
       if (!cached) return;
-      // Mutating the already cached JSON placement fields is O(1) and does not clone a
-      // long Pencil path. A later real content edit will therefore serialize the current
-      // position correctly.
-      Object.assign(cached, entry.transform, {
+      // getObjectRecords also lends this JSON object to the gesture's BEFORE
+      // history record. Never rewrite that baseline on opted-in boards: otherwise
+      // undo moves to the already-moved position. Copy only the shallow header;
+      // unchanged path/image data stays shared. Unmarked boards retain their path.
+      const next = realtimeRef.current?.getVerificationStats?.()?.enabled
+        ? { ...cached }
+        : cached;
+      Object.assign(next, entry.transform, {
         boardObjectId: entry.id,
         updatedAt: entry.updatedAt,
         updatedBy: entry.updatedBy,
       });
-      serializedObjectCacheRef.current.set(entry.object, cached);
+      serializedObjectCacheRef.current.set(entry.object, next);
     }
 
     function queueDeferredTransformPersistence(entries) {

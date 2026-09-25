@@ -52,3 +52,23 @@ test('new-board remote commits advance after a legacy order mismatch so the boun
   assert.throws(() => gate(mismatch, { current: {} }, [], null, 8), /Адресная проверка операции 8/);
   assert.equal(legacyCalls, 2, 'unmarked/old boards keep their exact legacy failure semantics');
 });
+
+test('a missing transform target on new boards defers to bounded repair without blocking revision', () => {
+  const start = board.indexOf('                if (!object)', board.indexOf('const applyRemoteOps ='));
+  const end = board.indexOf('\n                object.set(patch.transform);', start);
+  assert.ok(start > 0 && end > start);
+  const run = new Function('realtimeRef', 'object', 'id', `for (let once = 0; once < 1; once++) { ${board.slice(start, end)} } return true;`);
+  assert.equal(run({ current: { getVerificationStats: () => ({ enabled: true }) } }, null, 'missing'), true);
+  assert.throws(() => run({ current: {} }, null, 'missing'), /Не найден объект для transform/);
+});
+
+test('missing patch target preserves legacy errors but defers new-board repair', () => {
+  const start = board.indexOf('            if (!serialized)', board.indexOf('const applyRemoteOps ='));
+  const end = board.indexOf('\n          }\n          entry.serialized', start);
+  assert.ok(start > 0 && end > start);
+  const run = new Function('realtimeRef', 'serialized', 'id', 'entry', board.slice(start, end));
+  const entry = { skipDeleted: false, serialized: null, revived: null };
+  run({ current: { getVerificationStats: () => ({ enabled: true }) } }, null, 'missing', entry);
+  assert.equal(entry.skipDeleted, true);
+  assert.throws(() => run({ current: {} }, null, 'missing', {}), /Не найден объект для patch/);
+});

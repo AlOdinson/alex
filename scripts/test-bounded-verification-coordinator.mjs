@@ -144,3 +144,17 @@ feature('full sweep does not skip identities when repairs remove earlier array e
   assert.equal(h.local.view.count(), 0, 'every ghost must be checked despite earlier removals shifting the array');
   h.coordinator.close();
 });
+feature('finite bilateral sweep converges shuffled layers, missing ids and ghosts in batches of 100', async () => {
+  const objects = Array.from({ length: 300 }, (_, i) => object(`layer-${i}`, i));
+  const h = setup({ sourceObjects: objects, localObjects: [...objects.filter((_, i) => i % 11 !== 0).reverse(), object('extra-ghost')] });
+  let done = false;
+  for (let round = 0; round < 60; round++) {
+    const batch = h.older(100, true, round === 0);
+    assert.ok(batch.ids.length <= 100);
+    assert.equal((await h.verify(batch.ids, { fullSweep: true })).complete, true);
+    if (batch.done) { done = true; break; }
+  }
+  assert.ok(done, 'membership sweep must finish, not loop forever');
+  assert.deepEqual(h.local.snapshot.canvas.objects, h.source.snapshot.canvas.objects);
+  h.coordinator.close();
+});

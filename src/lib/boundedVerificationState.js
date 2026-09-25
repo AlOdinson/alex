@@ -1,4 +1,4 @@
-import { applyAuthorityOpsInPlace, authoritySnapshotLookup } from './authoritySnapshot.js';
+import { authoritySnapshotLookup } from './authoritySnapshot.js';
 
 export const isBoundedVerificationBoard = (board) => board?.verificationVersion === 1;
 export const validVerificationRecords = (records) => Array.isArray(records)
@@ -80,9 +80,14 @@ export function applyVerificationRecords(snapshot, records, background = null) {
   const ids = new Set(records.map((r) => r.id));
   // Repairs are exceptional. Remove every duplicate of a repaired id, not just the
   // last object in the lookup, and preserve all unrelated object references.
-  snapshot.canvas.objects = snapshot.canvas.objects.filter((o) => !ids.has(String(o?.boardObjectId ?? '')));
-  const ops = records.filter((r) => r.object !== null).sort((a, b) => a.zIndex - b.zIndex)
-    .map((r) => ({ type: 'upsert', object: r.object, zIndex: r.zIndex, reorder: true }));
-  applyAuthorityOpsInPlace(snapshot, ops, background);
+  // Repairs are exact state replacement, not new operations. The action reducer
+  // supplies default timestamps for unstamped imports, which would make a repaired
+  // object differ from its canonical source and fail its next digest again.
+  const restored = records.filter((r) => r.object !== null).sort((a, b) => a.zIndex - b.zIndex)
+    .map((r) => ({ ...r, object: structuredClone(r.object) }));
+  const objects = snapshot.canvas.objects.filter((o) => !ids.has(String(o?.boardObjectId ?? '')));
+  for (const record of restored) objects.splice(Math.min(objects.length, record.zIndex), 0, record.object);
+  snapshot.canvas.objects = objects;
+  if (background !== null) snapshot.background = background;
   return true;
 }

@@ -89,7 +89,7 @@ export function createBoundedBoardVerifier({
         }
         remoteScanRevision = stamp.revision;
         const payload = {
-          revision: stamp.revision, entries,
+          revision: stamp.revision, entries, fullSweep: batch.fullSweep,
           // Checking a tiny background value also detects a previously missed change.
           backgroundHash: await verificationDigest(view.background(), { budget }),
           scanCursor: remoteCursor,

@@ -22,12 +22,18 @@ export async function buildVerificationReply(view, request, epoch, options = {})
     isCurrent: () => view.isCurrent(stamp) && (options.isCurrent?.() ?? true),
   });
   try {
-    const repairs = [];
+    let repairs = [];
+    const compared = [];
     for (const entry of request.entries) {
       const expected = view.read(entry.id);
+      compared.push(expected);
       const hash = await verificationDigest(expected, { budget });
       if (hash !== entry.hash) repairs.push(expected);
     }
+    // A structural sweep establishes an ordered prefix. Re-insert its checked
+    // anchors together when repairing: moving a mismatching member can shift a
+    // previously matching neighbour within the same batch.
+    if (request.fullSweep === true && repairs.length) repairs = compared;
     let background = null;
     if (request.backgroundHash != null
       && await verificationDigest(view.background(), { budget }) !== request.backgroundHash) {

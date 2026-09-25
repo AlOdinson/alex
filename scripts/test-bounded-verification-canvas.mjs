@@ -108,3 +108,9 @@ feature('raw group children are checked without cloning nested path arrays', asy
   await h.adapter.check([{ id: 'g', object: expected, zIndex: 0 }], h.context());
   assert.equal(h.calls.length, 1);
 });
+feature('layer repairs include matching batch anchors that would otherwise shift', async () => {
+  const h = fixture([object('c'), object('b'), object('a')]);
+  const records = [{ id: 'b', object: object('b'), zIndex: 1 }, { id: 'c', object: object('c'), zIndex: 2 }];
+  await h.adapter.check(records, h.context());
+  assert.deepEqual(h.calls[0], records, 'repairing c alone shifts previously matching b to a wrong layer');
+});
