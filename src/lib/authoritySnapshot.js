@@ -2,6 +2,20 @@ import { applySerializedObjectPatch } from './operationProtocol.js';
 
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
 
+// Created only by the opt-in verifier. Ordinary/old boards retain no new index.
+const verificationLookups = new WeakMap();
+export function authoritySnapshotLookup(snapshot) {
+  let lookup = verificationLookups.get(snapshot);
+  if (!lookup || lookup.objects !== snapshot.canvas?.objects) {
+    const objects = snapshot.canvas?.objects ?? [];
+    lookup = { objects, byId: new Map(objects.filter((o) => o?.boardObjectId)
+      .map((o) => [String(o.boardObjectId), o])), generation: (lookup?.generation ?? 0) + 1 };
+    verificationLookups.set(snapshot, lookup);
+  }
+  return lookup;
+}
+
+
 function cloneValue(value) {
   if (value == null || typeof value !== 'object') return value;
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -156,6 +170,15 @@ function applyMutable(snapshot, ops, background = null, committedAt = null) {
     }
     objects.splice(targetIndex, 0, nextObject);
     objectById.set(objectId, nextObject);
+  }
+
+  const verificationLookup = verificationLookups.get(snapshot);
+  if (verificationLookup) {
+    // Reuse the reducer's existing index instead of cloning/re-indexing a whole
+    // snapshot after every stroke. Its records remain internal read-only views.
+    verificationLookup.byId = objectById;
+    verificationLookup.objects = objects;
+    verificationLookup.generation += 1;
   }
 
   if (['grid', 'dots', 'blank'].includes(background)) snapshot.background = background;

@@ -92,6 +92,7 @@ import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGat
 import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';
 import { createInitialHistoryOps, refreshHistoryOps } from '../lib/historyOperations.js';
 import { createHistoryCommandQueue } from '../lib/historyCommandQueue.js';
+import { createBoundedCanvasVerifier } from '../lib/boundedCanvasVerifier.js';
 
 const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
@@ -5151,7 +5152,8 @@ function BoardWorkspace({
     seedAuthoritativeSnapshot,
   ]);
 
-  const replayPendingActionsLocally = useCallback(async (actions) => {
+  const replayPendingActionsLocally = useCallback(async (actions, { isCurrent = () => true } = {}) => {
+    if (!isCurrent()) return false;
     const canvas = fabricCanvasRef.current;
     const pendingActions = Array.isArray(actions) ? actions : [];
     const ops = pendingActions.flatMap((action) => (
@@ -5160,7 +5162,7 @@ function BoardWorkspace({
     const pendingBackground = [...pendingActions]
       .reverse()
       .find((action) => BACKGROUNDS.has(action?.background))?.background ?? null;
-    if (!canvas || (!ops.length && !pendingBackground)) return;
+    if (!canvas || (!ops.length && !pendingBackground)) return false;
 
     const selectedIds = canvas.getActiveObjects()
       .map((object) => object.boardObjectId)
@@ -5215,6 +5217,16 @@ function BoardWorkspace({
           }
         }
       }
+    }
+
+    // A selective integrity repair may have awaited image/path revival while a
+    // newer gesture, undo or commit arrived. Dispose detached replacements rather
+    // than applying stale state. Legacy callers keep the default no-op guard.
+    if (canvas !== fabricCanvasRef.current || !isCurrent()) {
+      for (const entry of prepared) {
+        try { entry.revived?.dispose?.(); } catch { /* detached object only */ }
+      }
+      return false;
     }
 
     applyingRemoteRef.current = true;
@@ -5295,6 +5307,7 @@ function BoardWorkspace({
       canvas.renderOnAddRemove = previousRenderOnAddRemove;
       canvas.requestRenderAll();
     }
+    return true;
   }, [
     applyBackground,
     applyObjectInteractivityToObjects,
@@ -5329,6 +5342,13 @@ function BoardWorkspace({
   const runTargetedReconciliation = useCallback(async () => {
     const state = targetedReconcileStateRef.current;
     state.timer = null;
+    if (realtimeRef.current?.getVerificationStats?.()?.enabled) {
+      // Capability can arrive after a preview scheduled legacy work. New boards
+      // must not run that retry loop alongside their bounded committed verifier.
+      state.pending.clear();
+      realtimeRef.current?.resumeVerification?.();
+      return;
+    }
     if (state.running || !state.pending.size) return;
     state.running = true;
     const batch = [...state.pending.entries()];
@@ -5410,6 +5430,12 @@ function BoardWorkspace({
       delay = TARGETED_RECONCILE_DELAY,
     } = {},
   ) => {
+    if (realtimeRef.current?.getVerificationStats?.()?.enabled) {
+      // A preview is not a commit: only resume already queued confirmed work.
+      // The authoritative commit supplies its own affected ids and revision.
+      realtimeRef.current?.resumeVerification?.();
+      return;
+    }
     const state = targetedReconcileStateRef.current;
     const ids = [...new Set((Array.isArray(objectIds) ? objectIds : [...(objectIds ?? [])])
       .filter(Boolean)
@@ -5986,6 +6012,7 @@ function BoardWorkspace({
         onChange: () => {
           historyCommandBusyRef.current = historyCommandQueueRef.current?.pendingCount() > 0;
           updateHistoryButtons();
+          if (!historyCommandBusyRef.current) realtimeRef.current?.resumeVerification?.();
         },
         onError: (error) => {
           console.error('Ошибка истории', error);
@@ -6153,7 +6180,15 @@ function BoardWorkspace({
               ?? serializedObjectCacheRef.current.get(current)
               ?? (current ? serializeObject(current) : null);
             serialized = applySerializedObjectPatch(source, op);
-            if (!serialized) throw new Error(`Не найден объект для patch: ${id}`);
+            if (!serialized) {
+              if (realtimeRef.current?.getVerificationStats?.()?.enabled) {
+                // Advance the confirmed revision; the bounded checker restores the
+                // authoritative full object even when this patch has no local base.
+                entry.skipDeleted = true;
+                return;
+              }
+              throw new Error(`Не найден объект для patch: ${id}`);
+            }
           }
           entry.serialized = serialized;
           reviveEntries.push({ index, serialized });
@@ -6345,7 +6380,10 @@ function BoardWorkspace({
                 const candidates = registered
                   .filter((object) => !object.transientPreview && !object.transientTransformFallback);
                 const object = candidates[0] ?? registered[0] ?? null;
-                if (!object) throw new Error(`Не найден объект для transform: ${id}`);
+                if (!object) {
+                  if (realtimeRef.current?.getVerificationStats?.()?.enabled) continue;
+                  throw new Error(`Не найден объект для transform: ${id}`);
+                }
                 object.set(patch.transform);
                 object.updatedAt = Number(patch.updatedAt ?? Date.now());
                 object.updatedBy = patch.updatedBy ?? sourceClientId ?? object.updatedBy;
@@ -6418,7 +6456,11 @@ function BoardWorkspace({
           const verifiableOps = preparedOps
             .filter((entry) => !entry.skipDeleted)
             .map((entry) => entry.op);
-          if (!verifyAuthoritativeOps(verifiableOps, incomingBackground)) {
+          // New boards defer integrity checks to their bounded verifier. A missing
+          // earlier object changes visible layer indices: the legacy check would
+          // otherwise block this revision and prevent the new checker repairing it.
+          if (!realtimeRef.current?.getVerificationStats?.()?.enabled
+            && !verifyAuthoritativeOps(verifiableOps, incomingBackground)) {
             throw new Error(`Адресная проверка операции ${incomingRevision} не пройдена`);
           }
           rememberAuthoritativeOps(verifiableOps, incomingRevision);
@@ -8991,6 +9033,64 @@ function BoardWorkspace({
       setFatalError('Не удалось восстановить сохранённое состояние доски.');
     });
 
+    // Creation-only capability in the authority session decides whether any of
+    // these callbacks are used. Old boards never instantiate this adapter.
+    let boundedCanvasVerifier = null;
+    const canVerifyCanvas = (expectedRevision = Number(revisionRef.current ?? 0)) => (
+      boardReadyRef.current
+      && fabricCanvasRef.current === canvas
+      && Number(revisionRef.current ?? 0) === Number(expectedRevision)
+      && !applyingRemoteRef.current
+      && !historyCommandBusyRef.current
+      && pendingServerWritesRef.current === 0
+      && pendingLocalObjectMutationCountsRef.current.size === 0
+      && pendingLocalBackgroundMutationCountRef.current === 0
+      && localLockIdsRef.current.length === 0
+      && remoteLocksRef.current.size === 0
+      && !canvas._isCurrentlyDrawing && !canvas._currentTransform
+      && !activePencilRef.current && !shapeDraftRef.current && !lineRef.current
+      && !touchGestureRef.current && !localSelectionTransactionRef.current
+      && textBeforeRef.current.size === 0
+      && !(liveDrawSendRef.current?.acceptingPoints)
+      && !(liveTransformSendRef.current?.sessionId && liveTransformSendRef.current?.pendingTarget)
+    );
+    const getBoundedCanvasVerifier = () => {
+      if (boundedCanvasVerifier) return boundedCanvasVerifier;
+      boundedCanvasVerifier = createBoundedCanvasVerifier({
+        getCanvas: () => fabricCanvasRef.current,
+        getRegistry: () => objectRegistryRef.current,
+        getRevision: () => Number(revisionRef.current ?? 0),
+        getBackground: () => backgroundRef.current,
+        canCheck: canVerifyCanvas, placementMatches: authoritativePlacementMatches,
+        stylesToArray: util.stylesToArray,
+        apply: async (records, context) => {
+          const ops = [
+            ...records.filter((record) => record.object === null)
+              .map((record) => ({ type: 'delete', id: record.id })),
+            ...records.filter((record) => record.object !== null)
+              .sort((a, b) => a.zIndex - b.zIndex)
+              .map((record) => ({ type: 'upsert', object: record.object, zIndex: record.zIndex, reorder: true })),
+          ];
+          const background = BACKGROUNDS.has(context.background) && backgroundRef.current !== context.background
+            ? context.background : null;
+          if (!context.isCurrent()) return false;
+          const applied = await replayPendingActionsLocally([{ ops, background }], { isCurrent: context.isCurrent });
+          if (!applied || !context.isCurrent()) return false;
+          rememberAuthoritativeOps(ops, context.revision);
+          if (background) authoritativeBackgroundStateRef.current = { revision: context.revision, background };
+          return true;
+        },
+      });
+      return boundedCanvasVerifier;
+    };
+    const wakePendingVerification = () => realtimeRef.current?.resumeVerification?.();
+    // Resume already-pending work on existing events; no polling or retry timer.
+    canvas.on('mouse:up', wakePendingVerification);
+    canvas.on('selection:cleared', wakePendingVerification);
+    canvas.on('text:editing:exited', wakePendingVerification);
+    canvas.on('object:added', wakePendingVerification);
+    canvas.on('object:removed', wakePendingVerification);
+
     realtimeRef.current = connectBoardRealtime({
       boardId,
       boardKey,
@@ -8999,6 +9099,13 @@ function BoardWorkspace({
       name: participantName,
       permission,
       getKnownRevision: () => Number(revisionRef.current ?? 0),
+      canVerifyCanvas,
+      onVerificationRecords(records, context) {
+        return getBoundedCanvasVerifier().check(records, context);
+      },
+      readVerificationCanvasIds(limit, options) {
+        return getBoundedCanvasVerifier().readIds(limit, options);
+      },
       onOps: applyRemoteOps,
       onUsers: setUsers,
       onMode: handleRemoteMode,
@@ -9077,7 +9184,7 @@ function BoardWorkspace({
 
           const isLastInBatch = Number(batchMeta?.batchIndex ?? 0)
             === Number(batchMeta?.batchCount ?? 1) - 1;
-          if (isLastInBatch) {
+          if (isLastInBatch && !realtimeRef.current?.getVerificationStats?.()?.enabled) {
             const batchActions = Array.isArray(batchMeta?.actions) ? batchMeta.actions : [action];
             const batchResults = Array.isArray(batchMeta?.results) ? batchMeta.results : [result];
             const verificationOps = finalVerificationOps(batchActions, batchResults);
@@ -9229,6 +9336,7 @@ function BoardWorkspace({
         }
       }
       if (expiredLockIds.length) {
+        realtimeRef.current?.resumeVerification?.();
         setRemoteLocks([...remoteLocksRef.current.entries()].map(([objectId, lock]) => ({ objectId, ...lock })));
         applyObjectInteractivityToObjects(
           expiredLockIds.flatMap((objectId) => registeredObjectsById(objectId)),
@@ -9429,15 +9537,19 @@ function BoardWorkspace({
       if (!entry?.object || !entry?.transform) return;
       const cached = entry.cached ?? serializedObjectCacheRef.current.get(entry.object);
       if (!cached) return;
-      // Mutating the already cached JSON placement fields is O(1) and does not clone a
-      // long Pencil path. A later real content edit will therefore serialize the current
-      // position correctly.
-      Object.assign(cached, entry.transform, {
+      // getObjectRecords also lends this JSON object to the gesture's BEFORE
+      // history record. Never rewrite that baseline on opted-in boards: otherwise
+      // undo moves to the already-moved position. Copy only the shallow header;
+      // unchanged path/image data stays shared. Unmarked boards retain their path.
+      const next = realtimeRef.current?.getVerificationStats?.()?.enabled
+        ? { ...cached }
+        : cached;
+      Object.assign(next, entry.transform, {
         boardObjectId: entry.id,
         updatedAt: entry.updatedAt,
         updatedBy: entry.updatedBy,
       });
-      serializedObjectCacheRef.current.set(entry.object, cached);
+      serializedObjectCacheRef.current.set(entry.object, next);
     }
 
     function queueDeferredTransformPersistence(entries) {
@@ -13498,6 +13610,11 @@ function BoardWorkspace({
       }
       objectEraserPendingPatchRects = [];
       restoreObjectEraserRenderMode();
+      canvas.off('mouse:up', wakePendingVerification);
+      canvas.off('selection:cleared', wakePendingVerification);
+      canvas.off('text:editing:exited', wakePendingVerification);
+      canvas.off('object:added', wakePendingVerification);
+      canvas.off('object:removed', wakePendingVerification);
       canvas.off('object:added', handleRegistryObjectAdded);
       canvas.off('object:removed', handleRegistryObjectRemoved);
       canvas.off('before:render', drawBoardBackgroundOnCanvas);

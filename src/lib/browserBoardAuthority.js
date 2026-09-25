@@ -1,3 +1,5 @@
+import { createVerificationView, isBoundedVerificationBoard } from './boundedVerificationState.js';
+import { createVerificationWorkLane } from './boundedVerificationProtocol.js';
 import { isConditionalHistoryOperation, prepareAuthoritativeHistory } from './historyOperations.js';
 import { createTeacherAuthority } from './teacherAuthority.js';
 import { applyAuthorityActions, applyAuthorityOpsInPlace } from './authoritySnapshot.js';
@@ -131,6 +133,12 @@ export async function openBrowserBoardAuthority({
     },
   });
 
+  const verificationView = isBoundedVerificationBoard(board) ? createVerificationView({
+    getSnapshot: () => currentSnapshot,
+    getRevision: () => authority.getRevision(),
+  }) : null;
+  const verificationLane = verificationView ? createVerificationWorkLane() : null;
+
   let commitQueue = Promise.resolve();
 
   const commitOne = async (actionInput) => {
@@ -203,6 +211,12 @@ export async function openBrowserBoardAuthority({
     getSnapshot() {
       return cloneValue(currentSnapshot);
     },
+    getVerificationView() { return verificationView; },
+    runVerification(key, work) {
+      return verificationLane ? verificationLane.run(key, work)
+        : Promise.reject(new Error('Board verification is not enabled'));
+    },
+    closeVerification() { verificationLane?.close(); },
     getTombstones() {
       return cloneValue(currentTombstones);
     },

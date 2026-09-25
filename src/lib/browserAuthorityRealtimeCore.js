@@ -1,4 +1,5 @@
 import { randomToken } from './ids.js';
+import { createBoundedTransformPreviewSender } from './boundedTransformPreview.js';
 
 const LOCK_TTL = 12_000;
 const MAX_BROADCAST_CHARS = 48_000;
@@ -42,6 +43,7 @@ export function createBrowserAuthorityRealtimeCore({
   let active = false;
   let paused = false;
   let closed = false;
+  let boundedTransformPreview = null;
   let lastCursorSignature = '';
   let lastViewSignature = '';
 
@@ -171,14 +173,19 @@ export function createBrowserAuthorityRealtimeCore({
         && Array.isArray(transform?.objectIds) && transform.objectIds.length > 0
         && Array.isArray(transform?.deltaMatrix) && transform.deltaMatrix.length === 6;
       if (!hasObjectFrames && !hasGroupFrame) return Promise.resolve('ignored');
-      return publishRealtime('transform', {
+      const payload = {
         clientId: safeClientId,
         name,
         color,
         baseRevision: safeRevision(getKnownRevision?.()),
         ...transform,
         timestamp: Date.now(),
-      });
+      };
+      if (hasObjectFrames && session.getVerificationStats?.()?.enabled) {
+        boundedTransformPreview ??= createBoundedTransformPreviewSender(publishRealtime);
+        return boundedTransformPreview.send(payload);
+      }
+      return publishRealtime('transform', payload);
     },
 
     sendDraw(draw) {
@@ -331,6 +338,7 @@ export function createBrowserAuthorityRealtimeCore({
     async disconnect() {
       if (closed) return;
       closed = true;
+      boundedTransformPreview?.close();
       while (queue.length) {
         const entry = queue.shift();
         pending.delete(entry.action.actionId);

@@ -99,6 +99,10 @@ export async function createTeacherBoardRuntime({
       return authority.getRevision();
     },
 
+    getVerificationMode() { return hub.getVerificationMode?.() ?? { version: 0, epoch: '' }; },
+    getVerificationView() { return authority.getVerificationView?.() ?? null; },
+    runVerification(work) { return authority.runVerification('local-canvas', work); },
+
     getSnapshot() {
       return authority.getSnapshot();
     },
@@ -156,6 +160,7 @@ export async function createTeacherBoardRuntime({
 
     close() {
       network?.close?.();
+      authority.closeVerification?.();
       try { lockAuthority?.release?.({ clientId: safeClientId }); } catch { /* best effort */ }
     },
   };

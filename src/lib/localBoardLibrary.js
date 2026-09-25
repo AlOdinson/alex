@@ -38,6 +38,7 @@ export function createLocalBoardLibrary({
         title: cleanTitle(title),
         studentName: String(studentName ?? '').trim(),
         guestMode: 'edit',
+        verificationVersion: 1,
       });
       // Keep a short-lived, same-tab handoff so a hard Pages navigation cannot silently
       // downgrade a just-created owner to a remote editor if IndexedDB visibility is

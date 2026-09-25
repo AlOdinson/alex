@@ -344,6 +344,9 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     onScreenShareSignal,
     onSyncRequired,
     onSnapshot,
+    onVerificationRecords,
+    readVerificationCanvasIds,
+    canVerifyCanvas,
     onCommit,
     onPendingChange,
     onStatus,
@@ -381,6 +384,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     boardId,
     clientId,
     permission,
+    onVerificationRecords, readVerificationCanvasIds, canVerifyCanvas,
     sendScreenShareSignal: (signal) => core?.sendScreenShareSignal?.(signal) ?? Promise.reject(new Error('Realtime core is not ready')),
     onAuthoritativeCommit: (commit) => onOps?.(
       Array.isArray(commit?.appliedOps) ? commit.appliedOps : (Array.isArray(commit?.ops) ? commit.ops : []),
@@ -427,7 +431,10 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       return transport.publish(event, payload, publishOptions);
     },
     onCommit,
-    onPendingChange,
+    onPendingChange: typeof canVerifyCanvas === 'function' ? (count) => {
+      onPendingChange?.(count);
+      if (Number(count) === 0) session.resumeVerification?.();
+    } : onPendingChange,
     onStatus,
     onSyncRequired,
   });
@@ -485,6 +492,8 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
 
   return {
     ...core,
+    resumeVerification: () => session.resumeVerification?.(),
+    getVerificationStats: () => session.getVerificationStats?.() ?? { enabled: false },
     async disconnect() {
       if (disconnected) return;
       disconnected = true;

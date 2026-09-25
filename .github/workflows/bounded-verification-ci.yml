@@ -1,0 +1,68 @@
+name: Bounded board verification
+
+on:
+  push:
+    branches: [main, feature/bounded-board-verification-20260925]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bounded-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: node --test scripts/test-bounded*.mjs
+      - run: npm run test:browser-authority
+      - run: npm run test:sync:ci
+      - run: npm run test:screen-share
+      - run: node --test scripts/test-board-creation-storage.mjs
+      - run: npm run build
+  browser:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - if: matrix.engine == 'webkit'
+        run: node node_modules/playwright-core/cli.js install webkit
+      - name: Native rendering, collaboration and group history
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+          VERIFICATION_TEST_URL: http://127.0.0.1:5173/alex/
+        run: bash scripts/run-bounded-browser-ci.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bounded-browser-${{ matrix.engine }}-${{ github.sha }}
+          path: |
+            bounded-browser-results/
+            verification-evidence/browser.txt
+            verification-evidence/test-relay.txt
+          retention-days: 7
