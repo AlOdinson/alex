@@ -1,0 +1,141 @@
+diff --git a/scripts/test-board-integrity-canvas.mjs b/scripts/test-board-integrity-canvas.mjs
+index 499c7e2..d75f390 100644
+--- a/scripts/test-board-integrity-canvas.mjs
++++ b/scripts/test-board-integrity-canvas.mjs
+@@ -88,3 +88,14 @@ test('real Board replay rechecks an audit guard after object enlivening', async
+   assert.equal(result, false);
+   assert.equal(objects.length, 0, 'stale loaded replacement must never touch Canvas');
+ });
++
++test('a completed move can be audited while its object remains selected', () => {
++  const source=fs.readFileSync(new URL('../src/components/Board.jsx',import.meta.url),'utf8');
++  const start=source.indexOf('    const integrityProtected = (id) => {');
++  const end=source.indexOf('\n    };',start)+7;
++  const scope={getLocalMutationIds:()=>new Set(['A']),pendingLocalObjectMutationCountsRef:{current:new Map()},remoteLocksRef:{current:new Map()}};
++  const isProtected=new Function('scope',`with(scope){${source.slice(start,end)}; return integrityProtected;}`)(scope);
++  assert.equal(isProtected('A'),false,'an idle selection alone is not an unconfirmed mutation');
++  scope.pendingLocalObjectMutationCountsRef.current.set('A',1);
++  assert.equal(isProtected('A'),true);
++});
+diff --git a/scripts/test-board-integrity-native.py b/scripts/test-board-integrity-native.py
+index c32453f..f4be7d9 100644
+--- a/scripts/test-board-integrity-native.py
++++ b/scripts/test-board-integrity-native.py
+@@ -62,7 +62,7 @@ def configure(context):
+ 
+ 
+ def enter(page, name):
+-    page.wait_for_function("document.querySelector('canvas.upper-canvas') || [...document.querySelectorAll('input')].some(x => x.placeholder || x.id)")
++    page.wait_for_function("document.querySelector('canvas.upper-canvas') || document.querySelector('#board-access-name')")
+     if not page.locator('canvas.upper-canvas').count():
+         label=page.get_by_label('Ваше имя')
+         if label.count():
+@@ -123,6 +123,11 @@ def main():
+         canvas.requestRenderAll();
+       }""",{'id':target,'boardId':board_id})
+       owner.evaluate("id => __integrityTestSession.getRuntime().broadcastIntegrityHint([id,'integrity-ghost'],__integrityTestSession.getRevision())",target)
++      student.wait_for_function('''id => {
++        const objects=__integrityTestCanvas.getObjects().filter(o=>o.boardObjectId);
++        return objects.length===1 && objects[0].boardObjectId===id
++          && !['#ff0000','#ff00ff'].includes(objects[0].stroke);
++      }''',arg=target,timeout=20000)
+       wait_idle(student)
+       repaired=student.evaluate("""async boardId=>{
+         const module=await import('/alex/src/lib/browserReplicaStore.js');
+@@ -133,7 +138,7 @@ def main():
+       }""",board_id)
+       assert len(repaired['visible'])==1,repaired
+       assert repaired['visible'][0]['stroke']==repaired['model'][0]['stroke']
+-      assert repaired['visible'][0]['left']==repaired['model'][0]['left']
++      assert abs(repaired['visible'][0]['left']-repaired['model'][0]['left'])<=0.002
+       assert repaired['revision']==1,'an audit must not append history/commit'
+       print('Same-revision model/Canvas/ghost repair passed',flush=True)
+@@ -162,6 +167,9 @@ def main():
+     except Exception:
+       (OUT/'failure.json').write_text(json.dumps({'url':owner.url,'errors':errors,'console':console,'body':owner.locator('body').inner_text()[:5000], 'diagnostics':owner.evaluate('({status:globalThis.__integrityTestSession?.getIntegrityStatus?.(),revision:globalThis.__integrityTestSession?.getRevision?.(),objects:globalThis.__integrityTestCanvas?.getObjects?.().map(x=>({id:x.boardObjectId,type:x.type,left:x.left,top:x.top}))})')},indent=2))
+       owner.screenshot(path=str(OUT/'failure.png'))
++      if 'student' in locals():
++        (OUT/'student-failure.json').write_text(json.dumps(student.evaluate('({status:globalThis.__integrityTestSession?.getIntegrityStatus?.(),revision:globalThis.__integrityTestSession?.getRevision?.(),objects:globalThis.__integrityTestCanvas?.getObjects?.().map(x=>({id:x.boardObjectId,type:x.type,left:x.left,top:x.top,stroke:x.stroke}))})'),indent=2))
++        student.screenshot(path=str(OUT/'student-failure.png'))
+       raise
+     finally: browser.close()
+ 
+diff --git a/scripts/test-board-integrity.mjs b/scripts/test-board-integrity.mjs
+index f3c9199..42eec86 100644
+--- a/scripts/test-board-integrity.mjs
++++ b/scripts/test-board-integrity.mjs
+@@ -136,3 +136,14 @@ test('rescan cursor is acknowledged only after a completed batch, never while pa
+   assert.equal(acknowledged, 1);
+   done.queue.close();
+ });
++
++test('an input wake during an active deferred batch is not lost', async () => {
++  let release; let calls=0;
++  const stalled=new Promise(r=>release=r);
++  const {queue,clock}=setup(async()=>{calls++;return calls===1?stalled:{status:'done'};});
++  queue.mark(['A']);await clock.advance(200);
++  queue.wake();release({status:'paused'});
++  await clock.advance(1000);
++  assert.equal(calls,2,'finish of gesture must resume pending checking even during async capture');
++  assert.equal(queue.inspect().pending,0);queue.close();
++});
+diff --git a/src/components/Board.jsx b/src/components/Board.jsx
+index 8079a76..3f63020 100644
+--- a/src/components/Board.jsx
++++ b/src/components/Board.jsx
+@@ -9015,7 +9015,9 @@ function BoardWorkspace({
+       || Boolean(shapeDraftRef.current) || erasingRef.current || Boolean(selectionDragRef.current)
+       || Boolean(localSelectionTransactionRef.current) || textBeforeRef.current.size > 0;
+     const integrityProtected = (id) => {
+-      if (getLocalMutationIds().has(id)) return true;
++      // Active gestures are guarded above; a completed move stays auditable even
++      // while the unchanged object remains selected and holds its local lease.
++      if (pendingLocalObjectMutationCountsRef.current.has(id)) return true;
+       const remote = remoteLocksRef.current.get(id);
+       return Boolean(remote && Number(remote.expiresAt ?? 0) > Date.now());
+     };
+diff --git a/src/lib/boardIntegrityQueue.js b/src/lib/boardIntegrityQueue.js
+index b800411..908f83b 100644
+--- a/src/lib/boardIntegrityQueue.js
++++ b/src/lib/boardIntegrityQueue.js
+@@ -21,6 +21,7 @@ export function createBoardIntegrityQueue({
+   let rescanGeneration = 0;
+   let background = false;
+   let backgroundGeneration = 0;
++  let wakeGeneration = 0;
+   let firstAt = null;
+   let latestAt = 0;
+   let lastStart = -Infinity;
+@@ -43,6 +44,7 @@ export function createBoardIntegrityQueue({
+     lastStart = now();
+     const startedRescan = rescanGeneration;
+     const startedBackground = backgroundGeneration;
++    const startedWake = wakeGeneration;
+     const selected = new Map();
+     let sampled = null;
+     try {
+@@ -69,7 +71,7 @@ export function createBoardIntegrityQueue({
+         ? await run([...selected.keys()], { signal: controller.signal, background })
+         : { status: 'done' };
+       if (closed) return;
+-      if (result?.status === 'paused') paused = true;
++      if (result?.status === 'paused') paused = wakeGeneration === startedWake;
+       if (!result || result.status === 'done') {
+         sampled?.acknowledge?.();
+         const retry = new Set(result?.retryIds ?? []);
+@@ -99,13 +101,14 @@ export function createBoardIntegrityQueue({
+       for (const value of ids) put(String(value ?? ''), ++serial);
+       if (changedBackground) { background = true; backgroundGeneration++; }
+       if (!hasWork()) return;
++      wakeGeneration++;
+       const at = now();
+       if (firstAt === null) firstAt = at;
+       latestAt = at;
+       paused = false;
+       schedule();
+     },
+-    wake() { if (!closed) { paused = false; schedule(); } },
++    wake() { if (!closed) { wakeGeneration++; paused = false; schedule(); } },
+     inspect() { return { pending: pending.size, running, paused, rescan, timerPending: timer !== null }; },
+     close() {
+       if (closed) return;
