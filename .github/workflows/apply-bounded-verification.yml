@@ -37,6 +37,8 @@ jobs:
           gzip -dc /tmp/bounded.patch.gz > /tmp/bounded.patch
           git apply --check /tmp/bounded.patch
           git apply --index /tmp/bounded.patch
+          git apply --check .github/bounded-patch/native-fix.patch
+          git apply --index .github/bounded-patch/native-fix.patch
           git diff --cached --check
           git write-tree > verification-evidence/tested-tree.txt
           git archive --format=tar.gz "$(cat verification-evidence/tested-tree.txt)" > verification-evidence/tested-source.tar.gz
@@ -57,9 +59,7 @@ jobs:
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: set -o pipefail; npm run build 2>&1 | tee verification-evidence/build.txt
       - name: Install browser test driver
-        run: |
-          npm install --no-save --no-package-lock playwright-core@1.55.0
-          tar -czf verification-evidence/fabric-package.tar.gz -C node_modules fabric
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
       - name: Native Chromium and fresh two-device board
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
@@ -82,7 +82,7 @@ jobs:
           test "$GITHUB_REF" = refs/heads/feature/bounded-board-verification-20260925
           remote=$(git ls-remote origin "$GITHUB_REF" | cut -f1)
           test "$remote" = "$GITHUB_SHA"
-          git rm .github/bounded-patch/part-*
+          git rm .github/bounded-patch/part-* .github/bounded-patch/native-fix.patch
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -m 'feat: bounded event-driven integrity checks for new boards'
