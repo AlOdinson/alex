@@ -50,7 +50,8 @@ def configure(context):
             resp=route.fetch(); body=resp.text()
             assert 'dependencies.createTransport ?? createAblyBrowserTransport' in body
             body=body.replace('dependencies.createTransport ?? createAblyBrowserTransport','dependencies.createTransport ?? globalThis.__integrityTestTransport ?? createAblyBrowserTransport')
-            body=body.replace('  core = createCore({','  globalThis.__integrityTestSession = session;\n  core = createCore({',1)
+            assert body.count('core = createCore({') == 1
+            body=body.replace('core = createCore({','globalThis.__integrityTestSession = session;\n core = createCore({',1)
             route.fulfill(response=resp,body=body)
         elif '/src/components/Board.jsx' in url:
             resp=route.fetch(); body=resp.text()
@@ -108,8 +109,6 @@ def main():
       student.wait_for_function("globalThis.__integrityTestSession.getRevision()>=1")
       wait_idle(owner);wait_idle(student)
       print('Native stroke and audit completed',flush=True)
-      # Inject model drift, a missing/duplicate visible object and a ghost at the
-      # SAME revision. A real negotiated owner hint starts the existing audit.
       target=student.evaluate("__integrityTestCanvas.getObjects().find(x=>x.boardObjectId).boardObjectId")
       student.evaluate("""async ({id,boardId}) => {
         const module=await import('/alex/src/lib/browserReplicaStore.js');
@@ -141,7 +140,6 @@ def main():
       assert abs(repaired['visible'][0]['left']-repaired['model'][0]['left'])<=0.002
       assert repaired['revision']==1,'an audit must not append history/commit'
       print('Same-revision model/Canvas/ghost repair passed',flush=True)
-      # 100 separate trusted mouse strokes through actual React/Fabric handlers.
       for i in range(100):
         x=box['x']+80+(i%10)*28;y=box['y']+270+(i//10)*12
         owner.mouse.move(x,y);owner.mouse.down();owner.mouse.move(x+12,y+5,steps=2);owner.mouse.up()
