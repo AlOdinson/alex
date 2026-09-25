@@ -22,6 +22,7 @@ jobs:
       - name: New and existing regression suites
         run: |
           mkdir -p offline-verification
+          node --test scripts/test-screen-runtime-readiness.mjs > offline-verification/screen-readiness.txt 2>&1
           node --test scripts/test-student-offline-view.mjs scripts/test-student-offline-cache.mjs scripts/test-student-offline-baseline.mjs > offline-verification/new.txt 2>&1
           npm run test:browser-authority > offline-verification/authority.txt 2>&1
           npm run test:sync:ci > offline-verification/sync.txt 2>&1
