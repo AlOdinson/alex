@@ -18,8 +18,7 @@ python3 - <<'PY'
 import base64, gzip, hashlib
 from pathlib import Path
 encoded = Path('.github/bounded-continuation.patch.gz.base64').read_text().strip()
-# Correct transport transcription only. The resulting compressed and plain bytes
-# must BOTH match the locally tested patch; never apply a guessed source change.
+# Correct transport transcription only. Both checksums must match tested bytes.
 for old, new in [('Q8qspZZms', 'Q8qspZms'), ('J7pi6a6sd', 'J7pi6sd'), ('Cb3aeHY', 'Cb3HY'), ('PofLaXrv', 'PofvaXrv')]:
     encoded = encoded.replace(old, new)
 compressed = base64.b64decode(encoded, validate=True)
@@ -27,9 +26,13 @@ assert hashlib.sha256(compressed).hexdigest() == 'b3d62e3023c455ead56d677eb2d154
 patch = gzip.decompress(compressed)
 assert hashlib.sha256(patch).hexdigest() == '670761d551f5ebadc701ef108815a98cbc59cc8eda76463c47ac449b0238571f'
 Path('/tmp/bounded-continuation.patch').write_bytes(patch)
+review = Path('.github/bounded-review.patch').read_bytes()
+assert hashlib.sha256(review).hexdigest() == 'c44665da6b4cda5c3471b50dec66d7a37637ff66a5df7196047a68093054d15a', 'Review patch checksum mismatch'
 PY
 git apply --check /tmp/bounded-continuation.patch
 git apply --index /tmp/bounded-continuation.patch
+git apply --check .github/bounded-review.patch
+git apply --index .github/bounded-review.patch
 python3 - <<'PY'
 import json
 from pathlib import Path
