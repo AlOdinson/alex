@@ -1,0 +1,99 @@
+--- a/src/components/Board.jsx
++++ b/src/components/Board.jsx
+@@ -6167,7 +6167,15 @@
+               ?? serializedObjectCacheRef.current.get(current)
+               ?? (current ? serializeObject(current) : null);
+             serialized = applySerializedObjectPatch(source, op);
+-            if (!serialized) throw new Error(`Не найден объект для patch: ${id}`);
++            if (!serialized) {
++              if (realtimeRef.current?.getVerificationStats?.()?.enabled) {
++                // Advance the confirmed revision; the bounded checker restores the
++                // authoritative full object even when this patch has no local base.
++                entry.skipDeleted = true;
++                return;
++              }
++              throw new Error(`Не найден объект для patch: ${id}`);
++            }
+           }
+           entry.serialized = serialized;
+           reviveEntries.push({ index, serialized });
+@@ -6359,7 +6367,10 @@
+                 const candidates = registered
+                   .filter((object) => !object.transientPreview && !object.transientTransformFallback);
+                 const object = candidates[0] ?? registered[0] ?? null;
+-                if (!object) throw new Error(`Не найден объект для transform: ${id}`);
++                if (!object) {
++                  if (realtimeRef.current?.getVerificationStats?.()?.enabled) continue;
++                  throw new Error(`Не найден объект для transform: ${id}`);
++                }
+                 object.set(patch.transform);
+                 object.updatedAt = Number(patch.updatedAt ?? Date.now());
+                 object.updatedBy = patch.updatedBy ?? sourceClientId ?? object.updatedBy;
+--- a/scripts/test-bounded-verification-board-wiring.mjs
++++ b/scripts/test-bounded-verification-board-wiring.mjs
+@@ -52,3 +52,23 @@
+   assert.throws(() => gate(mismatch, { current: {} }, [], null, 8), /Адресная проверка операции 8/);
+   assert.equal(legacyCalls, 2, 'unmarked/old boards keep their exact legacy failure semantics');
+ });
++
++test('a missing transform target on new boards defers to bounded repair without blocking revision', () => {
++  const start = board.indexOf('                if (!object)', board.indexOf('const applyRemoteOps ='));
++  const end = board.indexOf('\n                object.set(patch.transform);', start);
++  assert.ok(start > 0 && end > start);
++  const run = new Function('realtimeRef', 'object', 'id', `for (let once = 0; once < 1; once++) { ${board.slice(start, end)} } return true;`);
++  assert.equal(run({ current: { getVerificationStats: () => ({ enabled: true }) } }, null, 'missing'), true);
++  assert.throws(() => run({ current: {} }, null, 'missing'), /Не найден объект для transform/);
++});
++
++test('missing patch target preserves legacy errors but defers new-board repair', () => {
++  const start = board.indexOf('            if (!serialized)', board.indexOf('const applyRemoteOps ='));
++  const end = board.indexOf('\n          }\n          entry.serialized', start);
++  assert.ok(start > 0 && end > start);
++  const run = new Function('realtimeRef', 'serialized', 'id', 'entry', board.slice(start, end));
++  const entry = { skipDeleted: false, serialized: null, revived: null };
++  run({ current: { getVerificationStats: () => ({ enabled: true }) } }, null, 'missing', entry);
++  assert.equal(entry.skipDeleted, true);
++  assert.throws(() => run({ current: {} }, null, 'missing', {}), /Не найден объект для patch/);
++});
+--- a/scripts/bounded-verification-browser.mjs
++++ b/scripts/bounded-verification-browser.mjs
+@@ -156,10 +156,23 @@
+       await wait('group controls ready', () => owner.getByRole('button', { name: 'Удалить выбранное', exact: true }).isEnabled());
+     };
+     await selectAll();
+-    const proxy = owner.locator('.selection-floating-proxy').first();
+-    await proxy.waitFor({ state: 'visible' });
+-    const bounds = await proxy.boundingBox();
+-    const center = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
++    // The similarly named .selection-floating-proxy is the COLOR TOOLBAR,
++    // not the selection's drag target. Drag the actual Fabric selection center.
++    const center = await owner.evaluate(() => {
++      const canvas = window.__boundedRefs().canvas;
++      const point = canvas.getActiveObject().getCenterPoint();
++      const v = canvas.viewportTransform; const rect = canvas.upperCanvasEl.getBoundingClientRect();
++      return { x: rect.left + point.x * v[0] + point.y * v[2] + v[4],
++        y: rect.top + point.x * v[1] + point.y * v[3] + v[5] };
++    });
++    // Also exercise an old missing target: its incoming transform must not block
++    // the Canvas revision, and the bounded repair must restore the moved object.
++    await student.evaluate(async ({ id, module }) => {
++      const store = await import(module); const boardId = decodeURIComponent(location.pathname.match(/\/board\/([^/]+)/)[1]);
++      store.applyReplicaVerificationRecords(boardId, [{ id, object: null, zIndex: -1 }], store.getReplicaRevision(boardId));
++      const canvas = window.__boundedRefs().canvas;
++      canvas.getObjects().filter((o) => o.boardObjectId === id).forEach((o) => canvas.remove(o));
++    }, { id: first, module: replicaModule });
+     await owner.mouse.move(center.x, center.y); await owner.mouse.down();
+     await owner.mouse.move(center.x + 35, center.y + 25, { steps: 8 }); await owner.mouse.up();
+     await owner.evaluate(() => window.__boundedRefs().canvas.discardActiveObject());
+@@ -196,7 +209,10 @@
+   for (const [ci, context] of browser.contexts().entries()) for (const [pi, page] of context.pages().entries()) {
+     await page.screenshot({ path: `bounded-browser-results/${engine}-${ci}-${pi}.png` }).catch(() => {});
+     const info = await page.evaluate(() => ({ text: document.body?.innerText?.slice(0, 3000),
+-      stats: window.__boundedRefs?.()?.realtime?.getVerificationStats?.(), messages: window.__boundedMessages })).catch(() => null);
++      stats: window.__boundedRefs?.()?.realtime?.getVerificationStats?.(), messages: window.__boundedMessages,
++      objects: window.__boundedRefs?.()?.canvas?.getObjects?.()?.filter((o) => o.boardObjectId)
++        .map((o) => ({ id: o.boardObjectId, left: o.left, top: o.top, group: o.group?.type, transient: o.transientPreview })),
++      selection: window.__boundedRefs?.()?.canvas?.getActiveObject?.()?.type })).catch(() => null);
+     await writeFile(`bounded-browser-results/${engine}-${ci}-${pi}.json`, JSON.stringify(info, null, 2));
+   }
+   throw error;
