@@ -6,6 +6,7 @@ on:
       - 'src/**'
       - 'scripts/**'
       - '.github/offline-view-part-*.b64'
+      - '.github/offline-view-followup.patch'
       - '.github/workflows/student-offline-view-ci.yml'
   pull_request:
     branches: [main]
@@ -24,13 +25,17 @@ jobs:
             git apply --check /tmp/offline.patch
             git apply /tmp/offline.patch
           fi
+          if [ -f .github/offline-view-followup.patch ]; then
+            git apply --check .github/offline-view-followup.patch
+            git apply .github/offline-view-followup.patch
+          fi
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm install --no-audit --no-fund
       - name: New and existing regression suites
         run: |
           mkdir -p offline-verification
-          node --test scripts/test-student-offline-view.mjs scripts/test-student-offline-cache.mjs > offline-verification/new.txt 2>&1
+          node --test scripts/test-student-offline-view.mjs scripts/test-student-offline-cache.mjs scripts/test-student-offline-baseline.mjs > offline-verification/new.txt 2>&1
           npm run test:browser-authority > offline-verification/authority.txt 2>&1
           npm run test:sync:ci > offline-verification/sync.txt 2>&1
           npm run test:screen-share > offline-verification/screen.txt 2>&1
@@ -57,6 +62,10 @@ jobs:
             python3 -c "import base64,gzip,pathlib,hashlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path(f'.github/offline-view-part-{i}.b64').read_text() for i in range(1,5)))); assert hashlib.sha256(p).hexdigest() == '14260945a5cb63655cf3e8ffd64febaf692629e8637d46e965497d2c9b0e83ca'; pathlib.Path('/tmp/offline.patch').write_bytes(p)"
             git apply --check /tmp/offline.patch
             git apply /tmp/offline.patch
+          fi
+          if [ -f .github/offline-view-followup.patch ]; then
+            git apply --check .github/offline-view-followup.patch
+            git apply .github/offline-view-followup.patch
           fi
       - uses: actions/setup-node@v4
         with: {node-version: 22}
@@ -92,6 +101,11 @@ jobs:
             python3 -c "import base64,gzip,pathlib,hashlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path(f'.github/offline-view-part-{i}.b64').read_text() for i in range(1,5)))); assert hashlib.sha256(p).hexdigest() == '14260945a5cb63655cf3e8ffd64febaf692629e8637d46e965497d2c9b0e83ca'; pathlib.Path('/tmp/offline.patch').write_bytes(p)"
             git apply --check /tmp/offline.patch
             git apply /tmp/offline.patch
+            if [ -f .github/offline-view-followup.patch ]; then
+              git apply --check .github/offline-view-followup.patch
+              git apply .github/offline-view-followup.patch
+              git rm .github/offline-view-followup.patch
+            fi
             git rm .github/offline-view-part-*.b64 .github/student-offline.patch.gz.base64 .github/workflows/offline-view-source.yml
             git add src scripts
             git config user.name 'AlOdinson'
