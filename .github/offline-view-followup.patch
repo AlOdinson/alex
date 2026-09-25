@@ -113,3 +113,50 @@
 +  assert.equal(accepts(5, { current: 1005 }, { current: false }), undefined);
 +  assert.equal(accepts(1005, { current: 1005 }, { current: false }), true);
 +});
+--- a/src/lib/browserAuthorityRealtime.js
++++ b/src/lib/browserAuthorityRealtime.js
+@@ -296,8 +296,16 @@
+       if (closed) return 'closed';
+       if (!channel) return 'starting';
+       if (!force && remoteParticipantCount === 0) return 'solo';
+-      await channel.publish(event, payload);
+-      return 'ok';
++      try {
++        await channel.publish(event, payload);
++        return closed ? 'closed' : 'ok';
++      } catch (error) {
++        // Navigation/reload deliberately closes Ably while a transient preview
++        // may still be awaiting its receipt. This is cancellation, not a live
++        // failure. Never suppress errors from a transport that is still active.
++        if (closed) return 'closed';
++        throw error;
++      }
+     },
+ 
+     async refreshUsers() {
+--- a/scripts/test-browser-authority-realtime-events.mjs
++++ b/scripts/test-browser-authority-realtime-events.mjs
+@@ -333,3 +333,23 @@
+   assert.equal(f.clients.length, 1);
+   assert.equal(f.clients[0].closes, 1);
+ });
++
++test('a preview publish interrupted by deliberate board shutdown settles as closed', async (t) => {
++  const f = startupFixture(t);
++  await f.transport.start();
++  let rejectPublish;
++  f.clients[0].channel.publish = () => new Promise((_resolve, reject) => { rejectPublish = reject; });
++  const result = f.transport.publish('cursor', { x: 1, y: 2 })
++    .then(value => ({ value }), error => ({ error }));
++  await f.transport.disconnect();
++  rejectPublish(new Error('Connection closed'));
++  assert.deepEqual(await result, { value: 'closed' }, 'intentional route teardown must not leak an unhandled preview rejection');
++});
++
++test('a live Ably publication failure is still rejected, not hidden as shutdown', async (t) => {
++  const f = startupFixture(t);
++  await f.transport.start();
++  const error = new Error('Connection closed');
++  f.clients[0].channel.publish = async () => { throw error; };
++  await assert.rejects(f.transport.publish('cursor', { x: 1, y: 2 }), failure => failure === error);
++});
