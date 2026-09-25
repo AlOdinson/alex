@@ -2,9 +2,14 @@
 set -euo pipefail
 test "$GITHUB_REF" = refs/heads/feature/bounded-board-verification-20260925
 git merge-base --is-ancestor f1e39d00068b90bf4ce7048439b50db63ae30931 HEAD
-base64 -d .github/bounded-final.patch.gz.base64 > /tmp/bounded-final.patch.gz
-echo '93e91addb851c402fa051780f855845850add16f233d9bc58ba9f5f007238c40  /tmp/bounded-final.patch.gz' | sha256sum -c -
-gzip -dc /tmp/bounded-final.patch.gz > /tmp/bounded-final.patch
+python3 - <<'PY'
+import base64, gzip, hashlib
+from pathlib import Path
+encoded = ''.join(Path('.github/bounded-final.patch.gz.base64').read_text().split())
+compressed = base64.b64decode(encoded, validate=True)
+assert hashlib.sha256(compressed).hexdigest() == '93e91addb851c402fa051780f855845850add16f233d9bc58ba9f5f007238c40', 'Base patch checksum mismatch'
+Path('/tmp/bounded-final.patch').write_bytes(gzip.decompress(compressed))
+PY
 git apply --check /tmp/bounded-final.patch
 git apply --index /tmp/bounded-final.patch
 git apply --check .github/bounded-finish.patch
