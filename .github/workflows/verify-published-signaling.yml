@@ -1,0 +1,54 @@
+name: Verify published signaling assistance
+on:
+  push:
+    branches: [verify/ably-signaling-published-20260925]
+permissions:
+  contents: read
+jobs:
+  verify-publication:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: d8081c2ae8b4fdc4cc8133c0e0d452b0f98f222c
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+      - name: Match published JavaScript and CSS to this exact release
+        run: |
+          python3 - <<'PYCODE'
+          import hashlib, json, re, time, urllib.request
+          from pathlib import Path
+          origin = 'https://alodinson.github.io'
+          local = Path('dist/index.html').read_text()
+          paths = sorted(set(re.findall(r'(/alex/assets/[^"\s]+\.(?:js|css))', local)))
+          assert paths and any(p.endswith('.js') for p in paths)
+          def get(path):
+              request = urllib.request.Request(origin + path + '?verify=' + str(time.time_ns()), headers={'Cache-Control': 'no-cache'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  assert response.status == 200
+                  return response.read()
+          published = get('/alex/').decode()
+          assets = []
+          for path in paths:
+              assert path in published, ('Published HTML has a different asset', path)
+              expected = Path('dist') / path.removeprefix('/alex/')
+              actual = get(path)
+              digest = hashlib.sha256(actual).hexdigest()
+              assert digest == hashlib.sha256(expected.read_bytes()).hexdigest(), path
+              assets.append({'path': path, 'bytes': len(actual), 'sha256': digest})
+          receipt = {'commit': 'd8081c2ae8b4fdc4cc8133c0e0d452b0f98f222c', 'site': origin + '/alex/', 'publishedAssetsMatchRelease': True, 'assets': assets}
+          Path('publication.json').write_text(json.dumps(receipt, indent=2))
+          print(json.dumps(receipt, indent=2))
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signaling-assistance-publication
+          path: publication.json
+          retention-days: 7
