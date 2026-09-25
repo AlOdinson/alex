@@ -1,0 +1,60 @@
+name: New-board integrity verification
+on:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: integrity-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  integrity:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm install --no-audit --no-fund
+      - run: npm run test:integrity
+      - run: npm run test:browser-authority
+      - run: npm run test:sync:ci
+      - run: npm run test:screen-share
+      - run: node --test scripts/test-board-creation-storage.mjs
+      - run: npm run build
+      - run: pip install playwright==1.55.0
+      - if: matrix.engine == 'webkit'
+        run: python -m playwright install webkit
+      - name: Real Board, Fabric, IndexedDB, history and WebRTC verification
+        env:
+          INTEGRITY_ENGINE: ${{ matrix.engine }}
+          CHROMIUM_PATH: /usr/bin/google-chrome
+          INTEGRITY_RESULTS: integrity-native-results
+        run: |
+          npm run dev -- --host 127.0.0.1 > /tmp/integrity-vite.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5173/alex/ > /dev/null; then break; fi
+            sleep 1
+          done
+          python scripts/test-board-integrity-native.py
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integrity-${{ matrix.engine }}
+          path: integrity-native-results
+          if-no-files-found: ignore
+          retention-days: 7
