@@ -1,12 +1,10 @@
 name: Student offline viewing
 on:
   push:
-    branches: [main, fix/student-offline-view-20260925]
+    branches: [main]
     paths:
       - 'src/**'
       - 'scripts/**'
-      - '.github/offline-view-part-*.b64'
-      - '.github/offline-view-*.patch'
       - '.github/workflows/student-offline-view-ci.yml'
   pull_request:
     branches: [main]
@@ -18,16 +16,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - name: Assemble checksummed candidate when patch transport is present
-        run: |
-          if [ -f .github/offline-view-part-1.b64 ]; then
-            python3 -c "import base64,gzip,pathlib,hashlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path(f'.github/offline-view-part-{i}.b64').read_text() for i in range(1,5)))); assert hashlib.sha256(p).hexdigest() == '14260945a5cb63655cf3e8ffd64febaf692629e8637d46e965497d2c9b0e83ca'; pathlib.Path('/tmp/offline.patch').write_bytes(p)"
-            git apply --check /tmp/offline.patch
-            git apply /tmp/offline.patch
-          fi
-          for patch in .github/offline-view-*.patch; do
-            if [ -f "$patch" ]; then git apply --check "$patch"; git apply "$patch"; fi
-          done
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm install --no-audit --no-fund
@@ -55,16 +43,6 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - name: Assemble identical candidate
-        run: |
-          if [ -f .github/offline-view-part-1.b64 ]; then
-            python3 -c "import base64,gzip,pathlib,hashlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path(f'.github/offline-view-part-{i}.b64').read_text() for i in range(1,5)))); assert hashlib.sha256(p).hexdigest() == '14260945a5cb63655cf3e8ffd64febaf692629e8637d46e965497d2c9b0e83ca'; pathlib.Path('/tmp/offline.patch').write_bytes(p)"
-            git apply --check /tmp/offline.patch
-            git apply /tmp/offline.patch
-          fi
-          for patch in .github/offline-view-*.patch; do
-            if [ -f "$patch" ]; then git apply --check "$patch"; git apply "$patch"; fi
-          done
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm install --no-audit --no-fund
@@ -85,27 +63,3 @@ jobs:
             student-offline-results
             verification-evidence
           retention-days: 7
-  publish-candidate:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/student-offline-view-20260925'
-    needs: [verify, browser]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v6
-      - name: Preserve only tested application and test files
-        run: |
-          if [ -f .github/offline-view-part-1.b64 ]; then
-            python3 -c "import base64,gzip,pathlib,hashlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path(f'.github/offline-view-part-{i}.b64').read_text() for i in range(1,5)))); assert hashlib.sha256(p).hexdigest() == '14260945a5cb63655cf3e8ffd64febaf692629e8637d46e965497d2c9b0e83ca'; pathlib.Path('/tmp/offline.patch').write_bytes(p)"
-            git apply --check /tmp/offline.patch
-            git apply /tmp/offline.patch
-            for patch in .github/offline-view-*.patch; do
-              if [ -f "$patch" ]; then git apply --check "$patch"; git apply "$patch"; git rm "$patch"; fi
-            done
-            git rm .github/offline-view-part-*.b64 .github/student-offline.patch.gz.base64 .github/workflows/offline-view-source.yml
-            git add src scripts
-            git config user.name 'AlOdinson'
-            git config user.email '309169678+AlOdinson@users.noreply.github.com'
-            git commit -m 'feat: allow student read-only lesson browsing while owner is offline'
-            git push origin HEAD:fix/student-offline-view-20260925
-          fi
