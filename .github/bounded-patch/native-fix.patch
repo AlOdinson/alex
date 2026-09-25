@@ -1,3 +1,46 @@
+diff --git a/scripts/bounded-verification-browser.mjs b/scripts/bounded-verification-browser.mjs
+index 45aeff5..102031a 100644
+--- a/scripts/bounded-verification-browser.mjs
++++ b/scripts/bounded-verification-browser.mjs
+@@ -1,12 +1,10 @@
+ import assert from 'node:assert/strict';
+-import { writeFile, mkdir, unlink } from 'node:fs/promises';
++import { writeFile, mkdir } from 'node:fs/promises';
+ import { chromium, webkit } from 'playwright-core';
+ import { deriveShareKey } from '../src/lib/ids.js';
+ 
+ const engine = process.env.VERIFICATION_BROWSER ?? 'chromium';
+ const home = process.env.VERIFICATION_TEST_URL ?? 'http://127.0.0.1:5173/alex/';
+-const fixturePath = new URL('../bounded-verification-fixture.html', import.meta.url);
+-await writeFile(fixturePath, '<!doctype html><html><body><script type="module" src="./scripts/bounded-verification-browser-fixture.js"></script></body></html>');
+ await mkdir('bounded-browser-results', { recursive: true });
+ const browser = await (engine === 'webkit' ? webkit.launch({ headless: true })
+   : chromium.launch({ channel: 'chrome', headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] }));
+@@ -78,7 +76,7 @@ async function stroke(page, i = 0) {
+ }
+ try {
+   const fixture = await browser.newPage();
+-  await fixture.goto(new URL('bounded-verification-fixture.html', home).href);
++  await fixture.goto(new URL('scripts/bounded-verification-fixture.html', home).href);
+   await fixture.waitForFunction(() => typeof window.runBoundedFabricChecks === 'function');
+   results.push({ name: 'native Fabric comparisons and 100-object workloads', engine, ...(await fixture.evaluate(() => window.runBoundedFabricChecks())) });
+   await fixture.close();
+@@ -160,4 +158,4 @@ try {
+     await writeFile(`bounded-browser-results/${engine}-${ci}-${pi}.json`, JSON.stringify(info, null, 2));
+   }
+   throw error;
+-} finally { await browser.close(); await unlink(fixturePath).catch(() => {}); }
++} finally { await browser.close(); }
+diff --git a/scripts/bounded-verification-fixture.html b/scripts/bounded-verification-fixture.html
+new file mode 100644
+index 0000000..0c27eda
+--- /dev/null
++++ b/scripts/bounded-verification-fixture.html
+@@ -0,0 +1,4 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>Bounded verification test</title></head><body>
++<script type="module" src="./bounded-verification-browser-fixture.js"></script>
++</body></html>
 diff --git a/scripts/test-bounded-verification-board-wiring.mjs b/scripts/test-bounded-verification-board-wiring.mjs
 index 78700a0..664a458 100644
 --- a/scripts/test-bounded-verification-board-wiring.mjs
