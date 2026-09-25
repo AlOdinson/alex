@@ -1,3 +1,4 @@
+import { signalingNegotiationId } from './peerSignalingAssistance.js';
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { createPeerDataChannelTransport } from './peerDataChannel.js';
 
@@ -18,6 +19,10 @@ export function createTeacherPeerNetwork({
   }
 
   const peers = new Map();
+  // Bounded tombstones for signaling attempts, not board data. Retransmission of
+  // a retired offer must never replace the current connection for a stable peer.
+  const retiredOffers = new Set();
+  const offerKey = (peerId, fingerprint) => JSON.stringify([peerId, fingerprint]);
   let closed = false;
 
   const closePeer = (peerId, expectedEntry = null) => {
@@ -29,6 +34,10 @@ export function createTeacherPeerNetwork({
     // that newer connection.
     if (expectedEntry && entry !== expectedEntry) return false;
     peers.delete(id);
+    if (entry.offerFingerprint) {
+      if (retiredOffers.size >= 128) retiredOffers.delete(retiredOffers.values().next().value);
+      retiredOffers.add(offerKey(id, entry.offerFingerprint));
+    }
     try { entry.transport?.close?.(); } catch (error) { onError(error); }
     try { entry.unregister?.(); } catch (error) { onError(error); }
     try { peerHub.removePeer(id); } catch (error) { onError(error); }
@@ -82,9 +91,11 @@ export function createTeacherPeerNetwork({
       transport: null,
       unregister: null,
       offerFingerprint: null,
+      negotiationId: '',
     };
     const connection = createConnection({
       initiator: false,
+      assistSignaling: true,
       rtcConfig,
       sendSignal: (signal) => signaling.send(id, signal),
       onChannel: (channel) => attachTransport(id, channel, entry),
@@ -108,13 +119,26 @@ export function createTeacherPeerNetwork({
       if (!peerId || !message?.signal) return false;
       const fingerprint = message.signal.type === 'offer' ? JSON.stringify(message.signal) : null;
       const previous = peers.get(peerId);
+      const negotiationId = signalingNegotiationId(message.signal);
+      if (fingerprint && retiredOffers.has(offerKey(peerId, fingerprint))) return false;
+      if (!fingerprint && negotiationId && previous?.negotiationId
+        && negotiationId !== previous.negotiationId) return false;
       // A student may time out/retry before the remote browser declares its old
       // connection failed. Do not renegotiate the obsolete SCTP association.
-      if (fingerprint && previous?.offerFingerprint && previous.offerFingerprint !== fingerprint) {
+      if (fingerprint && previous && (
+        (previous.offerFingerprint && previous.offerFingerprint !== fingerprint)
+        || (previous.negotiationId && negotiationId && previous.negotiationId !== negotiationId)
+      )) {
         closePeer(peerId, previous);
       }
       const entry = ensurePeer(peerId);
-      if (fingerprint && entry.offerFingerprint === fingerprint) return true;
+      if (fingerprint && entry.offerFingerprint === fingerprint) {
+        // Receipt by Ably is not receipt by this browser. Re-send the cached
+        // answer/candidates; never setRemoteDescription or recreate SCTP here.
+        entry.connection.resendSignaling?.();
+        return true;
+      }
+      if (negotiationId && !entry.negotiationId) entry.negotiationId = negotiationId;
       if (fingerprint) entry.offerFingerprint = fingerprint;
       try {
         await entry.connection.handleSignal(message.signal);
@@ -135,6 +159,7 @@ export function createTeacherPeerNetwork({
       if (closed) return;
       closed = true;
       [...peers.keys()].forEach((peerId) => closePeer(peerId));
+      retiredOffers.clear();
     },
   };
 }
