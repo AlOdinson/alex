@@ -1,0 +1,39 @@
+diff --git a/scripts/test-bounded-verification-board-wiring.mjs b/scripts/test-bounded-verification-board-wiring.mjs
+index 78700a0..664a458 100644
+--- a/scripts/test-bounded-verification-board-wiring.mjs
++++ b/scripts/test-bounded-verification-board-wiring.mjs
+@@ -38,3 +38,17 @@ test('async object revival rechecks the revision/gesture fence before touching t
+   assert.equal(result, false); assert.deepEqual(disposed, ['a']); assert.deepEqual(mutations, []);
+   assert.equal(env.applyingRemoteRef.current, false);
+ });
++
++test('new-board remote commits advance after a legacy order mismatch so the bounded repair can run', () => {
++  const start = board.indexOf('          if (', board.indexOf('          const verifiableOps ='));
++  const end = board.indexOf('\n          rememberAuthoritativeOps(verifiableOps, incomingRevision);', start);
++  assert.ok(start > 0 && end > start);
++  const gate = new Function('verifyAuthoritativeOps', 'realtimeRef', 'verifiableOps', 'incomingBackground', 'incomingRevision', board.slice(start, end));
++  let legacyCalls = 0;
++  const mismatch = () => { legacyCalls++; return false; };
++  assert.doesNotThrow(() => gate(mismatch, { current: { getVerificationStats: () => ({ enabled: true }) } }, [], null, 8));
++  assert.equal(legacyCalls, 0, 'new boards must not wait for the old synchronous integrity check');
++  assert.throws(() => gate(mismatch, { current: { getVerificationStats: () => ({ enabled: false }) } }, [], null, 8), /Адресная проверка операции 8/);
++  assert.throws(() => gate(mismatch, { current: {} }, [], null, 8), /Адресная проверка операции 8/);
++  assert.equal(legacyCalls, 2, 'unmarked/old boards keep their exact legacy failure semantics');
++});
+diff --git a/src/components/Board.jsx b/src/components/Board.jsx
+index 04594ee..ae501ba 100644
+--- a/src/components/Board.jsx
++++ b/src/components/Board.jsx
+@@ -6432,7 +6432,11 @@ function BoardWorkspace({
+           const verifiableOps = preparedOps
+             .filter((entry) => !entry.skipDeleted)
+             .map((entry) => entry.op);
+-          if (!verifyAuthoritativeOps(verifiableOps, incomingBackground)) {
++          // New boards defer integrity checks to their bounded verifier. A missing
++          // earlier object changes visible layer indices: the legacy check would
++          // otherwise block this revision and prevent the new checker repairing it.
++          if (!realtimeRef.current?.getVerificationStats?.()?.enabled
++            && !verifyAuthoritativeOps(verifiableOps, incomingBackground)) {
+             throw new Error(`Адресная проверка операции ${incomingRevision} не пройдена`);
+           }
+           rememberAuthoritativeOps(verifiableOps, incomingRevision);
