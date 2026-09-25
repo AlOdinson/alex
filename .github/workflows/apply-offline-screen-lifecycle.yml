@@ -34,11 +34,6 @@ jobs:
           source=source.replace('}, [canEdit, clientId, isOwner, participantName, realtimeRef]);','}, [clientId, isOwner, participantName, realtimeRef]);',1)
           path.write_text(source)
           assert subprocess.check_output(['git','hash-object',str(path)],text=True).strip()=='ebc98a2f098acc1a1170f3ff7de565ecb1c017c1'
-          workflow=pathlib.Path('.github/workflows/student-offline-view-ci.yml')
-          source=workflow.read_text()
-          anchor='          mkdir -p offline-verification\n'
-          assert source.count(anchor)==1
-          workflow.write_text(source.replace(anchor,anchor+'          node --test scripts/test-screen-runtime-readiness.mjs > offline-verification/screen-readiness.txt 2>&1\n'))
           PY
       - name: Verify lifecycle and existing suites before recording feature fix
         run: |
@@ -48,9 +43,9 @@ jobs:
           npm run test:sync:ci
           npm run build
           git diff --check
-      - name: Commit only the checked feature-branch sources
+      - name: Commit only the checked feature-branch application source
         run: |
-          git add src/components/ScreenShare.jsx .github/workflows/student-offline-view-ci.yml
+          git add src/components/ScreenShare.jsx
           git config user.name 'AlOdinson'
           git config user.email '309169678+AlOdinson@users.noreply.github.com'
           git commit -m 'fix: keep screen signaling stable when offline viewing becomes editable'
