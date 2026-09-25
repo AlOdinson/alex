@@ -21,7 +21,7 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
-      - run: node --test scripts/test-signaling-assistance.mjs
+      - run: node --test scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs
       - run: npm run test:browser-authority
       - run: npm run test:sync:ci
       - run: node --test scripts/test-bounded*.mjs scripts/test-late-join-*.mjs scripts/test-board-creation-storage.mjs

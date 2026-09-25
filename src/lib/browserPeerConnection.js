@@ -44,6 +44,7 @@ export function createBrowserPeerConnection({
   let negotiationId = initiator && assistSignaling ? randomToken(12) : '';
   let signalQueue = Promise.resolve();
   let lastRemoteOffer = null;
+  let lastRemoteAnswer = null;
   const tagSignal = (signal) => negotiationId ? { ...signal, negotiationId } : signal;
   const candidateKey = (candidate) => JSON.stringify([
     candidate.candidate, candidate.sdpMid, candidate.sdpMLineIndex, candidate.usernameFragment,
@@ -166,10 +167,12 @@ export function createBrowserPeerConnection({
     if (signal.type === 'answer') {
       if (!signal.description) throw new Error('WebRTC answer has no description');
       if (!initiator) return null;
-      const remote = peerConnection.remoteDescription;
-      if (remote?.type === 'answer' && remote.sdp === signal.description.sdp) return null;
+      // Native remoteDescription may grow when trickle ICE is added. Compare
+      // the originally received answer, not that evolving browser SDP.
+      const fingerprint = JSON.stringify(signal.description);
+      if (lastRemoteAnswer === fingerprint) return null;
       await peerConnection.setRemoteDescription(signal.description);
-      if (!closed) await flushPendingIce();
+      if (!closed) { lastRemoteAnswer = fingerprint; await flushPendingIce(); }
     }
     return null;
   };

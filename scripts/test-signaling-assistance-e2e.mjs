@@ -34,9 +34,14 @@ async function instrument(context, mode, owner) {
     // snapshot, WebRTC method or application handler is mocked.
     let ably;
     Object.defineProperty(window, 'Ably', { configurable: true, get: () => ably, set(sdk) {
-      ably = sdk;
+      // Modern Ably bundles expose Realtime through an export getter. Keep the
+      // native constructor and other exports, but replace the outer namespace;
+      // assignment to sdk.Realtime itself can silently leave it unchanged.
+      const property = Object.getOwnPropertyDescriptor(sdk, 'Realtime');
+      window.__signalEvidence.realtimeExport = { getter: Boolean(property?.get), writable: property?.writable ?? null };
+      ably = { ...sdk };
       const NativeRealtime = sdk.Realtime;
-      sdk.Realtime = new Proxy(NativeRealtime, { construct(Target, args) {
+      ably.Realtime = new Proxy(NativeRealtime, { construct(Target, args) {
         const client = Reflect.construct(Target, args);
         const get = client.channels.get.bind(client.channels);
         const wrapped = new WeakSet();
