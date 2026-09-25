@@ -27,12 +27,14 @@ jobs:
           assert len(parts) == 4
           patch = lzma.decompress(base64.b64decode(''.join(p.read_text() for p in parts), validate=True))
           digest = hashlib.sha256(patch).hexdigest()
-          assert digest == pathlib.Path('.integrity-ready').read_text().strip(), digest
+          assert digest == pathlib.Path('.integrity-ready').read_text().splitlines()[0].strip(), digest
           pathlib.Path('/tmp/integrity.patch').write_bytes(patch)
           print('Verified patch SHA256', digest)
           PY
-          git apply --check /tmp/integrity.patch
-          git apply /tmp/integrity.patch
+          git apply --check --exclude=.github/workflows/board-integrity-ci.yml /tmp/integrity.patch
+          git apply --exclude=.github/workflows/board-integrity-ci.yml /tmp/integrity.patch
+          git apply --recount --check .integrity-patch/review.patch
+          git apply --recount .integrity-patch/review.patch
           cp package-lock.json /tmp/integrity-source-package-lock.json
       - run: npm install --no-audit --no-fund
       - run: npm run test:integrity
@@ -46,7 +48,7 @@ jobs:
           cp /tmp/integrity-source-package-lock.json package-lock.json
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src scripts docs package.json package-lock.json public/version.json .github/workflows/board-integrity-ci.yml
+          git add src scripts docs package.json package-lock.json public/version.json
           git commit -m 'feat: bounded event-driven integrity checks for new boards only'
           git push origin HEAD:feat/new-board-integrity-20260925
           mkdir -p integrity-native-results
@@ -70,8 +72,6 @@ jobs:
         if: always()
         with:
           name: integrity-native-stage
-          path: |
-            integrity-native-results
-            /tmp/integrity-vite.log
+          path: integrity-native-results
           retention-days: 7
           if-no-files-found: ignore
