@@ -64,8 +64,11 @@ async function instrument(context, mode, owner) {
               if (mode === 'ice' && signal.description) {
                 // Remove embedded candidates as well, so lost trickle ICE cannot
                 // accidentally succeed via the SDP and disguise a missing repair.
-                data = { ...data, signal: { ...signal, description: { ...signal.description,
+                data = { ...data, signal: { ...signal, description: { type: signal.description.type,
                   sdp: signal.description.sdp.replace(/^a=candidate:.*\r?\n/gm, '') } } };
+              }
+              if (signal.description && data.signal.description.type !== signal.description.type) {
+                throw new Error('Test fault injector changed SDP type');
               }
             }
             return publish(name, data, ...rest);
