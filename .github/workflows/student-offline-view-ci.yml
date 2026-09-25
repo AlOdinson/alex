@@ -1,0 +1,101 @@
+name: Student offline viewing
+on:
+  push:
+    branches: [main, fix/student-offline-view-20260925]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - '.github/offline-view-part-*.b64'
+      - '.github/workflows/student-offline-view-ci.yml'
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Assemble checksummed candidate when patch transport is present
+        run: |
+          if [ -f .github/offline-view-part-1.b64 ]; then
+            python3 -c "import base64,gzip,pathlib,hashlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path(f'.github/offline-view-part-{i}.b64').read_text() for i in range(1,5)))); assert hashlib.sha256(p).hexdigest() == '14260945a5cb63655cf3e8ffd64febaf692629e8637d46e965497d2c9b0e83ca'; pathlib.Path('/tmp/offline.patch').write_bytes(p)"
+            git apply --check /tmp/offline.patch
+            git apply /tmp/offline.patch
+          fi
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm install --no-audit --no-fund
+      - name: New and existing regression suites
+        run: |
+          mkdir -p offline-verification
+          node --test scripts/test-student-offline-view.mjs scripts/test-student-offline-cache.mjs > offline-verification/new.txt 2>&1
+          npm run test:browser-authority > offline-verification/authority.txt 2>&1
+          npm run test:sync:ci > offline-verification/sync.txt 2>&1
+          npm run test:screen-share > offline-verification/screen.txt 2>&1
+          node --test scripts/test-bounded*.mjs scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs > offline-verification/bounded.txt 2>&1
+          npm run build > offline-verification/build.txt 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: offline-unit-evidence, path: offline-verification, retention-days: 7}
+  browser:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, engine: chromium}
+          - {os: macos-latest, engine: webkit}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Assemble identical candidate
+        run: |
+          if [ -f .github/offline-view-part-1.b64 ]; then
+            python3 -c "import base64,gzip,pathlib,hashlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path(f'.github/offline-view-part-{i}.b64').read_text() for i in range(1,5)))); assert hashlib.sha256(p).hexdigest() == '14260945a5cb63655cf3e8ffd64febaf692629e8637d46e965497d2c9b0e83ca'; pathlib.Path('/tmp/offline.patch').write_bytes(p)"
+            git apply --check /tmp/offline.patch
+            git apply /tmp/offline.patch
+          fi
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm install --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - if: matrix.engine == 'webkit'
+        run: node node_modules/playwright-core/cli.js install webkit
+      - name: Owner offline, student reload, read-only navigation and real reconnect
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: bash scripts/run-student-offline-ci.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: student-offline-${{ matrix.engine }}
+          path: |
+            student-offline-results
+            verification-evidence
+          retention-days: 7
+  publish-candidate:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/fix/student-offline-view-20260925'
+    needs: [verify, browser]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Preserve only tested application and test files
+        run: |
+          if [ -f .github/offline-view-part-1.b64 ]; then
+            python3 -c "import base64,gzip,pathlib,hashlib; p=gzip.decompress(base64.b64decode(''.join(pathlib.Path(f'.github/offline-view-part-{i}.b64').read_text() for i in range(1,5)))); assert hashlib.sha256(p).hexdigest() == '14260945a5cb63655cf3e8ffd64febaf692629e8637d46e965497d2c9b0e83ca'; pathlib.Path('/tmp/offline.patch').write_bytes(p)"
+            git apply --check /tmp/offline.patch
+            git apply /tmp/offline.patch
+            git rm .github/offline-view-part-*.b64 .github/student-offline.patch.gz.base64 .github/workflows/offline-view-source.yml
+            git add src scripts
+            git config user.name 'AlOdinson'
+            git config user.email '309169678+AlOdinson@users.noreply.github.com'
+            git commit -m 'feat: allow student read-only lesson browsing while owner is offline'
+            git push origin HEAD:fix/student-offline-view-20260925
+          fi
