@@ -2,7 +2,7 @@ name: Apply and verify bounded implementation
 on:
   push:
     branches: [feature/bounded-board-verification-20260925]
-    paths: ['.github/bounded-final.patch.gz.base64', '.github/bounded-finish.patch', '.github/workflows/apply-bounded-verification.yml']
+    paths: ['.github/bounded-final.patch.gz.base64', '.github/bounded-finish.patch', '.github/bounded-continuation.patch.gz.base64', '.github/apply-bounded-corrections.sh', '.github/workflows/apply-bounded-verification.yml']
 permissions:
   contents: read
 concurrency:
@@ -11,10 +11,16 @@ concurrency:
 jobs:
   apply-and-test:
     if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/feature/bounded-board-verification-20260925'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -24,18 +30,8 @@ jobs:
           node-version: 22
       - name: Verify and stage exact correction
         run: |
-          set -euo pipefail
-          test "$GITHUB_REF" = refs/heads/feature/bounded-board-verification-20260925
-          git merge-base --is-ancestor 6a4b15c1b2430cb8dea8fa49710d3926ceba78bb HEAD
+          bash .github/apply-bounded-corrections.sh
           mkdir -p verification-evidence
-          base64 -d .github/bounded-final.patch.gz.base64 > /tmp/bounded-final.patch.gz
-          echo '93e91addb851c402fa051780f855845850add16f233d9bc58ba9f5f007238c40  /tmp/bounded-final.patch.gz' | sha256sum -c -
-          gzip -dc /tmp/bounded-final.patch.gz > /tmp/bounded-final.patch
-          git apply --check /tmp/bounded-final.patch
-          git apply --index /tmp/bounded-final.patch
-          git apply --check .github/bounded-finish.patch
-          git apply --index .github/bounded-finish.patch
-          git diff --cached --check
           git write-tree > verification-evidence/tested-tree.txt
           git archive --format=tar.gz "$(cat verification-evidence/tested-tree.txt)" > verification-evidence/tested-source.tar.gz
       - run: npm install --no-audit --no-fund
@@ -47,17 +43,21 @@ jobs:
         run: set -o pipefail; npm run test:sync:ci 2>&1 | tee verification-evidence/sync-tests.txt
       - name: Existing screen regressions
         run: set -o pipefail; npm run test:screen-share 2>&1 | tee verification-evidence/screen-tests.txt
+      - name: Storage regressions
+        run: set -o pipefail; node --test scripts/test-board-creation-storage.mjs 2>&1 | tee verification-evidence/storage-tests.txt
       - name: Production build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: set -o pipefail; npm run build 2>&1 | tee verification-evidence/build.txt
       - run: npm install --no-save --no-package-lock playwright-core@1.55.0
-      - name: Native Chromium and real group history
+      - if: matrix.engine == 'webkit'
+        run: node node_modules/playwright-core/cli.js install webkit
+      - name: Native browser and real group history
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
-          VERIFICATION_BROWSER: chromium
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
           VERIFICATION_TEST_URL: http://127.0.0.1:5173/alex/
         run: |
           set -euo pipefail
@@ -69,23 +69,49 @@ jobs:
             sleep 1
           done
           node scripts/bounded-verification-browser.mjs 2>&1 | tee verification-evidence/browser.txt
-      - name: Publish verified correction to feature only
-        run: |
-          set -euo pipefail
-          remote=$(git ls-remote origin "$GITHUB_REF" | cut -f1)
-          test "$remote" = "$GITHUB_SHA"
-          git rm .github/bounded-final.patch.gz.base64 .github/bounded-finish.patch
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'fix: preserve layer anchors and repair missing move targets on new boards'
-          git push origin HEAD:refs/heads/feature/bounded-board-verification-20260925
-          git rev-parse HEAD > verification-evidence/published-feature-commit.txt
       - name: Save test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bounded-final-${{ github.sha }}
+          name: bounded-candidate-${{ matrix.engine }}
           path: |
             verification-evidence/
             bounded-browser-results/
-          retention-days: 5
+          retention-days: 7
+  publish-feature:
+    needs: apply-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bounded-candidate-*
+          path: candidate-proof
+      - name: Publish identical tested sources to feature branch only
+        run: |
+          set -euo pipefail
+          remote=$(git ls-remote origin "$GITHUB_REF" | cut -f1)
+          test "$remote" = "$GITHUB_SHA"
+          bash .github/apply-bounded-corrections.sh
+          tree=$(git write-tree)
+          test "$tree" = "$(cat candidate-proof/bounded-candidate-chromium/verification-evidence/tested-tree.txt)"
+          test "$tree" = "$(cat candidate-proof/bounded-candidate-webkit/verification-evidence/tested-tree.txt)"
+          git rm .github/bounded-final.patch.gz.base64 .github/bounded-finish.patch .github/bounded-continuation.patch.gz.base64 .github/apply-bounded-corrections.sh .github/workflows/apply-bounded-verification.yml
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: publish verified new-board bounded synchronization and group history corrections'
+          git push origin HEAD:refs/heads/feature/bounded-board-verification-20260925
+          mkdir -p publication-proof
+          git rev-parse HEAD > publication-proof/feature-commit.txt
+          printf '%s\n' "$tree" > publication-proof/tested-tree.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bounded-feature-publication
+          path: publication-proof/
+          retention-days: 7
