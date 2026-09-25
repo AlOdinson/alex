@@ -2,7 +2,7 @@ name: Apply and verify bounded implementation
 on:
   push:
     branches: [feature/bounded-board-verification-20260925]
-    paths: ['.github/bounded-final.patch.gz.base64', '.github/bounded-finish.patch', '.github/bounded-continuation.patch.gz.base64', '.github/apply-bounded-corrections.sh', '.github/workflows/apply-bounded-verification.yml']
+    paths: ['.github/bounded-final.patch.gz.base64', '.github/bounded-finish.patch', '.github/bounded-continuation.patch.gz.base64', '.github/bounded-review.patch', '.github/apply-bounded-corrections.sh', '.github/workflows/apply-bounded-verification.yml', 'scripts/run-bounded-browser-ci.sh']
 permissions:
   contents: read
 concurrency:
@@ -59,16 +59,7 @@ jobs:
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
           VERIFICATION_BROWSER: ${{ matrix.engine }}
           VERIFICATION_TEST_URL: http://127.0.0.1:5173/alex/
-        run: |
-          set -euo pipefail
-          npm run dev -- --host 127.0.0.1 > verification-evidence/vite.txt 2>&1 &
-          server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -fsS "$VERIFICATION_TEST_URL" >/dev/null; then break; fi
-            sleep 1
-          done
-          node scripts/bounded-verification-browser.mjs 2>&1 | tee verification-evidence/browser.txt
+        run: bash scripts/run-bounded-browser-ci.sh
       - name: Save test evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -101,7 +92,7 @@ jobs:
           tree=$(git write-tree)
           test "$tree" = "$(cat candidate-proof/bounded-candidate-chromium/verification-evidence/tested-tree.txt)"
           test "$tree" = "$(cat candidate-proof/bounded-candidate-webkit/verification-evidence/tested-tree.txt)"
-          git rm .github/bounded-final.patch.gz.base64 .github/bounded-finish.patch .github/bounded-continuation.patch.gz.base64 .github/apply-bounded-corrections.sh .github/workflows/apply-bounded-verification.yml
+          git rm .github/bounded-final.patch.gz.base64 .github/bounded-finish.patch .github/bounded-continuation.patch.gz.base64 .github/bounded-review.patch .github/apply-bounded-corrections.sh .github/workflows/apply-bounded-verification.yml
           git diff --cached --check
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
