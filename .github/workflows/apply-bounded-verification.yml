@@ -1,17 +1,13 @@
 name: Apply and verify bounded implementation
-
 on:
   push:
     branches: [feature/bounded-board-verification-20260925]
-    paths: ['.github/bounded-patch/**', '.github/workflows/apply-bounded-verification.yml']
-
+    paths: ['.github/bounded-final.patch.gz.base64', '.github/workflows/apply-bounded-verification.yml']
 permissions:
   contents: read
-
 concurrency:
   group: apply-bounded-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   apply-and-test:
     if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/feature/bounded-board-verification-20260925'
@@ -26,41 +22,36 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Verify and stage the exact reviewed patch
+      - name: Verify and stage exact correction
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/feature/bounded-board-verification-20260925
-          git merge-base --is-ancestor fa9c6b1bdc8dde3caa4f02f4202e605955612312 HEAD
+          git merge-base --is-ancestor 6a4b15c1b2430cb8dea8fa49710d3926ceba78bb HEAD
           mkdir -p verification-evidence
-          cat .github/bounded-patch/part-* > /tmp/bounded.patch.gz
-          echo 'd049bd801bb80daec830443d5fa0aed25912b22ac24397278783d7898a2878f0  /tmp/bounded.patch.gz' | sha256sum -c -
-          gzip -dc /tmp/bounded.patch.gz > /tmp/bounded.patch
-          git apply --check /tmp/bounded.patch
-          git apply --index /tmp/bounded.patch
-          git apply --check .github/bounded-patch/native-fix.patch
-          git apply --index .github/bounded-patch/native-fix.patch
+          base64 -d .github/bounded-final.patch.gz.base64 > /tmp/bounded-final.patch.gz
+          echo '93e91addb851c402fa051780f855845850add16f233d9bc58ba9f5f007238c40  /tmp/bounded-final.patch.gz' | sha256sum -c -
+          gzip -dc /tmp/bounded-final.patch.gz > /tmp/bounded-final.patch
+          git apply --check /tmp/bounded-final.patch
+          git apply --index /tmp/bounded-final.patch
           git diff --cached --check
           git write-tree > verification-evidence/tested-tree.txt
           git archive --format=tar.gz "$(cat verification-evidence/tested-tree.txt)" > verification-evidence/tested-source.tar.gz
-          git diff --cached --stat > verification-evidence/changes.txt
-      - name: Install existing dependencies
-        run: npm install --no-audit --no-fund
-      - name: New deterministic verification tests
+      - run: npm install --no-audit --no-fund
+      - name: New deterministic tests
         run: set -o pipefail; node --test scripts/test-bounded*.mjs 2>&1 | tee verification-evidence/bounded-tests.txt
       - name: Existing authority regressions
         run: set -o pipefail; npm run test:browser-authority 2>&1 | tee verification-evidence/authority-tests.txt
       - name: Existing sync regressions
         run: set -o pipefail; npm run test:sync:ci 2>&1 | tee verification-evidence/sync-tests.txt
-      - name: Existing screen-share regressions
+      - name: Existing screen regressions
         run: set -o pipefail; npm run test:screen-share 2>&1 | tee verification-evidence/screen-tests.txt
       - name: Production build
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: set -o pipefail; npm run build 2>&1 | tee verification-evidence/build.txt
-      - name: Install browser test driver
-        run: npm install --no-save --no-package-lock playwright-core@1.55.0
-      - name: Native Chromium and fresh two-device board
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: Native Chromium and real group history
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
@@ -76,23 +67,22 @@ jobs:
             sleep 1
           done
           node scripts/bounded-verification-browser.mjs 2>&1 | tee verification-evidence/browser.txt
-      - name: Publish verified source to feature branch only
+      - name: Publish verified correction to feature only
         run: |
           set -euo pipefail
-          test "$GITHUB_REF" = refs/heads/feature/bounded-board-verification-20260925
           remote=$(git ls-remote origin "$GITHUB_REF" | cut -f1)
           test "$remote" = "$GITHUB_SHA"
-          git rm .github/bounded-patch/part-* .github/bounded-patch/native-fix.patch
+          git rm .github/bounded-final.patch.gz.base64
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'feat: bounded event-driven integrity checks for new boards'
+          git commit -m 'fix: preserve canonical layer anchors during bounded repairs'
           git push origin HEAD:refs/heads/feature/bounded-board-verification-20260925
           git rev-parse HEAD > verification-evidence/published-feature-commit.txt
-      - name: Save exact source and verification evidence
+      - name: Save test evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bounded-implementation-${{ github.sha }}
+          name: bounded-final-${{ github.sha }}
           path: |
             verification-evidence/
             bounded-browser-results/

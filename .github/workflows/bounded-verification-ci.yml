@@ -2,13 +2,9 @@ name: Bounded board verification
 
 on:
   push:
-    branches: [feature/bounded-board-verification-20260925]
+    branches: [main, feature/bounded-board-verification-20260925]
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'scripts/test-bounded*'
-      - '.github/workflows/bounded-verification-ci.yml'
 
 permissions:
   contents: read
@@ -26,31 +22,51 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Capture exact source before dependency installation
+      - run: npm install --no-audit --no-fund
+      - run: node --test scripts/test-bounded*.mjs
+      - run: npm run test:browser-authority
+      - run: npm run test:sync:ci
+      - run: npm run test:screen-share
+      - run: npm run build
+  browser:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - if: matrix.engine == 'webkit'
+        run: node node_modules/playwright-core/cli.js install webkit
+      - name: Native rendering and bounded workloads
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+          VERIFICATION_TEST_URL: http://127.0.0.1:5173/alex/
         run: |
-          mkdir -p verification-evidence
-          git archive --format=tar.gz HEAD > verification-evidence/source.tar.gz
-          git rev-parse HEAD > verification-evidence/commit.txt
-      - name: Upload exact source
+          npm run dev -- --host 127.0.0.1 > /tmp/bounded-vite.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS "$VERIFICATION_TEST_URL" >/dev/null; then break; fi
+            sleep 1
+          done
+          node scripts/bounded-verification-browser.mjs
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: bounded-source-${{ github.sha }}
-          path: verification-evidence/
-          retention-days: 3
-      - name: Install existing dependencies
-        run: npm install --no-audit --no-fund
-      - name: Bounded feature tests when present
-        run: |
-          if compgen -G 'scripts/test-bounded*.mjs' > /dev/null; then
-            node --test scripts/test-bounded*.mjs
-          else
-            echo 'Feature tests not yet added; baseline run only.'
-          fi
-      - name: Existing browser authority regressions
-        run: npm run test:browser-authority
-      - name: Existing sync regressions
-        run: npm run test:sync:ci
-      - name: Existing screen-share regressions
-        run: npm run test:screen-share
-      - name: Production build
-        run: npm run build
+          name: bounded-browser-${{ matrix.engine }}-${{ github.sha }}
+          path: bounded-browser-results/
+          retention-days: 5
