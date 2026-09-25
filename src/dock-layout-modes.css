@@ -125,17 +125,18 @@ html[data-dock-layout="3"] .dock-layout-mode-button {
   top: min(calc(100dvh - 32px), calc(var(--dock-style-bottom, 50vh) + 35px)) !important;
 }
 
-/* In mode 3 the existing left utility menu moves as one horizontal group to top center,
-   below the permanent A/top-right utility row. */
+/* Mode 3: keep the five utility controls together at the right-center edge.
+   The existing Bring here anchor follows this rail; modes 1 and 2 are unchanged. */
 html[data-dock-layout="3"] .toolbar-secondary-row .edit-actions {
-  left: 50% !important;
-  right: auto !important;
-  top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
-  transform: translateX(-50%) !important;
-  flex-direction: row !important;
+  left: auto !important;
+  right: max(10px, env(safe-area-inset-right)) !important;
+  top: 50% !important;
+  bottom: auto !important;
+  transform: translateY(-50%) !important;
+  flex-direction: column !important;
 }
 
-/* Selection object actions become a second horizontal row beneath the utility group. */
+/* Selection-only object actions keep their existing horizontal top row. */
 html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
   left: 50% !important;
   right: auto !important;
@@ -192,6 +193,10 @@ html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
     flex-basis: 52px !important;
     width: 54px !important;
     height: 52px !important;
+  }
+
+  html[data-dock-layout="3"] .toolbar-secondary-row .edit-actions {
+    right: max(6px, env(safe-area-inset-right)) !important;
   }
 }
 

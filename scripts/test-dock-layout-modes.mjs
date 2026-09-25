@@ -19,7 +19,7 @@ assert.match(enhancer, /contextualDirectionForMode/);
 assert.match(css, /data-dock-layout="3"[\s\S]*?flex-direction:\s*column/);
 assert.match(css, /data-context-direction="below"/);
 assert.match(css, /data-context-direction="right"/);
-assert.match(css, /\.edit-actions[\s\S]*?flex-direction:\s*row/);
+assert.match(css, /html\[data-dock-layout="3"\] \.toolbar-secondary-row \.edit-actions\s*\{[^}]*flex-direction:\s*column/);
 assert.match(css, /\.object-actions[\s\S]*?flex-direction:\s*row/);
 assert.match(main, /dock-layout-controller\.js/);
 assert.match(main, /dock-layout-runtime\.js/);

@@ -5,6 +5,7 @@ on:
     branches:
       - feature/dock-style-accessories
       - fix/dock-accessories-react
+      - fix/mode3-right-utility-menu-20260925
   pull_request:
     branches:
       - main
@@ -46,5 +47,7 @@ jobs:
         run: |
           node scripts/test-floating-drawing-controls.mjs
           node scripts/test-ipad-color-palette.mjs
+      - name: Existing sync regressions
+        run: npm run test:sync:ci
       - name: Production build
         run: npm run build
