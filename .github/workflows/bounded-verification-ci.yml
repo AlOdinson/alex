@@ -27,6 +27,7 @@ jobs:
       - run: npm run test:browser-authority
       - run: npm run test:sync:ci
       - run: npm run test:screen-share
+      - run: node --test scripts/test-board-creation-storage.mjs
       - run: npm run build
   browser:
     needs: verify
@@ -39,7 +40,7 @@ jobs:
           - os: macos-latest
             engine: webkit
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
@@ -49,24 +50,19 @@ jobs:
       - run: npm install --no-save --no-package-lock playwright-core@1.55.0
       - if: matrix.engine == 'webkit'
         run: node node_modules/playwright-core/cli.js install webkit
-      - name: Native rendering and bounded workloads
+      - name: Native rendering, collaboration and group history
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
           VERIFICATION_BROWSER: ${{ matrix.engine }}
           VERIFICATION_TEST_URL: http://127.0.0.1:5173/alex/
-        run: |
-          npm run dev -- --host 127.0.0.1 > /tmp/bounded-vite.log 2>&1 &
-          server_pid=$!
-          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -fsS "$VERIFICATION_TEST_URL" >/dev/null; then break; fi
-            sleep 1
-          done
-          node scripts/bounded-verification-browser.mjs
+        run: bash scripts/run-bounded-browser-ci.sh
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: bounded-browser-${{ matrix.engine }}-${{ github.sha }}
-          path: bounded-browser-results/
-          retention-days: 5
+          path: |
+            bounded-browser-results/
+            verification-evidence/browser.txt
+            verification-evidence/test-relay.txt
+          retention-days: 7
