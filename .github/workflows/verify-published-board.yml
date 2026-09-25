@@ -1,0 +1,69 @@
+name: Verify published Alex Board 1.36.0
+on:
+  push:
+    branches: [verify/published-1-36-0-20260925]
+    paths: [.github/workflows/verify-published-board.yml]
+permissions:
+  contents: read
+jobs:
+  published-bytes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+      - name: Compare published version and assets with exact release build
+        env:
+          PUBLISHED_BASE: https://alodinson.github.io/alex/
+          RELEASE_SHA: 7ff79abb8ce7efb7ab71c055e57b106dede7647c
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, time, urllib.request
+          from pathlib import Path
+          from urllib.parse import urljoin, urlsplit, urlencode
+          base = os.environ['PUBLISHED_BASE'].rstrip('/') + '/'
+          release = os.environ['RELEASE_SHA']
+          def fetch(url):
+              req = urllib.request.Request(url, headers={'Cache-Control': 'no-cache'})
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  assert response.status == 200
+                  return response.read()
+          last_error = None
+          for attempt in range(12):
+              try:
+                  version = json.loads(fetch(urljoin(base, 'version.json') + '?' + urlencode({'release': release, 'attempt': attempt})))
+                  assert version['version'] == '1.36.0', version
+                  html = fetch(base + '?' + urlencode({'release': release, 'attempt': attempt})).decode()
+                  local_html = Path('dist/index.html').read_text()
+                  assets = re.findall(r'(?:src|href)="([^\"]*/assets/[^\"]+\.(?:js|css))"', local_html)
+                  assert assets, 'Built HTML has no application assets'
+                  verified = []
+                  for asset in assets:
+                      assert asset in html, ('Published HTML references another build', asset)
+                      published = fetch(urljoin(base, asset))
+                      local = Path('dist/assets', Path(urlsplit(asset).path).name).read_bytes()
+                      assert hashlib.sha256(published).digest() == hashlib.sha256(local).digest(), ('Asset mismatch', asset)
+                      verified.append({'asset': asset, 'sha256': hashlib.sha256(published).hexdigest(), 'bytes': len(published)})
+                  receipt = {'releaseCommit': release, 'base': base, 'version': version['version'], 'identicalBuiltAssets': verified, 'passed': True}
+                  Path('published-verification.json').write_text(json.dumps(receipt, indent=2))
+                  print(json.dumps(receipt, indent=2))
+                  break
+              except Exception as error:
+                  last_error = error
+                  print(f'Readback attempt {attempt + 1}: {error}')
+                  if attempt == 11: raise
+                  time.sleep(5)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: published-board-1.36.0-receipt
+          path: published-verification.json
+          retention-days: 7
