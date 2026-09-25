@@ -296,8 +296,16 @@ export function createAblyBrowserTransport({
       if (closed) return 'closed';
       if (!channel) return 'starting';
       if (!force && remoteParticipantCount === 0) return 'solo';
-      await channel.publish(event, payload);
-      return 'ok';
+      try {
+        await channel.publish(event, payload);
+        return closed ? 'closed' : 'ok';
+      } catch (error) {
+        // Navigation/reload deliberately closes Ably while a transient preview
+        // may still be awaiting its receipt. This is cancellation, not a live
+        // failure. Never suppress errors from a transport that is still active.
+        if (closed) return 'closed';
+        throw error;
+      }
     },
 
     async refreshUsers() {
@@ -381,6 +389,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   };
 
   const session = createSession({
+    offlineCacheKey: realtimeKey,
     boardId,
     clientId,
     permission,

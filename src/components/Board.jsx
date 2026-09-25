@@ -1802,7 +1802,11 @@ function BoardWorkspace({
     line: { ...DEFAULT_DRAWING_STYLES.line },
     shape: { ...DEFAULT_DRAWING_STYLES.shape },
   });
-  const canEditRef = useRef(initialAccess.permission === 'owner' || initialAccess.permission === 'edit');
+  const canEditRef = useRef(false);
+  const runtimeReadyRef = useRef(false);
+  const viewedSnapshotRef = useRef(Boolean(initialAccess.snapshot));
+  const viewingArchiveRef = useRef(Boolean(initialAccess.offlineSnapshot));
+  const resumeToolRef = useRef(initialAccess.permission === 'view' ? 'select' : 'pencil');
   const colorRef = useRef(DEFAULT_DRAWING_STYLES.pencil.color);
   const opacityRef = useRef(DEFAULT_DRAWING_STYLES.pencil.opacity);
   const widthRef = useRef(DEFAULT_DRAWING_STYLES.pencil.width);
@@ -1985,6 +1989,7 @@ function BoardWorkspace({
   });
 
   const [permission, setPermission] = useState(initialAccess.permission);
+  const [runtimeReady, setRuntimeReady] = useState(false);
   const [guestMode, setGuestModeState] = useState(initialAccess.guestMode);
   const [tool, setToolState] = useState(initialAccess.permission === 'view' ? 'select' : 'pencil');
   const [color, setColorState] = useState(DEFAULT_DRAWING_STYLES.pencil.color);
@@ -2035,7 +2040,7 @@ function BoardWorkspace({
   }, [boardId, boardKey]);
 
   const isOwner = permission === 'owner';
-  const canEdit = permission === 'owner' || permission === 'edit';
+  const canEdit = (permission === 'owner' || permission === 'edit') && runtimeReady;
   const getInitialScreenShareBoardLayout = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return null;
@@ -3074,8 +3079,8 @@ function BoardWorkspace({
         || object.transientPreview
         || (object.transientSelectionProxy && !isLocalSelectionProxy)
       );
-      const canInteract = isLocalSelectionProxy
-        || (canEditRef.current && !permanentNonInteractive && !lockedByOther);
+      const canInteract = canEditRef.current && (isLocalSelectionProxy
+        || (!permanentNonInteractive && !lockedByOther));
       const isActiveSelectionMember = activeSelectionMembers.has(object);
       const nextControls = canInteract && !isActiveSelectionMember;
       const nextBorders = canInteract && !isActiveSelectionMember;
@@ -3124,8 +3129,8 @@ function BoardWorkspace({
         || object.transientPreview
         || (object.transientSelectionProxy && !isLocalSelectionProxy)
       );
-      const canInteract = isLocalSelectionProxy
-        || (canEditRef.current && !permanentNonInteractive && !lockedByOther);
+      const canInteract = canEditRef.current && (isLocalSelectionProxy
+        || (!permanentNonInteractive && !lockedByOther));
       const isActiveSelectionMember = activeSelectionMembers.has(object);
       const nextControls = canInteract && !isActiveSelectionMember;
       const nextBorders = canInteract && !isActiveSelectionMember;
@@ -3270,7 +3275,7 @@ function BoardWorkspace({
     const toolCursor = activeToolRef.current === 'shape'
       ? 'crosshair'
       : (activeToolRef.current === 'text' ? 'text' : 'default');
-    canvas.defaultCursor = eyedropperActiveRef.current ? 'crosshair' : toolCursor;
+    canvas.defaultCursor = !canEditRef.current ? 'grab' : (eyedropperActiveRef.current ? 'crosshair' : toolCursor);
     canvas.hoverCursor = eyedropperActiveRef.current
       ? 'crosshair'
       : (activeToolRef.current === 'shape' ? 'crosshair' : (activeToolRef.current === 'text' ? 'text' : 'move'));
@@ -4920,7 +4925,7 @@ function BoardWorkspace({
       .then(async () => {
         const canvas = fabricCanvasRef.current;
         if (!canvas || !snapshot?.canvas) return;
-        if (Number(revision ?? 0) < Number(revisionRef.current ?? 0)) return;
+        if (!viewingArchiveRef.current && Number(revision ?? 0) < Number(revisionRef.current ?? 0)) return;
 
         const selectedIds = canvas
           .getActiveObjects()
@@ -4973,6 +4978,7 @@ function BoardWorkspace({
           }
 
           revisionRef.current = Number(revision ?? revisionRef.current);
+          viewingArchiveRef.current = false;
           snapshotCompactBaseRef.current = sanitizedSnapshot;
           snapshotCompactBaseRevisionRef.current = revisionRef.current;
           snapshotCompactActionsRef.current = [];
@@ -6549,8 +6555,8 @@ function BoardWorkspace({
     }
     setPermission(mode);
     if (mode !== 'edit') cancelCreationDraftRef.current?.('permission-change');
-    canEditRef.current = mode === 'edit';
-    activeToolRef.current = mode === 'edit' ? 'pencil' : 'select';
+    canEditRef.current = mode === 'edit' && runtimeReadyRef.current;
+    activeToolRef.current = canEditRef.current ? 'pencil' : 'select';
     if (mode === 'edit') activateDrawingStyle('pencil');
     setToolState(activeToolRef.current);
     applyObjectInteractivity();
@@ -8939,14 +8945,14 @@ function BoardWorkspace({
         }
       }).catch(() => undefined);
 
-      const cached = await getCachedSnapshot(boardId);
+      const cached = initialAccess.offlineSnapshot ? null : await getCachedSnapshot(boardId);
       let baseSnapshot = initialAccess.snapshot ?? {
         version: 2,
         background: 'grid',
         canvas: { objects: [] },
       };
       let baseRevision = accessSnapshotRevision;
-      let authoritativeBase = Boolean(initialAccess.snapshot);
+      let authoritativeBase = Boolean(initialAccess.snapshot) && !initialAccess.offlineSnapshot;
 
       // Use a newer local snapshot even while online. This gives reloads on the same
       // device an immediate full board, while server synchronization still verifies it.
@@ -8959,7 +8965,12 @@ function BoardWorkspace({
         authoritativeBase = true;
       }
 
-      const localState = await rebuildInitialSnapshot(baseSnapshot, baseRevision);
+      // A viewing archive contains only confirmed owner data. Do not mix old
+      // pending edits into it or use it as proof that the live peer is ready.
+      const localState = initialAccess.offlineSnapshot ? {
+        snapshot: baseSnapshot, confirmedSnapshot: baseSnapshot,
+        confirmedRevision: baseRevision, confirmedActions: [], confirmedRevisionGap: false,
+      } : await rebuildInitialSnapshot(baseSnapshot, baseRevision);
       snapshotCompactBaseRef.current = applyOpsToSnapshot(localState.confirmedSnapshot, []);
       snapshotCompactBaseRevisionRef.current = localState.confirmedRevision;
       snapshotCompactActionsRef.current = [];
@@ -10233,6 +10244,14 @@ function BoardWorkspace({
     }
 
     canvas.on('path:created', ({ path }) => {
+      if (!canEditRef.current) {
+        const pending = activePencilRef.current;
+        if (pending) retirePendingPencil(pending, { cancelled: true });
+        applyingRemoteRef.current = true;
+        try { if (path?.canvas === canvas) canvas.remove(path); }
+        finally { applyingRemoteRef.current = false; }
+        return;
+      }
       const isPartialEraserPath = activeToolRef.current === 'eraser'
         && eraserModeRef.current === 'partial';
       const activePending = activePencilRef.current;
@@ -11120,7 +11139,7 @@ function BoardWorkspace({
         editingText.exitEditing?.();
         return;
       }
-      if (nativeEvent.button === 1 || nativeEvent.button === 2 || spacePressedRef.current) {
+      if (!canEditRef.current || nativeEvent.button === 1 || nativeEvent.button === 2 || spacePressedRef.current) {
         nativeEvent.preventDefault?.();
         panningRef.current = true;
         lastPanRef.current = event.viewportPoint ?? canvas.getViewportPoint(nativeEvent);
@@ -13016,6 +13035,7 @@ function BoardWorkspace({
 
     function activateTouchGesture(gesture, event) {
       if (!gesture || gesture.active) return;
+      panningRef.current = false;
       cancelActiveDrawingForTouchGesture();
       abortFabricDrawingForTouchGesture(event);
       const inverse = util.invertTransform(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]);
@@ -13662,8 +13682,19 @@ function BoardWorkspace({
 
   useEffect(() => {
     canEditRef.current = canEdit;
+    if (canEdit && activeToolRef.current === 'select' && resumeToolRef.current !== 'select') {
+      activeToolRef.current = resumeToolRef.current;
+      setToolState(activeToolRef.current);
+    }
     if (!canEdit) {
       cancelCreationDraftRef.current?.('permission-change');
+      const text = fabricCanvasRef.current?.getActiveObject();
+      if (text?.isEditing) {
+        applyingRemoteRef.current = true;
+        try { text.exitEditing?.(); } finally { applyingRemoteRef.current = false; }
+      }
+      mobileTextEditorRef.current = null;
+      setMobileTextEditor(null);
       eyedropperActiveRef.current = false;
       eyedropperModeRef.current = null;
       eyedropperSelectionIdsRef.current = [];
@@ -13677,7 +13708,42 @@ function BoardWorkspace({
     }
     applyObjectInteractivity();
     configureBrushAndMode();
-  }, [applyObjectInteractivity, canEdit, configureBrushAndMode]);
+    const canvas = fabricCanvasRef.current;
+    if (canvas?.upperCanvasEl) {
+      if (!canEdit && !isOwner) canvas.upperCanvasEl.setAttribute('data-readonly-navigation', 'true');
+      else canvas.upperCanvasEl.removeAttribute('data-readonly-navigation');
+    }
+    window.dispatchEvent(new CustomEvent('alex-board-readonly-view', {
+      detail: { boardId, hasSnapshot: viewedSnapshotRef.current },
+    }));
+  }, [applyObjectInteractivity, boardId, canEdit, configureBrushAndMode, isOwner]);
+
+  useEffect(() => {
+    const update = (detail) => {
+      if (String(detail?.boardId ?? '') !== String(boardId)) return;
+      const ready = detail.state === 'ready';
+      const wasEditable = canEditRef.current;
+      if (wasEditable && !ready) resumeToolRef.current = activeToolRef.current;
+      runtimeReadyRef.current = ready;
+      if (ready) viewedSnapshotRef.current = true;
+      // Revoke commands immediately, not only after React's next paint.
+      canEditRef.current = ready && (permission === 'owner' || permission === 'edit');
+      const canvas = fabricCanvasRef.current;
+      if (canvas && !canEditRef.current) {
+        canvas.isDrawingMode = false;
+        canvas.selection = false;
+        canvas.skipTargetFind = true;
+        canvas._currentTransform = null;
+        if (wasEditable) canvas.upperCanvasEl?.removeAttribute('data-readonly-navigation');
+      }
+      setRuntimeReady(ready);
+    };
+    const listener = (event) => update(event.detail);
+    window.addEventListener('alex-board-runtime-state', listener);
+    const data = document.documentElement.dataset;
+    update({ boardId: data.alexDurableEditBoardId, state: data.alexDurableEditState });
+    return () => window.removeEventListener('alex-board-runtime-state', listener);
+  }, [boardId, permission]);
 
   const projectScenePoint = (x, y) => {
     const canvas = fabricCanvasRef.current;
@@ -13820,6 +13886,7 @@ function BoardWorkspace({
         className={`canvas-host background-${background}`}
         ref={canvasHostRef}
         aria-label="Онлайн-доска"
+        data-readonly-view={!isOwner && !canEdit ? 'true' : 'false'}
       >
         <canvas ref={canvasElementRef} />
         <div

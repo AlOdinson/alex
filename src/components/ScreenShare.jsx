@@ -174,6 +174,11 @@ function useAdaptiveScreenShareBase({
     setView((current) => ({ ...current, ...patch }));
   }, []);
 
+  // Runtime readiness and guest mode can change without unmounting this hook.
+  // Keep the sender identity stable: it participates in viewer/teardown effects.
+  const signalingPermissionRef = useRef(canEdit);
+  signalingPermissionRef.current = canEdit;
+
   const sendSignal = useCallback((type, details = {}, explicitSession = null) => {
     const session = explicitSession ?? activeSessionRef.current;
     const sessionId = String(details.sessionId ?? session?.sessionId ?? '');
@@ -213,7 +218,7 @@ function useAdaptiveScreenShareBase({
           ...payload,
           clientId,
           name: participantName,
-          permission: isOwner ? 'owner' : (canEdit ? 'edit' : 'view'),
+          permission: isOwner ? 'owner' : (signalingPermissionRef.current ? 'edit' : 'view'),
           timestamp: Date.now(),
         },
       })).catch(() => 'unavailable');
@@ -225,7 +230,7 @@ function useAdaptiveScreenShareBase({
     } catch {
       return Promise.resolve('unavailable');
     }
-  }, [canEdit, clientId, isOwner, participantName, realtimeRef]);
+  }, [clientId, isOwner, participantName, realtimeRef]);
 
   const applyCurrentProfile = useCallback(async () => {
     const profile = currentProfileRef.current;

@@ -1,3 +1,4 @@
+import { createStudentOfflineRecorder } from './studentOfflineCache.js';
 import { createBoundedBoardVerifier } from './boundedBoardVerifier.js';
 import { createBrowserAuthorityDurableBridge } from './browserAuthorityDurableBridge.js';
 import { registerBoardRuntime as registerDefaultBoardRuntime } from './browserBoardRuntimeRegistry.js';
@@ -29,6 +30,7 @@ export function createBrowserBoardSession({
   boardId,
   clientId,
   permission,
+  offlineCacheKey = '',
   sendScreenShareSignal,
   onAuthoritativeCommit = async () => {},
   onAuthoritativeSnapshot = async () => {},
@@ -57,6 +59,10 @@ export function createBrowserBoardSession({
   if (!safeClientId) throw new Error('clientId is required');
   if (typeof sendScreenShareSignal !== 'function') throw new Error('sendScreenShareSignal is required');
 
+  const offlineRecorder = !isOwner && offlineCacheKey ? createStudentOfflineRecorder({
+    boardId: safeBoardId, roomKey: offlineCacheKey,
+    onError: (error) => console.warn('Student viewing cache unavailable', error),
+  }) : null;
   let runtime = null;
   let verifier = null;
   let verifierEpoch = '';
@@ -369,6 +375,7 @@ export function createBrowserBoardSession({
         const applied = applyReplicaCommit(safeBoardId, commit);
         if (applied?.needsSnapshot) throw new Error('Student replica needs authoritative snapshot');
         if (applied?.applied) {
+          offlineRecorder?.commit(commit);
           await onAuthoritativeCommit(commit);
           if (!closed && runtime === nextRuntime) notifyVerification(commit);
         }
@@ -380,6 +387,7 @@ export function createBrowserBoardSession({
         // snapshot if painting fails; a cached head alone cannot repair the Canvas.
         replicaNeedsSnapshot = true;
         installReplicaSnapshot(safeBoardId, snapshot, revision);
+        offlineRecorder?.snapshot(snapshot, safeRevision(revision));
         await onAuthoritativeSnapshot(snapshot, safeRevision(revision));
         replicaNeedsSnapshot = false;
         try { verifier?.resume?.(); } catch (error) { verificationError(error); }
@@ -491,6 +499,7 @@ export function createBrowserBoardSession({
     },
     close() {
       if (closed) return;
+      offlineRecorder?.close();
       closed = true;
       desiredTeacherId = '';
       cancelStudentRetry();

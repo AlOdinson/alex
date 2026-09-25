@@ -1,3 +1,4 @@
+import { readStudentOfflineSnapshot } from './studentOfflineCache.js';
 import { applyAuthorityActions, applyAuthorityOps } from './authoritySnapshot.js';
 import {
   createAuthorityBoard,
@@ -64,6 +65,7 @@ export function createBrowserBoardRepository({
   openAuthority = openBrowserBoardAuthority,
   saveSnapshot = saveAuthoritySnapshot,
   getReplica = getReplicaState,
+  getReadOnlySnapshot = readStudentOfflineSnapshot,
   getReplicaChanges = getReplicaChangesAfter,
   getRuntime = getBoardRuntime,
 } = {}) {
@@ -90,10 +92,15 @@ export function createBrowserBoardRepository({
     );
   };
 
-  const remoteAccess = (boardId, key) => {
+  const remoteAccess = async (boardId, key) => {
     const secret = String(key ?? '').trim();
     if (!secret) return null;
     const replica = getReplica(String(boardId ?? '').trim());
+    let saved = null;
+    if (!replica?.snapshot) {
+      try { saved = await getReadOnlySnapshot(String(boardId ?? '').trim(), secret); } catch { /* optional cache */ }
+    }
+    const display = replica ?? saved;
     return {
       permission: 'edit',
       realtimeKey: secret,
@@ -101,9 +108,11 @@ export function createBrowserBoardRepository({
       gameLibraryVisible: false,
       title: 'Доска',
       studentName: '',
-      snapshot: replica?.snapshot ? cloneValue(replica.snapshot) : null,
-      snapshotRevision: safeRevision(replica?.revision),
-      revision: safeRevision(replica?.revision),
+      snapshot: display?.snapshot ? cloneValue(display.snapshot) : null,
+      snapshotRevision: safeRevision(display?.revision),
+      revision: safeRevision(display?.revision),
+      offlineSnapshot: Boolean(saved?.snapshot),
+      offlineSavedAt: saved?.savedAt ?? null,
       updatedAt: null,
       createdAt: null,
     };

@@ -30,6 +30,7 @@ export function createBrowserAuthorityRealtimeCore({
   onPendingChange = () => {},
   onStatus = () => {},
   onSyncRequired = () => {},
+  onTransientError = (error, event) => console.warn(`Ably ${event} publication failed`, error),
   createActionId = () => randomToken(24),
 } = {}) {
   const safeClientId = String(clientId ?? '').trim();
@@ -120,7 +121,14 @@ export function createBrowserAuthorityRealtimeCore({
 
   const publishRealtime = (event, payload, options = {}) => {
     if (closed) return Promise.resolve('closed');
-    return Promise.resolve(publish(event, payload, options));
+    const task = Promise.resolve().then(() => publish(event, payload, options));
+    // Cursor/view previews are often fire-and-forget. Observe rejection on the
+    // ORIGINAL promise even when native page unload closes the SDK before React
+    // cleanup. Return that same promise: awaited signaling failures still reject.
+    task.catch((error) => {
+      try { onTransientError(error, event); } catch { /* diagnostic observer only */ }
+    });
+    return task;
   };
 
   return {

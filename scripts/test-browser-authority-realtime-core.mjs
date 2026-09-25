@@ -143,3 +143,35 @@ test('sendSettings stores background through durable authority while background-
   }]);
   assert.equal(published[0].event, 'background-live');
 });
+
+test('fire-and-forget cursor failure is observed rather than an unhandled page rejection', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const url = new URL('../src/lib/browserAuthorityRealtimeCore.js', import.meta.url).href;
+  const child = spawnSync(process.execPath, ['--unhandled-rejections=strict', '--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { createBrowserAuthorityRealtimeCore } from ${JSON.stringify(url)};
+    const failure = new Error('Connection closed');
+    const observed = [];
+    const core = createBrowserAuthorityRealtimeCore({
+      clientId: 'student', session: { sendOps: async () => ({}) },
+      publish: async () => { throw failure; },
+      onTransientError: (error, event) => observed.push([error, event]),
+    });
+    void core.sendCursor({x:1,y:2});
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.deepEqual(observed, [[failure, 'cursor']]);
+  `], { encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+});
+
+test('observing a transient error does not turn an awaited signaling failure into success', async () => {
+  const failure = new Error('Live transport failure');
+  const observed = [];
+  const core = createBrowserAuthorityRealtimeCore({
+    clientId: 'student', session: { sendOps: async () => ({}) },
+    publish: async () => { throw failure; },
+    onTransientError: (error, event) => observed.push([error, event]),
+  });
+  await assert.rejects(core.sendScreenShareSignal({protocol:'board',type:'offer',sessionId:'a'}), e=>e===failure);
+  assert.deepEqual(observed, [[failure, 'screen-share-signal']]);
+});

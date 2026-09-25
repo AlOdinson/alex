@@ -1,0 +1,66 @@
+name: Student offline viewing
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/**'
+      - '.github/workflows/student-offline-view-ci.yml'
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm install --no-audit --no-fund
+      - name: New and existing regression suites
+        run: |
+          mkdir -p offline-verification
+          node --test scripts/test-screen-runtime-readiness.mjs > offline-verification/screen-readiness.txt 2>&1
+          node --test scripts/test-student-offline-view.mjs scripts/test-student-offline-cache.mjs scripts/test-student-offline-baseline.mjs > offline-verification/new.txt 2>&1
+          npm run test:browser-authority > offline-verification/authority.txt 2>&1
+          npm run test:sync:ci > offline-verification/sync.txt 2>&1
+          npm run test:screen-share > offline-verification/screen.txt 2>&1
+          node --test scripts/test-bounded*.mjs scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs > offline-verification/bounded.txt 2>&1
+          npm run build > offline-verification/build.txt 2>&1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: offline-unit-evidence, path: offline-verification, retention-days: 7}
+  browser:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, engine: chromium}
+          - {os: macos-latest, engine: webkit}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm install --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - if: matrix.engine == 'webkit'
+        run: node node_modules/playwright-core/cli.js install webkit
+      - name: Owner offline, student reload, read-only navigation and real reconnect
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: bash scripts/run-student-offline-ci.sh
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: student-offline-${{ matrix.engine }}
+          path: |
+            student-offline-results
+            verification-evidence
+          retention-days: 7
