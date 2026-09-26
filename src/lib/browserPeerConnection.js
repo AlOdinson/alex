@@ -24,7 +24,7 @@ function resolveRtcConfig(rtcConfig) {
 
 export function createBrowserPeerConnection({
   initiator = false,
-  enableLiveChannel = true,
+  enableLiveChannel = false,
   rtcConfig = {},
   sendSignal,
   onChannel = () => {},
