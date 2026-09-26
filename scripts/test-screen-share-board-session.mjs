@@ -20,8 +20,16 @@ includes(
   'ScreenShare hook must accept a board-provided initial layout callback.',
 );
 includes(
-  /frameRate:\s*\{\s*ideal:\s*60,\s*max:\s*60\s*\}/,
-  'Normal WebRTC screen capture must request up to 60 FPS.',
+  /frameRate:\s*\{\s*ideal:\s*10,\s*max:\s*60\s*\}/,
+  'Capture must start with the standard preference while retaining a 60 FPS Ultra envelope.',
+);
+includes(
+  /setUltraEnabled/,
+  'The host session must expose a live Ultra quality toggle.',
+);
+includes(
+  /ULTRA_SCREEN_SHARE_TOGGLE_EVENT/,
+  'The board-native Ultra checkbox must be wired to the host session.',
 );
 includes(
   /if \(!canEdit \|\| startBusyRef\.current\) return;/,
