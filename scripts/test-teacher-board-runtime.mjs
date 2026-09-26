@@ -158,3 +158,39 @@ test('exposes teacher live broadcast without changing durable authority', async 
   assert.deepEqual(runtime.getLiveStats('student-a'), { sent: 2 });
   assert.equal(live.length, 2);
 });
+
+
+test('teacher runtime broadcasts reliable board-control through the durable peer hub', async () => {
+  const controls = [];
+  let hubOptions = null;
+  const runtime = await createTeacherBoardRuntime({
+    boardId: 'board-control',
+    clientId: 'teacher-control',
+    sendScreenShareSignal: async () => {},
+    onBoardControl: () => {},
+    openAuthority: async () => ({
+      getRevision: () => 2,
+      getSnapshot: () => ({}),
+      getCommitsAfter: async () => [],
+      compactSnapshot: async () => 2,
+      commitAction: async (action) => ({ ...action, revision: 3 }),
+    }),
+    createHub: (options) => {
+      hubOptions = options;
+      return {
+        addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {},
+        broadcastCommit: async () => {},
+        async broadcastBoardControl(event, payload) {
+          controls.push({ event, payload });
+          return 1;
+        },
+      };
+    },
+    createSignaling: ({ onSignal }) => ({ send: async () => {}, handle: onSignal }),
+    createNetwork: () => ({ handleSignal: async () => {}, close() {} }),
+  });
+
+  assert.equal(typeof hubOptions.onBoardControl, 'function');
+  assert.equal(await runtime.sendBoardControl('mode', { mode: 'edit' }), 1);
+  assert.deepEqual(controls, [{ event: 'mode', payload: { mode: 'edit' } }]);
+});
