@@ -43,3 +43,53 @@ test('routes signaling and student actions through the peer network', async () =
     'close',
   ]);
 });
+
+
+test('passes board identity and live callbacks through student runtime', async () => {
+  let networkOptions = null;
+  const live = [];
+  const onLiveEvent = () => {};
+  const onLiveState = () => {};
+  const runtime = createStudentBoardRuntime({
+    boardId: 'board-live',
+    clientId: 'student-live',
+    teacherId: 'teacher-live',
+    sendScreenShareSignal: async () => {},
+    getRevision: () => 5,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    onLiveEvent,
+    onLiveState,
+    createSignaling: ({ onSignal }) => ({ send: async () => {}, handle: onSignal }),
+    createNetwork: (options) => {
+      networkOptions = options;
+      return {
+        async start() {},
+        async handleSignal() {},
+        async proposeAction() {},
+        async proposeActionAndWait() {},
+        async requestLock() {},
+        sendLive(type, payload, sendOptions) {
+          live.push({ type, payload, sendOptions });
+          return 'sent';
+        },
+        getLiveState: () => 'open',
+        getLiveStats: () => ({ received: 3 }),
+        getVerificationMode: () => ({ version: 0, epoch: '' }),
+        whenIdle: async () => {},
+        isReady: () => true,
+        close() {},
+      };
+    },
+  });
+
+  assert.equal(networkOptions.boardId, 'board-live');
+  assert.equal(networkOptions.clientId, 'student-live');
+  assert.equal(networkOptions.teacherId, 'teacher-live');
+  assert.equal(networkOptions.onLiveEvent, onLiveEvent);
+  assert.equal(networkOptions.onLiveState, onLiveState);
+  assert.equal(runtime.sendLive('cursor', { x: 2 }, { streamKey: 'cursor' }), 'sent');
+  assert.equal(runtime.getLiveState(), 'open');
+  assert.deepEqual(runtime.getLiveStats(), { received: 3 });
+  assert.deepEqual(live, [{ type: 'cursor', payload: { x: 2 }, sendOptions: { streamKey: 'cursor' } }]);
+});
