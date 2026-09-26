@@ -93,6 +93,7 @@ import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';
 import { createInitialHistoryOps, refreshHistoryOps } from '../lib/historyOperations.js';
 import { createHistoryCommandQueue } from '../lib/historyCommandQueue.js';
 import { createBoundedCanvasVerifier } from '../lib/boundedCanvasVerifier.js';
+import { isWebrtcLiveV1Enabled } from '../lib/collaborationTransportFlags.js';
 
 const BACKGROUNDS = new Set(['grid', 'dots', 'blank']);
 const MIN_ZOOM = 0.05;
@@ -9109,6 +9110,7 @@ function BoardWorkspace({
       clientId,
       name: participantName,
       permission,
+      webrtcLiveV1: isWebrtcLiveV1Enabled(),
       getKnownRevision: () => Number(revisionRef.current ?? 0),
       canVerifyCanvas,
       onVerificationRecords(records, context) {
