@@ -13,6 +13,11 @@ import {
 import { createStudentBoardRuntime as createDefaultStudentRuntime } from './studentBoardRuntime.js';
 import { createTeacherBoardRuntime as createDefaultTeacherRuntime } from './teacherBoardRuntime.js';
 import { createTeacherTabAuthority as createDefaultTeacherTabAuthority } from './teacherTabAuthority.js';
+import {
+  COLLABORATION_LIVE_CAPABILITIES,
+  normalizeCollaborationCapabilities,
+  resolveCollaborationMode,
+} from './collaborationTransportFlags.js';
 
 const TERMINAL_STUDENT_STATES = new Set(['failed', 'closed']);
 const RUNTIME_STATE_EVENT = 'alex-board-runtime-state';
@@ -30,6 +35,8 @@ export function createBrowserBoardSession({
   boardId,
   clientId,
   permission,
+  webrtcLiveV1 = false,
+  localCapabilities = null,
   offlineCacheKey = '',
   sendScreenShareSignal,
   onAuthoritativeCommit = async () => {},
@@ -55,6 +62,9 @@ export function createBrowserBoardSession({
   const safeBoardId = safeId(boardId);
   const safeClientId = safeId(clientId);
   const isOwner = permission === 'owner';
+  const normalizedLocalCapabilities = normalizeCollaborationCapabilities(
+    localCapabilities ?? (webrtcLiveV1 ? COLLABORATION_LIVE_CAPABILITIES : null),
+  );
   if (!safeBoardId) throw new Error('boardId is required');
   if (!safeClientId) throw new Error('clientId is required');
   if (typeof sendScreenShareSignal !== 'function') throw new Error('sendScreenShareSignal is required');
@@ -110,8 +120,17 @@ export function createBrowserBoardSession({
   let runtimeState = 'idle';
   let replicaNeedsSnapshot = false;
   let desiredTeacherId = '';
+  let activeTeacherMode = 'legacy';
+  let desiredTeacherMode = 'legacy';
+  const participantCapabilities = new Map();
   let studentRetryTimer = null;
   let studentRetryFailures = 0;
+
+  const collaborationModeFor = (peerId) => resolveCollaborationMode({
+    enabled: Boolean(webrtcLiveV1),
+    localCapabilities: normalizedLocalCapabilities,
+    remoteCapabilities: participantCapabilities.get(safeId(peerId)) ?? null,
+  });
 
   const cancelStudentRetry = () => {
     clearTimeout(studentRetryTimer);
@@ -185,6 +204,7 @@ export function createBrowserBoardSession({
     const previousUnregister = unregisterRuntime;
     runtime = null;
     unregisterRuntime = null;
+    if (!isOwner) activeTeacherMode = 'legacy';
     durableBridge = null;
     previousUnregister?.();
     try { previousRuntime?.close?.(); } catch (error) { onError(error); }
@@ -344,6 +364,8 @@ export function createBrowserBoardSession({
   const startStudent = async (nextTeacherId) => {
     const resolvedTeacherId = safeId(nextTeacherId);
     if (closed || !resolvedTeacherId || resolvedTeacherId !== desiredTeacherId) return null;
+    const resolvedTeacherMode = collaborationModeFor(resolvedTeacherId);
+    if (resolvedTeacherMode !== desiredTeacherMode) return null;
     if (runtime && teacherId === resolvedTeacherId) return runtime;
     if (runtime && teacherId !== resolvedTeacherId) clearRuntime();
     reportRuntimeState('waiting');
@@ -366,7 +388,9 @@ export function createBrowserBoardSession({
     };
 
     nextRuntime = createStudentRuntime({
+      boardId: safeBoardId,
       clientId: safeClientId,
+      webrtcLiveEnabled: resolvedTeacherMode === 'webrtc-live-v1',
       teacherId: resolvedTeacherId,
       sendScreenShareSignal,
       rtcConfig,
@@ -405,6 +429,7 @@ export function createBrowserBoardSession({
     }
 
     teacherId = resolvedTeacherId;
+    activeTeacherMode = resolvedTeacherMode;
     connectingTeacherId = resolvedTeacherId;
     connectingRuntime = nextRuntime;
     try {
@@ -454,15 +479,38 @@ export function createBrowserBoardSession({
       return new Promise((resolve, reject) => runtimeWaiters.add({ resolve, reject }));
     },
     updateParticipants(users) {
-      if (closed || isOwner) return Promise.resolve(runtime);
-      const ownerIds = (Array.isArray(users) ? users : [])
+      if (closed) return Promise.resolve(runtime);
+      const list = Array.isArray(users) ? users : [];
+      participantCapabilities.clear();
+      for (const user of list) {
+        const id = safeId(user?.clientId);
+        if (!id) continue;
+        participantCapabilities.set(id, normalizeCollaborationCapabilities(user?.capabilities));
+      }
+      if (isOwner) return Promise.resolve(runtime);
+
+      const ownerIds = list
         .filter((user) => user?.permission === 'owner')
         .map((user) => safeId(user?.clientId))
         .filter((id) => id && id !== safeClientId)
         .sort();
       const nextTeacherId = ownerIds[0] ?? '';
-      if (desiredTeacherId !== nextTeacherId) studentRetryFailures = 0;
+      const nextTeacherMode = nextTeacherId ? collaborationModeFor(nextTeacherId) : 'legacy';
+      const sameTeacherModeChanged = Boolean(
+        nextTeacherId
+        && nextTeacherId === desiredTeacherId
+        && nextTeacherMode !== desiredTeacherMode
+      );
+      if (desiredTeacherId !== nextTeacherId || sameTeacherModeChanged) studentRetryFailures = 0;
+      if (sameTeacherModeChanged) {
+        clearConnectingRuntime();
+        if (runtime && teacherId === nextTeacherId && activeTeacherMode !== nextTeacherMode) {
+          teacherId = '';
+          clearRuntime();
+        }
+      }
       desiredTeacherId = nextTeacherId;
+      desiredTeacherMode = nextTeacherMode;
       cancelStudentRetry();
       if (!nextTeacherId) {
         if (!runtime && !connectingRuntime) reportRuntimeState('teacher-offline');
@@ -491,6 +539,7 @@ export function createBrowserBoardSession({
     },
     getVerificationStats() { return verifier?.stats?.() ?? { enabled: false }; },
     getRuntime() { return runtime; },
+    getCollaborationMode(peerId = teacherId) { return collaborationModeFor(peerId); },
     getRuntimeState() { return runtimeState; },
     getTeacherId() { return teacherId; },
     getRevision() {
