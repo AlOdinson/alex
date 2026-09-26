@@ -247,6 +247,20 @@ async function tryDrawStroke(page, offset = 0) {
   return 'attempted';
 }
 
+async function dragCenteredSelection(page, dx = 80, dy = 45) {
+  await page.getByRole('button', { name: 'Выделение' }).click();
+  const canvas = page.locator('canvas.upper-canvas');
+  await canvas.waitFor({ state: 'visible' });
+  const box = await canvas.boundingBox();
+  assert.ok(box && box.width > 240 && box.height > 180, 'Fabric upper canvas has no usable bounds');
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, { steps: 12 });
+  await page.mouse.up();
+}
+
 async function uploadTestImage(page) {
   const svg = [
     '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="120">',
@@ -533,6 +547,46 @@ try {
   await waitFor('student image visible after redo', async () => (
     (await canvasDigest(student)) !== studentBeforeImage
   ));
+
+  if (EXPECT_WEBRTC_LIVE_V1) {
+    const teacherBeforeImageDrag = await canvasDigest(teacher);
+    const studentBeforeImageDrag = await canvasDigest(student);
+    await clearRtcSendLog(teacher);
+    await dragCenteredSelection(teacher);
+
+    const revisionAfterImageDrag = await waitFor('image drag durable revision', async () => {
+      const board = await authorityBoard(teacher, boardId);
+      return Number(board?.revision ?? 0) > revisionAfterRedo ? Number(board.revision) : 0;
+    });
+    assert.ok(revisionAfterImageDrag > revisionAfterRedo);
+
+    await waitFor('teacher image moved after drag', async () => (
+      (await canvasDigest(teacher)) !== teacherBeforeImageDrag
+    ));
+    await waitFor('student receives durable image drag', async () => (
+      (await canvasDigest(student)) !== studentBeforeImageDrag
+    ));
+
+    await waitFor('image drag preview uses WebRTC live transform', async () => (
+      rtcSent(teacher, 'alex-board-live-v1', /"type":"transform"/)
+    ));
+    await waitFor('image drag final state uses durable WebRTC commit', async () => (
+      rtcSent(teacher, 'alex-board-durable-v1', /"type":"commit"/)
+    ));
+
+    const liveTransformLeakedImageBytes = await teacher.evaluate(() => (
+      (window.__alexRtcSendLog ?? []).some((entry) => (
+        entry?.label === 'alex-board-live-v1'
+        && String(entry?.data ?? '').includes('"type":"transform"')
+        && String(entry?.data ?? '').includes('data:image/')
+      ))
+    ));
+    assert.equal(
+      liveTransformLeakedImageBytes,
+      false,
+      'live image transform must send geometry, not self-contained image bytes',
+    );
+  }
 
   const beforeViewOnly = await authorityBoard(teacher, boardId);
   await clickOwnerShareOrDump(teacher, beforeViewOnly);
