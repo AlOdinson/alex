@@ -1,3 +1,5 @@
+import { normalizeBoardControl } from './boardControlProtocol.js';
+
 function safeRevision(value) {
   const revision = Number(value ?? 0);
   return Number.isInteger(revision) && revision >= 0 ? revision : 0;
@@ -16,6 +18,7 @@ export function createStudentPeerSession({
   onAck = () => {},
   onError = () => {},
   onVerificationMode = () => {},
+  onBoardControl = () => {},
   createRequestId = defaultRequestId,
 } = {}) {
   if (!transport?.send) throw new Error('peer transport is required');
@@ -152,6 +155,12 @@ export function createStudentPeerSession({
         return Promise.resolve();
       }
 
+      if (type === 'board-control') {
+        const control = normalizeBoardControl(payload.event, payload.payload);
+        onBoardControl(control.event, control.payload);
+        return Promise.resolve();
+      }
+
       if (type === 'lock-result') {
         const requestId = String(payload.requestId ?? '');
         const waiter = lockWaiters.get(requestId);
@@ -228,6 +237,12 @@ export function createStudentPeerSession({
         Promise.resolve(sending).catch(fail);
       } catch (error) { fail(error); }
       return task;
+    },
+
+    async sendBoardControl(event, payload = {}) {
+      const control = normalizeBoardControl(event, payload);
+      await transport.send('board-control', control);
+      return true;
     },
 
     proposeAction(action) {
