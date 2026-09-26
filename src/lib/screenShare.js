@@ -27,13 +27,25 @@ export const SCREEN_SHARE_PROFILES = Object.freeze({
 
 export const SCREEN_SHARE_ULTRA_PROFILE = Object.freeze({
   id: 'ultra',
-  label: 'Ultra · 60 FPS · до 10 Мбит/с',
+  label: 'Ultra · 1080p · 60 FPS · до 10 Мбит/с',
   maxFrameRate: 60,
   maxBitrate: 10_000_000,
 });
 
-export function screenShareEffectiveProfile(profile, ultraEnabled = false) {
-  return ultraEnabled ? SCREEN_SHARE_ULTRA_PROFILE : profile;
+export const SCREEN_SHARE_ULTRA_720_PROFILE = Object.freeze({
+  id: 'ultra-720',
+  label: 'Ultra · 720p · 60 FPS · до 10 Мбит/с',
+  maxFrameRate: 60,
+  maxBitrate: 10_000_000,
+});
+
+export function screenShareEffectiveProfile(
+  profile,
+  ultraEnabled = false,
+  resolution720Enabled = false,
+) {
+  if (!ultraEnabled) return profile;
+  return resolution720Enabled ? SCREEN_SHARE_ULTRA_720_PROFILE : SCREEN_SHARE_ULTRA_PROFILE;
 }
 
 const SIGNAL_TYPES = new Set([

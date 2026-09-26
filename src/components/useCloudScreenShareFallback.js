@@ -80,6 +80,7 @@ export function useCloudScreenShareFallback({
   p2pStream,
   profileId,
   ultraEnabled,
+  resolution720Enabled,
   networkDegraded,
 }) {
   const [cloudStream, setCloudStream] = useState(null);
@@ -268,6 +269,7 @@ export function useCloudScreenShareFallback({
         const profile = screenShareEffectiveProfile(
           SCREEN_SHARE_PROFILES[profileId] ?? SCREEN_SHARE_PROFILES.idle,
           Boolean(ultraEnabled),
+          Boolean(resolution720Enabled),
         );
         await applyCloudSenderProfile(publisher.sender, profile, Boolean(networkDegraded));
         await announceCloudTrack();
@@ -322,6 +324,7 @@ export function useCloudScreenShareFallback({
     p2pStream,
     patchCloudState,
     profileId,
+    resolution720Enabled,
     sendCloudSignal,
     ultraEnabled,
   ]);
@@ -476,9 +479,10 @@ export function useCloudScreenShareFallback({
     const profile = screenShareEffectiveProfile(
       SCREEN_SHARE_PROFILES[profileId] ?? SCREEN_SHARE_PROFILES.idle,
       Boolean(ultraEnabled),
+      Boolean(resolution720Enabled),
     );
     applyCloudSenderProfile(publisher.sender, profile, Boolean(networkDegraded)).catch(() => undefined);
-  }, [networkDegraded, profileId, ultraEnabled]);
+  }, [networkDegraded, profileId, resolution720Enabled, ultraEnabled]);
 
   useEffect(() => {
     if (cloudState.transport !== 'cloud' || cloudState.cloudPhase !== 'on' || role !== 'host') {

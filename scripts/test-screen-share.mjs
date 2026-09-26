@@ -6,6 +6,7 @@ import {
   preferredScreenShareSession,
   SCREEN_SHARE_PROFILES,
   SCREEN_SHARE_PROTOCOL,
+  SCREEN_SHARE_ULTRA_720_PROFILE,
   SCREEN_SHARE_ULTRA_PROFILE,
   screenShareBoardLayoutForViewport,
   screenShareCapability,
@@ -28,6 +29,8 @@ assert.deepEqual(
 );
 assert.equal(SCREEN_SHARE_ULTRA_PROFILE.maxFrameRate, 60, 'Ultra raises the frame-rate ceiling to 60 FPS');
 assert.equal(SCREEN_SHARE_ULTRA_PROFILE.maxBitrate, 10_000_000, 'Ultra raises the bitrate ceiling to 10 Mbps');
+assert.equal(SCREEN_SHARE_ULTRA_720_PROFILE.maxFrameRate, 60, '720 + Ultra keeps 60 FPS');
+assert.equal(SCREEN_SHARE_ULTRA_720_PROFILE.maxBitrate, 10_000_000, '720 + Ultra keeps the 10 Mbps Ultra bitrate ceiling');
 assert.equal(
   screenShareEffectiveProfile(SCREEN_SHARE_PROFILES.motion, false),
   SCREEN_SHARE_PROFILES.motion,
@@ -37,6 +40,16 @@ assert.equal(
   screenShareEffectiveProfile(SCREEN_SHARE_PROFILES.motion, true),
   SCREEN_SHARE_ULTRA_PROFILE,
   'Ultra overrides the activity profile',
+);
+assert.equal(
+  screenShareEffectiveProfile(SCREEN_SHARE_PROFILES.motion, true, true),
+  SCREEN_SHARE_ULTRA_720_PROFILE,
+  '720 + Ultra selects the 10 Mbps 720p profile',
+);
+assert.equal(
+  screenShareEffectiveProfile(SCREEN_SHARE_PROFILES.motion, false, true),
+  SCREEN_SHARE_PROFILES.motion,
+  '720 without Ultra keeps the standard adaptive bitrate/FPS profile',
 );
 
 assert.deepEqual(

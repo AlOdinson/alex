@@ -27,6 +27,9 @@ const HOST_SIGNAL_TYPES = new Set(['host-start', 'host-stop', 'host-paused', 'of
 export const ULTRA_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-ultra-state';
 export const ULTRA_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-ultra-state-request';
 export const ULTRA_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-ultra-toggle';
+export const HD720_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-720-state';
+export const HD720_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-720-state-request';
+export const HD720_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-720-toggle';
 
 function closePeer(entry) {
   const peer = entry?.peer ?? entry;
@@ -150,6 +153,7 @@ function useAdaptiveScreenShareBase({
     message: '',
     profileId: 'idle',
     ultraEnabled: false,
+    resolution720Enabled: false,
     viewerCount: 0,
     networkDegraded: false,
     sourceMode: null,
@@ -168,6 +172,7 @@ function useAdaptiveScreenShareBase({
   const hostPeersRef = useRef(new Map());
   const currentProfileRef = useRef(SCREEN_SHARE_PROFILES.idle);
   const ultraEnabledRef = useRef(false);
+  const resolution720EnabledRef = useRef(false);
   const networkDegradedRef = useRef(false);
   const startBusyRef = useRef(false);
   const stopHostingRef = useRef(() => undefined);
@@ -240,22 +245,40 @@ function useAdaptiveScreenShareBase({
   }, [clientId, isOwner, participantName, realtimeRef]);
 
   const applyCurrentProfile = useCallback(async () => {
+    const ultraEnabled = ultraEnabledRef.current;
+    const resolution720Enabled = resolution720EnabledRef.current;
     const profile = screenShareEffectiveProfile(
       currentProfileRef.current,
-      ultraEnabledRef.current,
+      ultraEnabled,
+      resolution720Enabled,
     );
     const degraded = networkDegradedRef.current;
     const track = localStreamRef.current?.getVideoTracks?.()[0];
     if (track?.applyConstraints) {
       try {
+        const resolutionConstraints = resolution720Enabled
+          ? {
+              width: { ideal: 1280, max: 1280 },
+              height: { ideal: 720, max: 720 },
+            }
+          : (ultraEnabled
+            ? {
+                width: { ideal: 1920, max: 1920 },
+                height: { ideal: 1080, max: 1080 },
+              }
+            : {
+                width: { ideal: 1280, max: 1920 },
+                height: { ideal: 720, max: 1080 },
+              });
         await track.applyConstraints({
+          ...resolutionConstraints,
           frameRate: {
             ideal: degraded ? Math.min(8, profile.maxFrameRate) : profile.maxFrameRate,
             max: degraded ? Math.min(8, profile.maxFrameRate) : profile.maxFrameRate,
           },
         });
       } catch {
-        // Some iOS capture sources expose a fixed frame rate. Sender limits still apply.
+        // Capture sources may expose fixed dimensions/frame rates. Sender limits still apply.
       }
     }
     await Promise.allSettled([...hostPeersRef.current.values()].map((entry) => (
@@ -389,6 +412,7 @@ function useAdaptiveScreenShareBase({
         message: '',
         profileId: 'idle',
         ultraEnabled: false,
+        resolution720Enabled: false,
         viewerCount: 0,
         networkDegraded: false,
         sourceMode: null,
@@ -420,6 +444,7 @@ function useAdaptiveScreenShareBase({
         message: '',
         profileId: 'idle',
         ultraEnabled: false,
+        resolution720Enabled: false,
         viewerCount: 0,
         networkDegraded: false,
         sourceMode: null,
@@ -494,7 +519,11 @@ function useAdaptiveScreenShareBase({
       entry.creating = false;
       await applySenderProfile(
         entry.sender,
-        screenShareEffectiveProfile(currentProfileRef.current, ultraEnabledRef.current),
+        screenShareEffectiveProfile(
+          currentProfileRef.current,
+          ultraEnabledRef.current,
+          resolution720EnabledRef.current,
+        ),
         networkDegradedRef.current,
       );
       updateView({ viewerCount: hostPeersRef.current.size });
@@ -950,6 +979,7 @@ function useAdaptiveScreenShareBase({
       localStreamRef.current = captured;
       currentProfileRef.current = SCREEN_SHARE_PROFILES.active;
       ultraEnabledRef.current = false;
+      resolution720EnabledRef.current = false;
       networkDegradedRef.current = false;
       track.onended = () => stopHostingRef.current('browser-ended', true);
       track.onmute = () => {
@@ -974,6 +1004,7 @@ function useAdaptiveScreenShareBase({
         message: track.muted ? 'Передача временно приостановлена.' : '',
         profileId: 'active',
         ultraEnabled: false,
+        resolution720Enabled: false,
         viewerCount: 0,
         networkDegraded: false,
         sourceMode: 'screen',
@@ -1275,6 +1306,59 @@ function useAdaptiveScreenShareBase({
     return () => window.removeEventListener(ULTRA_SCREEN_SHARE_TOGGLE_EVENT, handleToggle);
   }, [setUltraEnabled, view.role, view.sessionId, view.sourceMode]);
 
+  const setResolution720Enabled = useCallback(async (enabled) => {
+    const session = activeSessionRef.current;
+    if (!session || session.hostId !== clientId || session.sourceMode !== 'screen') return false;
+    const next = Boolean(enabled);
+    resolution720EnabledRef.current = next;
+    updateView({ resolution720Enabled: next });
+    await applyCurrentProfile();
+    return true;
+  }, [applyCurrentProfile, clientId, updateView]);
+
+  const publish720State = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const visible = Boolean(
+      view.sessionId
+      && view.sourceMode === 'screen'
+      && view.role === 'host'
+      && activeSessionRef.current?.hostId === clientId,
+    );
+    window.dispatchEvent(new CustomEvent(HD720_SCREEN_SHARE_STATE_EVENT, {
+      detail: {
+        sessionId: view.sessionId,
+        visible,
+        enabled: Boolean(view.resolution720Enabled),
+      },
+    }));
+  }, [clientId, view.resolution720Enabled, view.role, view.sessionId, view.sourceMode]);
+
+  useEffect(() => {
+    publish720State();
+  }, [publish720State]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleStateRequest = (event) => {
+      if (String(event?.detail?.sessionId ?? '') !== String(view.sessionId ?? '')) return;
+      publish720State();
+    };
+    window.addEventListener(HD720_SCREEN_SHARE_STATE_REQUEST_EVENT, handleStateRequest);
+    return () => window.removeEventListener(HD720_SCREEN_SHARE_STATE_REQUEST_EVENT, handleStateRequest);
+  }, [publish720State, view.sessionId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleToggle = (event) => {
+      const detail = event?.detail ?? {};
+      if (String(detail.sessionId ?? '') !== String(view.sessionId ?? '')) return;
+      if (view.role !== 'host' || view.sourceMode !== 'screen') return;
+      setResolution720Enabled(Boolean(detail.enabled));
+    };
+    window.addEventListener(HD720_SCREEN_SHARE_TOGGLE_EVENT, handleToggle);
+    return () => window.removeEventListener(HD720_SCREEN_SHARE_TOGGLE_EVENT, handleToggle);
+  }, [setResolution720Enabled, view.role, view.sessionId, view.sourceMode]);
+
   useEffect(() => () => {
     mountedRef.current = false;
     const session = activeSessionRef.current;
@@ -1325,6 +1409,8 @@ function useAdaptiveScreenShareBase({
     remoteAgentName: remoteAgent?.name ?? '',
     ultraEnabled: Boolean(view.ultraEnabled),
     setUltraEnabled,
+    resolution720Enabled: Boolean(view.resolution720Enabled),
+    setResolution720Enabled,
     clientId,
     participantName,
     canEdit,
@@ -1333,6 +1419,7 @@ function useAdaptiveScreenShareBase({
     profileLabel: screenShareEffectiveProfile(
       SCREEN_SHARE_PROFILES[view.profileId] ?? SCREEN_SHARE_PROFILES.idle,
       Boolean(view.ultraEnabled),
+      Boolean(view.resolution720Enabled),
     ).label,
   };
 }
@@ -1355,6 +1442,7 @@ export function useAdaptiveScreenShare(options) {
     p2pStream: base.stream,
     profileId: base.profileId,
     ultraEnabled: base.ultraEnabled,
+    resolution720Enabled: base.resolution720Enabled,
     networkDegraded: base.networkDegraded,
   });
   const handleSignal = useCallback((payload) => {
