@@ -5,13 +5,26 @@ export function createLiveTransportRouter({
   needsLegacyAbly = () => !enabled,
 } = {}) {
   let closed = false;
+  const counters = {
+    total: 0,
+    webrtc: 0,
+    mixed: 0,
+    ablyLegacy: 0,
+    unavailable: 0,
+    closed: 0,
+  };
 
   return {
     async send(event, payload, options = {}) {
-      if (closed) return { route: 'closed', liveResult: 'closed', legacyResult: null };
+      counters.total += 1;
+      if (closed) {
+        counters.closed += 1;
+        return { route: 'closed', liveResult: 'closed', legacyResult: null };
+      }
 
       if (!enabled) {
         const legacyResult = await publishLegacyAbly(event, payload, options);
+        counters.ablyLegacy += 1;
         return { route: 'ably-legacy', liveResult: null, legacyResult };
       }
 
@@ -19,16 +32,30 @@ export function createLiveTransportRouter({
       const legacyNeeded = Boolean(needsLegacyAbly(event, payload, options));
       if (legacyNeeded) {
         const legacyResult = await publishLegacyAbly(event, payload, options);
+        counters.mixed += 1;
+        counters.ablyLegacy += 1;
         return { route: 'webrtc+ably-legacy', liveResult, legacyResult };
       }
 
+      if (liveResult === 'unavailable' || liveResult === 'closed') {
+        counters.unavailable += 1;
+        return {
+          route: 'webrtc-unavailable',
+          liveResult,
+          legacyResult: null,
+        };
+      }
+
+      counters.webrtc += 1;
       return {
-        route: liveResult === 'unavailable' || liveResult === 'closed'
-          ? 'webrtc-unavailable'
-          : 'webrtc',
+        route: 'webrtc',
         liveResult,
         legacyResult: null,
       };
+    },
+
+    stats() {
+      return { ...counters };
     },
 
     close() {
