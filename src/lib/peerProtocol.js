@@ -14,6 +14,7 @@ const MESSAGE_TYPES = new Set([
   'ack',
   'lock-request',
   'lock-result',
+  'board-control',
   'transfer-start',
   'transfer-chunk',
   'transfer-end',
