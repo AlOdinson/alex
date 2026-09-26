@@ -204,3 +204,40 @@ test('injected live publisher receives high-rate board events while signaling st
   ]);
   assert.deepEqual(ably.map((entry) => entry.event), ['screen-share-signal']);
 });
+
+
+test('reliable board-control methods use WebRTC control publisher while signaling remains on Ably', async () => {
+  const ably = [];
+  const control = [];
+  const durable = [];
+  const core = createBrowserAuthorityRealtimeCore({
+    session: {
+      whenRuntimeReady: async () => ({}),
+      async sendOps(ops, options) {
+        durable.push({ ops, options });
+        return { accepted: true, revision: 2, appliedOps: ops, appliedBackground: options.background ?? null };
+      },
+    },
+    clientId: 'teacher-control',
+    createActionId: () => 'background-control',
+    getKnownRevision: () => 1,
+    publish: async (event, payload) => { ably.push({ event, payload }); return 'ok'; },
+    publishControl: async (event, payload) => { control.push({ event, payload }); return { route: 'webrtc' }; },
+  });
+
+  await core.sendMode('edit');
+  await core.sendSettings({ background: 'dots' });
+  await core.sendLock(['x'], true);
+  await core.sendViewJump({ centerX: 1, centerY: 2, zoom: 1 });
+  await core.requestView();
+  await core.sendGameLibraryVisibility(true);
+  await core.sendSelectionTransaction({ phase: 'start', transactionId: 'tx-control' });
+  await core.sendScreenShareSignal({ protocol: 'p', type: 'board-peer-signal', sessionId: 's' });
+
+  assert.deepEqual(control.map((entry) => entry.event), [
+    'mode', 'background-live', 'lock', 'view-jump', 'view-request',
+    'game-library-visibility', 'selection-transaction',
+  ]);
+  assert.deepEqual(ably.map((entry) => entry.event), ['screen-share-signal']);
+  assert.equal(durable.length, 1, 'background canonical state remains a durable authority action');
+});
