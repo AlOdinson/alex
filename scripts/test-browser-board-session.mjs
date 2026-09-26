@@ -458,3 +458,40 @@ test('session exposes live routing state and forwards live events through the ac
   });
   session.close();
 });
+
+
+test('board session forwards reliable board-control through runtime and receives it without Ably', async () => {
+  const sent = [];
+  const received = [];
+  let teacherOptions = null;
+  const runtime = {
+    getRevision: () => 1,
+    commitTeacherAction: async (action) => ({ ...action, revision: 2, changed: true, appliedOps: action.ops }),
+    async sendBoardControl(event, payload) {
+      sent.push({ event, payload });
+      return 1;
+    },
+    close() {},
+  };
+  const session = createBrowserBoardSession({
+    boardId: 'board-control',
+    clientId: 'teacher-control',
+    permission: 'owner',
+    webrtcLiveV1: true,
+    localCapabilities: { webrtcLiveV1: true },
+    sendScreenShareSignal: async () => {},
+    onBoardControl: (event, payload) => received.push({ event, payload }),
+    createTeacherTabAuthority: createImmediateTeacherTabAuthority,
+    createTeacherRuntime: async (options) => { teacherOptions = options; return runtime; },
+    registerRuntime: () => () => {},
+  });
+  await session.start();
+  assert.equal(await session.sendBoardControl('mode', { mode: 'edit' }), 1);
+  teacherOptions.onBoardControl('student-a', 'view-request', { clientId: 'student-a' });
+  assert.deepEqual(sent, [{ event: 'mode', payload: { mode: 'edit' } }]);
+  assert.deepEqual(received, [{
+    event: 'view-request',
+    payload: { clientId: 'student-a' },
+  }]);
+  session.close();
+});
