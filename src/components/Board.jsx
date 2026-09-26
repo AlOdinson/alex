@@ -13160,6 +13160,14 @@ function BoardWorkspace({
       clearNativeBoardSelection();
     }
 
+    function handleNativeBoardDragStart(event) {
+      // Native page dragging is never part of board interaction. Prevent browsers from
+      // turning selected text, images, links or SVG chrome into draggable page content.
+      if (isNativeBoardTextTarget(event.target)) return;
+      if (event.cancelable) event.preventDefault();
+      clearNativeBoardSelection();
+    }
+
     function handleNativeBoardSelectionChange() {
       if (isNativeBoardTextTarget(document.activeElement)) return;
       clearNativeBoardSelection();
@@ -13300,6 +13308,7 @@ function BoardWorkspace({
     touchTarget.addEventListener('touchcancel', handleTouchCancel, { passive: false, capture: true });
     boardPage.addEventListener('selectstart', handleNativeBoardSelectionStart, { passive: false, capture: true });
     boardPage.addEventListener('contextmenu', handleNativeBoardContextMenu, { passive: false, capture: true });
+    boardPage.addEventListener('dragstart', handleNativeBoardDragStart, { passive: false, capture: true });
     document.addEventListener('selectionchange', handleNativeBoardSelectionChange);
 
     function handleContextMenu(event) {
@@ -13556,6 +13565,7 @@ function BoardWorkspace({
       touchTarget.removeEventListener('touchcancel', handleTouchCancel, true);
       boardPage.removeEventListener('selectstart', handleNativeBoardSelectionStart, true);
       boardPage.removeEventListener('contextmenu', handleNativeBoardContextMenu, true);
+      boardPage.removeEventListener('dragstart', handleNativeBoardDragStart, true);
       document.removeEventListener('selectionchange', handleNativeBoardSelectionChange);
       host.removeEventListener('dragenter', handleDragOver);
       host.removeEventListener('dragover', handleDragOver);
