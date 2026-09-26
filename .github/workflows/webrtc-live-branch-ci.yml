@@ -37,6 +37,7 @@ jobs:
           node --test scripts/test-browser-peer-connection.mjs
           node --test scripts/test-teacher-peer-network.mjs scripts/test-student-peer-network.mjs
           node --test scripts/test-teacher-board-runtime.mjs scripts/test-student-board-runtime.mjs
+          node --test scripts/test-board-control-protocol.mjs scripts/test-peer-protocol.mjs scripts/test-teacher-peer-hub.mjs scripts/test-student-peer-session.mjs
           node --test scripts/test-browser-authority-realtime-events.mjs
           node --test scripts/test-browser-authority-realtime-core.mjs
           node --test scripts/test-browser-board-session.mjs
