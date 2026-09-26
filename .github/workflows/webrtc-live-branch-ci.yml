@@ -35,3 +35,4 @@ jobs:
             node --test scripts/test-live-transport-router.mjs
           fi
           node --test scripts/test-browser-peer-connection.mjs
+          node --test scripts/test-teacher-peer-network.mjs scripts/test-student-peer-network.mjs
