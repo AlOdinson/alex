@@ -1,0 +1,37 @@
+name: WebRTC Live Branch CI
+
+on:
+  push:
+    branches:
+      - project/webrtc-live-ably-sync
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: WebRTC live focused tests
+        run: |
+          set -e
+          if [ -f scripts/test-live-event-protocol.mjs ]; then
+            node --test scripts/test-live-event-protocol.mjs
+          fi
+          if [ -f scripts/test-peer-live-channel.mjs ]; then
+            node --test scripts/test-peer-live-channel.mjs
+          fi
+          if [ -f scripts/test-collaboration-transport-flags.mjs ]; then
+            node --test scripts/test-collaboration-transport-flags.mjs
+          fi
+          if [ -f scripts/test-live-transport-router.mjs ]; then
+            node --test scripts/test-live-transport-router.mjs
+          fi
+          node --test scripts/test-browser-peer-connection.mjs
