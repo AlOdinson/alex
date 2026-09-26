@@ -96,3 +96,58 @@ html.alex-board-immersive-fallback #root {
   height: 100dvh !important;
   overflow: hidden !important;
 }
+
+
+/* Clean fullscreen: the board/media remains visible while every application control
+   disappears. The fullscreen exit button is mounted outside #root and intentionally
+   remains available in the top-left corner. */
+html.alex-board-immersive-clean #root .toolbar-shell,
+html.alex-board-immersive-clean #root .toolbar-primary-row,
+html.alex-board-immersive-clean #root .toolbar-secondary-row,
+html.alex-board-immersive-clean #root .board-tool-dock,
+html.alex-board-immersive-clean #root .floating-drawing-controls,
+html.alex-board-immersive-clean #root .shape-palette,
+html.alex-board-immersive-clean #root .drawing-presets-menu,
+html.alex-board-immersive-clean #root .presence-menu,
+html.alex-board-immersive-clean #root .export-menu,
+html.alex-board-immersive-clean #root .modal-backdrop,
+html.alex-board-immersive-clean #root .teacher-auth-shell,
+html.alex-board-immersive-clean #root .teacher-account-card,
+html.alex-board-immersive-clean #root .compact-board-keyboard,
+html.alex-board-immersive-clean #root .local-mode-badge,
+html.alex-board-immersive-clean #root .screen-share-header,
+html.alex-board-immersive-clean #root .screen-share-footer,
+html.alex-board-immersive-clean #root .remote-browser-toolbar,
+html.alex-board-immersive-clean #root .remote-browser-control-hint,
+html.alex-board-immersive-clean #root .screen-share-message {
+  display: none !important;
+}
+
+html.alex-board-immersive-clean #root button,
+html.alex-board-immersive-clean #root input,
+html.alex-board-immersive-clean #root select,
+html.alex-board-immersive-clean #root textarea,
+html.alex-board-immersive-clean #root [role="button"],
+html.alex-board-immersive-clean #root [role="menu"],
+html.alex-board-immersive-clean #root [role="dialog"],
+html.alex-board-immersive-clean #root [role="toolbar"] {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+html.alex-board-immersive-clean #root .screen-share-panel {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html.alex-board-immersive-clean #alex-board-fullscreen-root {
+  display: block !important;
+  z-index: 2147483647;
+}
+
+html.alex-board-immersive-clean .alex-board-fullscreen-button {
+  visibility: visible !important;
+  pointer-events: auto !important;
+}

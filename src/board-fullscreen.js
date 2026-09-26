@@ -6,6 +6,7 @@ import {
 
 const ROOT_ID = 'alex-board-fullscreen-root';
 const FALLBACK_CLASS = 'alex-board-immersive-fallback';
+const CLEAN_CLASS = 'alex-board-immersive-clean';
 const BUTTON_GAP = 5;
 const BUTTON_SIZE = 42;
 const FULLSCREEN_ICON_VARIANT = 'corner-brackets-1';
@@ -48,6 +49,12 @@ function renderButton() {
 
 function positionButton() {
   if (!root) return;
+  if (isActive()) {
+    root.hidden = false;
+    root.style.left = 'max(8px, env(safe-area-inset-left))';
+    root.style.top = 'max(8px, env(safe-area-inset-top))';
+    return;
+  }
   const brand = brandButton();
   if (!brand) {
     root.hidden = true;
@@ -63,10 +70,17 @@ function positionButton() {
   root.style.top = `${Math.round(brandRect.top + (brandRect.height / 2) - (BUTTON_SIZE / 2) + 1)}px`;
 }
 
+function syncCleanUi() {
+  const active = isActive();
+  document.documentElement.classList.toggle(CLEAN_CLASS, active);
+  document.body?.classList.toggle(CLEAN_CLASS, active);
+}
+
 function setFallback(active) {
   fallbackActive = Boolean(active);
   document.documentElement.classList.toggle(FALLBACK_CLASS, fallbackActive);
   document.body?.classList.toggle(FALLBACK_CLASS, fallbackActive);
+  syncCleanUi();
   if (fallbackActive) {
     window.scrollTo?.(0, 0);
   }
@@ -91,6 +105,7 @@ async function toggleFullscreen() {
     if (!entered) setFallback(true);
   } finally {
     busy = false;
+    syncCleanUi();
     renderButton();
     window.requestAnimationFrame?.(positionButton);
   }
@@ -118,6 +133,7 @@ function createButton() {
 
 function handleNativeFullscreenChange() {
   if (getFullscreenElement(document)) setFallback(false);
+  syncCleanUi();
   renderButton();
   window.requestAnimationFrame?.(positionButton);
 }
@@ -142,7 +158,9 @@ for (const eventName of [
 
 document.addEventListener('fullscreenerror', () => {
   if (!getFullscreenElement(document) && !fallbackActive) setFallback(true);
+  syncCleanUi();
   renderButton();
+  window.requestAnimationFrame?.(positionButton);
 });
 
 window.addEventListener('resize', positionButton, { passive: true });
