@@ -99,10 +99,68 @@ jobs:
           fi
 
 
+  webkit-e2e:
+    needs: focused
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install project dependencies
+        run: npm install --no-audit --no-fund
+      - name: Install Playwright WebKit driver
+        run: |
+          npm install --no-save --no-package-lock playwright@1.55.0
+          npx playwright install --with-deps webkit
+      - name: Validate live test configuration
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          test -n "$VITE_SUPABASE_URL"
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
+      - name: Build branch preview with WebRTC live enabled
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_WEBRTC_LIVE_V1: "true"
+        run: npm run build -- --base=/preview-browser-authority/
+      - name: Start local branch preview
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4173 --base=/preview-browser-authority/ > /tmp/alex-preview-webkit.log 2>&1 &
+          echo $! > /tmp/alex-preview-webkit.pid
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4173/preview-browser-authority/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/alex-preview-webkit.log
+          exit 1
+      - name: WebKit WebRTC live/durable E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/preview-browser-authority/
+          EXPECT_WEBRTC_LIVE_V1: "1"
+          BROWSER_ENGINE: webkit
+        run: node scripts/test-browser-authority-preview-e2e.mjs
+      - name: Show WebKit preview log on failure
+        if: failure()
+        run: cat /tmp/alex-preview-webkit.log || true
+      - name: Stop WebKit local preview
+        if: always()
+        run: |
+          if [ -f /tmp/alex-preview-webkit.pid ]; then
+            kill "$(cat /tmp/alex-preview-webkit.pid)" || true
+          fi
+
+
   full-regression:
     needs:
       - focused
       - browser-e2e
+      - webkit-e2e
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
