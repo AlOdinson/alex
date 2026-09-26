@@ -576,6 +576,19 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     ...core,
     resumeVerification: () => session.resumeVerification?.(),
     getVerificationStats: () => session.getVerificationStats?.() ?? { enabled: false },
+    getTransportDiagnostics() {
+      const revision = Number(session?.getRevision?.() ?? getKnownRevision?.() ?? 0);
+      return {
+        revision: Number.isFinite(revision) && revision >= 0 ? revision : 0,
+        routing: session?.getLiveRoutingState?.() ?? {
+          enabled: Boolean(webrtcLiveV1),
+          hasWebRtcLivePeers: false,
+          hasLegacyPeers: false,
+        },
+        liveRouting: liveRouter?.stats?.() ?? null,
+        controlRouting: controlRouter?.stats?.() ?? null,
+      };
+    },
     async disconnect() {
       if (disconnected) return;
       disconnected = true;
