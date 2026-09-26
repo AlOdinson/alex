@@ -1,6 +1,7 @@
 import { createBrowserBoardSession } from './browserBoardSession.js';
 import { createBrowserAuthorityRealtimeCore } from './browserAuthorityRealtimeCore.js';
 import { supabase } from './supabase.js';
+import { createLiveTransportRouter } from './liveTransportRouter.js';
 import {
   COLLABORATION_LIVE_CAPABILITIES,
   normalizeCollaborationCapabilities,
@@ -8,6 +9,10 @@ import {
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const LOCK_TTL = 12_000;
+const WEBRTC_LIVE_EVENTS = new Set([
+  'cursor', 'draw', 'transform', 'preview', 'object-live',
+  'delete-preview', 'selection-transaction', 'view',
+]);
 
 function participantColor(clientId) {
   const palette = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626'];
@@ -37,8 +42,11 @@ export async function routeBrowserRealtimeEvent(event, payload, {
   localClientId = '',
   session = null,
   callbacks = {},
+  source = 'ably',
 } = {}) {
   if (!payload || String(payload.clientId ?? '') === String(localClientId ?? '')) return false;
+  if (source === 'ably' && WEBRTC_LIVE_EVENTS.has(event)
+    && session?.getCollaborationMode?.(payload.clientId) === 'webrtc-live-v1') return false;
 
   // Durable board state never arrives through Ably in browser-authority mode.
   // These names are intentionally ignored so an old/stale publisher cannot bypass
@@ -382,6 +390,8 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   const localCapabilities = webrtcLiveV1 ? COLLABORATION_LIVE_CAPABILITIES : null;
   let transport = null;
   let core = null;
+  let session = null;
+  let liveRouter = null;
   let disconnected = false;
 
   const callbacks = {
@@ -404,7 +414,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     onScreenShareSignal,
   };
 
-  const session = createSession({
+  session = createSession({
     offlineCacheKey: realtimeKey,
     boardId,
     clientId,
@@ -427,6 +437,16 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       if (typeof onSnapshot === 'function') return onSnapshot(snapshot, safeRevision);
       return onSyncRequired?.(safeRevision);
     },
+    onLiveEvent: (event, payload) => routeBrowserRealtimeEvent(event, payload, {
+      localClientId: clientId,
+      session,
+      callbacks,
+      source: 'webrtc-live',
+    }),
+    onLiveState: (state) => {
+      if (state === 'open') onStatus?.('LIVE_CONNECTED');
+      else if (state === 'closed' || state === 'error') onStatus?.('LIVE_DEGRADED');
+    },
     onPeerState: (state) => {
       const peerState = String(state ?? '');
       if (peerState === 'failed' || peerState === 'closed' || peerState === 'disconnected') {
@@ -446,6 +466,16 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     },
   });
 
+  liveRouter = createLiveTransportRouter({
+    enabled: Boolean(webrtcLiveV1),
+    sendWebRtcLive: (event, payload, options) => session?.sendLive?.(event, payload, options) ?? 'unavailable',
+    publishLegacyAbly: (event, payload, options) => {
+      if (!transport) throw new Error('Ably board transport is not ready');
+      return transport.publish(event, payload, options);
+    },
+    needsLegacyAbly: () => Boolean(session?.getLiveRoutingState?.().hasLegacyPeers),
+  });
+
   core = createCore({
     session,
     clientId,
@@ -457,6 +487,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       if (!transport) throw new Error('Ably board transport is not ready');
       return transport.publish(event, payload, publishOptions);
     },
+    publishLive: (event, payload, publishOptions) => liveRouter.send(event, payload, publishOptions),
     onCommit,
     onPendingChange: typeof canVerifyCanvas === 'function' ? (count) => {
       onPendingChange?.(count);
@@ -478,6 +509,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       localClientId: clientId,
       session,
       callbacks,
+      source: 'ably',
     }),
     onUsers: (users) => {
       onUsers?.(users);
@@ -525,6 +557,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     async disconnect() {
       if (disconnected) return;
       disconnected = true;
+      liveRouter?.close?.();
       await core.disconnect?.();
       session.close?.();
       await transport.disconnect?.();
