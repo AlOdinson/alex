@@ -288,3 +288,63 @@ test('student peer network forwards board-control through the durable session', 
   assert.deepEqual(controls, [{ event: 'mode', payload: { mode: 'edit' } }]);
   network.close();
 });
+
+
+test('durable channel failure retires live transport and reports failed state', async () => {
+  let connectionOptions;
+  let durableOptions;
+  let liveClosed = 0;
+  let connectionClosed = 0;
+  const states = [];
+
+  const network = createStudentPeerNetwork({
+    boardId: 'board-durable-failure',
+    clientId: 'student-a',
+    teacherId: 'teacher-a',
+    signaling: { send: async () => {} },
+    getRevision: () => 4,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    onState: (state) => states.push(state),
+    createConnection: (options) => {
+      connectionOptions = options;
+      return {
+        async start() {},
+        async handleSignal() {},
+        close() { connectionClosed += 1; },
+      };
+    },
+    createTransport: (options) => {
+      durableOptions = options;
+      return {
+        send: async () => {},
+        close() {},
+      };
+    },
+    createSession: () => ({
+      async start() {},
+      whenIdle: async () => {},
+      close() {},
+    }),
+    createLiveTransport: () => ({
+      send: () => 'sent',
+      stats: () => ({ sent: 0 }),
+      close() { liveClosed += 1; },
+    }),
+  });
+
+  const starting = network.start();
+  await Promise.resolve();
+  connectionOptions.onLiveChannel({ label: 'alex-board-live-v1' });
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  assert.equal(network.isReady(), true);
+
+  durableOptions.onClose();
+  await Promise.resolve();
+
+  assert.equal(network.isReady(), false, 'durable failure must revoke edit readiness');
+  assert.equal(liveClosed, 1, 'live transport must be retired with the failed durable session');
+  assert.equal(connectionClosed, 1);
+  assert.equal(states.at(-1), 'failed');
+});
