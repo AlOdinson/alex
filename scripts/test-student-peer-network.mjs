@@ -225,3 +225,31 @@ test('student live transport is independent from durable readiness and closure',
   assert.equal(liveClosed, 1);
   assert.equal(connectionClosed, 1);
 });
+
+
+test('student peer network disables live DataChannel for legacy teacher mode', async () => {
+  let connectionOptions = null;
+  const network = createStudentPeerNetwork({
+    boardId: 'board-legacy',
+    clientId: 'student-a',
+    teacherId: 'teacher-legacy',
+    liveEnabled: false,
+    signaling: { send: async () => {} },
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    createConnection: (options) => {
+      connectionOptions = options;
+      return { async start() {}, async handleSignal() {}, close() {} };
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+    createSession: () => ({ async start() {}, close() {} }),
+  });
+
+  const starting = network.start();
+  await Promise.resolve();
+  assert.equal(connectionOptions.enableLiveChannel, false);
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  network.close();
+});
