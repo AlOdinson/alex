@@ -6,8 +6,10 @@ import {
   preferredScreenShareSession,
   SCREEN_SHARE_PROFILES,
   SCREEN_SHARE_PROTOCOL,
+  SCREEN_SHARE_ULTRA_PROFILE,
   screenShareBoardLayoutForViewport,
   screenShareCapability,
+  screenShareEffectiveProfile,
   screenShareNetworkIsDegraded,
   screenSharePermissionCanHost,
   screenShareProfileForActivity,
@@ -15,10 +17,27 @@ import {
 
 assert.equal(MAX_SCREEN_SHARE_VIEWERS, 3, 'three viewers plus the presenter must fit the four-person limit');
 
-for (const profile of Object.values(SCREEN_SHARE_PROFILES)) {
-  assert.equal(profile.maxFrameRate, 60, `${profile.id} screen-share profile must allow 60 FPS`);
-}
-assert.equal(SCREEN_SHARE_PROFILES.motion.maxBitrate, 6_000_000, 'motion profile must budget enough bitrate for high-frame-rate video');
+assert.deepEqual(
+  Object.values(SCREEN_SHARE_PROFILES).map(({ id, maxFrameRate, maxBitrate }) => ({ id, maxFrameRate, maxBitrate })),
+  [
+    { id: 'idle', maxFrameRate: 2, maxBitrate: 280_000 },
+    { id: 'active', maxFrameRate: 10, maxBitrate: 850_000 },
+    { id: 'motion', maxFrameRate: 15, maxBitrate: 1_250_000 },
+  ],
+  'unchecked Ultra must preserve the original adaptive screen-share limits',
+);
+assert.equal(SCREEN_SHARE_ULTRA_PROFILE.maxFrameRate, 60, 'Ultra raises the frame-rate ceiling to 60 FPS');
+assert.equal(SCREEN_SHARE_ULTRA_PROFILE.maxBitrate, 10_000_000, 'Ultra raises the bitrate ceiling to 10 Mbps');
+assert.equal(
+  screenShareEffectiveProfile(SCREEN_SHARE_PROFILES.motion, false),
+  SCREEN_SHARE_PROFILES.motion,
+  'standard mode keeps the activity profile',
+);
+assert.equal(
+  screenShareEffectiveProfile(SCREEN_SHARE_PROFILES.motion, true),
+  SCREEN_SHARE_ULTRA_PROFILE,
+  'Ultra overrides the activity profile',
+);
 
 assert.deepEqual(
   screenShareCapability({
