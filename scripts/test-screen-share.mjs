@@ -4,6 +4,7 @@ import {
   normalizeScreenShareBoardLayout,
   normalizeScreenShareSignal,
   preferredScreenShareSession,
+  SCREEN_SHARE_PROFILES,
   SCREEN_SHARE_PROTOCOL,
   screenShareBoardLayoutForViewport,
   screenShareCapability,
@@ -13,6 +14,11 @@ import {
 } from '../src/lib/screenShare.js';
 
 assert.equal(MAX_SCREEN_SHARE_VIEWERS, 3, 'three viewers plus the presenter must fit the four-person limit');
+
+for (const profile of Object.values(SCREEN_SHARE_PROFILES)) {
+  assert.equal(profile.maxFrameRate, 60, `${profile.id} screen-share profile must allow 60 FPS`);
+}
+assert.equal(SCREEN_SHARE_PROFILES.motion.maxBitrate, 6_000_000, 'motion profile must budget enough bitrate for high-frame-rate video');
 
 assert.deepEqual(
   screenShareCapability({

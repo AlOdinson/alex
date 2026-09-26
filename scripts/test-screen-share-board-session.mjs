@@ -20,6 +20,10 @@ includes(
   'ScreenShare hook must accept a board-provided initial layout callback.',
 );
 includes(
+  /frameRate:\s*\{\s*ideal:\s*60,\s*max:\s*60\s*\}/,
+  'Normal WebRTC screen capture must request up to 60 FPS.',
+);
+includes(
   /if \(!canEdit \|\| startBusyRef\.current\) return;/,
   'Normal screen capture must be available to every editor, not only the owner.',
 );

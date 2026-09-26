@@ -915,7 +915,7 @@ function useAdaptiveScreenShareBase({
     try {
       const captured = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          frameRate: { ideal: 10, max: 15 },
+          frameRate: { ideal: 60, max: 60 },
           width: { ideal: 1280, max: 1920 },
           height: { ideal: 720, max: 1080 },
         },

@@ -3,7 +3,7 @@ import { normalizeScreenShareBoardLayout } from './screenShare.js';
 
 const SCREEN_SHARE_SOURCE_WIDTH = 1280;
 const SCREEN_SHARE_SOURCE_HEIGHT = 720;
-const FALLBACK_FRAME_INTERVAL_MS = 66;
+const FALLBACK_FRAME_INTERVAL_MS = 1000 / 60;
 const CLOUD_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-cloud-state';
 const CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-cloud-state-request';
 const CLOUD_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-cloud-toggle';
