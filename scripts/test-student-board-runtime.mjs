@@ -93,3 +93,46 @@ test('passes board identity and live callbacks through student runtime', async (
   assert.deepEqual(runtime.getLiveStats(), { received: 3 });
   assert.deepEqual(live, [{ type: 'cursor', payload: { x: 2 }, sendOptions: { streamKey: 'cursor' } }]);
 });
+
+
+test('student runtime forwards reliable board-control through its peer session', async () => {
+  const controls = [];
+  let networkOptions = null;
+  const onBoardControl = () => {};
+  const runtime = createStudentBoardRuntime({
+    boardId: 'board-control',
+    clientId: 'student-control',
+    teacherId: 'teacher-control',
+    sendScreenShareSignal: async () => {},
+    getRevision: () => 1,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    onBoardControl,
+    createSignaling: ({ onSignal }) => ({ send: async () => {}, handle: onSignal }),
+    createNetwork: (options) => {
+      networkOptions = options;
+      return {
+        async start() {},
+        async handleSignal() {},
+        async proposeAction() {},
+        async proposeActionAndWait() {},
+        async requestLock() {},
+        async sendBoardControl(event, payload) {
+          controls.push({ event, payload });
+          return true;
+        },
+        getVerificationMode: () => ({ version: 0, epoch: '' }),
+        whenIdle: async () => {},
+        isReady: () => true,
+        close() {},
+      };
+    },
+  });
+
+  assert.equal(networkOptions.onBoardControl, onBoardControl);
+  assert.equal(await runtime.sendBoardControl('view-request', { clientId: 'student-control' }), true);
+  assert.deepEqual(controls, [{
+    event: 'view-request',
+    payload: { clientId: 'student-control' },
+  }]);
+});
