@@ -2,6 +2,7 @@ import { buildVerificationReply } from './boundedVerificationProtocol.js';
 import { verificationJson } from './boundedVerificationDigest.js';
 import { operationObjectIds } from './operationProtocol.js';
 import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
+import { normalizeBoardControl } from './boardControlProtocol.js';
 
 const SNAPSHOT_WRITE_TIMEOUT_MS = 120_000;
 
@@ -54,6 +55,7 @@ export function createTeacherPeerHub({
   maxJournalCommits = 256,
   snapshotWriteTimeoutMs = SNAPSHOT_WRITE_TIMEOUT_MS,
   onCommit = () => {},
+  onBoardControl = () => {},
   lockAuthority = createTeacherObjectLockAuthority(),
   canPeerEdit = async () => true,
 } = {}) {
@@ -192,6 +194,30 @@ export function createTeacherPeerHub({
     });
   };
 
+
+  const sendBoardControl = async (peerId, event, payload = {}) => {
+    const peer = requirePeer(peerId);
+    const control = normalizeBoardControl(event, payload);
+    await peer.send('board-control', control);
+    return true;
+  };
+
+  const broadcastBoardControl = async (event, payload = {}) => {
+    const control = normalizeBoardControl(event, payload);
+    const tasks = [];
+    for (const [peerId, transport] of peers.entries()) {
+      const task = Promise.resolve(transport.send('board-control', control)).catch((error) => {
+        if (removePeer(peerId, transport)) {
+          try { transport.close?.({ closeChannel: true }); } catch { /* retired */ }
+        }
+        throw error;
+      });
+      tasks.push(task);
+    }
+    await Promise.all(tasks);
+    return tasks.length;
+  };
+
   return {
     addPeer(peerId, transport) {
       const id = String(peerId ?? '').trim();
@@ -210,6 +236,8 @@ export function createTeacherPeerHub({
     },
 
     broadcastCommit,
+    sendBoardControl,
+    broadcastBoardControl,
 
     async handleMessage(peerId, message) {
       const safePeerId = String(peerId ?? '').trim();
@@ -230,6 +258,12 @@ export function createTeacherPeerHub({
 
       if (type === 'sync-request') {
         await sendSync(peer, payload.revision);
+        return;
+      }
+
+      if (type === 'board-control') {
+        const control = normalizeBoardControl(payload.event, payload.payload);
+        await onBoardControl(safePeerId, control.event, control.payload);
         return;
       }
 
