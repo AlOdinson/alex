@@ -8282,6 +8282,7 @@ function BoardWorkspace({
     const canvasElement = canvasElementRef.current;
     const host = canvasHostRef.current;
     if (!canvasElement || !host) return undefined;
+    const boardPage = host.closest?.('.board-page') ?? host;
 
     const clientId = clientIdRef.current;
     const canvas = new Canvas(canvasElement, {
@@ -13138,7 +13139,7 @@ function BoardWorkspace({
       if (!selection || selection.rangeCount === 0) return;
       const nodeBelongsToBoard = (node) => {
         const element = node?.nodeType === 1 ? node : node?.parentElement;
-        return Boolean(element && (element === host || host.contains(element)));
+        return Boolean(element && (element === boardPage || boardPage.contains(element)));
       };
       if (nodeBelongsToBoard(selection.anchorNode) || nodeBelongsToBoard(selection.focusNode)) {
         selection.removeAllRanges();
@@ -13150,6 +13151,17 @@ function BoardWorkspace({
       // else inside the board is an interactive drawing surface, never page content.
       if (isNativeBoardTextTarget(event.target)) return;
       if (event.cancelable) event.preventDefault();
+      clearNativeBoardSelection();
+    }
+
+    function handleNativeBoardContextMenu(event) {
+      if (isNativeBoardTextTarget(event.target)) return;
+      if (event.cancelable) event.preventDefault();
+      clearNativeBoardSelection();
+    }
+
+    function handleNativeBoardSelectionChange() {
+      if (isNativeBoardTextTarget(document.activeElement)) return;
       clearNativeBoardSelection();
     }
 
@@ -13286,7 +13298,9 @@ function BoardWorkspace({
     touchTarget.addEventListener('touchmove', handleTouchMove, { passive: false, capture: true });
     touchTarget.addEventListener('touchend', handleTouchEnd, { passive: false, capture: true });
     touchTarget.addEventListener('touchcancel', handleTouchCancel, { passive: false, capture: true });
-    host.addEventListener('selectstart', handleNativeBoardSelectionStart, { passive: false, capture: true });
+    boardPage.addEventListener('selectstart', handleNativeBoardSelectionStart, { passive: false, capture: true });
+    boardPage.addEventListener('contextmenu', handleNativeBoardContextMenu, { passive: false, capture: true });
+    document.addEventListener('selectionchange', handleNativeBoardSelectionChange);
 
     function handleContextMenu(event) {
       event.preventDefault();
@@ -13540,7 +13554,9 @@ function BoardWorkspace({
       touchTarget.removeEventListener('touchmove', handleTouchMove, true);
       touchTarget.removeEventListener('touchend', handleTouchEnd, true);
       touchTarget.removeEventListener('touchcancel', handleTouchCancel, true);
-      host.removeEventListener('selectstart', handleNativeBoardSelectionStart, true);
+      boardPage.removeEventListener('selectstart', handleNativeBoardSelectionStart, true);
+      boardPage.removeEventListener('contextmenu', handleNativeBoardContextMenu, true);
+      document.removeEventListener('selectionchange', handleNativeBoardSelectionChange);
       host.removeEventListener('dragenter', handleDragOver);
       host.removeEventListener('dragover', handleDragOver);
       host.removeEventListener('drop', handleDrop);
