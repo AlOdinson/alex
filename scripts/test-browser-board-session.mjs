@@ -400,3 +400,61 @@ test('student recreates the same-teacher runtime when live capability mode chang
   assert.equal(current?.number, 2);
   session.close();
 });
+
+
+test('session exposes live routing state and forwards live events through the active runtime', async () => {
+  const sent = [];
+  let teacherOptions = null;
+  const runtime = {
+    getRevision: () => 2,
+    commitTeacherAction: async (action) => ({ ...action, revision: 3, changed: true, appliedOps: action.ops }),
+    sendLive(type, payload, options) {
+      sent.push({ type, payload, options });
+      return [{ peerId: 'student-new', result: 'sent' }];
+    },
+    close() {},
+  };
+  const received = [];
+  const session = createBrowserBoardSession({
+    boardId: 'board-routing',
+    clientId: 'teacher-routing',
+    permission: 'owner',
+    webrtcLiveV1: true,
+    localCapabilities: { webrtcLiveV1: true },
+    sendScreenShareSignal: async () => {},
+    onLiveEvent: (type, payload) => received.push({ type, payload }),
+    createTeacherTabAuthority: createImmediateTeacherTabAuthority,
+    createTeacherRuntime: async (options) => { teacherOptions = options; return runtime; },
+    registerRuntime: () => () => {},
+  });
+
+  await session.start();
+  await session.updateParticipants([
+    { clientId: 'teacher-routing', permission: 'owner', capabilities: { webrtcLiveV1: true } },
+    { clientId: 'student-new', permission: 'edit', capabilities: { webrtcLiveV1: true } },
+  ]);
+
+  assert.deepEqual(session.getLiveRoutingState(), {
+    enabled: true,
+    hasWebRtcLivePeers: true,
+    hasLegacyPeers: false,
+  });
+  assert.deepEqual(session.sendLive('cursor', { x: 3 }, { streamKey: 'cursor' }), [{
+    peerId: 'student-new', result: 'sent',
+  }]);
+  teacherOptions.onLiveEvent('student-new', 'cursor', { x: 8 }, { seq: 1 });
+  assert.deepEqual(received, [{ type: 'cursor', payload: { x: 8 } }]);
+  assert.equal(sent.length, 1);
+
+  await session.updateParticipants([
+    { clientId: 'teacher-routing', permission: 'owner', capabilities: { webrtcLiveV1: true } },
+    { clientId: 'student-new', permission: 'edit', capabilities: { webrtcLiveV1: true } },
+    { clientId: 'student-old', permission: 'edit' },
+  ]);
+  assert.deepEqual(session.getLiveRoutingState(), {
+    enabled: true,
+    hasWebRtcLivePeers: true,
+    hasLegacyPeers: true,
+  });
+  session.close();
+});
