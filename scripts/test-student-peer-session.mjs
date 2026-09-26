@@ -230,3 +230,42 @@ test('closing a student peer rejects pending initial sync, durable and lock wait
     /closed/i,
   );
 });
+
+
+test('student session sends and receives reliable board-control messages', async () => {
+  const sent = [];
+  const received = [];
+  const session = createStudentPeerSession({
+    transport: {
+      async send(type, payload) { sent.push({ type, payload }); },
+    },
+    getRevision: () => 4,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    onBoardControl: (event, payload) => received.push({ event, payload }),
+  });
+
+  await session.sendBoardControl('view-jump', { centerX: 1, centerY: 2, zoom: 3 });
+  assert.deepEqual(sent.at(-1), {
+    type: 'board-control',
+    payload: {
+      event: 'view-jump',
+      payload: { centerX: 1, centerY: 2, zoom: 3 },
+    },
+  });
+
+  await session.handleMessage({
+    type: 'board-control',
+    payload: { event: 'game-library-visibility', payload: { visible: true } },
+  });
+  assert.deepEqual(received, [{
+    event: 'game-library-visibility',
+    payload: { visible: true },
+  }]);
+
+  await assert.rejects(
+    session.sendBoardControl('draw', { points: [] }),
+    /board control event/i,
+  );
+  session.close();
+});
