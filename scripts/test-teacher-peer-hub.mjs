@@ -336,3 +336,74 @@ test('teacher hub sends and receives reliable board-control without touching aut
     /board control event/i,
   );
 });
+
+
+test('teacher hub filters student board-control by direction and actual edit permission', async () => {
+  const received = [];
+  let editable = false;
+  const hub = createTeacherPeerHub({
+    authority: {
+      getRevision: () => 9,
+      commitAction: async () => ({ revision: 10 }),
+    },
+    getSnapshot: async () => ({ snapshot: {}, revision: 9 }),
+    getCommitsAfter: async () => [],
+    canPeerEdit: async () => editable,
+    onBoardControl: (peerId, event, payload) => received.push({ peerId, event, payload }),
+  });
+  hub.addPeer('student-a', makeTransport());
+
+  await hub.handleMessage('student-a', {
+    type: 'board-control',
+    payload: { event: 'view-request', payload: { clientId: 'student-a' } },
+  });
+  assert.deepEqual(received.map((entry) => entry.event), ['view-request']);
+
+  await hub.handleMessage('student-a', {
+    type: 'board-control',
+    payload: { event: 'background-live', payload: { background: 'dots' } },
+  });
+  await hub.handleMessage('student-a', {
+    type: 'board-control',
+    payload: { event: 'lock', payload: { objectIds: ['shape-1'], locked: true } },
+  });
+  await hub.handleMessage('student-a', {
+    type: 'board-control',
+    payload: { event: 'selection-transaction', payload: { phase: 'start', transactionId: 'tx-a' } },
+  });
+  assert.deepEqual(
+    received.map((entry) => entry.event),
+    ['view-request'],
+    'view-only peers must not inject edit-only transient controls',
+  );
+
+  editable = true;
+  await hub.handleMessage('student-a', {
+    type: 'board-control',
+    payload: { event: 'background-live', payload: { background: 'blank' } },
+  });
+  await hub.handleMessage('student-a', {
+    type: 'board-control',
+    payload: { event: 'lock', payload: { objectIds: ['shape-1'], locked: true } },
+  });
+  await hub.handleMessage('student-a', {
+    type: 'board-control',
+    payload: { event: 'selection-transaction', payload: { phase: 'start', transactionId: 'tx-b' } },
+  });
+  assert.deepEqual(
+    received.map((entry) => entry.event),
+    ['view-request', 'background-live', 'lock', 'selection-transaction'],
+  );
+
+  for (const event of ['mode', 'view-jump', 'game-library-visibility']) {
+    await hub.handleMessage('student-a', {
+      type: 'board-control',
+      payload: { event, payload: { permission: 'owner', visible: true, mode: 'closed' } },
+    });
+  }
+  assert.deepEqual(
+    received.map((entry) => entry.event),
+    ['view-request', 'background-live', 'lock', 'selection-transaction'],
+    'owner-only controls must never be accepted from a student peer',
+  );
+});
