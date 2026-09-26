@@ -44,3 +44,13 @@ test('normalization only accepts an explicit boolean true capability', () => {
     webrtcLiveV1: false,
   });
 });
+
+
+test('branch feature flag can be enabled explicitly by URL or Vite environment', async () => {
+  const { isWebrtcLiveV1Enabled } = await import('../src/lib/collaborationTransportFlags.js');
+  assert.equal(isWebrtcLiveV1Enabled({ environment: {}, search: '' }), false);
+  assert.equal(isWebrtcLiveV1Enabled({ environment: {}, search: '?webrtcLiveV1=1' }), true);
+  assert.equal(isWebrtcLiveV1Enabled({ environment: {}, search: '?webrtcLiveV1=true' }), true);
+  assert.equal(isWebrtcLiveV1Enabled({ environment: { VITE_WEBRTC_LIVE_V1: '1' }, search: '' }), true);
+  assert.equal(isWebrtcLiveV1Enabled({ environment: { VITE_WEBRTC_LIVE_V1: 'false' }, search: '' }), false);
+});
