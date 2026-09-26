@@ -392,3 +392,35 @@ test('WebRTC-live opt-in advertises capability to Ably transport without changin
   assert.deepEqual(transportOptions.capabilities, { webrtcLiveV1: true });
   await realtime.disconnect();
 });
+
+
+test('ignores legacy Ably live echo from a peer already using WebRTC live while accepting its WebRTC frame', async () => {
+  const seen = [];
+  const payload = { clientId: 'student-new', x: 4, y: 5 };
+  const session = {
+    getCollaborationMode: (peerId) => peerId === 'student-new' ? 'webrtc-live-v1' : 'legacy',
+  };
+  const callbacks = { onCursor: (value) => seen.push(value.x) };
+
+  assert.equal(await routeBrowserRealtimeEvent('cursor', payload, {
+    localClientId: 'teacher-a', session, callbacks, source: 'ably',
+  }), false);
+  assert.deepEqual(seen, []);
+
+  assert.equal(await routeBrowserRealtimeEvent('cursor', payload, {
+    localClientId: 'teacher-a', session, callbacks, source: 'webrtc-live',
+  }), true);
+  assert.deepEqual(seen, [4]);
+});
+
+test('legacy peer Ably live event is still routed during mixed-client rollout', async () => {
+  const seen = [];
+  const session = { getCollaborationMode: () => 'legacy' };
+  await routeBrowserRealtimeEvent('cursor', { clientId: 'student-old', x: 7 }, {
+    localClientId: 'teacher-a',
+    session,
+    callbacks: { onCursor: (value) => seen.push(value.x) },
+    source: 'ably',
+  });
+  assert.deepEqual(seen, [7]);
+});
