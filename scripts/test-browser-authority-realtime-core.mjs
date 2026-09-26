@@ -175,3 +175,32 @@ test('observing a transient error does not turn an awaited signaling failure int
   await assert.rejects(core.sendScreenShareSignal({protocol:'board',type:'offer',sessionId:'a'}), e=>e===failure);
   assert.deepEqual(observed, [[failure, 'screen-share-signal']]);
 });
+
+
+test('injected live publisher receives high-rate board events while signaling stays on Ably publisher', async () => {
+  const ably = [];
+  const live = [];
+  const core = createBrowserAuthorityRealtimeCore({
+    session: { whenRuntimeReady: async () => ({}), sendOps: async () => ({ accepted: true, revision: 1 }) },
+    clientId: 'student-live',
+    getKnownRevision: () => 9,
+    publish: async (event, payload) => { ably.push({ event, payload }); return 'ok'; },
+    publishLive: async (event, payload, options) => { live.push({ event, payload, options }); return { route: 'webrtc' }; },
+  });
+
+  await core.sendCursor({ x: 1, y: 2 });
+  await core.sendDraw({ objectId: 'stroke-a', phase: 'update', points: [[1, 2]], baseRevision: 9 });
+  await core.sendTransform({ objects: [{ id: 'shape-a', matrix: [1, 0, 0, 1, 2, 3] }] });
+  await core.sendPreview([{ id: 'preview-a' }]);
+  await core.sendObjectLive({ object: { boardObjectId: 'object-a' } });
+  await core.sendDeletePreview(['object-a']);
+  await core.sendSelectionTransaction({ phase: 'style', transactionId: 'tx-a' });
+  await core.sendView({ centerX: 1, centerY: 2, zoom: 1 });
+  await core.sendScreenShareSignal({ protocol: 'p', type: 'board-peer-signal', sessionId: 'signal-a' });
+
+  assert.deepEqual(live.map((entry) => entry.event), [
+    'cursor', 'draw', 'transform', 'preview', 'object-live',
+    'delete-preview', 'selection-transaction', 'view',
+  ]);
+  assert.deepEqual(ably.map((entry) => entry.event), ['screen-share-signal']);
+});
