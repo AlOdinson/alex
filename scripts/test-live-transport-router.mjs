@@ -58,3 +58,33 @@ test('new-capability mode never falls back board live traffic to Ably when live 
   assert.equal(result.route, 'webrtc-unavailable');
   assert.equal(ablyCalls, 0);
 });
+
+
+test('reports routing counters so Ably-live reduction can be measured', async () => {
+  let legacyNeeded = false;
+  let liveResult = 'sent';
+  const router = createLiveTransportRouter({
+    enabled: true,
+    sendWebRtcLive: () => liveResult,
+    publishLegacyAbly: async () => 'ok',
+    needsLegacyAbly: () => legacyNeeded,
+  });
+
+  await router.send('cursor', { x: 1 });
+  legacyNeeded = true;
+  await router.send('cursor', { x: 2 });
+  legacyNeeded = false;
+  liveResult = 'unavailable';
+  await router.send('draw', { points: [] });
+  router.close();
+  await router.send('view', { zoom: 1 });
+
+  assert.deepEqual(router.stats(), {
+    total: 4,
+    webrtc: 1,
+    mixed: 1,
+    ablyLegacy: 1,
+    unavailable: 1,
+    closed: 1,
+  });
+});
