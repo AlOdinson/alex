@@ -15,6 +15,7 @@ export function createStudentBoardRuntime({
   onState = () => {},
   onLiveEvent = () => {},
   onLiveState = () => {},
+  onBoardControl = () => {},
   onError = () => {},
   onVerificationMode = () => {},
   createSignaling = createBoardPeerSignalingBridge,
@@ -51,6 +52,7 @@ export function createStudentBoardRuntime({
     onState,
     onLiveEvent,
     onLiveState,
+    onBoardControl,
     onError,
   });
 
@@ -69,6 +71,10 @@ export function createStudentBoardRuntime({
 
     proposeActionAndWait(action) {
       return network.proposeActionAndWait(action);
+    },
+
+    sendBoardControl(event, payload = {}) {
+      return network.sendBoardControl(event, payload);
     },
 
     requestLock(operation, payload = {}) {
