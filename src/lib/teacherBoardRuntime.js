@@ -13,6 +13,8 @@ export async function createTeacherBoardRuntime({
   rtcConfig = {},
   onRemoteCommit = () => {},
   onPeerState = () => {},
+  onLiveEvent = () => {},
+  onLiveState = () => {},
   onError = () => {},
   openAuthority = openBrowserBoardAuthority,
   getBoardMetadata = getAuthorityBoard,
@@ -58,10 +60,15 @@ export async function createTeacherBoardRuntime({
   });
 
   network = createNetwork({
+    boardId: safeBoardId,
+    clientId: safeClientId,
+    getRevision: () => authority.getRevision(),
     signaling,
     peerHub: hub,
     rtcConfig,
     onPeerState,
+    onLiveEvent,
+    onLiveState,
     onError,
   });
 
@@ -156,6 +163,22 @@ export async function createTeacherBoardRuntime({
 
     getPeerCount() {
       return network?.getPeerCount?.() ?? 0;
+    },
+
+    sendLive(type, payload, options = {}) {
+      return network?.broadcastLive?.(type, payload, options) ?? [];
+    },
+
+    sendLiveTo(peerId, type, payload, options = {}) {
+      return network?.sendLive?.(peerId, type, payload, options) ?? 'unavailable';
+    },
+
+    getLiveState(peerId) {
+      return network?.getLiveState?.(peerId) ?? 'unavailable';
+    },
+
+    getLiveStats(peerId) {
+      return network?.getLiveStats?.(peerId) ?? null;
     },
 
     close() {
