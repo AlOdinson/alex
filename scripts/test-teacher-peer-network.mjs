@@ -123,3 +123,79 @@ test('late terminal state from a replaced connection cannot close the reconnect'
   assert.equal(created[1].closed, 0, 'stale old connection callback closed the replacement connection');
   assert.equal(removed.length, 1, 'replacement peer was removed from the hub by stale cleanup');
 });
+
+
+test('attaches live transport separately and a live-only close does not remove durable peer', async () => {
+  let connectionOptions;
+  let liveOptions;
+  let durableClosed = 0;
+  let liveClosed = 0;
+  const removed = [];
+  const liveEvents = [];
+  const liveStates = [];
+  const sentLive = [];
+
+  const network = createTeacherPeerNetwork({
+    boardId: 'board-live',
+    clientId: 'teacher-a',
+    getRevision: () => 12,
+    signaling: { send: async () => {} },
+    peerHub: {
+      addPeer: () => () => {},
+      removePeer(peerId) { removed.push(peerId); },
+      async handleMessage() {},
+    },
+    createConnection: (options) => {
+      connectionOptions = options;
+      return { async start() {}, async handleSignal() {}, close() {} };
+    },
+    createTransport: () => ({
+      send: async () => {},
+      sendTextTransfer: async () => {},
+      close() { durableClosed += 1; },
+    }),
+    createLiveTransport: (options) => {
+      liveOptions = options;
+      return {
+        send(type, payload, sendOptions) {
+          sentLive.push({ type, payload, sendOptions });
+          return 'sent';
+        },
+        stats: () => ({ sent: 1 }),
+        close() { liveClosed += 1; },
+      };
+    },
+    onLiveEvent: (peerId, type, payload) => liveEvents.push({ peerId, type, payload }),
+    onLiveState: (peerId, state) => liveStates.push({ peerId, state }),
+  });
+
+  await network.handleSignal({ sourceId: 'student-live', signal: { type: 'offer' } });
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  connectionOptions.onLiveChannel({ label: 'alex-board-live-v1' });
+
+  assert.equal(network.getPeerCount(), 1);
+  assert.equal(network.sendLive('student-live', 'cursor', { x: 4 }, { streamKey: 'cursor' }), 'sent');
+  assert.deepEqual(sentLive, [{
+    type: 'cursor',
+    payload: { x: 4 },
+    sendOptions: { streamKey: 'cursor' },
+  }]);
+
+  liveOptions.onEvent('cursor', { x: 8 }, { seq: 3 });
+  assert.deepEqual(liveEvents, [{
+    peerId: 'student-live',
+    type: 'cursor',
+    payload: { x: 8 },
+  }]);
+
+  liveOptions.onState('closed');
+  assert.equal(network.getPeerCount(), 1, 'live-only close must not retire durable peer');
+  assert.equal(durableClosed, 0);
+  assert.deepEqual(removed, []);
+  assert.deepEqual(liveStates.at(-1), { peerId: 'student-live', state: 'closed' });
+
+  connectionOptions.onConnectionState('failed');
+  assert.equal(durableClosed, 1);
+  assert.equal(liveClosed, 1);
+  assert.deepEqual(removed, ['student-live']);
+});
