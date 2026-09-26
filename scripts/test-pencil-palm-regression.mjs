@@ -65,8 +65,10 @@ assert.match(
   stylesSource,
   /\.canvas-host textarea,[\s\S]*?\[contenteditable="true"\][\s\S]*?-webkit-user-select: text;/,
 );
-assert.match(boardSource, /host\.addEventListener\('selectstart', handleNativeBoardSelectionStart/);
-assert.match(boardSource, /host\.removeEventListener\('selectstart', handleNativeBoardSelectionStart/);
+assert.match(boardSource, /boardPage\.addEventListener\('selectstart', handleNativeBoardSelectionStart/);
+assert.match(boardSource, /boardPage\.removeEventListener\('selectstart', handleNativeBoardSelectionStart/);
+assert.match(boardSource, /boardPage\.addEventListener\('contextmenu', handleNativeBoardContextMenu/);
+assert.match(boardSource, /document\.addEventListener\('selectionchange', handleNativeBoardSelectionChange\)/);
 assert.match(boardSource, /if \(isNativeBoardTextTarget\(event\.target\)\) return;/);
 assert.match(boardSource, /clearNativeBoardSelection\(\);/);
 
