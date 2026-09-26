@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright-core';
+import { chromium, webkit } from 'playwright-core';
 
 const PREVIEW_URL = process.env.BROWSER_AUTHORITY_PREVIEW_URL
   ?? 'https://alodinson.github.io/alex/preview-browser-authority/';
@@ -280,11 +280,18 @@ async function blurActiveElement(page) {
   await page.evaluate(() => document.activeElement?.blur?.());
 }
 
-const browser = await chromium.launch({
-  channel: 'chrome',
-  headless: true,
-  args: ['--no-sandbox', '--disable-dev-shm-usage'],
-});
+const BROWSER_ENGINE = String(process.env.BROWSER_ENGINE ?? 'chromium').trim().toLowerCase();
+if (!['chromium', 'webkit'].includes(BROWSER_ENGINE)) {
+  throw new Error(`Unsupported BROWSER_ENGINE: ${BROWSER_ENGINE}`);
+}
+const browserType = BROWSER_ENGINE === 'webkit' ? webkit : chromium;
+const browser = await browserType.launch(BROWSER_ENGINE === 'chromium'
+  ? {
+      channel: 'chrome',
+      headless: true,
+      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+    }
+  : { headless: true });
 
 const teacherContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const studentContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
