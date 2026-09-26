@@ -162,3 +162,16 @@ test('forwards local ICE candidates through signaling and closes both channels c
   assert.equal(pc.closed, true);
   assert.ok(pc.createdChannels.every((channel) => channel.closed));
 });
+
+
+test('initiator can keep legacy durable-only channel when live capability is disabled', async () => {
+  const pc = new FakePeerConnection();
+  const peer = createBrowserPeerConnection({
+    initiator: true,
+    enableLiveChannel: false,
+    sendSignal: async () => {},
+    createPeerConnection: () => pc,
+  });
+  await peer.start();
+  assert.deepEqual(pc.createdChannels.map((channel) => channel.label), ['alex-board-durable-v1']);
+});
