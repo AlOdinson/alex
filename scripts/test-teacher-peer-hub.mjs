@@ -290,3 +290,49 @@ test('view-only peer can sync but cannot acquire locks or commit durable actions
   assert.equal(transport.sent.at(-1)?.payload?.needsSync, false);
   assert.equal(transport.sent.at(-1)?.payload?.error, 'Board is view-only');
 });
+
+
+test('teacher hub sends and receives reliable board-control without touching authority revision', async () => {
+  const sent = [];
+  const received = [];
+  let revision = 7;
+  const hub = createTeacherPeerHub({
+    authority: {
+      getRevision: () => revision,
+      commitAction: async () => { revision += 1; return { revision }; },
+    },
+    getSnapshot: async () => ({ snapshot: {}, revision }),
+    getCommitsAfter: async () => [],
+    onBoardControl: (peerId, event, payload) => received.push({ peerId, event, payload }),
+  });
+  const transport = {
+    async send(type, payload) { sent.push({ type, payload }); },
+    async sendTextTransfer() {},
+  };
+  hub.addPeer('student-a', transport);
+
+  await hub.broadcastBoardControl('mode', { mode: 'edit' });
+  assert.deepEqual(sent.at(-1), {
+    type: 'board-control',
+    payload: { event: 'mode', payload: { mode: 'edit' } },
+  });
+
+  await hub.handleMessage('student-a', {
+    type: 'board-control',
+    payload: { event: 'view-request', payload: { clientId: 'student-a' } },
+  });
+  assert.deepEqual(received, [{
+    peerId: 'student-a',
+    event: 'view-request',
+    payload: { clientId: 'student-a' },
+  }]);
+  assert.equal(revision, 7, 'board-control must never advance authority revision');
+
+  await assert.rejects(
+    hub.handleMessage('student-a', {
+      type: 'board-control',
+      payload: { event: 'cursor', payload: { x: 1 } },
+    }),
+    /board control event/i,
+  );
+});
