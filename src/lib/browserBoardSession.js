@@ -49,6 +49,7 @@ export function createBrowserBoardSession({
   onPeerState = () => {},
   onLiveEvent = () => {},
   onLiveState = () => {},
+  onBoardControl = () => {},
   onRuntimeState = () => {},
   onError = () => {},
   rtcConfig = {},
@@ -350,6 +351,9 @@ export function createBrowserBoardSession({
         onLiveState: (peerId, state) => {
           onLiveState(state, { peerId });
         },
+        onBoardControl: (peerId, event, payload) => {
+          onBoardControl(event, payload, { peerId });
+        },
         onError,
       });
     } catch (error) {
@@ -433,6 +437,9 @@ export function createBrowserBoardSession({
       },
       onLiveState: (state) => {
         onLiveState(state, { peerId: resolvedTeacherId });
+      },
+      onBoardControl: (event, payload) => {
+        onBoardControl(event, payload, { peerId: resolvedTeacherId });
       },
       onError,
     });
@@ -565,6 +572,24 @@ export function createBrowserBoardSession({
     },
     sendLive(type, payload, options = {}) {
       return runtime?.sendLive?.(type, payload, options) ?? 'unavailable';
+    },
+    async sendBoardControl(event, payload = {}) {
+      if (!runtime) return 'unavailable';
+      if (!isOwner) {
+        if (collaborationModeFor(teacherId) !== 'webrtc-live-v1') return 'unavailable';
+        return runtime.sendBoardControl?.(event, payload) ?? 'unavailable';
+      }
+      const targetIds = [...participantCapabilities.keys()]
+        .filter((id) => id && id !== safeClientId && collaborationModeFor(id) === 'webrtc-live-v1');
+      if (typeof runtime.sendBoardControlTo === 'function') {
+        const results = [];
+        for (const peerId of targetIds) {
+          // eslint-disable-next-line no-await-in-loop
+          results.push(await runtime.sendBoardControlTo(peerId, event, payload));
+        }
+        return results;
+      }
+      return runtime.sendBoardControl?.(event, payload) ?? 'unavailable';
     },
     getRuntimeState() { return runtimeState; },
     getTeacherId() { return teacherId; },
