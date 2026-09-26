@@ -68,40 +68,69 @@ test('keeps an explicit ICE server configuration instead of injecting the defaul
   assert.deepEqual(receivedConfig, rtcConfig);
 });
 
-test('initiator creates an ordered durable channel and sends an offer', async () => {
+test('initiator creates durable and independent lossy live channels before sending the offer', async () => {
   const signals = [];
-  const channels = [];
+  const durableChannels = [];
+  const liveChannels = [];
   const pc = new FakePeerConnection();
   const peer = createBrowserPeerConnection({
     initiator: true,
     sendSignal: async (signal) => signals.push(signal),
-    onChannel: (channel) => channels.push(channel),
+    onChannel: (channel) => durableChannels.push(channel),
+    onLiveChannel: (channel) => liveChannels.push(channel),
     createPeerConnection: () => pc,
   });
   await peer.start();
-  assert.equal(pc.createdChannels.length, 1);
+  assert.equal(pc.createdChannels.length, 2);
   assert.equal(pc.createdChannels[0].label, 'alex-board-durable-v1');
   assert.equal(pc.createdChannels[0].options.ordered, true);
-  assert.equal(channels[0], pc.createdChannels[0]);
+  assert.equal(pc.createdChannels[1].label, 'alex-board-live-v1');
+  assert.equal(pc.createdChannels[1].options.ordered, false);
+  assert.equal(pc.createdChannels[1].options.maxRetransmits, 0);
+  assert.equal(durableChannels[0], pc.createdChannels[0]);
+  assert.equal(liveChannels[0], pc.createdChannels[1]);
   assert.deepEqual(signals, [{ type: 'offer', description: { type: 'offer', sdp: 'offer-sdp' } }]);
 });
 
-test('responder answers an offer and accepts the remote durable channel', async () => {
+test('responder answers an offer and routes durable and live channels independently', async () => {
   const signals = [];
-  const channels = [];
+  const durableChannels = [];
+  const liveChannels = [];
   const pc = new FakePeerConnection();
   const peer = createBrowserPeerConnection({
     initiator: false,
     sendSignal: async (signal) => signals.push(signal),
-    onChannel: (channel) => channels.push(channel),
+    onChannel: (channel) => durableChannels.push(channel),
+    onLiveChannel: (channel) => liveChannels.push(channel),
     createPeerConnection: () => pc,
   });
   await peer.handleSignal({ type: 'offer', description: { type: 'offer', sdp: 'remote-offer' } });
-  const incoming = new FakeDataChannel('alex-board-durable-v1');
-  pc.emitDataChannel(incoming);
+  const durable = new FakeDataChannel('alex-board-durable-v1');
+  const live = new FakeDataChannel('alex-board-live-v1');
+  const unknown = new FakeDataChannel('not-alex-board');
+  pc.emitDataChannel(durable);
+  pc.emitDataChannel(live);
+  pc.emitDataChannel(unknown);
   assert.deepEqual(pc.remoteDescription, { type: 'offer', sdp: 'remote-offer' });
   assert.deepEqual(signals, [{ type: 'answer', description: { type: 'answer', sdp: 'answer-sdp' } }]);
-  assert.equal(channels[0], incoming);
+  assert.deepEqual(durableChannels, [durable]);
+  assert.deepEqual(liveChannels, [live]);
+  assert.equal(unknown.closed, true, 'unknown peer data channels must be rejected');
+});
+
+test('closing only the live channel does not close durable channel or peer connection', async () => {
+  const pc = new FakePeerConnection();
+  const peer = createBrowserPeerConnection({
+    initiator: true,
+    sendSignal: async () => {},
+    createPeerConnection: () => pc,
+  });
+  await peer.start();
+  const durable = pc.createdChannels.find((channel) => channel.label === 'alex-board-durable-v1');
+  const live = pc.createdChannels.find((channel) => channel.label === 'alex-board-live-v1');
+  live.close();
+  assert.equal(durable.closed, false);
+  assert.equal(pc.closed, false);
 });
 
 test('buffers ICE candidates received before the remote description', async () => {
@@ -117,7 +146,7 @@ test('buffers ICE candidates received before the remote description', async () =
   assert.deepEqual(pc.addedCandidates, [{ candidate: 'early' }]);
 });
 
-test('forwards local ICE candidates through signaling and closes cleanly', async () => {
+test('forwards local ICE candidates through signaling and closes both channels cleanly', async () => {
   const signals = [];
   const pc = new FakePeerConnection();
   const peer = createBrowserPeerConnection({
@@ -131,5 +160,5 @@ test('forwards local ICE candidates through signaling and closes cleanly', async
   assert.deepEqual(signals.at(-1), { type: 'ice', candidate: { candidate: 'local' } });
   peer.close();
   assert.equal(pc.closed, true);
-  assert.equal(pc.createdChannels[0].closed, true);
+  assert.ok(pc.createdChannels.every((channel) => channel.closed));
 });
