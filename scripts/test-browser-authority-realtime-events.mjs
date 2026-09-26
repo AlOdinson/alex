@@ -353,3 +353,42 @@ test('a live Ably publication failure is still rejected, not hidden as shutdown'
   f.clients[0].channel.publish = async () => { throw error; };
   await assert.rejects(f.transport.publish('cursor', { x: 1, y: 2 }), failure => failure === error);
 });
+
+
+test('WebRTC-live opt-in advertises capability to Ably transport without changing permission', async () => {
+  let transportOptions = null;
+  const realtime = connectBoardRealtime({
+    boardId: 'board-capability',
+    realtimeKey: 'room-key-capability-1234567890',
+    clientId: 'student-capability',
+    permission: 'edit',
+    webrtcLiveV1: true,
+  }, {
+    createSession: () => ({
+      async start() {},
+      async updateParticipants() {},
+      async handleRealtimeSignal() {},
+      getRevision: () => 0,
+      close() {},
+    }),
+    createCore: () => ({
+      async flushPending() {},
+      async disconnect() {},
+      async sendScreenShareSignal() {},
+    }),
+    createTransport: (options) => {
+      transportOptions = options;
+      return {
+        async start() {},
+        async publish() { return 'ok'; },
+        async disconnect() {},
+      };
+    },
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(transportOptions.permission, 'edit');
+  assert.deepEqual(transportOptions.capabilities, { webrtcLiveV1: true });
+  await realtime.disconnect();
+});
