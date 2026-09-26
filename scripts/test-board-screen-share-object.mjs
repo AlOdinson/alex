@@ -49,6 +49,7 @@ assert.match(source, /lockSkewingX:\s*true/, 'horizontal skew must be locked');
 assert.match(source, /lockSkewingY:\s*true/, 'vertical skew must be locked');
 assert.match(source, /setControlsVisibility(?:\?\.)?\(\{[\s\S]*?mtr:\s*false/, 'rotation control must be hidden');
 assert.match(source, /requestVideoFrameCallback|setInterval/, 'video frames must schedule Fabric rendering');
+assert.match(source, /FALLBACK_FRAME_INTERVAL_MS\s*=\s*1000\s*\/\s*60/, 'fallback renderer must not cap screen share below 60 FPS');
 assert.match(source, /setStream/, 'media controller must be able to attach the WebRTC MediaStream');
 assert.match(source, /dispose/, 'media controller must clean up video/frame resources');
 
