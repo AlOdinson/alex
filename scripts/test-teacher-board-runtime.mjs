@@ -99,3 +99,62 @@ test('peer edit authorization follows fresh local guest mode and never trusts th
   guestMode = 'view';
   assert.equal(await hubOptions.canPeerEdit('student-spoofing-edit'), false);
 });
+
+
+test('exposes teacher live broadcast without changing durable authority', async () => {
+  const live = [];
+  let networkOptions = null;
+  const onLiveEvent = () => {};
+  const onLiveState = () => {};
+  const runtime = await createTeacherBoardRuntime({
+    boardId: 'board-live',
+    clientId: 'teacher-live',
+    sendScreenShareSignal: async () => {},
+    onLiveEvent,
+    onLiveState,
+    openAuthority: async () => ({
+      getRevision: () => 11,
+      getSnapshot: () => ({}),
+      getCommitsAfter: async () => [],
+      compactSnapshot: async () => 11,
+      commitAction: async (action) => ({ ...action, revision: 12, duplicate: false }),
+    }),
+    createHub: () => ({
+      addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {},
+      broadcastCommit: async () => {},
+    }),
+    createSignaling: ({ onSignal }) => ({ send: async () => {}, handle: onSignal }),
+    createNetwork: (options) => {
+      networkOptions = options;
+      return {
+        async handleSignal() {},
+        broadcastLive(type, payload, sendOptions) {
+          live.push({ type, payload, sendOptions });
+          return [{ peerId: 'student-a', result: 'sent' }];
+        },
+        sendLive(peerId, type, payload, sendOptions) {
+          live.push({ peerId, type, payload, sendOptions });
+          return 'sent';
+        },
+        getLiveState: () => 'open',
+        getLiveStats: () => ({ sent: 2 }),
+        close() {},
+      };
+    },
+  });
+
+  assert.equal(networkOptions.boardId, 'board-live');
+  assert.equal(networkOptions.clientId, 'teacher-live');
+  assert.equal(networkOptions.getRevision(), 11);
+  assert.equal(networkOptions.onLiveEvent, onLiveEvent);
+  assert.equal(networkOptions.onLiveState, onLiveState);
+
+  assert.deepEqual(
+    runtime.sendLive('cursor', { x: 1 }, { streamKey: 'cursor' }),
+    [{ peerId: 'student-a', result: 'sent' }],
+  );
+  assert.equal(runtime.sendLiveTo('student-a', 'transform', { left: 4 }, { streamKey: 'transform:x' }), 'sent');
+  assert.equal(runtime.getLiveState('student-a'), 'open');
+  assert.deepEqual(runtime.getLiveStats('student-a'), { sent: 2 });
+  assert.equal(live.length, 2);
+});
