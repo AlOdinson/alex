@@ -24,6 +24,7 @@ function resolveRtcConfig(rtcConfig) {
 
 export function createBrowserPeerConnection({
   initiator = false,
+  enableLiveChannel = true,
   rtcConfig = {},
   sendSignal,
   onChannel = () => {},
@@ -208,10 +209,12 @@ export function createBrowserPeerConnection({
       attachDurableChannel(peerConnection.createDataChannel(BOARD_DURABLE_DATA_CHANNEL, {
         ordered: true,
       }));
-      attachLiveChannel(peerConnection.createDataChannel(BOARD_LIVE_DATA_CHANNEL, {
-        ordered: false,
-        maxRetransmits: 0,
-      }));
+      if (enableLiveChannel) {
+        attachLiveChannel(peerConnection.createDataChannel(BOARD_LIVE_DATA_CHANNEL, {
+          ordered: false,
+          maxRetransmits: 0,
+        }));
+      }
       const offer = await peerConnection.createOffer();
       if (closed) return;
       await peerConnection.setLocalDescription(offer);
