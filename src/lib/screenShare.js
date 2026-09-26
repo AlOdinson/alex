@@ -7,23 +7,34 @@ export const REMOTE_BROWSER_AGENT_TTL_MS = 9_000;
 export const SCREEN_SHARE_PROFILES = Object.freeze({
   idle: Object.freeze({
     id: 'idle',
-    label: '60 FPS · экономный поток',
-    maxFrameRate: 60,
-    maxBitrate: 2_500_000,
+    label: 'экономный режим',
+    maxFrameRate: 2,
+    maxBitrate: 280_000,
   }),
   active: Object.freeze({
     id: 'active',
-    label: '60 FPS · стандарт',
-    maxFrameRate: 60,
-    maxBitrate: 4_000_000,
+    label: 'текст и указатель',
+    maxFrameRate: 10,
+    maxBitrate: 850_000,
   }),
   motion: Object.freeze({
     id: 'motion',
-    label: '60 FPS · движение',
-    maxFrameRate: 60,
-    maxBitrate: 6_000_000,
+    label: 'прокрутка и движение',
+    maxFrameRate: 15,
+    maxBitrate: 1_250_000,
   }),
 });
+
+export const SCREEN_SHARE_ULTRA_PROFILE = Object.freeze({
+  id: 'ultra',
+  label: 'Ultra · 60 FPS · до 10 Мбит/с',
+  maxFrameRate: 60,
+  maxBitrate: 10_000_000,
+});
+
+export function screenShareEffectiveProfile(profile, ultraEnabled = false) {
+  return ultraEnabled ? SCREEN_SHARE_ULTRA_PROFILE : profile;
+}
 
 const SIGNAL_TYPES = new Set([
   'host-start',
