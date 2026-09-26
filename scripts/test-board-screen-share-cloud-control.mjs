@@ -19,6 +19,15 @@ assert.match(mediaSource, /CustomEvent\([^)]*CLOUD_SCREEN_SHARE_TOGGLE_EVENT/, '
 assert.match(mediaSource, /removeEventListener\([^)]*CLOUD_SCREEN_SHARE_STATE_EVENT/, 'controller disposal must remove the Cloud state listener');
 assert.match(mediaSource, /cloudButton\?\.remove\(\)/, 'controller disposal must remove the DOM button');
 
+assert.match(mediaSource, /alex-screen-share-ultra-state/, 'board media must listen for host-only Ultra state');
+assert.match(mediaSource, /alex-screen-share-ultra-state-request/, 'board media must request current Ultra state when attached');
+assert.match(mediaSource, /alex-screen-share-ultra-toggle/, 'board media must dispatch the Ultra toggle');
+assert.match(mediaSource, /createElement\(['"]input['"]\)/, 'Ultra must use a real checkbox input');
+assert.match(mediaSource, /type\s*=\s*['"]checkbox['"]/, 'Ultra control must be a checkbox');
+assert.match(mediaSource, /textContent\s*=\s*['"]Ultra['"]/, 'Ultra control must be labeled Ultra');
+assert.match(mediaSource, /topLeft/, 'Ultra control must anchor to the top-left of the screen-share object');
+assert.match(mediaSource, /ultraControl\?\.remove\(\)/, 'controller disposal must remove the Ultra control');
+
 assert.match(cloudHookSource, /CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT/, 'Cloud hook must answer state replay requests');
 assert.match(cloudHookSource, /publishCloudState/, 'Cloud hook must have one state publication path for updates and replay');
 assert.match(cloudHookSource, /addEventListener\([^)]*CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT/, 'Cloud hook must listen for state replay requests');
