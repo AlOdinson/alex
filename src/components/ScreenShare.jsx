@@ -16,12 +16,17 @@ import {
   SCREEN_SHARE_PROFILES,
   SCREEN_SHARE_PROTOCOL,
   screenShareCapability,
+  screenShareEffectiveProfile,
   screenShareNetworkIsDegraded,
   screenSharePermissionCanHost,
   screenShareProfileForActivity,
 } from '../lib/screenShare.js';
 
 const HOST_SIGNAL_TYPES = new Set(['host-start', 'host-stop', 'host-paused', 'offer']);
+
+export const ULTRA_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-ultra-state';
+export const ULTRA_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-ultra-state-request';
+export const ULTRA_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-ultra-toggle';
 
 function closePeer(entry) {
   const peer = entry?.peer ?? entry;
@@ -144,6 +149,7 @@ function useAdaptiveScreenShareBase({
     hostName: '',
     message: '',
     profileId: 'idle',
+    ultraEnabled: false,
     viewerCount: 0,
     networkDegraded: false,
     sourceMode: null,
@@ -161,6 +167,7 @@ function useAdaptiveScreenShareBase({
   const viewerStunRetryAttemptsRef = useRef(0);
   const hostPeersRef = useRef(new Map());
   const currentProfileRef = useRef(SCREEN_SHARE_PROFILES.idle);
+  const ultraEnabledRef = useRef(false);
   const networkDegradedRef = useRef(false);
   const startBusyRef = useRef(false);
   const stopHostingRef = useRef(() => undefined);
@@ -233,7 +240,10 @@ function useAdaptiveScreenShareBase({
   }, [clientId, isOwner, participantName, realtimeRef]);
 
   const applyCurrentProfile = useCallback(async () => {
-    const profile = currentProfileRef.current;
+    const profile = screenShareEffectiveProfile(
+      currentProfileRef.current,
+      ultraEnabledRef.current,
+    );
     const degraded = networkDegradedRef.current;
     const track = localStreamRef.current?.getVideoTracks?.()[0];
     if (track?.applyConstraints) {
@@ -367,6 +377,7 @@ function useAdaptiveScreenShareBase({
     stopStream(localStream);
     networkDegradedRef.current = false;
     currentProfileRef.current = SCREEN_SHARE_PROFILES.idle;
+    ultraEnabledRef.current = false;
     if (mountedRef.current) {
       setStream(null);
       setMinimized(false);
@@ -378,6 +389,7 @@ function useAdaptiveScreenShareBase({
         hostName: '',
         message: '',
         profileId: 'idle',
+        ultraEnabled: false,
         viewerCount: 0,
         networkDegraded: false,
         sourceMode: null,
@@ -408,6 +420,7 @@ function useAdaptiveScreenShareBase({
         hostName: '',
         message: '',
         profileId: 'idle',
+        ultraEnabled: false,
         viewerCount: 0,
         networkDegraded: false,
         sourceMode: null,
@@ -482,7 +495,7 @@ function useAdaptiveScreenShareBase({
       entry.creating = false;
       await applySenderProfile(
         entry.sender,
-        currentProfileRef.current,
+        screenShareEffectiveProfile(currentProfileRef.current, ultraEnabledRef.current),
         networkDegradedRef.current,
       );
       updateView({ viewerCount: hostPeersRef.current.size });
@@ -915,7 +928,7 @@ function useAdaptiveScreenShareBase({
     try {
       const captured = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          frameRate: { ideal: 60, max: 60 },
+          frameRate: { ideal: 10, max: 60 },
           width: { ideal: 1280, max: 1920 },
           height: { ideal: 720, max: 1080 },
         },
@@ -937,6 +950,7 @@ function useAdaptiveScreenShareBase({
       activeSessionRef.current = session;
       localStreamRef.current = captured;
       currentProfileRef.current = SCREEN_SHARE_PROFILES.active;
+      ultraEnabledRef.current = false;
       networkDegradedRef.current = false;
       track.onended = () => stopHostingRef.current('browser-ended', true);
       track.onmute = () => {
@@ -960,6 +974,7 @@ function useAdaptiveScreenShareBase({
         hostName: participantName,
         message: track.muted ? 'Передача временно приостановлена.' : '',
         profileId: 'active',
+        ultraEnabled: false,
         viewerCount: 0,
         networkDegraded: false,
         sourceMode: 'screen',
@@ -1208,6 +1223,59 @@ function useAdaptiveScreenShareBase({
     };
   }, [applyCurrentProfile, clientId, updateView, view.role]);
 
+  const setUltraEnabled = useCallback(async (enabled) => {
+    const session = activeSessionRef.current;
+    if (!session || session.hostId !== clientId || session.sourceMode !== 'screen') return false;
+    const next = Boolean(enabled);
+    ultraEnabledRef.current = next;
+    updateView({ ultraEnabled: next });
+    await applyCurrentProfile();
+    return true;
+  }, [applyCurrentProfile, clientId, updateView]);
+
+  const publishUltraState = useCallback(() => {
+    if (typeof window === 'undefined') return;
+    const visible = Boolean(
+      view.sessionId
+      && view.sourceMode === 'screen'
+      && view.role === 'host'
+      && activeSessionRef.current?.hostId === clientId,
+    );
+    window.dispatchEvent(new CustomEvent(ULTRA_SCREEN_SHARE_STATE_EVENT, {
+      detail: {
+        sessionId: view.sessionId,
+        visible,
+        enabled: Boolean(view.ultraEnabled),
+      },
+    }));
+  }, [clientId, view.role, view.sessionId, view.sourceMode, view.ultraEnabled]);
+
+  useEffect(() => {
+    publishUltraState();
+  }, [publishUltraState]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleStateRequest = (event) => {
+      if (String(event?.detail?.sessionId ?? '') !== String(view.sessionId ?? '')) return;
+      publishUltraState();
+    };
+    window.addEventListener(ULTRA_SCREEN_SHARE_STATE_REQUEST_EVENT, handleStateRequest);
+    return () => window.removeEventListener(ULTRA_SCREEN_SHARE_STATE_REQUEST_EVENT, handleStateRequest);
+  }, [publishUltraState, view.sessionId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleToggle = (event) => {
+      const detail = event?.detail ?? {};
+      if (String(detail.sessionId ?? '') !== String(view.sessionId ?? '')) return;
+      if (view.role !== 'host' || view.sourceMode !== 'screen') return;
+      setUltraEnabled(Boolean(detail.enabled));
+    };
+    window.addEventListener(ULTRA_SCREEN_SHARE_TOGGLE_EVENT, handleToggle);
+    return () => window.removeEventListener(ULTRA_SCREEN_SHARE_TOGGLE_EVENT, handleToggle);
+  }, [setUltraEnabled, view.role, view.sessionId, view.sourceMode]);
+
   useEffect(() => () => {
     mountedRef.current = false;
     const session = activeSessionRef.current;
@@ -1256,12 +1324,17 @@ function useAdaptiveScreenShareBase({
     remoteBrowserActive,
     remoteAvailable,
     remoteAgentName: remoteAgent?.name ?? '',
+    ultraEnabled: Boolean(view.ultraEnabled),
+    setUltraEnabled,
     clientId,
     participantName,
     canEdit,
     isOwner,
     buttonDisabled: view.phase === 'requesting' || activeRemoteSession,
-    profileLabel: SCREEN_SHARE_PROFILES[view.profileId]?.label ?? SCREEN_SHARE_PROFILES.idle.label,
+    profileLabel: screenShareEffectiveProfile(
+      SCREEN_SHARE_PROFILES[view.profileId] ?? SCREEN_SHARE_PROFILES.idle,
+      Boolean(view.ultraEnabled),
+    ).label,
   };
 }
 
@@ -1282,6 +1355,7 @@ export function useAdaptiveScreenShare(options) {
     sourceMode: base.sourceMode,
     p2pStream: base.stream,
     profileId: base.profileId,
+    ultraEnabled: base.ultraEnabled,
     networkDegraded: base.networkDegraded,
   });
   const handleSignal = useCallback((payload) => {
