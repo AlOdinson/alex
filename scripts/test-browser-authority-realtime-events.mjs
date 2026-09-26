@@ -424,3 +424,21 @@ test('legacy peer Ably live event is still routed during mixed-client rollout', 
   });
   assert.deepEqual(seen, [7]);
 });
+
+
+test('new-capability peer board-control ignores Ably copy and accepts WebRTC control frame', async () => {
+  const seen = [];
+  const payload = { clientId: 'student-new', mode: 'edit' };
+  const session = { getCollaborationMode: () => 'webrtc-live-v1' };
+  const callbacks = { onMode: (mode) => seen.push(mode) };
+
+  assert.equal(await routeBrowserRealtimeEvent('mode', payload, {
+    localClientId: 'teacher-a', session, callbacks, source: 'ably',
+  }), false);
+  assert.deepEqual(seen, []);
+
+  assert.equal(await routeBrowserRealtimeEvent('mode', payload, {
+    localClientId: 'teacher-a', session, callbacks, source: 'webrtc-control',
+  }), true);
+  assert.deepEqual(seen, ['edit']);
+});
