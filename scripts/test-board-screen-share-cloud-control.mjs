@@ -27,6 +27,14 @@ assert.match(mediaSource, /type\s*=\s*['"]checkbox['"]/, 'Ultra control must be 
 assert.match(mediaSource, /textContent\s*=\s*['"]Ultra['"]/, 'Ultra control must be labeled Ultra');
 assert.match(mediaSource, /topLeft/, 'Ultra control must anchor to the top-left of the screen-share object');
 assert.match(mediaSource, /ultraControl\?\.remove\(\)/, 'controller disposal must remove the Ultra control');
+assert.match(mediaSource, /alex-screen-share-720-state/, 'board media must listen for host-only 720 state');
+assert.match(mediaSource, /alex-screen-share-720-state-request/, 'board media must request current 720 state when attached');
+assert.match(mediaSource, /alex-screen-share-720-toggle/, 'board media must dispatch the 720 toggle');
+assert.match(mediaSource, /screen-share-720-checkbox/, '720 control must use its own checkbox');
+assert.match(mediaSource, /textContent\s*=\s*['"]720['"]/, '720 checkbox must be labeled 720');
+assert.match(mediaSource, /position720Control/, '720 control must track the screen-share object');
+assert.match(mediaSource, /CLOUD_BUTTON_MARGIN \+ CLOUD_BUTTON_HEIGHT \+ 4/, 'Ultra must sit below the 720 checkbox');
+assert.match(mediaSource, /hd720Control\?\.remove\(\)/, 'controller disposal must remove the 720 control');
 
 assert.match(cloudHookSource, /CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT/, 'Cloud hook must answer state replay requests');
 assert.match(cloudHookSource, /publishCloudState/, 'Cloud hook must have one state publication path for updates and replay');
