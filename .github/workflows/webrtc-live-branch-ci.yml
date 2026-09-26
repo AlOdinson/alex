@@ -36,3 +36,4 @@ jobs:
           fi
           node --test scripts/test-browser-peer-connection.mjs
           node --test scripts/test-teacher-peer-network.mjs scripts/test-student-peer-network.mjs
+          node --test scripts/test-teacher-board-runtime.mjs scripts/test-student-board-runtime.mjs
