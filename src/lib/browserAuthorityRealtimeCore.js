@@ -27,6 +27,7 @@ export function createBrowserAuthorityRealtimeCore({
   getKnownRevision = () => 0,
   publish = async () => 'ok',
   publishLive = null,
+  publishControl = null,
   onCommit = () => {},
   onPendingChange = () => {},
   onStatus = () => {},
@@ -138,6 +139,12 @@ export function createBrowserAuthorityRealtimeCore({
     return observeTransient(Promise.resolve().then(() => sender(event, payload, options)), event);
   };
 
+  const publishControlRealtime = (event, payload, options = {}) => {
+    if (closed) return Promise.resolve('closed');
+    const sender = typeof publishControl === 'function' ? publishControl : publish;
+    return observeTransient(Promise.resolve().then(() => sender(event, payload, options)), event);
+  };
+
   const transformStreamKey = (transform = {}) => {
     if (transform.mode === 'group') {
       const ids = safeArray(transform.objectIds).map(String).sort();
@@ -157,12 +164,12 @@ export function createBrowserAuthorityRealtimeCore({
     },
 
     sendMode(mode) {
-      return publishRealtime('mode', { clientId: safeClientId, mode });
+      return publishControlRealtime('mode', { clientId: safeClientId, mode });
     },
 
     sendSettings(settings) {
       const background = settings?.background ?? null;
-      publishRealtime('background-live', {
+      publishControlRealtime('background-live', {
         clientId: safeClientId,
         background,
         baseRevision: safeRevision(getKnownRevision?.()),
@@ -184,7 +191,7 @@ export function createBrowserAuthorityRealtimeCore({
     },
 
     sendLock(objectIds, locked = true) {
-      return publishRealtime('lock', {
+      return publishControlRealtime('lock', {
         clientId: safeClientId,
         name,
         color,
@@ -287,14 +294,20 @@ export function createBrowserAuthorityRealtimeCore({
       const phase = transaction?.phase;
       if (!['start', 'style', 'operation', 'commit', 'cancel'].includes(phase)) return Promise.resolve('ignored');
       if (phase !== 'operation' && !transaction?.transactionId) return Promise.resolve('ignored');
-      return publishLiveRealtime('selection-transaction', {
+      const payload = {
         clientId: safeClientId,
         name,
         color,
         baseRevision: safeRevision(getKnownRevision?.()),
         ...transaction,
         timestamp: Date.now(),
-      }, { streamKey: `selection:${String(transaction.transactionId ?? 'transient')}` });
+      };
+      if (phase === 'start' || phase === 'commit' || phase === 'cancel') {
+        return publishControlRealtime('selection-transaction', payload);
+      }
+      return publishLiveRealtime('selection-transaction', payload, {
+        streamKey: `selection:${String(transaction.transactionId ?? 'transient')}`,
+      });
     },
 
     sendView(view, { force = false } = {}) {
@@ -311,13 +324,13 @@ export function createBrowserAuthorityRealtimeCore({
     },
 
     sendViewJump(view) {
-      return publishRealtime('view-jump', {
+      return publishControlRealtime('view-jump', {
         clientId: safeClientId, name, color, permission, ...view, timestamp: Date.now(),
       }, { force: true });
     },
 
     requestView() {
-      return publishRealtime('view-request', {
+      return publishControlRealtime('view-request', {
         clientId: safeClientId, name, color, permission, timestamp: Date.now(),
       }, { force: true });
     },
@@ -328,7 +341,7 @@ export function createBrowserAuthorityRealtimeCore({
     },
 
     sendGameLibraryVisibility(visible) {
-      return publishRealtime('game-library-visibility', {
+      return publishControlRealtime('game-library-visibility', {
         clientId: safeClientId, name, permission, visible: Boolean(visible), timestamp: Date.now(),
       });
     },
