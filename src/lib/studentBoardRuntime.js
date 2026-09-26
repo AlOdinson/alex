@@ -2,6 +2,7 @@ import { createBoardPeerSignalingBridge } from './boardPeerSignaling.js';
 import { createStudentPeerNetwork } from './studentPeerNetwork.js';
 
 export function createStudentBoardRuntime({
+  boardId = '',
   clientId,
   teacherId,
   sendScreenShareSignal,
@@ -11,11 +12,14 @@ export function createStudentBoardRuntime({
   rtcConfig = {},
   onAck = () => {},
   onState = () => {},
+  onLiveEvent = () => {},
+  onLiveState = () => {},
   onError = () => {},
   onVerificationMode = () => {},
   createSignaling = createBoardPeerSignalingBridge,
   createNetwork = createStudentPeerNetwork,
 } = {}) {
+  const safeBoardId = String(boardId ?? '').trim();
   const safeClientId = String(clientId ?? '').trim();
   const safeTeacherId = String(teacherId ?? '').trim();
   if (!safeClientId) throw new Error('clientId is required');
@@ -33,6 +37,8 @@ export function createStudentBoardRuntime({
 
   network = createNetwork({
     onVerificationMode,
+    boardId: safeBoardId,
+    clientId: safeClientId,
     teacherId: safeTeacherId,
     signaling,
     rtcConfig,
@@ -41,6 +47,8 @@ export function createStudentBoardRuntime({
     installSnapshot,
     onAck,
     onState,
+    onLiveEvent,
+    onLiveState,
     onError,
   });
 
@@ -63,6 +71,18 @@ export function createStudentBoardRuntime({
 
     requestLock(operation, payload = {}) {
       return network.requestLock(operation, payload);
+    },
+
+    sendLive(type, payload, options = {}) {
+      return network?.sendLive?.(type, payload, options) ?? 'unavailable';
+    },
+
+    getLiveState() {
+      return network?.getLiveState?.() ?? 'unavailable';
+    },
+
+    getLiveStats() {
+      return network?.getLiveStats?.() ?? null;
     },
 
     getVerificationMode() { return network?.getVerificationMode?.() ?? { version: 0, epoch: '' }; },
