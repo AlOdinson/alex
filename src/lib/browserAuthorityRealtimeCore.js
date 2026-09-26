@@ -26,6 +26,7 @@ export function createBrowserAuthorityRealtimeCore({
   permission = 'view',
   getKnownRevision = () => 0,
   publish = async () => 'ok',
+  publishLive = null,
   onCommit = () => {},
   onPendingChange = () => {},
   onStatus = () => {},
@@ -119,16 +120,34 @@ export function createBrowserAuthorityRealtimeCore({
     return task;
   };
 
-  const publishRealtime = (event, payload, options = {}) => {
-    if (closed) return Promise.resolve('closed');
-    const task = Promise.resolve().then(() => publish(event, payload, options));
-    // Cursor/view previews are often fire-and-forget. Observe rejection on the
-    // ORIGINAL promise even when native page unload closes the SDK before React
-    // cleanup. Return that same promise: awaited signaling failures still reject.
+  const observeTransient = (task, event) => {
     task.catch((error) => {
       try { onTransientError(error, event); } catch { /* diagnostic observer only */ }
     });
     return task;
+  };
+
+  const publishRealtime = (event, payload, options = {}) => {
+    if (closed) return Promise.resolve('closed');
+    return observeTransient(Promise.resolve().then(() => publish(event, payload, options)), event);
+  };
+
+  const publishLiveRealtime = (event, payload, options = {}) => {
+    if (closed) return Promise.resolve('closed');
+    const sender = typeof publishLive === 'function' ? publishLive : publish;
+    return observeTransient(Promise.resolve().then(() => sender(event, payload, options)), event);
+  };
+
+  const transformStreamKey = (transform = {}) => {
+    if (transform.mode === 'group') {
+      const ids = safeArray(transform.objectIds).map(String).sort();
+      return `transform:group:${ids.join(',') || 'selection'}`;
+    }
+    const ids = safeArray(transform.objects)
+      .map((item) => String(item?.id ?? item?.objectId ?? item?.boardObjectId ?? ''))
+      .filter(Boolean)
+      .sort();
+    return `transform:${ids.join(',') || 'objects'}`;
   };
 
   return {
@@ -159,9 +178,9 @@ export function createBrowserAuthorityRealtimeCore({
       const signature = `${x}:${y}`;
       if (signature === lastCursorSignature) return Promise.resolve('duplicate');
       lastCursorSignature = signature;
-      return publishRealtime('cursor', {
+      return publishLiveRealtime('cursor', {
         clientId: safeClientId, name, color, x, y, timestamp: Date.now(),
-      });
+      }, { streamKey: 'cursor' });
     },
 
     sendLock(objectIds, locked = true) {
@@ -190,24 +209,26 @@ export function createBrowserAuthorityRealtimeCore({
         timestamp: Date.now(),
       };
       if (hasObjectFrames && session.getVerificationStats?.()?.enabled) {
-        boundedTransformPreview ??= createBoundedTransformPreviewSender(publishRealtime);
+        boundedTransformPreview ??= createBoundedTransformPreviewSender((event, value) => (
+          publishLiveRealtime(event, value, { streamKey: transformStreamKey(value) })
+        ));
         return boundedTransformPreview.send(payload);
       }
-      return publishRealtime('transform', payload);
+      return publishLiveRealtime('transform', payload, { streamKey: transformStreamKey(payload) });
     },
 
     sendDraw(draw) {
       if (!draw?.objectId || !Array.isArray(draw?.points)) return Promise.resolve('ignored');
       if (draw.phase === 'update' && draw.points.length === 0) return Promise.resolve('ignored');
       const requested = Number(draw.baseRevision);
-      return publishRealtime('draw', {
+      return publishLiveRealtime('draw', {
         clientId: safeClientId,
         name,
         color,
         ...draw,
         baseRevision: Number.isFinite(requested) && requested >= 0 ? requested : safeRevision(getKnownRevision?.()),
         timestamp: Date.now(),
-      });
+      }, { streamKey: `draw:${String(draw.objectId)}` });
     },
 
     sendPreview(records, batch = null) {
@@ -218,7 +239,7 @@ export function createBrowserAuthorityRealtimeCore({
       } catch {
         return Promise.resolve('invalid');
       }
-      return publishRealtime('preview', {
+      return publishLiveRealtime('preview', {
         clientId: safeClientId,
         name,
         color,
@@ -227,7 +248,7 @@ export function createBrowserAuthorityRealtimeCore({
         chunkIndex: Number(batch?.chunkIndex ?? 0),
         chunkCount: Math.max(1, Number(batch?.chunkCount ?? 1)),
         timestamp: Date.now(),
-      });
+      }, { streamKey: `preview:${String(batch?.batchId ?? 'board')}` });
     },
 
     sendObjectLive(record) {
@@ -237,20 +258,20 @@ export function createBrowserAuthorityRealtimeCore({
       } catch {
         return Promise.resolve('invalid');
       }
-      return publishRealtime('object-live', {
+      return publishLiveRealtime('object-live', {
         clientId: safeClientId,
         name,
         color,
         baseRevision: safeRevision(getKnownRevision?.()),
         record,
         timestamp: Date.now(),
-      });
+      }, { streamKey: `object-live:${String(record.object.boardObjectId)}` });
     },
 
     sendDeletePreview(ids, { expectDurable = true } = {}) {
       const safeIds = [...new Set(safeArray(ids).map(String))];
       if (!safeIds.length) return Promise.resolve('ignored');
-      return publishRealtime('delete-preview', {
+      return publishLiveRealtime('delete-preview', {
         clientId: safeClientId,
         name,
         color,
@@ -259,21 +280,21 @@ export function createBrowserAuthorityRealtimeCore({
         expectDurable: Boolean(expectDurable),
         mutationId: randomToken(16),
         timestamp: Date.now(),
-      });
+      }, { streamKey: 'delete-preview' });
     },
 
     sendSelectionTransaction(transaction) {
       const phase = transaction?.phase;
       if (!['start', 'style', 'operation', 'commit', 'cancel'].includes(phase)) return Promise.resolve('ignored');
       if (phase !== 'operation' && !transaction?.transactionId) return Promise.resolve('ignored');
-      return publishRealtime('selection-transaction', {
+      return publishLiveRealtime('selection-transaction', {
         clientId: safeClientId,
         name,
         color,
         baseRevision: safeRevision(getKnownRevision?.()),
         ...transaction,
         timestamp: Date.now(),
-      });
+      }, { streamKey: `selection:${String(transaction.transactionId ?? 'transient')}` });
     },
 
     sendView(view, { force = false } = {}) {
@@ -284,9 +305,9 @@ export function createBrowserAuthorityRealtimeCore({
       const signature = `${centerX}:${centerY}:${zoom}`;
       if (!force && signature === lastViewSignature) return Promise.resolve('duplicate');
       lastViewSignature = signature;
-      return publishRealtime('view', {
+      return publishLiveRealtime('view', {
         clientId: safeClientId, name, color, permission, ...view, centerX, centerY, zoom, timestamp: Date.now(),
-      }, { force });
+      }, { force, streamKey: 'view' });
     },
 
     sendViewJump(view) {
