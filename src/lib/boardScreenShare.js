@@ -493,7 +493,7 @@ export function createBoardScreenShareMedia({
       : 'rgba(255,255,255,0.5)';
     control.title = ultraState.enabled
       ? (hd720State.enabled
-        ? 'Ultra включен: 720p, до 60 FPS и 5 Мбит/с'
+        ? 'Ultra включен: 720p, до 60 FPS и 10 Мбит/с'
         : 'Ultra включен: 1080p, до 60 FPS и 10 Мбит/с')
       : 'Включить Ultra: до 60 FPS';
     positionUltraControl();
