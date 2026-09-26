@@ -68,8 +68,10 @@ assert.match(
 assert.match(boardSource, /boardPage\.addEventListener\('selectstart', handleNativeBoardSelectionStart/);
 assert.match(boardSource, /boardPage\.removeEventListener\('selectstart', handleNativeBoardSelectionStart/);
 assert.match(boardSource, /boardPage\.addEventListener\('contextmenu', handleNativeBoardContextMenu/);
+assert.match(boardSource, /boardPage\.addEventListener\('dragstart', handleNativeBoardDragStart/);
+assert.match(boardSource, /boardPage\.removeEventListener\('dragstart', handleNativeBoardDragStart/);
 assert.match(boardSource, /document\.addEventListener\('selectionchange', handleNativeBoardSelectionChange\)/);
 assert.match(boardSource, /if \(isNativeBoardTextTarget\(event\.target\)\) return;/);
 assert.match(boardSource, /clearNativeBoardSelection\(\);/);
 
-console.log('Pencil palm rejection and Safari selection regression tests passed.');
+console.log('Pencil palm rejection and cross-browser native selection regression tests passed.');
