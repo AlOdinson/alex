@@ -267,5 +267,4 @@ test('student session sends and receives reliable board-control messages', async
     session.sendBoardControl('draw', { points: [] }),
     /board control event/i,
   );
-  session.close();
 });
