@@ -377,7 +377,6 @@ function useAdaptiveScreenShareBase({
     stopStream(localStream);
     networkDegradedRef.current = false;
     currentProfileRef.current = SCREEN_SHARE_PROFILES.idle;
-    ultraEnabledRef.current = false;
     if (mountedRef.current) {
       setStream(null);
       setMinimized(false);
