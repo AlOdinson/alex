@@ -2,6 +2,7 @@ import { randomToken } from './ids.js';
 import { createPeerSignalingAssistance, signalingNegotiationId } from './peerSignalingAssistance.js';
 
 export const BOARD_DURABLE_DATA_CHANNEL = 'alex-board-durable-v1';
+export const BOARD_LIVE_DATA_CHANNEL = 'alex-board-live-v1';
 
 export const DEFAULT_BROWSER_RTC_CONFIG = Object.freeze({
   iceServers: Object.freeze([
@@ -26,6 +27,7 @@ export function createBrowserPeerConnection({
   rtcConfig = {},
   sendSignal,
   onChannel = () => {},
+  onLiveChannel = () => {},
   onConnectionState = () => {},
   onError = () => {},
   createPeerConnection,
@@ -37,6 +39,7 @@ export function createBrowserPeerConnection({
   if (!peerConnection) throw new Error('Could not create RTCPeerConnection');
 
   let dataChannel = null;
+  let liveDataChannel = null;
   let started = false;
   let closed = false;
   const pendingIce = [];
@@ -70,7 +73,7 @@ export function createBrowserPeerConnection({
     isOpen: () => dataChannel?.readyState === 'open', isClosed: () => closed,
   });
 
-  const attachChannel = (channel) => {
+  const attachDurableChannel = (channel) => {
     if (!channel || channel.label !== BOARD_DURABLE_DATA_CHANNEL || closed) return false;
     dataChannel = channel;
     const opened = () => {
@@ -81,6 +84,24 @@ export function createBrowserPeerConnection({
     if (channel.readyState === 'open') opened();
     else channel.onopen = opened;
     return true;
+  };
+
+  const attachLiveChannel = (channel) => {
+    if (!channel || channel.label !== BOARD_LIVE_DATA_CHANNEL || closed) return false;
+    liveDataChannel = channel;
+    const opened = () => {
+      if (closed || liveDataChannel !== channel) return;
+      onLiveChannel(channel);
+    };
+    if (channel.readyState === 'open') opened();
+    else channel.onopen = opened;
+    return true;
+  };
+
+  const attachChannel = (channel) => {
+    if (attachDurableChannel(channel) || attachLiveChannel(channel)) return true;
+    try { channel?.close?.(); } catch (error) { reportError(error); }
+    return false;
   };
 
   const queueIce = (candidate) => {
@@ -184,8 +205,12 @@ export function createBrowserPeerConnection({
       started = true;
       if (!initiator) return;
 
-      attachChannel(peerConnection.createDataChannel(BOARD_DURABLE_DATA_CHANNEL, {
+      attachDurableChannel(peerConnection.createDataChannel(BOARD_DURABLE_DATA_CHANNEL, {
         ordered: true,
+      }));
+      attachLiveChannel(peerConnection.createDataChannel(BOARD_LIVE_DATA_CHANNEL, {
+        ordered: false,
+        maxRetransmits: 0,
       }));
       const offer = await peerConnection.createOffer();
       if (closed) return;
@@ -210,6 +235,10 @@ export function createBrowserPeerConnection({
       return dataChannel;
     },
 
+    getLiveDataChannel() {
+      return liveDataChannel;
+    },
+
     getPeerConnection() {
       return peerConnection;
     },
@@ -226,6 +255,12 @@ export function createBrowserPeerConnection({
         reportError(error);
       }
       dataChannel = null;
+      try {
+        liveDataChannel?.close?.();
+      } catch (error) {
+        reportError(error);
+      }
+      liveDataChannel = null;
       try {
         peerConnection.close?.();
       } catch (error) {
