@@ -1,16 +1,23 @@
 import { signalingNegotiationId } from './peerSignalingAssistance.js';
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { createPeerDataChannelTransport } from './peerDataChannel.js';
+import { createPeerLiveChannel } from './peerLiveChannel.js';
 
 const TERMINAL_STATES = new Set(['failed', 'closed', 'disconnected']);
 
 export function createTeacherPeerNetwork({
+  boardId = '',
+  clientId = '',
+  getRevision = () => 0,
   signaling,
   peerHub,
   rtcConfig = {},
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
+  createLiveTransport = createPeerLiveChannel,
   onPeerState = () => {},
+  onLiveEvent = () => {},
+  onLiveState = () => {},
   onError = () => {},
 } = {}) {
   if (!signaling?.send) throw new Error('signaling bridge is required');
@@ -38,6 +45,7 @@ export function createTeacherPeerNetwork({
       if (retiredOffers.size >= 128) retiredOffers.delete(retiredOffers.values().next().value);
       retiredOffers.add(offerKey(id, entry.offerFingerprint));
     }
+    try { entry.liveTransport?.close?.(); } catch (error) { onError(error); }
     try { entry.transport?.close?.(); } catch (error) { onError(error); }
     try { entry.unregister?.(); } catch (error) { onError(error); }
     try { peerHub.removePeer(id); } catch (error) { onError(error); }
@@ -80,6 +88,38 @@ export function createTeacherPeerNetwork({
     return transport;
   };
 
+  const attachLiveTransport = (peerId, channel, expectedEntry) => {
+    const entry = peers.get(peerId);
+    if (!entry || entry !== expectedEntry) {
+      try { channel?.close?.(); } catch { /* stale channel is already retired */ }
+      return null;
+    }
+    if (entry.liveTransport) return entry.liveTransport;
+    const liveTransport = createLiveTransport({
+      channel,
+      boardId: String(boardId ?? ''),
+      localClientId: String(clientId ?? ''),
+      remoteClientId: peerId,
+      getRevision,
+      onEvent: (type, payload, envelope) => {
+        if (peers.get(peerId) !== entry) return;
+        try { onLiveEvent(peerId, type, payload, envelope); } catch (error) { onError(error); }
+      },
+      onState: (state) => {
+        if (peers.get(peerId) !== entry) return;
+        entry.liveState = String(state ?? 'unknown');
+        try { onLiveState(peerId, entry.liveState); } catch (error) { onError(error); }
+      },
+      onError: (error) => {
+        if (peers.get(peerId) !== entry) return;
+        try { onError(error); } catch { /* observer errors are ignored */ }
+      },
+    });
+    entry.liveTransport = liveTransport;
+    if (entry.liveState === 'idle') entry.liveState = channel?.readyState === 'open' ? 'open' : 'connecting';
+    return liveTransport;
+  };
+
   const ensurePeer = (peerId) => {
     const id = String(peerId ?? '').trim();
     if (!id) throw new Error('peerId is required');
@@ -89,6 +129,8 @@ export function createTeacherPeerNetwork({
     const entry = {
       connection: null,
       transport: null,
+      liveTransport: null,
+      liveState: 'idle',
       unregister: null,
       offerFingerprint: null,
       negotiationId: '',
@@ -99,6 +141,7 @@ export function createTeacherPeerNetwork({
       rtcConfig,
       sendSignal: (signal) => signaling.send(id, signal),
       onChannel: (channel) => attachTransport(id, channel, entry),
+      onLiveChannel: (channel) => attachLiveTransport(id, channel, entry),
       onConnectionState: (state) => {
         if (peers.get(id) !== entry) return;
         onPeerState(id, state);
@@ -151,6 +194,32 @@ export function createTeacherPeerNetwork({
 
     getPeerCount() {
       return peers.size;
+    },
+
+    sendLive(peerId, type, payload, options = {}) {
+      const entry = peers.get(String(peerId ?? '').trim());
+      if (!entry?.liveTransport?.send) return 'unavailable';
+      return entry.liveTransport.send(type, payload, options);
+    },
+
+    broadcastLive(type, payload, options = {}) {
+      const results = [];
+      for (const [peerId, entry] of peers.entries()) {
+        if (!entry?.liveTransport?.send) {
+          results.push({ peerId, result: 'unavailable' });
+          continue;
+        }
+        results.push({ peerId, result: entry.liveTransport.send(type, payload, options) });
+      }
+      return results;
+    },
+
+    getLiveState(peerId) {
+      return peers.get(String(peerId ?? '').trim())?.liveState ?? 'unavailable';
+    },
+
+    getLiveStats(peerId) {
+      return peers.get(String(peerId ?? '').trim())?.liveTransport?.stats?.() ?? null;
     },
 
     closePeer,
