@@ -41,6 +41,9 @@ jobs:
           node --test scripts/test-browser-authority-realtime-events.mjs
           node --test scripts/test-browser-authority-realtime-core.mjs
           node --test scripts/test-browser-board-session.mjs
+          node --test scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs
+          node --test scripts/test-screen-runtime-readiness.mjs
+          node --test scripts/test-student-offline-view.mjs scripts/test-student-offline-cache.mjs scripts/test-student-offline-baseline.mjs
 
 
   browser-e2e:
