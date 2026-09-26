@@ -148,3 +148,80 @@ test('closing the student network closes the active peer session', async () => {
   assert.equal(transportCloseCount, 1);
   assert.equal(connectionCloseCount, 1);
 });
+
+
+test('student live transport is independent from durable readiness and closure', async () => {
+  let connectionOptions;
+  let liveOptions;
+  let durableClosed = 0;
+  let liveClosed = 0;
+  let connectionClosed = 0;
+  const sentLive = [];
+  const liveEvents = [];
+
+  const network = createStudentPeerNetwork({
+    boardId: 'board-live',
+    clientId: 'student-a',
+    teacherId: 'teacher-a',
+    signaling: { send: async () => {} },
+    getRevision: () => 3,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    createConnection: (options) => {
+      connectionOptions = options;
+      return {
+        async start() {},
+        async handleSignal() {},
+        close() { connectionClosed += 1; },
+      };
+    },
+    createTransport: () => ({
+      send: async () => {},
+      close() { durableClosed += 1; },
+    }),
+    createSession: () => ({
+      async start() {},
+      whenIdle: async () => {},
+      close() {},
+    }),
+    createLiveTransport: (options) => {
+      liveOptions = options;
+      return {
+        send(type, payload, sendOptions) {
+          sentLive.push({ type, payload, sendOptions });
+          return 'sent';
+        },
+        stats: () => ({ sent: 1 }),
+        close() { liveClosed += 1; },
+      };
+    },
+    onLiveEvent: (type, payload) => liveEvents.push({ type, payload }),
+  });
+
+  const starting = network.start();
+  await Promise.resolve();
+
+  connectionOptions.onLiveChannel({ label: 'alex-board-live-v1' });
+  assert.equal(network.sendLive('cursor', { x: 2 }, { streamKey: 'cursor' }), 'sent');
+  assert.deepEqual(sentLive[0], {
+    type: 'cursor',
+    payload: { x: 2 },
+    sendOptions: { streamKey: 'cursor' },
+  });
+
+  liveOptions.onEvent('cursor', { x: 9 }, { seq: 2 });
+  assert.deepEqual(liveEvents, [{ type: 'cursor', payload: { x: 9 } }]);
+
+  liveOptions.onState('closed');
+  assert.equal(durableClosed, 0);
+  assert.equal(connectionClosed, 0, 'live-only close must not close the peer connection');
+
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  assert.equal(network.isReady(), true);
+
+  network.close();
+  assert.equal(durableClosed, 1);
+  assert.equal(liveClosed, 1);
+  assert.equal(connectionClosed, 1);
+});
