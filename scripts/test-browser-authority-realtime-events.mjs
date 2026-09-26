@@ -442,3 +442,69 @@ test('new-capability peer board-control ignores Ably copy and accepts WebRTC con
   }), true);
   assert.deepEqual(seen, ['edit']);
 });
+
+
+test('realtime exposes transport diagnostics for measuring WebRTC live adoption', async () => {
+  const session = {
+    async start() {},
+    async updateParticipants() {},
+    async handleRealtimeSignal() {},
+    getRevision: () => 9,
+    getLiveRoutingState: () => ({
+      enabled: true,
+      hasWebRtcLivePeers: true,
+      hasLegacyPeers: false,
+    }),
+    close() {},
+  };
+
+  const realtime = connectBoardRealtime({
+    boardId: 'board-diagnostics',
+    realtimeKey: 'room-key-diagnostics-1234567890',
+    clientId: 'teacher-diagnostics',
+    permission: 'owner',
+    webrtcLiveV1: true,
+  }, {
+    createSession: () => session,
+    createCore: () => ({
+      async flushPending() {},
+      async disconnect() {},
+      async sendScreenShareSignal() {},
+    }),
+    createTransport: () => ({
+      async start() {},
+      async publish() { return 'ok'; },
+      async disconnect() {},
+    }),
+  });
+
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.deepEqual(realtime.getTransportDiagnostics(), {
+    revision: 9,
+    routing: {
+      enabled: true,
+      hasWebRtcLivePeers: true,
+      hasLegacyPeers: false,
+    },
+    liveRouting: {
+      total: 0,
+      webrtc: 0,
+      mixed: 0,
+      ablyLegacy: 0,
+      unavailable: 0,
+      closed: 0,
+    },
+    controlRouting: {
+      total: 0,
+      webrtc: 0,
+      mixed: 0,
+      ablyLegacy: 0,
+      unavailable: 0,
+      closed: 0,
+    },
+  });
+
+  await realtime.disconnect();
+});
