@@ -10326,35 +10326,69 @@ function BoardWorkspace({
         currentTransformMovedRef.current = false;
         return;
       }
-      if (!ownsSelectionLease(transform.target)) {
-        // Fabric can begin a drag in the same pointerdown that creates a selection.
-        // Freeze that transform until Supabase grants the object lease; this closes the
-        // simultaneous-grab race without adding any work to Pencil drawing.
-        setSelectionLeaseInteraction(transform.target, false);
-        acquireLocalSelectionLease(transform.target);
-        transform.actionHandler = () => false;
-        return;
-      }
-      suppressTargetFindDuringTransform();
-      const pointerType = nativeEvent?.pointerType
-        ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
-      transformGestureRef.current.pointerType = pointerType;
-      transformGestureRef.current.startingViewportRects = pointerType === 'pen'
-        ? transformViewportPatchRects(flattenTarget(transform.target))
-        : [];
-      if (transform.target.transientSelectionProxy) {
-        modifiedBeforeRef.current = [];
-        modifiedBeforeRecordsRef.current = [];
-        transformGestureRef.current.startingViewportRects = [];
+      const beginLeasedTransform = () => {
+        suppressTargetFindDuringTransform();
+        const pointerType = nativeEvent?.pointerType
+          ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
+        transformGestureRef.current.pointerType = pointerType;
+        transformGestureRef.current.startingViewportRects = pointerType === 'pen'
+          ? transformViewportPatchRects(flattenTarget(transform.target))
+          : [];
+        if (transform.target.transientSelectionProxy) {
+          modifiedBeforeRef.current = [];
+          modifiedBeforeRecordsRef.current = [];
+          transformGestureRef.current.startingViewportRects = [];
+          transformGestureRef.current.activeId = beginLiveTransform(transform.target);
+          lastLockBroadcastRef.current = Date.now();
+          return;
+        }
+        modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
+        modifiedBeforeRecordsRef.current = getObjectRecords(flattenTarget(transform.target));
+        sendLocalLock(transform.target, true);
         transformGestureRef.current.activeId = beginLiveTransform(transform.target);
         lastLockBroadcastRef.current = Date.now();
+      };
+      if (!ownsSelectionLease(transform.target)) {
+        // Selection can request a lease in the same pointerdown that starts a drag
+        // or resize. Keep Fabric's original handler: a permanent no-op strands the
+        // entire held gesture even after the teacher grants permission.
+        const actionHandler = transform.actionHandler;
+        transform.actionHandler = () => false;
+        let pointerEnded = false;
+        const stopWaitingForPointer = () => {
+          window.removeEventListener('pointerup', onPendingPointerEnd, true);
+          window.removeEventListener('pointercancel', onPendingPointerEnd, true);
+        };
+        const onPendingPointerEnd = (event) => {
+          if (nativeEvent?.pointerId != null && event.pointerId !== nativeEvent.pointerId) return;
+          pointerEnded = true;
+          stopWaitingForPointer();
+        };
+        // Fabric does not handle every native cancellation. Fence the original
+        // pointer even when _currentTransform has not yet been cleared by the UI.
+        window.addEventListener('pointerup', onPendingPointerEnd, true);
+        window.addEventListener('pointercancel', onPendingPointerEnd, true);
+        setSelectionLeaseInteraction(transform.target, false);
+        acquireLocalSelectionLease(transform.target).then((granted) => {
+          // A late reply must never revive a released/cancelled gesture, overwrite
+          // a newer transform, or edit a different/disposed canvas or selection.
+          if (!granted || pointerEnded || disposed || fabricCanvasRef.current !== canvas
+            || !canEditRef.current || activeToolRef.current !== 'select'
+            || applyingRemoteRef.current || applyingHistoryRef.current
+            || canvas._currentTransform !== transform
+            || transform.target.canvas !== canvas
+            || canvas.getActiveObject() !== transform.target
+            || !ownsSelectionLease(transform.target)) return;
+          // Capture history and start live synchronization BEFORE the first resumed
+          // movement. Do not synthesize a pointer event when permission arrives.
+          beginLeasedTransform();
+          transform.actionHandler = actionHandler;
+        }).catch((error) => {
+          console.warn('Не удалось продолжить перемещение после подтверждения выделения', error);
+        }).finally(stopWaitingForPointer);
         return;
       }
-      modifiedBeforeRef.current = transformFramesForObjects(flattenTarget(transform.target), canvas);
-      modifiedBeforeRecordsRef.current = getObjectRecords(flattenTarget(transform.target));
-      sendLocalLock(transform.target, true);
-      transformGestureRef.current.activeId = beginLiveTransform(transform.target);
-      lastLockBroadcastRef.current = Date.now();
+      beginLeasedTransform();
     });
 
     const broadcastLiveTransform = ({ target }) => {
