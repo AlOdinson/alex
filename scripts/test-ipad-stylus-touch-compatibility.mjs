@@ -48,23 +48,30 @@ assert.match(
 assert.match(
   board,
   /boardPage\.addEventListener\('selectstart', handleNativeBoardSelectionStart/,
-  'board page must cancel Safari native selection outside real text editors',
+  'board page must cancel native selection outside real text editors in every browser',
 );
 assert.match(
   board,
   /boardPage\.addEventListener\('contextmenu', handleNativeBoardContextMenu/,
-  'board page must suppress Safari long-press callouts outside text editors',
+  'board page must suppress browser context/callout UI outside text editors',
 );
 assert.match(
   board,
   /document\.addEventListener\('selectionchange', handleNativeBoardSelectionChange\)/,
-  'stray Safari selections must be cleared even if WebKit creates them after the initial contact',
+  'stray native selections must be cleared even if a browser creates them after the initial contact',
+);
+assert.match(
+  board,
+  /boardPage\.addEventListener\('dragstart', handleNativeBoardDragStart/,
+  'board page must cancel native text/image/link dragging outside real text editors',
 );
 assert.match(
   styles,
   /\.board-page\s*\{[\s\S]*?-webkit-user-select:\s*none;[\s\S]*?-webkit-touch-callout:\s*none;/,
-  'board page CSS must declaratively disable Safari selection and touch callouts',
+  'board page CSS must declaratively disable native selection and WebKit touch callouts',
 );
+assert.match(styles, /\.board-page\s*\{[\s\S]*?-moz-user-select:\s*none;/, 'Firefox selection guard must be explicit');
+assert.match(styles, /\.board-page\s*\{[\s\S]*?-ms-user-select:\s*none;/, 'legacy Edge selection guard must be explicit');
 assert.match(
   styles,
   /\.board-page input,[\s\S]*?\.board-page textarea,[\s\S]*?\[contenteditable="true"\][\s\S]*?-webkit-user-select:\s*text;/,
