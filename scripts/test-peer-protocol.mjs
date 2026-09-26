@@ -63,3 +63,16 @@ test('does not complete a transfer with a missing chunk', () => {
   const results = withoutOneChunk.map((frame) => assembler.accept(frame)).filter(Boolean);
   assert.deepEqual(results, []);
 });
+
+
+test('peer protocol carries board-control frames over the reliable channel', () => {
+  const encoded = createPeerMessage('board-control', {
+    event: 'mode',
+    payload: { mode: 'edit' },
+  });
+  assert.deepEqual(decodePeerMessage(encoded), {
+    v: 1,
+    type: 'board-control',
+    payload: { event: 'mode', payload: { mode: 'edit' } },
+  });
+});
