@@ -535,17 +535,21 @@ button:disabled {
   background: #ffffff;
   user-select: none;
   -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
   -webkit-touch-callout: none;
 }
 
-/* Safari/iPad must never treat board chrome or the drawing surface as selectable page
-   content. Restore native selection only for actual editors so Text and browser inputs
-   keep normal caret/selection behavior. */
+/* The board is application chrome, not selectable page content, in every browser.
+   Restore native selection only for actual editors so text entry and browser-address
+   inputs keep normal caret/selection behavior. */
 .board-page input,
 .board-page textarea,
 .board-page [contenteditable="true"] {
   user-select: text;
   -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
   -webkit-touch-callout: default;
 }
 
@@ -1106,6 +1110,8 @@ button:disabled {
   touch-action: none !important;
   user-select: none !important;
   -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
   -webkit-touch-callout: none;
   -webkit-user-drag: none;
   background: transparent !important;
@@ -1118,6 +1124,8 @@ button:disabled {
 .canvas-host [contenteditable="true"] {
   user-select: text;
   -webkit-user-select: text;
+  -moz-user-select: text;
+  -ms-user-select: text;
   -webkit-touch-callout: default;
 }
 
