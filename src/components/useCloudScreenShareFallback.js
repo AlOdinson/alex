@@ -10,6 +10,7 @@ import {
   SCREEN_SHARE_PROFILES,
   SCREEN_SHARE_PROTOCOL,
   screenShareCloudTrackName,
+  screenShareEffectiveProfile,
   screenSharePermissionCanHost,
 } from '../lib/screenShare.js';
 import { isSupabaseConfigured, supabase } from '../lib/supabase.js';
@@ -78,6 +79,7 @@ export function useCloudScreenShareFallback({
   sourceMode,
   p2pStream,
   profileId,
+  ultraEnabled,
   networkDegraded,
 }) {
   const [cloudStream, setCloudStream] = useState(null);
@@ -263,7 +265,10 @@ export function useCloudScreenShareFallback({
         }
 
         publisherRef.current = publisher;
-        const profile = SCREEN_SHARE_PROFILES[profileId] ?? SCREEN_SHARE_PROFILES.idle;
+        const profile = screenShareEffectiveProfile(
+          SCREEN_SHARE_PROFILES[profileId] ?? SCREEN_SHARE_PROFILES.idle,
+          Boolean(ultraEnabled),
+        );
         await applyCloudSenderProfile(publisher.sender, profile, Boolean(networkDegraded));
         await announceCloudTrack();
         patchCloudState({
@@ -318,6 +323,7 @@ export function useCloudScreenShareFallback({
     patchCloudState,
     profileId,
     sendCloudSignal,
+    ultraEnabled,
   ]);
 
   processSignalRef.current = async (rawPayload) => {
@@ -467,9 +473,12 @@ export function useCloudScreenShareFallback({
   useEffect(() => {
     const publisher = publisherRef.current;
     if (!publisher?.sender) return;
-    const profile = SCREEN_SHARE_PROFILES[profileId] ?? SCREEN_SHARE_PROFILES.idle;
+    const profile = screenShareEffectiveProfile(
+      SCREEN_SHARE_PROFILES[profileId] ?? SCREEN_SHARE_PROFILES.idle,
+      Boolean(ultraEnabled),
+    );
     applyCloudSenderProfile(publisher.sender, profile, Boolean(networkDegraded)).catch(() => undefined);
-  }, [networkDegraded, profileId]);
+  }, [networkDegraded, profileId, ultraEnabled]);
 
   useEffect(() => {
     if (cloudState.transport !== 'cloud' || cloudState.cloudPhase !== 'on' || role !== 'host') {
