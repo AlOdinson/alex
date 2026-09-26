@@ -430,6 +430,8 @@ try {
 
   await waitFor('student authoritative stroke rendered on teacher', async () => (await canvasDigest(teacher)) !== teacherAfterFirst);
 
+  let latestDurableRevision = revisionAfterStudent;
+
   if (EXPECT_WEBRTC_LIVE_V1) {
     await waitFor('student draw preview uses WebRTC live channel', async () => (
       rtcSent(student, 'alex-board-live-v1', /"type":"draw"/)
@@ -447,6 +449,7 @@ try {
       return Number(board?.revision ?? 0) > revisionAfterStudent ? Number(board.revision) : 0;
     });
     assert.ok(revisionAfterLiveClose > revisionAfterStudent);
+    latestDurableRevision = revisionAfterLiveClose;
     await waitFor('teacher receives canonical edit after live channel close', async () => (
       (await canvasDigest(teacher)) !== teacherBeforeLiveCloseEdit
     ));
@@ -486,7 +489,7 @@ try {
   await uploadTestImage(teacher);
   const revisionAfterImage = await waitFor('image upload durable revision', async () => {
     const board = await authorityBoard(teacher, boardId);
-    return Number(board?.revision ?? 0) > revisionAfterStudent ? Number(board.revision) : 0;
+    return Number(board?.revision ?? 0) > latestDurableRevision ? Number(board.revision) : 0;
   });
   await waitFor('image rendered on teacher', async () => (
     (await canvasDigest(teacher)) !== teacherBeforeImage
