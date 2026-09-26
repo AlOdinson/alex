@@ -5,6 +5,12 @@ import { createTeacherObjectLockAuthority } from './teacherObjectLocks.js';
 import { normalizeBoardControl } from './boardControlProtocol.js';
 
 const SNAPSHOT_WRITE_TIMEOUT_MS = 120_000;
+const PEER_BOARD_CONTROL_ALWAYS_ALLOWED = new Set(['view-request']);
+const PEER_BOARD_CONTROL_EDIT_REQUIRED = new Set([
+  'background-live',
+  'lock',
+  'selection-transaction',
+]);
 
 function defaultTransferId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
@@ -263,7 +269,13 @@ export function createTeacherPeerHub({
 
       if (type === 'board-control') {
         const control = normalizeBoardControl(payload.event, payload.payload);
-        await onBoardControl(safePeerId, control.event, control.payload);
+        if (PEER_BOARD_CONTROL_ALWAYS_ALLOWED.has(control.event)) {
+          await onBoardControl(safePeerId, control.event, control.payload);
+          return;
+        }
+        if (PEER_BOARD_CONTROL_EDIT_REQUIRED.has(control.event) && await peerMayEdit(safePeerId)) {
+          await onBoardControl(safePeerId, control.event, control.payload);
+        }
         return;
       }
 
