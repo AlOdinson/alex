@@ -86,6 +86,8 @@ jobs:
           BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/preview-browser-authority/
           EXPECT_WEBRTC_LIVE_V1: "1"
         run: node scripts/test-browser-authority-preview-e2e.mjs
+      - name: Chromium real-Fabric image drag/resize interaction fixture
+        run: node scripts/test-selection-lease-transform-browser.mjs
       - name: Show preview log on failure
         if: failure()
         run: cat /tmp/alex-preview.log || true
