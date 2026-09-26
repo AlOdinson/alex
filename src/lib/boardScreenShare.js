@@ -11,6 +11,9 @@ const CLOUD_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-cloud-toggle';
 const ULTRA_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-ultra-state';
 const ULTRA_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-ultra-state-request';
 const ULTRA_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-ultra-toggle';
+const HD720_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-720-state';
+const HD720_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-720-state-request';
+const HD720_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-720-toggle';
 const CLOUD_BUTTON_WIDTH = 88;
 const CLOUD_BUTTON_HEIGHT = 24;
 const CLOUD_BUTTON_MARGIN = 8;
@@ -54,6 +57,14 @@ function normalizedCloudControlState(detail, sessionId) {
 }
 
 function normalizedUltraControlState(detail, sessionId) {
+  if (!detail || String(detail.sessionId ?? '') !== String(sessionId ?? '')) return null;
+  return {
+    visible: Boolean(detail.visible),
+    enabled: Boolean(detail.enabled),
+  };
+}
+
+function normalized720ControlState(detail, sessionId) {
   if (!detail || String(detail.sessionId ?? '') !== String(sessionId ?? '')) return null;
   return {
     visible: Boolean(detail.visible),
@@ -210,6 +221,12 @@ export function createBoardScreenShareMedia({
   };
   let ultraControl = null;
   let ultraInput = null;
+  let hd720State = {
+    visible: false,
+    enabled: false,
+  };
+  let hd720Control = null;
+  let hd720Input = null;
   let restartFrameLoop = () => undefined;
 
   const rememberUniformScale = () => {
@@ -291,10 +308,123 @@ export function createBoardScreenShareMedia({
     const left = Number(canvasRect.left ?? 0) - Number(hostRect.left ?? 0)
       + viewport.x * cssScaleX + CLOUD_BUTTON_MARGIN;
     const top = Number(canvasRect.top ?? 0) - Number(hostRect.top ?? 0)
-      + viewport.y * cssScaleY + CLOUD_BUTTON_MARGIN;
+      + viewport.y * cssScaleY + CLOUD_BUTTON_MARGIN + CLOUD_BUTTON_HEIGHT + 4;
 
     ultraControl.style.left = `${Math.round(left)}px`;
     ultraControl.style.top = `${Math.round(top)}px`;
+  };
+
+  const position720Control = () => {
+    if (disposed || !hd720Control || !hd720State.visible) return;
+    const canvas = object.canvas;
+    const upperCanvas = canvas?.upperCanvasEl;
+    const host = upperCanvas?.parentElement;
+    if (!canvas || !upperCanvas || !host) return;
+
+    const coords = object.getCoords?.();
+    const topLeft = coords?.[0] ?? object.aCoords?.tl;
+    if (!topLeft) return;
+    const viewport = viewportPoint(topLeft, canvas.viewportTransform);
+    const canvasRect = upperCanvas.getBoundingClientRect?.();
+    const hostRect = host.getBoundingClientRect?.();
+    if (!canvasRect || !hostRect) return;
+
+    const logicalWidth = Math.max(1, Number(canvas.getWidth?.() ?? canvasRect.width ?? 1));
+    const logicalHeight = Math.max(1, Number(canvas.getHeight?.() ?? canvasRect.height ?? 1));
+    const cssScaleX = Number(canvasRect.width ?? logicalWidth) / logicalWidth;
+    const cssScaleY = Number(canvasRect.height ?? logicalHeight) / logicalHeight;
+    const left = Number(canvasRect.left ?? 0) - Number(hostRect.left ?? 0)
+      + viewport.x * cssScaleX + CLOUD_BUTTON_MARGIN;
+    const top = Number(canvasRect.top ?? 0) - Number(hostRect.top ?? 0)
+      + viewport.y * cssScaleY + CLOUD_BUTTON_MARGIN;
+
+    hd720Control.style.left = `${Math.round(left)}px`;
+    hd720Control.style.top = `${Math.round(top)}px`;
+  };
+
+  const ensure720Control = () => {
+    if (disposed || typeof document === 'undefined') return null;
+    const canvas = object.canvas;
+    const upperCanvas = canvas?.upperCanvasEl;
+    const host = upperCanvas?.parentElement;
+    if (!canvas || !upperCanvas || !host) return null;
+
+    if (!hd720Control) {
+      hd720Control = document.createElement('label');
+      hd720Control.className = 'screen-share-720-toggle';
+      hd720Control.style.position = 'absolute';
+      hd720Control.style.height = `${CLOUD_BUTTON_HEIGHT}px`;
+      hd720Control.style.padding = '0 8px';
+      hd720Control.style.borderRadius = '7px';
+      hd720Control.style.border = '1px solid rgba(255,255,255,0.5)';
+      hd720Control.style.background = 'rgba(15,23,42,0.88)';
+      hd720Control.style.color = '#fff';
+      hd720Control.style.font = '600 11px system-ui, sans-serif';
+      hd720Control.style.display = 'flex';
+      hd720Control.style.alignItems = 'center';
+      hd720Control.style.gap = '5px';
+      hd720Control.style.boxSizing = 'border-box';
+      hd720Control.style.zIndex = '40';
+      hd720Control.style.cursor = 'pointer';
+      hd720Control.style.userSelect = 'none';
+      hd720Control.style.webkitUserSelect = 'none';
+      hd720Control.style.touchAction = 'manipulation';
+      hd720Control.setAttribute('aria-label', 'Ограничить демонстрацию качеством 720p');
+
+      hd720Input = document.createElement('input');
+      hd720Input.type = 'checkbox';
+      hd720Input.className = 'screen-share-720-checkbox';
+      hd720Input.setAttribute('aria-label', '720p');
+      const labelText = document.createElement('span');
+      labelText.textContent = '720';
+      hd720Control.appendChild(hd720Input);
+      hd720Control.appendChild(labelText);
+      hd720Control.addEventListener('pointerdown', (event) => event.stopPropagation());
+      hd720Control.addEventListener('click', (event) => event.stopPropagation());
+      hd720Input.addEventListener('change', (event) => {
+        event.stopPropagation();
+        if (disposed || !hd720State.visible) return;
+        window.dispatchEvent(new CustomEvent(HD720_SCREEN_SHARE_TOGGLE_EVENT, {
+          detail: { sessionId: safeSessionId, enabled: Boolean(hd720Input.checked) },
+        }));
+      });
+    }
+    if (hd720Control.parentElement !== host) host.appendChild(hd720Control);
+    return hd720Control;
+  };
+
+  const sync720Control = () => {
+    if (disposed) return;
+    if (!hd720State.visible) {
+      if (hd720Control) hd720Control.style.display = 'none';
+      return;
+    }
+    const control = ensure720Control();
+    if (!control || !hd720Input) return;
+    control.style.display = 'flex';
+    hd720Input.checked = hd720State.enabled;
+    control.style.borderColor = hd720State.enabled
+      ? 'rgba(134,239,172,0.95)'
+      : 'rgba(255,255,255,0.5)';
+    control.title = hd720State.enabled
+      ? '720p включено: максимум 1280×720'
+      : 'Ограничить трансляцию до 1280×720';
+    position720Control();
+  };
+
+  const handle720State = (event) => {
+    const nextState = normalized720ControlState(event?.detail, safeSessionId);
+    if (!nextState) return;
+    hd720State = nextState;
+    sync720Control();
+    syncUltraControl();
+  };
+
+  const request720State = () => {
+    if (typeof window === 'undefined' || !safeSessionId) return;
+    window.dispatchEvent(new CustomEvent(HD720_SCREEN_SHARE_STATE_REQUEST_EVENT, {
+      detail: { sessionId: safeSessionId },
+    }));
   };
 
   const ensureUltraControl = () => {
@@ -362,8 +492,10 @@ export function createBoardScreenShareMedia({
       ? 'rgba(134,239,172,0.95)'
       : 'rgba(255,255,255,0.5)';
     control.title = ultraState.enabled
-      ? 'Ultra включен: до 60 FPS и 10 Мбит/с'
-      : 'Включить Ultra: до 60 FPS и 10 Мбит/с';
+      ? (hd720State.enabled
+        ? 'Ultra включен: 720p, до 60 FPS и 5 Мбит/с'
+        : 'Ultra включен: 1080p, до 60 FPS и 10 Мбит/с')
+      : 'Включить Ultra: до 60 FPS';
     positionUltraControl();
   };
 
@@ -479,29 +611,37 @@ export function createBoardScreenShareMedia({
     if (cloudCanvas !== canvas) {
       cloudCanvas?.off?.('after:render', positionCloudButton);
       cloudCanvas?.off?.('after:render', positionUltraControl);
+      cloudCanvas?.off?.('after:render', position720Control);
       cloudCanvas = canvas;
       cloudCanvas.on?.('after:render', positionCloudButton);
       cloudCanvas.on?.('after:render', positionUltraControl);
+      cloudCanvas.on?.('after:render', position720Control);
     }
     syncCloudButton();
+    sync720Control();
     syncUltraControl();
     requestCloudState();
+    request720State();
     requestUltraState();
   };
 
   const detachCloudOverlay = () => {
     cloudCanvas?.off?.('after:render', positionCloudButton);
     cloudCanvas?.off?.('after:render', positionUltraControl);
+    cloudCanvas?.off?.('after:render', position720Control);
     cloudCanvas = null;
     cloudButton?.remove();
     ultraControl?.remove();
+    hd720Control?.remove();
   };
 
   if (typeof window !== 'undefined') {
     window.addEventListener(CLOUD_SCREEN_SHARE_STATE_EVENT, handleCloudState);
     window.addEventListener(ULTRA_SCREEN_SHARE_STATE_EVENT, handleUltraState);
+    window.addEventListener(HD720_SCREEN_SHARE_STATE_EVENT, handle720State);
     window.addEventListener('resize', positionCloudButton, { passive: true });
     window.addEventListener('resize', positionUltraControl, { passive: true });
+    window.addEventListener('resize', position720Control, { passive: true });
   }
   object.on?.('added', attachCloudOverlay);
   object.on?.('removed', detachCloudOverlay);
@@ -660,15 +800,20 @@ export function createBoardScreenShareMedia({
     if (typeof window !== 'undefined') {
       window.removeEventListener(CLOUD_SCREEN_SHARE_STATE_EVENT, handleCloudState);
       window.removeEventListener(ULTRA_SCREEN_SHARE_STATE_EVENT, handleUltraState);
+      window.removeEventListener(HD720_SCREEN_SHARE_STATE_EVENT, handle720State);
       window.removeEventListener('resize', positionCloudButton);
       window.removeEventListener('resize', positionUltraControl);
+      window.removeEventListener('resize', position720Control);
     }
     detachCloudOverlay();
     cloudButton?.remove();
     ultraControl?.remove();
+    hd720Control?.remove();
     cloudButton = null;
     ultraControl = null;
     ultraInput = null;
+    hd720Control = null;
+    hd720Input = null;
     cancelFrameLoop();
     if (video) {
       video.onloadedmetadata = null;
