@@ -1,6 +1,7 @@
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { createPeerDataChannelTransport } from './peerDataChannel.js';
 import { createStudentPeerSession } from './studentPeerSession.js';
+import { createPeerLiveChannel } from './peerLiveChannel.js';
 
 const TERMINAL_STATES = new Set(['failed', 'closed']);
 const CONNECT_TIMEOUT_MS = 15_000;
@@ -22,6 +23,8 @@ function normalizeStudentConnectionState(state) {
 }
 
 export function createStudentPeerNetwork({
+  boardId = '',
+  clientId = '',
   teacherId,
   signaling,
   rtcConfig = {},
@@ -37,7 +40,10 @@ export function createStudentPeerNetwork({
   requestTimeoutMs = 30_000,
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
+  createLiveTransport = createPeerLiveChannel,
   createSession = createStudentPeerSession,
+  onLiveEvent = () => {},
+  onLiveState = () => {},
 } = {}) {
   const targetTeacherId = String(teacherId ?? '').trim();
   if (!targetTeacherId) throw new Error('teacherId is required');
@@ -47,6 +53,8 @@ export function createStudentPeerNetwork({
   if (typeof installSnapshot !== 'function') throw new Error('installSnapshot is required');
 
   let transport = null;
+  let liveTransport = null;
+  let liveState = 'idle';
   let session = null;
   let connection = null;
   let closed = false;
@@ -95,6 +103,9 @@ export function createStudentPeerNetwork({
     const error = reason instanceof Error ? reason : new Error(String(reason ?? 'Student peer network closed'));
     rejectReadiness(error);
     try { session?.close?.(error); } catch (caught) { onError(caught); }
+    try { liveTransport?.close?.(); } catch (caught) { onError(caught); }
+    liveTransport = null;
+    liveState = 'closed';
     try { transport?.close?.(); } catch (caught) { onError(caught); }
     transport = null;
     session = null;
@@ -167,12 +178,45 @@ export function createStudentPeerNetwork({
     channelStart.then(settleReady, failConnection);
   };
 
+  const attachLiveChannel = (channel) => {
+    if (closed) {
+      try { channel?.close?.(); } catch { /* stale channel */ }
+      return;
+    }
+    if (liveTransport) {
+      try { channel?.close?.(); } catch { /* duplicate live channel */ }
+      return;
+    }
+    liveTransport = createLiveTransport({
+      channel,
+      boardId: String(boardId ?? ''),
+      localClientId: String(clientId ?? ''),
+      remoteClientId: targetTeacherId,
+      getRevision,
+      onEvent: (type, payload, envelope) => {
+        if (closed) return;
+        try { onLiveEvent(type, payload, envelope); } catch (error) { onError(error); }
+      },
+      onState: (state) => {
+        if (closed) return;
+        liveState = String(state ?? 'unknown');
+        try { onLiveState(liveState); } catch (error) { onError(error); }
+      },
+      onError: (error) => {
+        if (closed) return;
+        try { onError(error); } catch { /* observer errors are ignored */ }
+      },
+    });
+    if (liveState === 'idle') liveState = channel?.readyState === 'open' ? 'open' : 'connecting';
+  };
+
   connection = createConnection({
     initiator: true,
     assistSignaling: true,
     rtcConfig,
     sendSignal: (signal) => signaling.send(targetTeacherId, signal),
     onChannel: attachChannel,
+    onLiveChannel: attachLiveChannel,
     onConnectionState: (state) => {
       if (closed) return;
       const recoveryState = normalizeStudentConnectionState(state);
@@ -240,6 +284,15 @@ export function createStudentPeerNetwork({
       if (typeof session.requestLock !== 'function') throw new Error('Peer lock API is unavailable');
       return awaitAcknowledgement(session.requestLock(operation, payload));
     },
+
+    sendLive(type, payload, options = {}) {
+      if (!liveTransport?.send) return 'unavailable';
+      return liveTransport.send(type, payload, options);
+    },
+
+    getLiveState() { return liveState; },
+
+    getLiveStats() { return liveTransport?.stats?.() ?? null; },
 
     getVerificationMode() { return session?.getVerificationMode?.() ?? { version: 0, epoch: '' }; },
     verifyObjects(request) {
