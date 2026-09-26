@@ -47,6 +47,8 @@ export function createBrowserBoardSession({
   createVerifier = createBoundedBoardVerifier,
   getVerificationReplicaView = getReplicaVerificationView,
   onPeerState = () => {},
+  onLiveEvent = () => {},
+  onLiveState = () => {},
   onRuntimeState = () => {},
   onError = () => {},
   rtcConfig = {},
@@ -342,6 +344,12 @@ export function createBrowserBoardSession({
           if (!closed && runtime === nextRuntime) notifyVerification(commit);
         },
         onPeerState,
+        onLiveEvent: (peerId, type, payload, envelope) => {
+          onLiveEvent(type, payload, envelope, { peerId });
+        },
+        onLiveState: (peerId, state) => {
+          onLiveState(state, { peerId });
+        },
         onError,
       });
     } catch (error) {
@@ -420,6 +428,12 @@ export function createBrowserBoardSession({
         if (runtime === nextRuntime) configureVerification(nextRuntime);
       },
       onState: handleStudentState,
+      onLiveEvent: (type, payload, envelope) => {
+        onLiveEvent(type, payload, envelope, { peerId: resolvedTeacherId });
+      },
+      onLiveState: (state) => {
+        onLiveState(state, { peerId: resolvedTeacherId });
+      },
       onError,
     });
 
@@ -540,6 +554,18 @@ export function createBrowserBoardSession({
     getVerificationStats() { return verifier?.stats?.() ?? { enabled: false }; },
     getRuntime() { return runtime; },
     getCollaborationMode(peerId = teacherId) { return collaborationModeFor(peerId); },
+    getLiveRoutingState() {
+      const remoteIds = [...participantCapabilities.keys()].filter((id) => id && id !== safeClientId);
+      const modes = remoteIds.map((id) => collaborationModeFor(id));
+      return {
+        enabled: Boolean(webrtcLiveV1),
+        hasWebRtcLivePeers: modes.includes('webrtc-live-v1'),
+        hasLegacyPeers: modes.includes('legacy'),
+      };
+    },
+    sendLive(type, payload, options = {}) {
+      return runtime?.sendLive?.(type, payload, options) ?? 'unavailable';
+    },
     getRuntimeState() { return runtimeState; },
     getTeacherId() { return teacherId; },
     getRevision() {
