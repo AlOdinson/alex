@@ -253,3 +253,38 @@ test('student peer network disables live DataChannel for legacy teacher mode', a
   await starting;
   network.close();
 });
+
+
+test('student peer network forwards board-control through the durable session', async () => {
+  let connectionOptions = null;
+  const controls = [];
+  const network = createStudentPeerNetwork({
+    boardId: 'board-control',
+    clientId: 'student-control',
+    teacherId: 'teacher-control',
+    signaling: { send: async () => {} },
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    createConnection: (options) => {
+      connectionOptions = options;
+      return { async start() {}, async handleSignal() {}, close() {} };
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+    createSession: () => ({
+      async start() {},
+      async sendBoardControl(event, payload) {
+        controls.push({ event, payload });
+        return true;
+      },
+      close() {},
+    }),
+  });
+  const starting = network.start();
+  await Promise.resolve();
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  assert.equal(await network.sendBoardControl('mode', { mode: 'edit' }), true);
+  assert.deepEqual(controls, [{ event: 'mode', payload: { mode: 'edit' } }]);
+  network.close();
+});
