@@ -15,6 +15,7 @@ export async function createTeacherBoardRuntime({
   onPeerState = () => {},
   onLiveEvent = () => {},
   onLiveState = () => {},
+  onBoardControl = () => {},
   onError = () => {},
   openAuthority = openBrowserBoardAuthority,
   getBoardMetadata = getAuthorityBoard,
@@ -42,6 +43,7 @@ export async function createTeacherBoardRuntime({
     }),
     getCommitsAfter: (revision, limit) => authority.getCommitsAfter(revision, limit),
     onCommit: onRemoteCommit,
+    onBoardControl,
     lockAuthority,
     canPeerEdit: async () => {
       const board = await getBoardMetadata(safeBoardId);
@@ -167,6 +169,14 @@ export async function createTeacherBoardRuntime({
 
     sendLive(type, payload, options = {}) {
       return network?.broadcastLive?.(type, payload, options) ?? [];
+    },
+
+    sendBoardControl(event, payload = {}) {
+      return hub.broadcastBoardControl?.(event, payload) ?? Promise.resolve(0);
+    },
+
+    sendBoardControlTo(peerId, event, payload = {}) {
+      return hub.sendBoardControl?.(peerId, event, payload) ?? Promise.resolve(false);
     },
 
     sendLiveTo(peerId, type, payload, options = {}) {
