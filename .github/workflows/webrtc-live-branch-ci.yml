@@ -95,3 +95,29 @@ jobs:
           if [ -f /tmp/alex-preview.pid ]; then
             kill "$(cat /tmp/alex-preview.pid)" || true
           fi
+
+
+  full-regression:
+    needs:
+      - focused
+      - browser-e2e
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: Full browser-authority regressions
+        run: npm run test:browser-authority
+      - name: Hosted-safe sync, drawing, history and UI regressions
+        run: npm run test:sync:ci
+      - name: Screen-share regressions
+        run: npm run test:screen-share
+      - name: Production build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: npm run build
