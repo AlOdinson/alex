@@ -274,8 +274,74 @@ const browser = await chromium.launch({
 
 const teacherContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
 const studentContext = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+const EXPECT_WEBRTC_LIVE_V1 = process.env.EXPECT_WEBRTC_LIVE_V1 === '1';
+
+async function installRtcDiagnostics(context) {
+  await context.addInitScript(() => {
+    window.__alexRtcSendLog = [];
+    window.__alexRtcCreatedLabels = [];
+    window.__alexRtcCreatedChannels = [];
+
+    const originalCreateDataChannel = RTCPeerConnection.prototype.createDataChannel;
+    RTCPeerConnection.prototype.createDataChannel = function patchedCreateDataChannel(label, options) {
+      const channel = originalCreateDataChannel.call(this, label, options);
+      window.__alexRtcCreatedLabels.push(String(label ?? ''));
+      window.__alexRtcCreatedChannels.push(channel);
+      return channel;
+    };
+
+    const originalSend = RTCDataChannel.prototype.send;
+    RTCDataChannel.prototype.send = function patchedRtcSend(data) {
+      try {
+        const text = typeof data === 'string' ? data : '[binary]';
+        window.__alexRtcSendLog.push({
+          label: String(this.label ?? ''),
+          data: text.slice(0, 65536),
+          at: Date.now(),
+        });
+        if (window.__alexRtcSendLog.length > 2000) window.__alexRtcSendLog.splice(0, 500);
+      } catch {
+        // Diagnostics must never alter transport behavior.
+      }
+      return originalSend.call(this, data);
+    };
+  });
+}
+
+if (EXPECT_WEBRTC_LIVE_V1) {
+  await Promise.all([
+    installRtcDiagnostics(teacherContext),
+    installRtcDiagnostics(studentContext),
+  ]);
+}
+
 const teacher = await teacherContext.newPage();
 const student = await studentContext.newPage();
+
+async function clearRtcSendLog(page) {
+  if (!EXPECT_WEBRTC_LIVE_V1) return;
+  await page.evaluate(() => { window.__alexRtcSendLog = []; });
+}
+
+async function rtcSent(page, label, pattern) {
+  if (!EXPECT_WEBRTC_LIVE_V1) return false;
+  return page.evaluate(({ expectedLabel, source }) => {
+    const regex = new RegExp(source);
+    return (window.__alexRtcSendLog ?? []).some((entry) => (
+      entry?.label === expectedLabel && regex.test(String(entry?.data ?? ''))
+    ));
+  }, { expectedLabel: label, source: pattern.source });
+}
+
+async function closeCreatedLiveChannel(page) {
+  return page.evaluate(() => {
+    const channel = (window.__alexRtcCreatedChannels ?? [])
+      .find((candidate) => candidate?.label === 'alex-board-live-v1' && candidate?.readyState !== 'closed');
+    if (!channel) return false;
+    channel.close();
+    return true;
+  });
+}
 
 function attachDiagnostics(page, label) {
   page.on('pageerror', (error) => console.error(`${label} pageerror:`, error.message));
@@ -326,7 +392,15 @@ try {
     return teacherCount >= 2 && studentCount >= 2;
   });
 
+  if (EXPECT_WEBRTC_LIVE_V1) {
+    await waitFor('student creates both durable and live WebRTC channels', async () => student.evaluate(() => {
+      const labels = window.__alexRtcCreatedLabels ?? [];
+      return labels.includes('alex-board-durable-v1') && labels.includes('alex-board-live-v1');
+    }));
+  }
+
   const studentBlank = await canvasDigest(student);
+  await clearRtcSendLog(teacher);
   await drawStroke(teacher, 0);
   const revisionAfterTeacher = await waitFor('teacher stroke durable revision', async () => {
     const board = await authorityBoard(teacher, boardId);
@@ -336,7 +410,17 @@ try {
 
   await waitFor('teacher stroke on student canvas', async () => (await canvasDigest(student)) !== studentBlank);
 
+  if (EXPECT_WEBRTC_LIVE_V1) {
+    await waitFor('teacher draw preview uses WebRTC live channel', async () => (
+      rtcSent(teacher, 'alex-board-live-v1', /"type":"draw"/)
+    ));
+    await waitFor('teacher final stroke uses durable WebRTC channel', async () => (
+      rtcSent(teacher, 'alex-board-durable-v1', /"type":"commit"/)
+    ));
+  }
+
   const teacherAfterFirst = await canvasDigest(teacher);
+  await clearRtcSendLog(student);
   await drawStroke(student, 120);
   const revisionAfterStudent = await waitFor('student stroke persisted by teacher authority', async () => {
     const board = await authorityBoard(teacher, boardId);
@@ -345,6 +429,38 @@ try {
   assert.ok(revisionAfterStudent > revisionAfterTeacher);
 
   await waitFor('student authoritative stroke rendered on teacher', async () => (await canvasDigest(teacher)) !== teacherAfterFirst);
+
+  if (EXPECT_WEBRTC_LIVE_V1) {
+    await waitFor('student draw preview uses WebRTC live channel', async () => (
+      rtcSent(student, 'alex-board-live-v1', /"type":"draw"/)
+    ));
+    await waitFor('student final stroke proposes over durable WebRTC channel', async () => (
+      rtcSent(student, 'alex-board-durable-v1', /"type":"action-proposal"/)
+    ));
+
+    const teacherBeforeLiveCloseEdit = await canvasDigest(teacher);
+    assert.equal(await closeCreatedLiveChannel(student), true, 'student live channel was not available to close');
+    await clearRtcSendLog(student);
+    await drawStroke(student, 240);
+    const revisionAfterLiveClose = await waitFor('durable edit after live channel close', async () => {
+      const board = await authorityBoard(teacher, boardId);
+      return Number(board?.revision ?? 0) > revisionAfterStudent ? Number(board.revision) : 0;
+    });
+    assert.ok(revisionAfterLiveClose > revisionAfterStudent);
+    await waitFor('teacher receives canonical edit after live channel close', async () => (
+      (await canvasDigest(teacher)) !== teacherBeforeLiveCloseEdit
+    ));
+    assert.equal(
+      await rtcSent(student, 'alex-board-live-v1', /"type":"draw"/),
+      false,
+      'closed live channel unexpectedly carried the next draw preview',
+    );
+    assert.equal(
+      await rtcSent(student, 'alex-board-durable-v1', /"type":"action-proposal"/),
+      true,
+      'durable channel must remain usable after live-only close',
+    );
+  }
 
   const teacherBeforeStudentReconnect = await canvasDigest(teacher);
   await student.reload({ waitUntil: 'domcontentloaded', timeout: TIMEOUT_MS });
@@ -358,6 +474,12 @@ try {
   await waitFor('student snapshot restored after reconnect', async () => (
     (await canvasDigest(student)) === teacherBeforeStudentReconnect
   ));
+
+  if (EXPECT_WEBRTC_LIVE_V1) {
+    await waitFor('student recreates live WebRTC channel after reconnect', async () => student.evaluate(() => (
+      (window.__alexRtcCreatedLabels ?? []).includes('alex-board-live-v1')
+    )));
+  }
 
   const teacherBeforeImage = await canvasDigest(teacher);
   const studentBeforeImage = await canvasDigest(student);
