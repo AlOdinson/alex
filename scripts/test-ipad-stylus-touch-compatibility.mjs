@@ -11,6 +11,8 @@ const readSource = async (url) => {
 
 const main = await readSource(new URL('../src/main.jsx', import.meta.url));
 const compatibility = await readSource(new URL('../src/fabricStylusTouchCompatibility.js', import.meta.url));
+const board = await readSource(new URL('../src/components/Board.jsx', import.meta.url));
+const styles = await readSource(new URL('../src/styles.css', import.meta.url));
 
 assert.match(
   main,
@@ -36,6 +38,37 @@ assert.doesNotMatch(
   compatibility,
   /enablePointerEvents\s*=\s*true/,
   'the fix must not globally enable Fabric Pointer Events on iPad',
+);
+
+assert.match(
+  board,
+  /const boardPage = host\.closest\?\.\('\.board-page'\) \?\? host;/,
+  'native selection protection must cover the whole board page, not only the Fabric canvas',
+);
+assert.match(
+  board,
+  /boardPage\.addEventListener\('selectstart', handleNativeBoardSelectionStart/,
+  'board page must cancel Safari native selection outside real text editors',
+);
+assert.match(
+  board,
+  /boardPage\.addEventListener\('contextmenu', handleNativeBoardContextMenu/,
+  'board page must suppress Safari long-press callouts outside text editors',
+);
+assert.match(
+  board,
+  /document\.addEventListener\('selectionchange', handleNativeBoardSelectionChange\)/,
+  'stray Safari selections must be cleared even if WebKit creates them after the initial contact',
+);
+assert.match(
+  styles,
+  /\.board-page\s*\{[\s\S]*?-webkit-user-select:\s*none;[\s\S]*?-webkit-touch-callout:\s*none;/,
+  'board page CSS must declaratively disable Safari selection and touch callouts',
+);
+assert.match(
+  styles,
+  /\.board-page input,[\s\S]*?\.board-page textarea,[\s\S]*?\[contenteditable="true"\][\s\S]*?-webkit-user-select:\s*text;/,
+  'real text editors must retain native text selection',
 );
 
 const {

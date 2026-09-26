@@ -533,6 +533,20 @@ button:disabled {
   height: 100%;
   overflow: hidden;
   background: #ffffff;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Safari/iPad must never treat board chrome or the drawing surface as selectable page
+   content. Restore native selection only for actual editors so Text and browser inputs
+   keep normal caret/selection behavior. */
+.board-page input,
+.board-page textarea,
+.board-page [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+  -webkit-touch-callout: default;
 }
 
 .toolbar-shell {
