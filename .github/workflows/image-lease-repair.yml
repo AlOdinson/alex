@@ -1,0 +1,25 @@
+name: Image Lease Repair Verification
+on:
+  push:
+    branches: [fix/image-selection-lease-20260926]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Export exact source and pinned test dependencies
+        run: |
+          git archive --format=tar HEAD > source.tar
+          tar -czf image-lease-workspace.tar.gz source.tar node_modules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-lease-workspace
+          path: image-lease-workspace.tar.gz
+          retention-days: 1
