@@ -32,6 +32,22 @@ includes(
   'The board-native Ultra checkbox must be wired to the host session.',
 );
 includes(
+  /setResolution720Enabled/,
+  'The host session must expose a live 720p quality toggle.',
+);
+includes(
+  /HD720_SCREEN_SHARE_TOGGLE_EVENT/,
+  'The board-native 720 checkbox must be wired to the host session.',
+);
+includes(
+  /width:\s*\{\s*ideal:\s*1280,\s*max:\s*1280\s*\}[\s\S]*?height:\s*\{\s*ideal:\s*720,\s*max:\s*720\s*\}/,
+  '720 mode must cap capture at 1280x720.',
+);
+includes(
+  /width:\s*\{\s*ideal:\s*1920,\s*max:\s*1920\s*\}[\s\S]*?height:\s*\{\s*ideal:\s*1080,\s*max:\s*1080\s*\}/,
+  'Ultra without 720 must request 1920x1080.',
+);
+includes(
   /if \(!canEdit \|\| startBusyRef\.current\) return;/,
   'Normal screen capture must be available to every editor, not only the owner.',
 );
