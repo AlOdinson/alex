@@ -288,3 +288,115 @@ test('student can recreate a failed peer runtime for the same teacher after pres
   assert.notEqual(second, first);
   assert.equal(second.teacherId, 'teacher-a');
 });
+
+
+test('student enables WebRTC live only when both local opt-in and owner capability are present', async () => {
+  const created = [];
+  const session = createBrowserBoardSession({
+    boardId: 'board-live-capability',
+    clientId: 'student-live-capability',
+    permission: 'edit',
+    webrtcLiveV1: true,
+    localCapabilities: { webrtcLiveV1: true },
+    sendScreenShareSignal: async () => {},
+    getReplica: () => ({ revision: 0 }),
+    createStudentRuntime: (options) => {
+      created.push(options);
+      return {
+        start: async () => {},
+        proposeActionAndWait: async () => ({ accepted: true, revision: 0 }),
+        close() {},
+      };
+    },
+    registerRuntime: () => () => {},
+  });
+
+  await session.start();
+  await session.updateParticipants([{
+    clientId: 'teacher-new',
+    permission: 'owner',
+    capabilities: { webrtcLiveV1: true },
+  }]);
+
+  assert.equal(created.length, 1);
+  assert.equal(created[0].boardId, 'board-live-capability');
+  assert.equal(created[0].teacherId, 'teacher-new');
+  assert.equal(created[0].webrtcLiveEnabled, true);
+  assert.equal(session.getCollaborationMode('teacher-new'), 'webrtc-live-v1');
+  session.close();
+});
+
+test('student keeps legacy transport when owner does not advertise WebRTC live capability', async () => {
+  let studentOptions = null;
+  const session = createBrowserBoardSession({
+    boardId: 'board-live-legacy',
+    clientId: 'student-live-legacy',
+    permission: 'edit',
+    webrtcLiveV1: true,
+    localCapabilities: { webrtcLiveV1: true },
+    sendScreenShareSignal: async () => {},
+    getReplica: () => ({ revision: 0 }),
+    createStudentRuntime: (options) => {
+      studentOptions = options;
+      return {
+        start: async () => {},
+        proposeActionAndWait: async () => ({ accepted: true, revision: 0 }),
+        close() {},
+      };
+    },
+    registerRuntime: () => () => {},
+  });
+
+  await session.start();
+  await session.updateParticipants([{ clientId: 'teacher-legacy', permission: 'owner' }]);
+
+  assert.equal(studentOptions.webrtcLiveEnabled, false);
+  assert.equal(session.getCollaborationMode('teacher-legacy'), 'legacy');
+  session.close();
+});
+
+test('student recreates the same-teacher runtime when live capability mode changes', async () => {
+  const created = [];
+  const closed = [];
+  let current = null;
+  const session = createBrowserBoardSession({
+    boardId: 'board-live-upgrade',
+    clientId: 'student-live-upgrade',
+    permission: 'edit',
+    webrtcLiveV1: true,
+    localCapabilities: { webrtcLiveV1: true },
+    sendScreenShareSignal: async () => {},
+    getReplica: () => ({ revision: 4 }),
+    createStudentRuntime: (options) => {
+      const number = created.length + 1;
+      const runtime = {
+        number,
+        start: async () => {},
+        proposeActionAndWait: async () => ({ accepted: true, revision: 4 }),
+        close() { closed.push(number); },
+      };
+      created.push({ options, runtime });
+      return runtime;
+    },
+    registerRuntime: (_boardId, runtime) => {
+      current = runtime;
+      return () => { if (current === runtime) current = null; };
+    },
+  });
+
+  await session.start();
+  await session.updateParticipants([{ clientId: 'teacher-a', permission: 'owner' }]);
+  assert.equal(created[0].options.webrtcLiveEnabled, false);
+
+  await session.updateParticipants([{
+    clientId: 'teacher-a',
+    permission: 'owner',
+    capabilities: { webrtcLiveV1: true },
+  }]);
+
+  assert.equal(created.length, 2);
+  assert.equal(created[1].options.webrtcLiveEnabled, true);
+  assert.deepEqual(closed, [1]);
+  assert.equal(current?.number, 2);
+  session.close();
+});
