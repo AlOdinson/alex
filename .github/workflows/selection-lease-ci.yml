@@ -1,0 +1,22 @@
+name: Selection Lease CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  selection-lease:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npm run test:selection-lease
+      - name: Install browser test driver
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: Real Fabric mouse move, resize and cancellation regressions
+        run: npm run test:selection-lease:browser
