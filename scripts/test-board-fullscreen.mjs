@@ -52,6 +52,9 @@ assert.match(ui, /const BUTTON_SIZE\s*=\s*42/);
 assert.match(ui, /brandRect\.right\s*\+\s*BUTTON_GAP/);
 assert.match(ui, /brandRect\.top\s*\+\s*\(brandRect\.height\s*\/\s*2\)\s*-\s*\(BUTTON_SIZE\s*\/\s*2\)\s*\+\s*1/);
 assert.match(ui, /alex-board-immersive-fallback/);
+assert.match(ui, /alex-board-immersive-clean/);
+assert.match(ui, /if \(isActive\(\)\) \{[\s\S]*?safe-area-inset-left[\s\S]*?safe-area-inset-top/, 'active fullscreen control must anchor independently of the hidden toolbar');
+assert.match(ui, /syncCleanUi\(\)/, 'fullscreen transitions must synchronize clean board chrome');
 assert.match(ui, /fullscreenchange/);
 assert.match(ui, /webkitfullscreenchange/);
 assert.match(ui, /FULLSCREEN_ICON_VARIANT\s*=\s*['\"]corner-brackets-1['\"]/);
@@ -65,6 +68,11 @@ assert.match(css, /\.alex-board-fullscreen-button[\s\S]*?background:\s*transpare
 assert.match(css, /\.alex-board-fullscreen-button[\s\S]*?color:\s*#2563eb/);
 assert.match(css, /\.alex-board-fullscreen-button[\s\S]*?box-shadow:\s*none/);
 assert.doesNotMatch(css, /\.alex-board-fullscreen-button\s*\{[\s\S]*?background:\s*#2563eb/);
+assert.match(css, /html\.alex-board-immersive-clean #root \.toolbar-primary-row[\s\S]*?display:\s*none\s*!important/, 'clean fullscreen must hide the primary toolbar');
+assert.match(css, /html\.alex-board-immersive-clean #root \.board-tool-dock[\s\S]*?display:\s*none\s*!important/, 'clean fullscreen must hide the bottom tool dock');
+assert.match(css, /html\.alex-board-immersive-clean #root button[\s\S]*?visibility:\s*hidden\s*!important/, 'clean fullscreen must hide remaining application buttons');
+assert.match(css, /html\.alex-board-immersive-clean #alex-board-fullscreen-root[\s\S]*?display:\s*block\s*!important/, 'fullscreen exit control must remain visible');
+assert.match(css, /html\.alex-board-immersive-clean #root \.screen-share-panel[\s\S]*?box-shadow:\s*none\s*!important/, 'remote browser media must keep its content without panel chrome');
 assert.match(pkg.scripts['test:sync'], /test-board-fullscreen\.mjs/);
 
 console.log('Board fullscreen regression passed.');
