@@ -68,13 +68,13 @@ jobs:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
           VITE_WEBRTC_LIVE_V1: "true"
-        run: npm run build -- --base=/alex/preview-browser-authority/
+        run: npm run build -- --base=/preview-browser-authority/
       - name: Start local branch preview
         run: |
-          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/alex-preview.log 2>&1 &
+          npm run preview -- --host 127.0.0.1 --port 4173 --base=/preview-browser-authority/ > /tmp/alex-preview.log 2>&1 &
           echo $! > /tmp/alex-preview.pid
           for attempt in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:4173/alex/preview-browser-authority/ >/dev/null; then
+            if curl -fsS http://127.0.0.1:4173/preview-browser-authority/ >/dev/null; then
               exit 0
             fi
             sleep 1
