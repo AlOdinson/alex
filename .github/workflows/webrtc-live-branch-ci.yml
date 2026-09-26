@@ -41,3 +41,57 @@ jobs:
           node --test scripts/test-browser-authority-realtime-events.mjs
           node --test scripts/test-browser-authority-realtime-core.mjs
           node --test scripts/test-browser-board-session.mjs
+
+
+  browser-e2e:
+    needs: focused
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install project dependencies
+        run: npm install --no-audit --no-fund
+      - name: Install lightweight Playwright driver
+        run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - name: Validate live test configuration
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          test -n "$VITE_SUPABASE_URL"
+          test -n "$VITE_SUPABASE_PUBLISHABLE_KEY"
+      - name: Build branch preview with WebRTC live enabled
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
+          VITE_WEBRTC_LIVE_V1: "true"
+        run: npm run build -- --base=/alex/preview-browser-authority/
+      - name: Start local branch preview
+        run: |
+          npm run preview -- --host 127.0.0.1 --port 4173 > /tmp/alex-preview.log 2>&1 &
+          echo $! > /tmp/alex-preview.pid
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4173/alex/preview-browser-authority/ >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/alex-preview.log
+          exit 1
+      - name: Chromium WebRTC live/durable E2E
+        env:
+          BROWSER_AUTHORITY_PREVIEW_URL: http://127.0.0.1:4173/alex/preview-browser-authority/
+          EXPECT_WEBRTC_LIVE_V1: "1"
+        run: node scripts/test-browser-authority-preview-e2e.mjs
+      - name: Show preview log on failure
+        if: failure()
+        run: cat /tmp/alex-preview.log || true
+      - name: Stop local preview
+        if: always()
+        run: |
+          if [ -f /tmp/alex-preview.pid ]; then
+            kill "$(cat /tmp/alex-preview.pid)" || true
+          fi
