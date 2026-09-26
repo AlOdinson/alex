@@ -34,9 +34,9 @@ export const SCREEN_SHARE_ULTRA_PROFILE = Object.freeze({
 
 export const SCREEN_SHARE_ULTRA_720_PROFILE = Object.freeze({
   id: 'ultra-720',
-  label: 'Ultra · 720p · 60 FPS · до 5 Мбит/с',
+  label: 'Ultra · 720p · 60 FPS · до 10 Мбит/с',
   maxFrameRate: 60,
-  maxBitrate: 5_000_000,
+  maxBitrate: 10_000_000,
 });
 
 export function screenShareEffectiveProfile(
