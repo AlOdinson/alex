@@ -6,6 +6,7 @@ import {
   preferredScreenShareSession,
   SCREEN_SHARE_PROFILES,
   SCREEN_SHARE_PROTOCOL,
+  SCREEN_SHARE_ULTRA_720_PROFILE,
   SCREEN_SHARE_ULTRA_PROFILE,
   screenShareBoardLayoutForViewport,
   screenShareCapability,
