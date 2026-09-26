@@ -1,4 +1,4 @@
-# WebRTC Live + Ably Authoritative Sync — Design
+# WebRTC Live + Ably Signaling — Design
 
 Date: 2026-09-26
 Branch: project/webrtc-live-ably-sync
@@ -6,462 +6,486 @@ Base main commit: 3b08833d57b604d312bdbaa97d620e0a91476108
 
 ## Goal
 
-Move high-frequency visual collaboration to WebRTC while making Ably the reliable board-synchronization and signaling plane.
+Move all board live/visual traffic that currently uses Ably onto WebRTC, while keeping Ably only as the connection-assistance plane: participant presence/discovery plus WebRTC signaling (offer, answer, ICE).
 
-The intended behavior is:
+The existing WebRTC durable authority path remains unchanged in purpose: it continues to carry canonical actions, acknowledgements, commits, snapshots, locks, verification traffic, and large transfers.
 
-- WebRTC carries disposable live previews: pencil points, cursors, drag/resize/rotate frames, selection previews, and viewport-follow frames.
-- Ably carries presence, WebRTC signaling, durable action proposals, authoritative commits, acknowledgements, locks, revision synchronization, and snapshot recovery.
-- The teacher browser remains the only canonical authority.
-- A WebRTC failure may reduce smoothness, but must not block durable editing while Ably is healthy.
-- This project is developed only on `project/webrtc-live-ably-sync`; `main` is not changed without explicit merge approval.
+The teacher browser remains the only canonical authority.
+
+No change is merged to `main` without explicit approval.
 
 ## Current architecture
 
-Today the project is split differently:
+Today:
 
-- Ably carries transient events such as `cursor`, `draw`, `transform`, `preview`, `object-live`, `delete-preview`, `selection-transaction`, `view`, and WebRTC signaling.
-- Durable student proposals, acknowledgements, commits, snapshots, locks, and verification traffic use an ordered reliable WebRTC DataChannel.
-- Ably deliberately ignores `action` / `actions` packets in browser-authority mode.
-- The teacher browser owns canonical board state and revision in the browser authority store.
-- Images may be embedded as large data URLs in durable objects; the existing peer transport chunks oversized messages and snapshot transfers.
-- The default RTC configuration currently has one STUN server and no TURN relay.
+- Ably carries transient board events:
+  - mode
+  - background-live
+  - sync
+  - cursor
+  - lock preview
+  - transform
+  - draw
+  - preview
+  - object-live
+  - delete-preview
+  - selection-transaction
+  - view
+  - view-jump
+  - view-request
+  - game-library-visibility
+  - WebRTC signaling
+  - presence
+- WebRTC `alex-board-durable-v1` carries durable student proposals, acknowledgements, commits, snapshots, locks, verification traffic, and large chunked transfers.
+- The teacher browser owns canonical board state/revision.
+- Ably deliberately does not accept durable `action` / `actions` packets.
+- WebRTC signaling is already relayed through Ably.
+- Current default RTC config has one STUN server and no TURN.
 
 ## Target architecture
 
-### Ably control + durable synchronization plane
+### Ably: connection assistance only
 
-Ably becomes the primary reliable transport for the existing peer-authority protocol.
+For two new-capability clients, Ably is used only for:
 
-It carries versioned, targeted durable envelopes for:
+- token authentication
+- presence
+- participant discovery
+- capability advertisement
+- WebRTC signaling:
+  - offer
+  - answer
+  - ICE candidates
+  - bounded signaling replay assistance already implemented
 
-- head / revision exchange
+No board live event is published through Ably once both peers support the new live transport.
+
+Ably does not become a board synchronization backend.
+
+### WebRTC durable channel: canonical/reliable path
+
+Keep existing label:
+
+`alex-board-durable-v1`
+
+Keep existing ordered, reliable semantics.
+
+It continues to carry:
+
+- initial head/revision exchange
 - snapshot request and snapshot transfer
-- sync request
-- action proposal
-- authoritative commit
-- acknowledgement
-- lock request / lock result
-- verification control traffic
-- WebRTC offer / answer / ICE signaling
-- presence and participant capabilities
+- sync requests
+- action proposals
+- authoritative commits
+- acknowledgements
+- lock acquire/refresh/release
+- verification traffic
+- large image-bearing messages
+- undo/redo outcomes
+- canonical board recovery
 
-Ably is a transport, not a second authority. A student may publish a proposal, but only the teacher authority may produce canonical commits and revision advances.
+This path remains the source of durable collaboration truth.
 
-The existing `teacherPeerHub` and `studentPeerSession` semantics should be reused wherever practical by placing an Ably transport adapter underneath them instead of duplicating authority logic.
+### WebRTC live channel: transient visual path
 
-### WebRTC live plane
+Create a second DataChannel:
 
-Create a dedicated DataChannel:
+`alex-board-live-v1`
 
-- label: `alex-board-live-v1`
-- purpose: transient high-frequency visual frames only
-- stale frames may be dropped
-- it never advances board revision
-- it never writes canonical history
-- it never grants permissions or locks
+Purpose:
 
-The current durable DataChannel `alex-board-durable-v1` remains available during rollout for legacy compatibility and as a temporary migration fallback, but it is not the target primary durable transport after both peers advertise Ably durable capability.
+- cursor
+- pencil live preview
+- transform preview
+- preview
+- object-live
+- delete-preview
+- selection-transaction preview
+- view / view-jump / view-request
+- background-live preview
+- lock visualization
+- other existing non-durable board live events
+
+Rules:
+
+- live traffic never advances canonical revision
+- live traffic never writes durable history
+- live traffic never grants permission
+- live traffic never bypasses object locks or selection leases
+- stale or malformed frames are discardable
+- final canonical state always comes from the existing durable channel
+
+## Low-frequency board-control events
+
+Some current Ably events are not high-rate but still belong to the board rather than to connection setup, e.g. mode, game-library-visibility, background-live, sync hints.
+
+For new-capability peers, these move off Ably too.
+
+Use the existing reliable WebRTC durable channel for low-frequency transient/control messages that should not be lost or reordered.
+
+Add a bounded peer-protocol message type such as:
+
+`board-control`
+
+with payload:
+
+```js
+{
+  event,
+  payload
+}
+```
+
+Allowed control events are explicitly enumerated.
+
+This avoids keeping Ably as a second board-event bus while also avoiding unreliable delivery for rare control transitions.
+
+## Live protocol
+
+Use a versioned envelope:
+
+```js
+{
+  protocol: "alex-board-live-v1",
+  type,
+  boardId,
+  clientId,
+  seq,
+  baseRevision,
+  timestamp,
+  streamKey,
+  payload
+}
+```
+
+### Sequence and staleness
+
+- `seq` is monotonic per sender live session.
+- Replaceable streams also use `streamKey` such as `cursor`, `transform:<objectId>`, `view`, or `draw:<objectId>`.
+- Receiver tracks newest accepted sequence per stream.
+- older frames are ignored
+- frames whose `baseRevision` is causally obsolete for the referenced object/state are ignored using existing convergence rules where applicable
+- canonical durable commit always wins over live preview
+
+## RTC live channel settings
+
+Initial channel configuration:
+
+```js
+{
+  ordered: false,
+  maxRetransmits: 0
+}
+```
+
+Rationale:
+
+- cursor/transform/view frames are replaceable
+- pencil preview may tolerate gaps because the complete final stroke arrives through the durable channel
+- removing retransmission avoids head-of-line delay for obsolete preview frames
+
+If browser compatibility testing proves `maxRetransmits: 0` unsuitable on a supported browser, keep `ordered: false` and use the narrowest compatible reliability setting; document the exact fallback in code/tests.
+
+## Congestion behavior
+
+The live channel must not use the durable channel's unbounded ordered promise queue.
+
+Requirements:
+
+- hard bufferedAmount high-water threshold
+- low-water drain threshold
+- bounded pending live map
+- coalesce replaceable frames by `streamKey`
+- newest frame replaces older pending frame
+- drop obsolete frames instead of growing memory
+- expose counts for sent/received/coalesced/dropped frames
+- never let live congestion block durable sends
+
+## Pencil behavior
+
+During pointer/stylus down:
+
+- points are sent incrementally over `alex-board-live-v1`
+- packets may be coalesced/dropped under congestion
+- receiver renders transient stroke preview
+
+On pointer-up:
+
+- full stroke is committed exactly as today over `alex-board-durable-v1`
+- canonical commit reconciles/replaces transient stroke
+- even if every live packet is lost, final board state is correct
+
+## Transform behavior
+
+During drag/resize/rotate/group transform:
+
+- geometry previews go through live channel
+- newest causally valid frame wins
+- final transform commit stays on durable channel
+- commit clears/reconciles preview
+- selection lease and lock authority stay unchanged
+
+## Images
+
+- image bytes are not repeatedly sent during live transforms
+- live image transform contains geometry/object identity only
+- insertion/final image object uses existing durable chunking
+- snapshot/image recovery remains on durable WebRTC channel
+- object-storage migration is out of scope
+
+## Connection model
+
+Student remains WebRTC initiator under current topology.
+
+On one RTCPeerConnection:
+
+- durable DataChannel: `alex-board-durable-v1`
+- live DataChannel: `alex-board-live-v1`
+
+Readiness is separate:
+
+- `durableReady`: canonical edit path ready
+- `liveReady`: live preview channel ready
+
+Editing requires `durableReady`.
+
+A live-channel-only failure must not close a healthy durable channel.
+
+If the entire RTCPeerConnection fails, existing recovery/signaling assistance reconnects the peer. Ably helps establish the new connection but does not carry board events in v1 mode.
+
+TURN is a separate follow-up project.
 
 ## Capability negotiation
 
-Presence data advertises explicit capabilities:
+Presence advertises:
 
 ```js
 capabilities: {
-  ablyDurableV1: true,
   webrtcLiveV1: true
 }
 ```
 
 Rules:
 
-- New teacher + new student: Ably durable + WebRTC live.
-- New + legacy peer: use the current legacy durable WebRTC path and current Ably transient path for that peer until both sides support the new architecture.
-- No client assumes support from version numbers or timing alone.
-- Capability changes are diagnostic/control metadata and do not grant edit permission.
+- new + new => WebRTC live + WebRTC durable; Ably presence/signaling only
+- new + legacy => current legacy behavior for that peer:
+  - durable over existing WebRTC
+  - live events through current Ably path
+- no capability inference from application version or timing
+- capability does not alter permission
 
-## Reusing the existing peer protocol over Ably
+This allows branch testing without breaking existing clients.
 
-Introduce an Ably durable transport adapter with the same conceptual interface used by the current peer sessions:
+## Routing model
 
-```js
-transport.send(type, payload)
-transport.sendTextTransfer(kind, text, options)
-transport.sendLowPriorityEncoded(encoded)
-transport.close()
-```
+Introduce a single board transient router.
 
-The adapter wraps each peer-protocol frame in a targeted Ably envelope containing:
+For each event:
 
-```js
-{
-  protocol: "alex-board-ably-durable-v1",
-  boardId,
-  sourceId,
-  targetId,
-  messageId,
-  frame
-}
-```
+- if collaboration mode is `v1` and event is high-rate live => WebRTC live
+- if collaboration mode is `v1` and event is reliable low-frequency board control => WebRTC durable `board-control`
+- if collaboration mode is `legacy` => existing Ably behavior
+- signaling always => Ably
+- durable canonical operations always => existing durable WebRTC path
 
-Teacher broadcast commits are still logically one authority commit delivered to each eligible peer. Receivers ignore envelopes not targeted to them (or explicit broadcast envelopes where allowed).
+No production dual-send of the same board event.
 
-## Ably large-message transport
-
-The existing peer protocol limits individual frames. Reuse its bounded transfer framing rather than publishing multi-megabyte JSON as one Ably message.
-
-Requirements:
-
-- choose an Ably-safe frame ceiling below the account/platform maximum; initial project value: 12 KiB encoded frame payload
-- large peer messages are split into `transfer-start`, bounded `transfer-chunk`, and `transfer-end`
-- receiver reassembles with an explicit maximum transfer size and maximum concurrent transfers
-- duplicated frames are idempotent
-- missing/incomplete transfers expire
-- malformed or oversized transfers are rejected
-- snapshots and image-bearing commits may therefore work without WebRTC, although they are expected to be slower and more expensive than small actions
-
-This project does not migrate images to object storage. That can be a later optimization.
-
-## Durable delivery semantics
-
-Ably receipt alone is not application acknowledgement.
-
-The existing action protocol remains authoritative:
-
-1. Student creates stable `actionId`.
-2. Student sends `action-proposal` through the Ably durable transport.
-3. Teacher validates permission, lock state, base revision, and operation semantics.
-4. Teacher commits once.
-5. Teacher sends canonical `commit` and `ack`.
-6. Duplicate proposal with the same `actionId` returns the existing outcome instead of applying twice.
-
-On reconnect, revision/head synchronization repairs any missed commit.
-
-## WebRTC live protocol
-
-Create a versioned envelope:
-
-```js
-{
-  protocol: "alex-board-live-v1",
-  type: "cursor" | "draw" | "transform" | "preview" | "object-live" |
-        "delete-preview" | "selection-transaction" | "view" |
-        "view-jump" | "view-request" | "background-live",
-  boardId,
-  clientId,
-  seq,
-  baseRevision,
-  timestamp,
-  payload
-}
-```
-
-Rules:
-
-- `seq` is monotonic per sender/live session.
-- Receiver tracks highest accepted sequence for replaceable streams.
-- Live messages cannot advance canonical revision.
-- Causally stale frames are ignored.
-- Corresponding transient state is reconciled or removed when the canonical Ably commit arrives.
-- Malformed, oversized, unknown-type, and wrong-board messages are rejected.
-
-## Live channel behavior
-
-Use a second RTCDataChannel independent from the legacy durable channel.
-
-Desired properties:
-
-- unordered where safe
-- bounded retransmission or no retransmission for disposable frames
-- no unbounded promise/send queue
-- congestion-aware coalescing
-- live channel closure must not close Ably durable editing
-- durable/Ably failure must not be hidden by a still-moving live preview
+Optional diagnostics mode may compute both paths but applies/sends only the selected path unless an explicit test fixture enables mirrored transport.
 
 ## Event classification
 
-### WebRTC-live primary
+### High-rate WebRTC live
 
 - cursor
-- pencil stroke preview
-- single-object transform preview
-- group transform preview
-- object-live preview
-- delete preview
-- selection transaction preview
-- viewport/view-follow
+- draw
+- transform
+- preview
+- object-live
+- delete-preview
+- selection-transaction preview frames that are self-contained
+- view
+
+### Reliable WebRTC board-control
+
+- mode
+- background-live
+- sync hint
 - view-jump
-- view-request when live peer is available
-- background-live preview
+- view-request
+- game-library-visibility
+- selection transaction lifecycle boundaries if tests show they cannot safely be lossy
+- other rare board UI control events currently using Ably
 
-### Ably durable/control
-
-- final pencil stroke
-- final object move/resize/rotate
-- object create/delete
-- text commit
-- style commit
-- background commit
-- undo/redo
-- image insertion final state
-- lock acquire/refresh/release
-- canonical commit
-- canonical snapshot
-- revision/head exchange
-- acknowledgements
-- permission-relevant state
-- verification traffic
-- presence/capabilities
-- WebRTC signaling
-
-## Pencil behavior
-
-While pointer/stylus is down:
-
-- incremental points travel through WebRTC live
-- points may be coalesced under congestion
-- receiver paints a transient stroke
-
-On pointer-up:
-
-- one complete authoritative stroke action is proposed through Ably
-- teacher commits it once
-- canonical commit replaces/reconciles transient preview
-- lost live packets cannot change the final stroke
-
-If live WebRTC is unavailable, optional bounded Ably transient fallback may provide a lower-rate preview; regardless, the final durable stroke still goes through Ably.
-
-## Transform behavior
-
-During drag, resize, rotation, or group transform:
-
-- send newest causally valid frame over WebRTC live
-- coalesce obsolete frames by object/group key
-- respect the existing selection lease and lock model
-- final state is proposed/committed through Ably
-- commit clears stale preview
-
-## Images
-
-Do not retransmit image bytes for every transform.
-
-- live image transform contains object id + geometry only
-- final transform action contains canonical object mutation
-- initial image insertion may contain a large data URL and therefore uses the bounded Ably transfer framing
-- late-join snapshot may include image data and uses the same bounded transfer framing
-- object-storage migration is out of scope
-
-## Ably transient fallback
-
-WebRTC live is preferred. When unavailable:
-
-- durable editing continues through Ably
-- selected transient events may use the existing Ably event path at bounded rates
-- cursor <= 10 Hz
-- transform <= 10 Hz
-- draw preview <= 10 Hz with point coalescing
-- view <= 8 Hz
-- object/selection previews coalesced by identity
-
-When live WebRTC recovers, discard stale queued previews and route new transient traffic back to WebRTC.
-
-## WebRTC signaling
-
-Keep offer/answer/ICE signaling on Ably.
-
-Existing signaling replay assistance remains.
-
-TURN infrastructure is not added in this project, but the new live channel must work with future `rtcConfig` STUN/TURN settings without protocol redesign.
-
-## Connection/readiness model
-
-Track durable and live readiness separately.
-
-- `durableReady`: Ably authority session is synchronized enough to edit.
-- `liveReady`: WebRTC live DataChannel is open.
-- Editing permission depends on `durableReady`, not `liveReady`.
-- UI may show reduced-live-quality/fallback diagnostics without disabling editing.
-- A working WebRTC channel must never mask an Ably durable outage.
+Exact classification is pinned by tests before migration of each event.
 
 ## Recovery
 
-### Ably durable reconnect
+### Live channel recovers
 
-1. reconnect/reattach Ably
-2. presence/capability refresh
-3. exchange authoritative head
-4. request missing commits or snapshot
-5. only then declare durable editing ready
+- clear pending stale live queue
+- reset live sequence epoch/session
+- resume only new frames
+- do not replay old previews
 
-### WebRTC live reconnect
+### Durable channel recovers
 
-1. verify signaling/session peer identity
-2. open new live channel
-3. clear stale local live queue
-4. resume only new transient frames
-5. canonical Ably revision remains unchanged by the live reconnect
+Use existing durable recovery semantics:
+
+- head/revision comparison
+- missing commits/snapshot
+- canonical convergence
+
+### Ably reconnects
+
+Ably reconnect is relevant only for presence/signaling continuity.
+
+If WebRTC is already healthy, an Ably signaling reconnect must not disturb the active board channels.
+
+If WebRTC is down, Ably presence/signaling recovery helps create a new peer connection.
 
 ## Diagnostics
 
-Expose internal counters/state without board content or secrets:
+Expose internal state/counters without board content or secret keys:
 
-- durable Ably state
-- live WebRTC state
-- live direct/relay candidate type when browser APIs expose it safely
-- current revision
-- live frames sent/received/dropped/coalesced
-- live fallback events sent via Ably
-- durable frames/messages sent via Ably
+- Ably signaling state
+- WebRTC connection state
+- durable channel state
+- live channel state
+- sent/received live frames
+- coalesced live frames
+- dropped live frames
+- legacy Ably live message count
+- current collaboration mode: legacy / webrtc-live-v1
 - reconnect count
-- large transfer count/bytes
-- current capability mode: legacy / hybrid / v1
+- current canonical revision
 
-## Feature flags and rollout
+## Feature flags
 
-Use a safe rollout flag:
+Use branch-only opt-in:
 
-- `ablyDurableWebrtcLiveV1`
+- `webrtcLiveV1`
 - optional `dualTransportDiagnostics`
 
 Modes:
 
-- off: current production behavior
-- on for both capable peers: Ably durable + WebRTC live
-- mixed capabilities: legacy behavior
-- diagnostic mode: compare paths without applying duplicate effects
-
-Keep the current implementation available until the new branch passes verification.
+- flag off => production behavior unchanged
+- flag on + capable peer => WebRTC live
+- flag on + legacy peer => current Ably live path
+- no merge to `main` without explicit approval
 
 ## Files expected to change
 
-Primary existing files:
+Primary:
 
-- `src/lib/browserAuthorityRealtime.js`
-- `src/lib/browserAuthorityRealtimeCore.js`
-- `src/lib/browserBoardSession.js`
 - `src/lib/browserPeerConnection.js`
+- `src/lib/peerProtocol.js`
+- `src/lib/peerDataChannel.js` only if board-control needs a helper
 - `src/lib/teacherPeerNetwork.js`
 - `src/lib/studentPeerNetwork.js`
 - `src/lib/teacherBoardRuntime.js`
 - `src/lib/studentBoardRuntime.js`
+- `src/lib/browserBoardSession.js`
+- `src/lib/browserAuthorityRealtimeCore.js`
+- `src/lib/browserAuthorityRealtime.js`
 - `src/components/Board.jsx`
 
-Reuse where possible:
+Likely new:
 
-- `src/lib/peerProtocol.js`
-- `src/lib/teacherPeerHub.js`
-- `src/lib/studentPeerSession.js`
-
-Likely new modules:
-
-- `src/lib/ablyDurableTransport.js`
 - `src/lib/liveEventProtocol.js`
 - `src/lib/peerLiveChannel.js`
 - `src/lib/liveTransportRouter.js`
+- `src/lib/collaborationTransportFlags.js`
 
 ## Non-goals
 
 This project will not:
 
-- remove Ably
-- replace teacher authority
-- move canonical browser storage to a backend
-- migrate images to object storage
-- replace Supabase token issuance
+- move durable board synchronization to Ably
+- make Ably an authoritative board backend
+- remove Ably signaling/presence
 - deploy TURN
+- replace Supabase token issuance
+- migrate image storage
 - change board/share-key formats
-- merge anything into `main` without explicit approval
+- change teacher authority semantics
+- merge to `main`
 
 ## Security and authority invariants
 
-- Only the teacher authority advances canonical revision.
-- Student Ably messages are proposals, never commits.
-- Source identity is taken from the authenticated/session context and validated against envelope identity.
-- Wrong-board / wrong-target durable envelopes are ignored.
-- Duplicate action IDs are idempotent.
-- Live WebRTC messages are untrusted preview input.
-- Live traffic cannot change permission, locks, history, or revision.
-- Oversized/malformed messages and transfers fail closed.
-- Secret room keys are never included in diagnostics.
+- live messages are untrusted transient UI input
+- live messages cannot mutate canonical history/revision
+- board-control messages are validated against an explicit allowlist
+- wrong-board/wrong-peer live frames are ignored
+- oversized/malformed live frames are rejected
+- durable actions continue through existing authority checks
+- secret room keys never enter diagnostics
 
 ## Verification plan
 
-### Unit tests
+### Unit
 
-- Ably durable envelope validation and targeting
-- peer-protocol framing over Ably
-- large durable message chunk/reassembly
-- duplicate/missing/expired transfer behavior
-- durable action idempotency through Ably
-- capability negotiation
 - live protocol validation
-- live sequence/stale rejection
-- live coalescing/congestion behavior
-- live failure independent from durable readiness
-- bounded Ably transient fallback
+- stale sequence rejection
+- wrong board/source rejection
+- congestion/coalescing/drop behavior
+- board-control allowlist validation
+- capability negotiation
+- live close independent from durable close
 
-### Integration tests
+### Integration
 
-- new student joins through Ably durable sync with revision 0 snapshot
-- existing student catches up through commits
-- student proposal -> teacher authority -> commit/ack over Ably
-- image-bearing action over chunked Ably
-- lock acquire/refresh/release over Ably
-- teacher/student reconnect and revision repair
-- cursor through WebRTC
-- pencil preview through WebRTC + final action through Ably
-- image drag/resize preview through WebRTC + final transform through Ably
-- group selection/transform
-- undo/redo after live preview
-- WebRTC loss while durable Ably edit succeeds
-- Ably loss while live frames may still arrive but editing is gated
-- legacy/new mixed-client behavior
-- late join gets canonical state, never stale previews
+- cursor teacher -> student over WebRTC
+- cursor student -> teacher over WebRTC
+- pencil preview over live + final durable stroke
+- transform preview over live + final durable transform
+- image resize preview without retransmitting image bytes
+- group transform/selection
+- view/view-jump/view-request
+- mode/background/game visibility through WebRTC board-control
+- live loss with durable final state still correct
+- Ably reconnect while WebRTC remains healthy
+- WebRTC reconnect using Ably signaling
+- new/legacy mixed peer uses legacy Ably live path
 
-### Browser tests
-
-At minimum:
+### Browser
 
 - Chromium desktop
 - WebKit desktop
-- existing touch-profile fixtures
-- throttled/congested live DataChannel
-- reordered/dropped live frames
-- Ably durable reconnect
-- large snapshot transfer over Ably adapter
-- fallback transient path
+- existing touch-profile browser tests
+- simulated reordered/dropped live frames
+- simulated live channel congestion
+- live channel close while durable stays open
+- full peer reconnect
 
-### Existing regression suites
+### Existing regressions
 
-Run all existing browser-authority, sync, history, image, selection, storage, peer, screen-share, and build suites relevant to production behavior.
+Run current peer, authority, history, image, selection, screen-share, sync, and production build suites.
 
 ## Acceptance criteria
 
-The branch is ready for merge review only when:
+Ready for merge review only when:
 
-1. New-capability peers use Ably for durable authority synchronization and WebRTC for high-frequency live previews.
-2. WebRTC live failure does not prevent a healthy Ably session from editing.
-3. Ably durable failure gates editing even if stale live frames still move.
-4. Final canonical board is identical with perfect, lossy, reordered, or absent live traffic.
-5. Large snapshots/image-bearing actions can synchronize without relying on the live WebRTC channel.
-6. Legacy/new mixed clients remain usable via legacy transport behavior.
-7. Instrumentation shows a material reduction in Ably transient message volume during normal drawing/dragging.
-8. Existing authority/history/image/selection synchronization tests remain green.
+1. Two new clients publish no board live events through Ably.
+2. Ably remains functional for presence and WebRTC signaling.
+3. Existing durable WebRTC authority path remains correct.
+4. High-frequency previews use `alex-board-live-v1`.
+5. Loss/reorder/congestion of live packets never corrupts canonical state.
+6. Live-channel failure alone does not break durable editing.
+7. Mixed new/legacy clients remain usable.
+8. Existing history/image/selection/authority regression suites remain green.
 9. `main` remains unchanged until explicit approval.
 
 ## Rollout sequence
 
-1. Ably durable transport adapter over existing peer protocol.
-2. Capability advertisement and mixed-client selection.
-3. Ably durable authority session integration.
-4. Dedicated WebRTC live channel.
-5. Cursor migration.
-6. Pencil preview migration.
-7. Single-object transform migration.
-8. Group/selection/view previews.
-9. Bounded Ably transient fallback.
-10. Diagnostics / dual-transport verification.
-11. Full regression and browser tests.
-12. Branch-only deployment/testing.
-13. Explicit merge decision.
+1. Live protocol + channel, unused by UI.
+2. Capability negotiation.
+3. Cursor migration.
+4. Pencil draw preview migration.
+5. Single-object transform migration.
+6. Group/selection/preview/object-live/delete-preview migration.
+7. View events migration.
+8. Rare board-control events move from Ably to reliable WebRTC.
+9. Diagnostics.
+10. Full regression/browser verification.
+11. Branch-only deployment/test.
+12. Explicit merge decision.
