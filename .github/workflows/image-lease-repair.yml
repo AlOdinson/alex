@@ -24,7 +24,7 @@ jobs:
           if node --test scripts/test-selection-lease-transform.mjs > repair-evidence/red.log 2>&1; then
             echo 'Expected baseline regression failure was not reproduced'; exit 1
           fi
-          grep '# fail 7' repair-evidence/red.log
+          grep '# fail 8' repair-evidence/red.log
       - name: Apply exact locally verified repair
         shell: python
         env:
