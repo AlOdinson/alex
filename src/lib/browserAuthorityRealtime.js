@@ -1,6 +1,10 @@
 import { createBrowserBoardSession } from './browserBoardSession.js';
 import { createBrowserAuthorityRealtimeCore } from './browserAuthorityRealtimeCore.js';
 import { supabase } from './supabase.js';
+import {
+  COLLABORATION_LIVE_CAPABILITIES,
+  normalizeCollaborationCapabilities,
+} from './collaborationTransportFlags.js';
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const LOCK_TTL = 12_000;
@@ -93,6 +97,7 @@ export function createAblyBrowserTransport({
   clientId,
   name,
   permission,
+  capabilities = null,
   color = participantColor(clientId),
   onEvent = () => {},
   onUsers = () => {},
@@ -112,6 +117,9 @@ export function createAblyBrowserTransport({
   const safeBoardId = String(boardId ?? '').trim();
   const safeRoomKey = String(roomKey ?? '').trim();
   const safeClientId = String(clientId ?? '').trim();
+  const safeCapabilities = capabilities && typeof capabilities === 'object'
+    ? normalizeCollaborationCapabilities(capabilities)
+    : null;
   if (!safeBoardId || !safeRoomKey || !safeClientId) throw new Error('Ably board identity is incomplete');
 
   let client = null;
@@ -155,6 +163,7 @@ export function createAblyBrowserTransport({
         name: data.name ?? 'Участник',
         permission: data.permission ?? 'view',
         color: data.color ?? participantColor(memberClientId),
+        capabilities: normalizeCollaborationCapabilities(data.capabilities),
       });
     });
     const list = [...users.values()];
@@ -251,7 +260,12 @@ export function createAblyBrowserTransport({
     }), CONNECT_TIMEOUT_MS, 'Timed out while subscribing to Ably board presence', lifetime.signal);
     assertCurrent();
     await withTimeout(attemptChannel.presence.enter({
-      clientId: safeClientId, name, permission, color, joinedAt: Date.now(),
+      clientId: safeClientId,
+      name,
+      permission,
+      color,
+      joinedAt: Date.now(),
+      ...(safeCapabilities ? { capabilities: safeCapabilities } : {}),
     }), CONNECT_TIMEOUT_MS, 'Timed out while entering Ably board presence', lifetime.signal);
     assertCurrent();
     await refreshUsers();
@@ -331,6 +345,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     clientId,
     name = 'Участник',
     permission = 'view',
+    webrtcLiveV1 = false,
     getKnownRevision = () => 0,
     onOps,
     onUsers,
@@ -364,6 +379,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   const createCore = dependencies.createCore ?? createBrowserAuthorityRealtimeCore;
   const createTransport = dependencies.createTransport ?? createAblyBrowserTransport;
   const color = participantColor(clientId);
+  const localCapabilities = webrtcLiveV1 ? COLLABORATION_LIVE_CAPABILITIES : null;
   let transport = null;
   let core = null;
   let disconnected = false;
@@ -393,6 +409,8 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     boardId,
     clientId,
     permission,
+    webrtcLiveV1,
+    localCapabilities,
     onVerificationRecords, readVerificationCanvasIds, canVerifyCanvas,
     sendScreenShareSignal: (signal) => core?.sendScreenShareSignal?.(signal) ?? Promise.reject(new Error('Realtime core is not ready')),
     onAuthoritativeCommit: (commit) => onOps?.(
@@ -454,6 +472,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     clientId,
     name,
     permission,
+    capabilities: localCapabilities,
     color,
     onEvent: (event, payload) => routeBrowserRealtimeEvent(event, payload, {
       localClientId: clientId,
