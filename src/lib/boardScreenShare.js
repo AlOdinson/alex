@@ -3,10 +3,14 @@ import { normalizeScreenShareBoardLayout } from './screenShare.js';
 
 const SCREEN_SHARE_SOURCE_WIDTH = 1280;
 const SCREEN_SHARE_SOURCE_HEIGHT = 720;
-const FALLBACK_FRAME_INTERVAL_MS = 1000 / 60;
+const STANDARD_FALLBACK_FRAME_INTERVAL_MS = 66;
+const ULTRA_FALLBACK_FRAME_INTERVAL_MS = 1000 / 60;
 const CLOUD_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-cloud-state';
 const CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-cloud-state-request';
 const CLOUD_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-cloud-toggle';
+const ULTRA_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-ultra-state';
+const ULTRA_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-ultra-state-request';
+const ULTRA_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-ultra-toggle';
 const CLOUD_BUTTON_WIDTH = 88;
 const CLOUD_BUTTON_HEIGHT = 24;
 const CLOUD_BUTTON_MARGIN = 8;
@@ -46,6 +50,14 @@ function normalizedCloudControlState(detail, sessionId) {
       ? detail.cloudPhase
       : 'off',
     cloudError: String(detail.cloudError ?? ''),
+  };
+}
+
+function normalizedUltraControlState(detail, sessionId) {
+  if (!detail || String(detail.sessionId ?? '') !== String(sessionId ?? '')) return null;
+  return {
+    visible: Boolean(detail.visible),
+    enabled: Boolean(detail.enabled),
   };
 }
 
@@ -192,6 +204,13 @@ export function createBoardScreenShareMedia({
   };
   let cloudButton = null;
   let cloudCanvas = null;
+  let ultraState = {
+    visible: false,
+    enabled: false,
+  };
+  let ultraControl = null;
+  let ultraInput = null;
+  let restartFrameLoop = () => undefined;
 
   const rememberUniformScale = () => {
     lastUniformScale = sourceDimension(object.scaleX, lastUniformScale || 1);
@@ -248,6 +267,120 @@ export function createBoardScreenShareMedia({
 
     cloudButton.style.left = `${Math.round(left)}px`;
     cloudButton.style.top = `${Math.round(top)}px`;
+  };
+
+  const positionUltraControl = () => {
+    if (disposed || !ultraControl || !ultraState.visible) return;
+    const canvas = object.canvas;
+    const upperCanvas = canvas?.upperCanvasEl;
+    const host = upperCanvas?.parentElement;
+    if (!canvas || !upperCanvas || !host) return;
+
+    const coords = object.getCoords?.();
+    const topLeft = coords?.[0] ?? object.aCoords?.tl;
+    if (!topLeft) return;
+    const viewport = viewportPoint(topLeft, canvas.viewportTransform);
+    const canvasRect = upperCanvas.getBoundingClientRect?.();
+    const hostRect = host.getBoundingClientRect?.();
+    if (!canvasRect || !hostRect) return;
+
+    const logicalWidth = Math.max(1, Number(canvas.getWidth?.() ?? canvasRect.width ?? 1));
+    const logicalHeight = Math.max(1, Number(canvas.getHeight?.() ?? canvasRect.height ?? 1));
+    const cssScaleX = Number(canvasRect.width ?? logicalWidth) / logicalWidth;
+    const cssScaleY = Number(canvasRect.height ?? logicalHeight) / logicalHeight;
+    const left = Number(canvasRect.left ?? 0) - Number(hostRect.left ?? 0)
+      + viewport.x * cssScaleX + CLOUD_BUTTON_MARGIN;
+    const top = Number(canvasRect.top ?? 0) - Number(hostRect.top ?? 0)
+      + viewport.y * cssScaleY + CLOUD_BUTTON_MARGIN;
+
+    ultraControl.style.left = `${Math.round(left)}px`;
+    ultraControl.style.top = `${Math.round(top)}px`;
+  };
+
+  const ensureUltraControl = () => {
+    if (disposed || typeof document === 'undefined') return null;
+    const canvas = object.canvas;
+    const upperCanvas = canvas?.upperCanvasEl;
+    const host = upperCanvas?.parentElement;
+    if (!canvas || !upperCanvas || !host) return null;
+
+    if (!ultraControl) {
+      ultraControl = document.createElement('label');
+      ultraControl.className = 'screen-share-ultra-toggle';
+      ultraControl.style.position = 'absolute';
+      ultraControl.style.height = `${CLOUD_BUTTON_HEIGHT}px`;
+      ultraControl.style.padding = '0 8px';
+      ultraControl.style.borderRadius = '7px';
+      ultraControl.style.border = '1px solid rgba(255,255,255,0.5)';
+      ultraControl.style.background = 'rgba(15,23,42,0.88)';
+      ultraControl.style.color = '#fff';
+      ultraControl.style.font = '600 11px system-ui, sans-serif';
+      ultraControl.style.display = 'flex';
+      ultraControl.style.alignItems = 'center';
+      ultraControl.style.gap = '5px';
+      ultraControl.style.boxSizing = 'border-box';
+      ultraControl.style.zIndex = '40';
+      ultraControl.style.cursor = 'pointer';
+      ultraControl.style.userSelect = 'none';
+      ultraControl.style.webkitUserSelect = 'none';
+      ultraControl.style.touchAction = 'manipulation';
+      ultraControl.setAttribute('aria-label', 'Ultra качество демонстрации');
+
+      ultraInput = document.createElement('input');
+      ultraInput.type = 'checkbox';
+      ultraInput.className = 'screen-share-ultra-checkbox';
+      ultraInput.setAttribute('aria-label', 'Ultra 60 FPS до 10 Мбит/с');
+      const labelText = document.createElement('span');
+      labelText.textContent = 'Ultra';
+      ultraControl.appendChild(ultraInput);
+      ultraControl.appendChild(labelText);
+      ultraControl.addEventListener('pointerdown', (event) => event.stopPropagation());
+      ultraControl.addEventListener('click', (event) => event.stopPropagation());
+      ultraInput.addEventListener('change', (event) => {
+        event.stopPropagation();
+        if (disposed || !ultraState.visible) return;
+        window.dispatchEvent(new CustomEvent(ULTRA_SCREEN_SHARE_TOGGLE_EVENT, {
+          detail: { sessionId: safeSessionId, enabled: Boolean(ultraInput.checked) },
+        }));
+      });
+    }
+    if (ultraControl.parentElement !== host) host.appendChild(ultraControl);
+    return ultraControl;
+  };
+
+  const syncUltraControl = () => {
+    if (disposed) return;
+    if (!ultraState.visible) {
+      if (ultraControl) ultraControl.style.display = 'none';
+      return;
+    }
+    const control = ensureUltraControl();
+    if (!control || !ultraInput) return;
+    control.style.display = 'flex';
+    ultraInput.checked = ultraState.enabled;
+    control.style.borderColor = ultraState.enabled
+      ? 'rgba(134,239,172,0.95)'
+      : 'rgba(255,255,255,0.5)';
+    control.title = ultraState.enabled
+      ? 'Ultra включен: до 60 FPS и 10 Мбит/с'
+      : 'Включить Ultra: до 60 FPS и 10 Мбит/с';
+    positionUltraControl();
+  };
+
+  const handleUltraState = (event) => {
+    const nextState = normalizedUltraControlState(event?.detail, safeSessionId);
+    if (!nextState) return;
+    const qualityChanged = nextState.enabled !== ultraState.enabled;
+    ultraState = nextState;
+    syncUltraControl();
+    if (qualityChanged && currentStream) restartFrameLoop();
+  };
+
+  const requestUltraState = () => {
+    if (typeof window === 'undefined' || !safeSessionId) return;
+    window.dispatchEvent(new CustomEvent(ULTRA_SCREEN_SHARE_STATE_REQUEST_EVENT, {
+      detail: { sessionId: safeSessionId },
+    }));
   };
 
   const ensureCloudButton = () => {
@@ -345,22 +478,30 @@ export function createBoardScreenShareMedia({
     if (!canvas) return;
     if (cloudCanvas !== canvas) {
       cloudCanvas?.off?.('after:render', positionCloudButton);
+      cloudCanvas?.off?.('after:render', positionUltraControl);
       cloudCanvas = canvas;
       cloudCanvas.on?.('after:render', positionCloudButton);
+      cloudCanvas.on?.('after:render', positionUltraControl);
     }
     syncCloudButton();
+    syncUltraControl();
     requestCloudState();
+    requestUltraState();
   };
 
   const detachCloudOverlay = () => {
     cloudCanvas?.off?.('after:render', positionCloudButton);
+    cloudCanvas?.off?.('after:render', positionUltraControl);
     cloudCanvas = null;
     cloudButton?.remove();
+    ultraControl?.remove();
   };
 
   if (typeof window !== 'undefined') {
     window.addEventListener(CLOUD_SCREEN_SHARE_STATE_EVENT, handleCloudState);
+    window.addEventListener(ULTRA_SCREEN_SHARE_STATE_EVENT, handleUltraState);
     window.addEventListener('resize', positionCloudButton, { passive: true });
+    window.addEventListener('resize', positionUltraControl, { passive: true });
   }
   object.on?.('added', attachCloudOverlay);
   object.on?.('removed', detachCloudOverlay);
@@ -428,8 +569,12 @@ export function createBoardScreenShareMedia({
       frameCallbackId = video.requestVideoFrameCallback(onFrame);
       return;
     }
-    frameTimer = setInterval(drawVideoFrame, FALLBACK_FRAME_INTERVAL_MS);
+    frameTimer = setInterval(
+      drawVideoFrame,
+      ultraState.enabled ? ULTRA_FALLBACK_FRAME_INTERVAL_MS : STANDARD_FALLBACK_FRAME_INTERVAL_MS,
+    );
   };
+  restartFrameLoop = startFrameLoop;
 
   const showVideo = () => {
     if (disposed || !video || !currentStream) return;
@@ -514,11 +659,16 @@ export function createBoardScreenShareMedia({
     object.off?.('removed', detachCloudOverlay);
     if (typeof window !== 'undefined') {
       window.removeEventListener(CLOUD_SCREEN_SHARE_STATE_EVENT, handleCloudState);
+      window.removeEventListener(ULTRA_SCREEN_SHARE_STATE_EVENT, handleUltraState);
       window.removeEventListener('resize', positionCloudButton);
+      window.removeEventListener('resize', positionUltraControl);
     }
     detachCloudOverlay();
     cloudButton?.remove();
+    ultraControl?.remove();
     cloudButton = null;
+    ultraControl = null;
+    ultraInput = null;
     cancelFrameLoop();
     if (video) {
       video.onloadedmetadata = null;

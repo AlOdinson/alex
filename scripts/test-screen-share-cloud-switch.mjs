@@ -31,6 +31,8 @@ assert.match(cloudSource, /cloud-viewer-ready/, 'viewer readiness must be signal
 assert.match(cloudSource, /transport:\s*'p2p'/, 'Cloud fallback starts in P2P mode');
 assert.match(cloudSource, /cloudPhase:\s*'off'/, 'Cloud fallback starts off');
 assert.match(cloudSource, /publisher\.sender/, 'adaptive profile must be applied to the Cloud publisher sender');
+assert.match(cloudSource, /screenShareEffectiveProfile/, 'Cloud publisher must honor the Ultra quality override');
+assert.match(cloudSource, /ultraEnabled/, 'Cloud publisher quality must react to the Ultra checkbox');
 assert.match(
   cloudSource,
   /if \(!currentSessionId \|\| signal\.sessionId !== currentSessionId\) return;/,
