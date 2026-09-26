@@ -36,6 +36,7 @@ export function createStudentPeerNetwork({
   onState = () => {},
   onError = () => {},
   onVerificationMode = () => {},
+  onBoardControl = () => {},
   connectTimeoutMs = CONNECT_TIMEOUT_MS,
   initialSyncTimeoutMs = INITIAL_SYNC_IDLE_TIMEOUT_MS,
   requestTimeoutMs = 30_000,
@@ -173,6 +174,7 @@ export function createStudentPeerNetwork({
       installSnapshot,
       onAck,
       onError,
+      onBoardControl,
     });
     session = nextSession;
     channelStart = Promise.resolve(session.start());
@@ -282,6 +284,13 @@ export function createStudentPeerNetwork({
         throw new Error('Acknowledged durable action API is unavailable');
       }
       return awaitAcknowledgement(session.proposeActionAndWait(action));
+    },
+
+    async sendBoardControl(event, payload = {}) {
+      if (!session) throw new Error('Teacher peer data channel is not ready');
+      await channelStart;
+      if (typeof session.sendBoardControl !== 'function') throw new Error('Peer board-control API is unavailable');
+      return session.sendBoardControl(event, payload);
     },
 
     async requestLock(operation, payload = {}) {
