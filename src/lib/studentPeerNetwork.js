@@ -26,6 +26,7 @@ export function createStudentPeerNetwork({
   boardId = '',
   clientId = '',
   teacherId,
+  liveEnabled = true,
   signaling,
   rtcConfig = {},
   getRevision,
@@ -179,6 +180,10 @@ export function createStudentPeerNetwork({
   };
 
   const attachLiveChannel = (channel) => {
+    if (!liveEnabled) {
+      try { channel?.close?.(); } catch { /* legacy mode ignores live channel */ }
+      return;
+    }
     if (closed) {
       try { channel?.close?.(); } catch { /* stale channel */ }
       return;
@@ -212,6 +217,7 @@ export function createStudentPeerNetwork({
 
   connection = createConnection({
     initiator: true,
+    enableLiveChannel: Boolean(liveEnabled),
     assistSignaling: true,
     rtcConfig,
     sendSignal: (signal) => signaling.send(targetTeacherId, signal),
