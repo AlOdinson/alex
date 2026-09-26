@@ -19,3 +19,14 @@ export function resolveCollaborationMode({
   const remote = normalizeCollaborationCapabilities(remoteCapabilities);
   return local.webrtcLiveV1 && remote.webrtcLiveV1 ? 'webrtc-live-v1' : 'legacy';
 }
+
+
+export function isWebrtcLiveV1Enabled({
+  environment = import.meta.env ?? {},
+  search = globalThis.location?.search ?? '',
+} = {}) {
+  const envValue = String(environment?.VITE_WEBRTC_LIVE_V1 ?? '').trim().toLowerCase();
+  if (envValue === '1' || envValue === 'true') return true;
+  const queryValue = new URLSearchParams(String(search ?? '')).get('webrtcLiveV1');
+  return queryValue === '1' || String(queryValue ?? '').toLowerCase() === 'true';
+}
