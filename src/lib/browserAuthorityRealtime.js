@@ -13,6 +13,10 @@ const WEBRTC_LIVE_EVENTS = new Set([
   'cursor', 'draw', 'transform', 'preview', 'object-live',
   'delete-preview', 'selection-transaction', 'view',
 ]);
+const WEBRTC_CONTROL_EVENTS = new Set([
+  'mode', 'background-live', 'lock', 'view-jump', 'view-request',
+  'game-library-visibility', 'selection-transaction',
+]);
 
 function participantColor(clientId) {
   const palette = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626'];
@@ -45,7 +49,7 @@ export async function routeBrowserRealtimeEvent(event, payload, {
   source = 'ably',
 } = {}) {
   if (!payload || String(payload.clientId ?? '') === String(localClientId ?? '')) return false;
-  if (source === 'ably' && WEBRTC_LIVE_EVENTS.has(event)
+  if (source === 'ably' && (WEBRTC_LIVE_EVENTS.has(event) || WEBRTC_CONTROL_EVENTS.has(event))
     && session?.getCollaborationMode?.(payload.clientId) === 'webrtc-live-v1') return false;
 
   // Durable board state never arrives through Ably in browser-authority mode.
@@ -392,6 +396,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   let core = null;
   let session = null;
   let liveRouter = null;
+  let controlRouter = null;
   let disconnected = false;
 
   const callbacks = {
@@ -447,6 +452,12 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       if (state === 'open') onStatus?.('LIVE_CONNECTED');
       else if (state === 'closed' || state === 'error') onStatus?.('LIVE_DEGRADED');
     },
+    onBoardControl: (event, payload) => routeBrowserRealtimeEvent(event, payload, {
+      localClientId: clientId,
+      session,
+      callbacks,
+      source: 'webrtc-control',
+    }),
     onPeerState: (state) => {
       const peerState = String(state ?? '');
       if (peerState === 'failed' || peerState === 'closed' || peerState === 'disconnected') {
@@ -476,6 +487,16 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     needsLegacyAbly: () => Boolean(session?.getLiveRoutingState?.().hasLegacyPeers),
   });
 
+  controlRouter = createLiveTransportRouter({
+    enabled: Boolean(webrtcLiveV1),
+    sendWebRtcLive: (event, payload) => session?.sendBoardControl?.(event, payload) ?? 'unavailable',
+    publishLegacyAbly: (event, payload, options) => {
+      if (!transport) throw new Error('Ably board transport is not ready');
+      return transport.publish(event, payload, options);
+    },
+    needsLegacyAbly: () => Boolean(session?.getLiveRoutingState?.().hasLegacyPeers),
+  });
+
   core = createCore({
     session,
     clientId,
@@ -488,6 +509,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       return transport.publish(event, payload, publishOptions);
     },
     publishLive: (event, payload, publishOptions) => liveRouter.send(event, payload, publishOptions),
+    publishControl: (event, payload, publishOptions) => controlRouter.send(event, payload, publishOptions),
     onCommit,
     onPendingChange: typeof canVerifyCanvas === 'function' ? (count) => {
       onPendingChange?.(count);
@@ -558,6 +580,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       if (disconnected) return;
       disconnected = true;
       liveRouter?.close?.();
+      controlRouter?.close?.();
       await core.disconnect?.();
       session.close?.();
       await transport.disconnect?.();
