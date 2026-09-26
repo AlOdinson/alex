@@ -75,6 +75,7 @@ test('initiator creates durable and independent lossy live channels before sendi
   const pc = new FakePeerConnection();
   const peer = createBrowserPeerConnection({
     initiator: true,
+    enableLiveChannel: true,
     sendSignal: async (signal) => signals.push(signal),
     onChannel: (channel) => durableChannels.push(channel),
     onLiveChannel: (channel) => liveChannels.push(channel),
@@ -122,6 +123,7 @@ test('closing only the live channel does not close durable channel or peer conne
   const pc = new FakePeerConnection();
   const peer = createBrowserPeerConnection({
     initiator: true,
+    enableLiveChannel: true,
     sendSignal: async () => {},
     createPeerConnection: () => pc,
   });
@@ -151,6 +153,7 @@ test('forwards local ICE candidates through signaling and closes both channels c
   const pc = new FakePeerConnection();
   const peer = createBrowserPeerConnection({
     initiator: true,
+    enableLiveChannel: true,
     sendSignal: async (signal) => signals.push(signal),
     createPeerConnection: () => pc,
   });
@@ -164,11 +167,10 @@ test('forwards local ICE candidates through signaling and closes both channels c
 });
 
 
-test('initiator can keep legacy durable-only channel when live capability is disabled', async () => {
+test('initiator defaults to legacy durable-only channel unless live capability is enabled', async () => {
   const pc = new FakePeerConnection();
   const peer = createBrowserPeerConnection({
     initiator: true,
-    enableLiveChannel: false,
     sendSignal: async () => {},
     createPeerConnection: () => pc,
   });
