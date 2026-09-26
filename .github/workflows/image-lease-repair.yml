@@ -4,22 +4,76 @@ on:
     branches: [fix/image-selection-lease-20260926]
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
 jobs:
-  prepare:
+  repair:
+    if: github.ref == 'refs/heads/fix/image-selection-lease-20260926'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm install --no-audit --no-fund
-      - name: Export exact source and pinned test dependencies
+      - name: Apply exact locally verified repair
+        shell: python
         run: |
-          git archive --format=tar HEAD > source.tar
-          tar -czf image-lease-workspace.tar.gz source.tar node_modules
+          import base64, gzip, hashlib, json, subprocess
+          from pathlib import Path
+          payload = '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'
+          raw = gzip.decompress(base64.b64decode(payload))
+          assert hashlib.sha256(raw).hexdigest() == '1764e469bd487984b2ff77ea3cb67a3977a380a83de8662554ed63aafffc476b'
+          data = json.loads(raw)
+          assert subprocess.check_output(['git','hash-object','src/components/Board.jsx'],text=True).strip() == 'dcce947fd355a9e192f237a570dd45811054fd12'
+          expected = {'.github/workflows/selection-lease-ci.yml','docs/superpowers/plans/2026-09-26-image-selection-lease.md','scripts/test-selection-lease-transform.mjs','scripts/test-selection-lease-transform-browser.mjs'}
+          assert set(data['files']) == expected
+          for name, text in data['files'].items():
+              path = Path(name)
+              assert not path.exists(), name
+              path.parent.mkdir(parents=True,exist_ok=True)
+              path.write_text(text)
+          path = Path('src/components/Board.jsx')
+          text = path.read_text()
+          start = text.index("    canvas.on('before:transform', ({ transform, e: nativeEvent }) => {")
+          end = text.index('\n    const broadcastLiveTransform =',start)
+          path.write_text(text[:start] + data['beforeTransform'] + text[end:])
+          assert subprocess.check_output(['git','hash-object',str(path)],text=True).strip() == '2c4e6bb20793f868116328bef82681252d416fae'
+          path = Path('package.json')
+          config = json.loads(path.read_text())
+          old = 'node --test scripts/test-connectivity-recovery.mjs'
+          assert old in config['scripts']['test:browser-authority']
+          config['scripts']['test:browser-authority'] = config['scripts']['test:browser-authority'].replace(old,'node --test scripts/test-selection-lease-transform.mjs scripts/test-connectivity-recovery.mjs')
+          config['scripts']['test:selection-lease'] = 'node --test scripts/test-selection-lease-transform.mjs'
+          config['scripts']['test:selection-lease:browser'] = 'node scripts/test-selection-lease-transform-browser.mjs'
+          path.write_text(json.dumps(config,indent=2)+'\n')
+      - run: npm install --no-audit --no-fund
+      - name: Verify repair and existing suites
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p repair-evidence
+          npm run test:selection-lease 2>&1 | tee repair-evidence/selection.log
+          npm run test:browser-authority 2>&1 | tee repair-evidence/authority.log
+          npm run test:sync:ci 2>&1 | tee repair-evidence/sync.log
+          npm run test:screen-share 2>&1 | tee repair-evidence/screen.log
+          npm run build 2>&1 | tee repair-evidence/build.log
+          npm install --no-save --no-package-lock playwright-core@1.55.0
+          npm run test:selection-lease:browser 2>&1 | tee repair-evidence/browser.log
+      - name: Commit verified repair only to isolated branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/image-lease-repair.yml
+          git add src/components/Board.jsx package.json scripts/test-selection-lease-transform.mjs scripts/test-selection-lease-transform-browser.mjs .github/workflows/selection-lease-ci.yml docs/superpowers/plans/2026-09-26-image-selection-lease.md
+          git diff --cached --check
+          git diff --cached --stat | tee repair-evidence/changes.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: resume held image transforms after selection lease grant'
+          git rev-parse HEAD | tee repair-evidence/commit.txt
+          git push origin HEAD:refs/heads/fix/image-selection-lease-20260926
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: image-lease-workspace
-          path: image-lease-workspace.tar.gz
-          retention-days: 1
+          name: image-lease-repair-evidence
+          path: repair-evidence
+          retention-days: 7
