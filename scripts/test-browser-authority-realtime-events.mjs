@@ -6,7 +6,7 @@ import {
   routeBrowserRealtimeEvent,
 } from '../src/lib/browserAuthorityRealtime.js';
 
-test('routes transient events and never accepts durable action packets from Ably', async () => {
+test('Ably ignores every board event and remains signaling-only', async () => {
   const events = [];
   const callbacks = {
     onCursor: (payload) => events.push(['cursor', payload.x]),
@@ -15,22 +15,23 @@ test('routes transient events and never accepts durable action packets from Ably
     onSyncRequired: (revision) => events.push(['sync', revision]),
   };
 
-  await routeBrowserRealtimeEvent('cursor', { clientId: 'student-b', x: 4 }, {
-    localClientId: 'student-a', callbacks,
-  });
-  await routeBrowserRealtimeEvent('mode', { clientId: 'teacher-a', mode: 'view' }, {
-    localClientId: 'student-a', callbacks,
-  });
-  await routeBrowserRealtimeEvent('actions', {
+  assert.equal(await routeBrowserRealtimeEvent('cursor', { clientId: 'student-b', x: 4 }, {
+    localClientId: 'student-a', callbacks, source: 'ably',
+  }), false);
+  assert.equal(await routeBrowserRealtimeEvent('mode', { clientId: 'teacher-a', mode: 'view' }, {
+    localClientId: 'student-a', callbacks, source: 'ably',
+  }), false);
+  assert.equal(await routeBrowserRealtimeEvent('actions', {
     clientId: 'teacher-a', actions: [{ revision: 9, ops: [{ type: 'delete', id: 'x' }] }],
-  }, { localClientId: 'student-a', callbacks });
-  await routeBrowserRealtimeEvent('action', {
+  }, { localClientId: 'student-a', callbacks, source: 'ably' }), false);
+  assert.equal(await routeBrowserRealtimeEvent('action', {
     clientId: 'teacher-a', revision: 9, ops: [{ type: 'delete', id: 'x' }],
-  }, { localClientId: 'student-a', callbacks });
-  await routeBrowserRealtimeEvent('sync', { clientId: 'teacher-a', revision: 9 }, {
-    localClientId: 'student-a', callbacks });
+  }, { localClientId: 'student-a', callbacks, source: 'ably' }), false);
+  assert.equal(await routeBrowserRealtimeEvent('sync', { clientId: 'teacher-a', revision: 9 }, {
+    localClientId: 'student-a', callbacks, source: 'ably',
+  }), false);
 
-  assert.deepEqual(events, [['cursor', 4], ['mode', 'view'], ['sync', 9]]);
+  assert.deepEqual(events, []);
 });
 
 test('board peer signaling is consumed by browser session and still offered to screen-share handler', async () => {
@@ -61,7 +62,7 @@ test('ignores own echoed transient events', async () => {
   assert.equal(calls, 0);
 });
 
-test('transient Ably publishes are harmless while an owner tab is still waiting for authority', async () => {
+test('Ably transport blocks board events even before startup and reserves publish for signaling', async () => {
   const transport = createAblyBrowserTransport({
     boardId: 'board-starting',
     roomKey: 'room-key-starting-1234567890',
@@ -72,8 +73,11 @@ test('transient Ably publishes are harmless while an owner tab is still waiting 
 
   assert.equal(
     await transport.publish('cursor', { clientId: 'teacher-starting', x: 1, y: 2 }),
+    'blocked-board-event',
+  );
+  assert.equal(
+    await transport.publish('screen-share-signal', { clientId: 'teacher-starting' }),
     'starting',
-    'transient UI events before transport startup must be dropped rather than becoming page errors',
   );
   await transport.disconnect();
 });
@@ -334,24 +338,27 @@ test('closing during startup backoff stops every future reconnect', async (t) =>
   assert.equal(f.clients[0].closes, 1);
 });
 
-test('a preview publish interrupted by deliberate board shutdown settles as closed', async (t) => {
+test('a signaling publish interrupted by deliberate board shutdown settles as closed', async (t) => {
   const f = startupFixture(t);
   await f.transport.start();
   let rejectPublish;
   f.clients[0].channel.publish = () => new Promise((_resolve, reject) => { rejectPublish = reject; });
-  const result = f.transport.publish('cursor', { x: 1, y: 2 })
+  const result = f.transport.publish('screen-share-signal', { protocol: 'test', type: 'test', sessionId: 'test' })
     .then(value => ({ value }), error => ({ error }));
   await f.transport.disconnect();
   rejectPublish(new Error('Connection closed'));
   assert.deepEqual(await result, { value: 'closed' }, 'intentional route teardown must not leak an unhandled preview rejection');
 });
 
-test('a live Ably publication failure is still rejected, not hidden as shutdown', async (t) => {
+test('an active Ably signaling publication failure is still rejected, not hidden as shutdown', async (t) => {
   const f = startupFixture(t);
   await f.transport.start();
   const error = new Error('Connection closed');
   f.clients[0].channel.publish = async () => { throw error; };
-  await assert.rejects(f.transport.publish('cursor', { x: 1, y: 2 }), failure => failure === error);
+  await assert.rejects(
+    f.transport.publish('screen-share-signal', { protocol: 'test', type: 'test', sessionId: 'test' }),
+    failure => failure === error,
+  );
 });
 
 
@@ -413,16 +420,16 @@ test('ignores legacy Ably live echo from a peer already using WebRTC live while 
   assert.deepEqual(seen, [4]);
 });
 
-test('legacy peer Ably live event is still routed during mixed-client rollout', async () => {
+test('legacy peer cannot re-enable Ably live routing', async () => {
   const seen = [];
   const session = { getCollaborationMode: () => 'legacy' };
-  await routeBrowserRealtimeEvent('cursor', { clientId: 'student-old', x: 7 }, {
+  assert.equal(await routeBrowserRealtimeEvent('cursor', { clientId: 'student-old', x: 7 }, {
     localClientId: 'teacher-a',
     session,
     callbacks: { onCursor: (value) => seen.push(value.x) },
     source: 'ably',
-  });
-  assert.deepEqual(seen, [7]);
+  }), false);
+  assert.deepEqual(seen, []);
 });
 
 

@@ -9,14 +9,7 @@ import {
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const LOCK_TTL = 12_000;
-const WEBRTC_LIVE_EVENTS = new Set([
-  'cursor', 'draw', 'transform', 'preview', 'object-live',
-  'delete-preview', 'selection-transaction', 'view',
-]);
-const WEBRTC_CONTROL_EVENTS = new Set([
-  'mode', 'background-live', 'lock', 'view-jump', 'view-request',
-  'game-library-visibility', 'selection-transaction',
-]);
+const ABLY_SIGNAL_EVENT = 'screen-share-signal';
 
 function participantColor(clientId) {
   const palette = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626'];
@@ -49,12 +42,12 @@ export async function routeBrowserRealtimeEvent(event, payload, {
   source = 'ably',
 } = {}) {
   if (!payload || String(payload.clientId ?? '') === String(localClientId ?? '')) return false;
-  if (source === 'ably' && (WEBRTC_LIVE_EVENTS.has(event) || WEBRTC_CONTROL_EVENTS.has(event))
-    && session?.getCollaborationMode?.(payload.clientId) === 'webrtc-live-v1') return false;
+  // Ably is strictly the connection-assistance plane: presence is handled by the
+  // transport itself and the only channel publication we accept is WebRTC signaling.
+  // Board live/control/durable events are never consumed from Ably.
+  if (source === 'ably' && event !== ABLY_SIGNAL_EVENT) return false;
 
   // Durable board state never arrives through Ably in browser-authority mode.
-  // These names are intentionally ignored so an old/stale publisher cannot bypass
-  // teacher authority or make Ably a second source of truth.
   if (event === 'action' || event === 'actions') return false;
 
   const {
@@ -319,6 +312,7 @@ export function createAblyBrowserTransport({
     },
 
     async publish(event, payload, { force = false } = {}) {
+      if (String(event ?? '') !== ABLY_SIGNAL_EVENT) return 'blocked-board-event';
       if (closed) return 'closed';
       if (!channel) return 'starting';
       if (!force && remoteParticipantCount === 0) return 'solo';
@@ -480,21 +474,11 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   liveRouter = createLiveTransportRouter({
     enabled: Boolean(webrtcLiveV1),
     sendWebRtcLive: (event, payload, options) => session?.sendLive?.(event, payload, options) ?? 'unavailable',
-    publishLegacyAbly: (event, payload, options) => {
-      if (!transport) throw new Error('Ably board transport is not ready');
-      return transport.publish(event, payload, options);
-    },
-    needsLegacyAbly: () => Boolean(session?.getLiveRoutingState?.().hasLegacyPeers),
   });
 
   controlRouter = createLiveTransportRouter({
     enabled: Boolean(webrtcLiveV1),
     sendWebRtcLive: (event, payload) => session?.sendBoardControl?.(event, payload) ?? 'unavailable',
-    publishLegacyAbly: (event, payload, options) => {
-      if (!transport) throw new Error('Ably board transport is not ready');
-      return transport.publish(event, payload, options);
-    },
-    needsLegacyAbly: () => Boolean(session?.getLiveRoutingState?.().hasLegacyPeers),
   });
 
   core = createCore({

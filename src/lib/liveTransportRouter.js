@@ -1,13 +1,14 @@
+// Board live/control traffic is WebRTC-only. Ably is deliberately excluded here:
+// it remains the presence/discovery + WebRTC signaling plane, never a board-event fallback.
 export function createLiveTransportRouter({
   enabled = false,
   sendWebRtcLive = () => 'unavailable',
-  publishLegacyAbly = async () => 'ok',
-  needsLegacyAbly = () => !enabled,
 } = {}) {
   let closed = false;
   const counters = {
     total: 0,
     webrtc: 0,
+    // Retained as zero-valued diagnostics for compatibility with existing tooling.
     mixed: 0,
     ablyLegacy: 0,
     unavailable: 0,
@@ -23,20 +24,11 @@ export function createLiveTransportRouter({
       }
 
       if (!enabled) {
-        const legacyResult = await publishLegacyAbly(event, payload, options);
-        counters.ablyLegacy += 1;
-        return { route: 'ably-legacy', liveResult: null, legacyResult };
+        counters.unavailable += 1;
+        return { route: 'webrtc-disabled', liveResult: 'disabled', legacyResult: null };
       }
 
       const liveResult = await Promise.resolve(sendWebRtcLive(event, payload, options));
-      const legacyNeeded = Boolean(needsLegacyAbly(event, payload, options));
-      if (legacyNeeded) {
-        const legacyResult = await publishLegacyAbly(event, payload, options);
-        counters.mixed += 1;
-        counters.ablyLegacy += 1;
-        return { route: 'webrtc+ably-legacy', liveResult, legacyResult };
-      }
-
       if (liveResult === 'unavailable' || liveResult === 'closed') {
         counters.unavailable += 1;
         return {
