@@ -36,7 +36,6 @@ import {
   isSupabaseConfigured,
   refreshBoardObjectLocks,
   releaseBoardObjectLocks,
-  saveBoardSnapshot,
   setGameLibraryVisibility,
   setGuestMode,
 } from '../lib/boardRepository.js';
@@ -105,14 +104,12 @@ const LIVE_TRANSFORM_INTERVAL = 50;
 const LIVE_TRANSFORM_LOCK_TTL = 7000;
 const DESKTOP_WHEEL_ZOOM_SPEED = 6.25;
 const VIEW_BROADCAST_INTERVAL = 80;
-const INSURANCE_SYNC_INTERVAL = 30_000;
 const INSURANCE_SYNC_PAGE_SIZE = 500;
 const TARGETED_RECONCILE_DELAY = 180;
 const TARGETED_RECONCILE_RETRY_DELAY = 240;
 const TARGETED_RECONCILE_MAX_WAIT_ATTEMPTS = 32;
 const LOCAL_LOCK_REFRESH_INTERVAL = 2_500;
 const IMAGE_RETRY_INTERVAL = 5_000;
-const SNAPSHOT_COMPACTION_IDLE_MS = 30_000;
 const PEN_TRANSFORM_SPATIAL_CELL_SIZE = 256;
 const PEN_TRANSFORM_SPATIAL_GLOBAL_CELL_LIMIT = 96;
 const PENCIL_TOUCH_GRACE_MS = 240;
@@ -1770,18 +1767,7 @@ function BoardWorkspace({
   const mobilePasteAwaitingPointRef = useRef(false);
   const toolbarPastePointRef = useRef(null);
   const toolbarPasteAwaitingPointRef = useRef(false);
-  const snapshotPersistTimerRef = useRef(null);
-  const snapshotPersistInFlightRef = useRef(false);
-  const snapshotPersistQueuedRef = useRef(false);
-  const snapshotPersistRunnerRef = useRef(null);
-  const snapshotCompactionNeededRef = useRef(false);
-  const lastBoardInteractionAtRef = useRef(0);
   const initialSnapshotRevision = Number(initialAccess.snapshotRevision ?? 0);
-  const lastSnapshotSavedRevisionRef = useRef(initialSnapshotRevision);
-  const snapshotCompactBaseRef = useRef(initialAccess.snapshot ?? null);
-  const snapshotCompactBaseRevisionRef = useRef(initialSnapshotRevision);
-  const snapshotCompactActionsRef = useRef([]);
-  const snapshotCompactTargetRevisionRef = useRef(initialSnapshotRevision);
   const revisionRef = useRef(Number(initialAccess.snapshotRevision ?? initialAccess.revision ?? 0));
   const pendingServerWritesRef = useRef(0);
   const pendingLocalObjectMutationCountsRef = useRef(new Map());
@@ -2903,51 +2889,11 @@ function BoardWorkspace({
     updateHistoryButtons();
   }, [updateHistoryButtons]);
 
-  // Durable operations remain the source of truth. Full snapshot compaction is only
-  // for content mutations and long genuine idle periods. Transform-only actions are
-  // tiny and replay quickly, so they never schedule this main-thread work.
-  const schedulePersistence = useCallback((delay = SNAPSHOT_COMPACTION_IDLE_MS) => {
-    if (!isSupabaseConfigured || !canEditRef.current) return;
-    snapshotCompactionNeededRef.current = true;
-    window.clearTimeout(snapshotPersistTimerRef.current);
-    snapshotPersistTimerRef.current = window.setTimeout(() => {
-      snapshotPersistTimerRef.current = null;
-      snapshotPersistRunnerRef.current?.();
-    }, Math.max(1_000, Number(delay ?? SNAPSHOT_COMPACTION_IDLE_MS)));
-  }, []);
-
-  const bufferSnapshotAction = useCallback((ops, background, revision) => {
-    const incomingRevision = Number(revision ?? 0);
-    if (incomingRevision <= 0) return;
-    const targetRevision = Number(snapshotCompactTargetRevisionRef.current ?? 0);
-    if (incomingRevision <= targetRevision) return;
-
-    if (incomingRevision !== targetRevision + 1) {
-      // A missed revision means the buffered compact state can no longer be trusted.
-      // The idle compactor will request one authoritative recovery snapshot instead.
-      snapshotCompactBaseRef.current = null;
-      snapshotCompactBaseRevisionRef.current = 0;
-      snapshotCompactActionsRef.current = [];
-      snapshotCompactTargetRevisionRef.current = incomingRevision;
-      schedulePersistence();
-      return;
-    }
-
-    const safeOps = Array.isArray(ops) ? ops : [];
-    const safeBackground = BACKGROUNDS.has(background) ? background : null;
-    snapshotCompactActionsRef.current.push({
-      revision: incomingRevision,
-      ops: safeOps,
-      background: safeBackground,
-    });
-    snapshotCompactTargetRevisionRef.current = incomingRevision;
-
-    // Replaying a transform only patches a few numbers. Keep it in the journal/buffer,
-    // but do not build the whole board snapshot because somebody moved an object.
-    const hasContentMutation = Boolean(safeBackground)
-      || safeOps.some((op) => op?.type !== 'transform');
-    if (hasContentMutation) schedulePersistence();
-  }, [schedulePersistence]);
+  // Automatic full-snapshot compaction is intentionally disabled.
+  // Durable commits/revisions remain the source of truth; these compatibility hooks
+  // stay as no-ops so mutation paths do not perform hidden whole-board work.
+  const schedulePersistence = useCallback(() => {}, []);
+  const bufferSnapshotAction = useCallback(() => {}, []);
 
   const applyGameLibraryVisibility = useCallback((visible) => {
     const nextVisible = Boolean(visible);
@@ -4730,123 +4676,6 @@ function BoardWorkspace({
     return ids;
   }, []);
 
-  const persistFullSnapshot = useCallback(async () => {
-    if (!canEditRef.current || !boardReadyRef.current) return;
-    if (!snapshotCompactionNeededRef.current) return;
-
-    // Never start whole-board JSON work near live input. Transform operations already
-    // replay in a few microseconds, so waiting for a real idle period is always cheaper
-    // than stealing a frame from Apple Pencil.
-    const interactionAge = Date.now() - Number(lastBoardInteractionAtRef.current ?? 0);
-    if (interactionAge < SNAPSHOT_COMPACTION_IDLE_MS) {
-      schedulePersistence(SNAPSHOT_COMPACTION_IDLE_MS - interactionAge);
-      return;
-    }
-
-    if (snapshotPersistInFlightRef.current) {
-      snapshotPersistQueuedRef.current = true;
-      return;
-    }
-    if (pendingServerWritesRef.current > 0 || getLocalMutationIds().size > 0) {
-      schedulePersistence(1_200);
-      return;
-    }
-
-    const requestedRevision = Number(revisionRef.current ?? 0);
-    if (requestedRevision <= Number(lastSnapshotSavedRevisionRef.current ?? 0)) return;
-
-    snapshotPersistInFlightRef.current = true;
-    snapshotPersistQueuedRef.current = false;
-    try {
-      let snapshot = null;
-      let snapshotRevision = requestedRevision;
-      const baseSnapshot = snapshotCompactBaseRef.current;
-      const baseRevision = Number(snapshotCompactBaseRevisionRef.current ?? 0);
-      const bufferedActions = snapshotCompactActionsRef.current
-        .filter((action) => Number(action?.revision ?? 0) <= requestedRevision)
-        .sort((left, right) => Number(left.revision ?? 0) - Number(right.revision ?? 0));
-
-      let expectedRevision = baseRevision;
-      let bufferedSequenceComplete = Boolean(baseSnapshot) && baseRevision <= requestedRevision;
-      const compactActions = [];
-      if (bufferedSequenceComplete) {
-        for (const action of bufferedActions) {
-          const actionRevision = Number(action.revision ?? 0);
-          if (actionRevision <= baseRevision) continue;
-          if (actionRevision !== expectedRevision + 1) {
-            bufferedSequenceComplete = false;
-            break;
-          }
-          compactActions.push(action);
-          expectedRevision = actionRevision;
-        }
-        if (expectedRevision !== requestedRevision) bufferedSequenceComplete = false;
-      }
-
-      if (bufferedSequenceComplete) {
-        // Clone once and apply the buffered actions in exact revision order. This avoids
-        // traversing the live Fabric canvas after a pause, so Pencil input stays responsive.
-        snapshot = applyActionsToSnapshot(baseSnapshot, compactActions);
-      } else if (isSupabaseConfigured) {
-        const recovery = await getBoardRecovery(boardId, boardKey);
-        if (!recovery?.snapshot) throw new Error('Сервер не вернул снимок для сжатия');
-        snapshot = applyOpsToSnapshot(recovery.snapshot, []);
-        snapshotRevision = Number(recovery.revision ?? requestedRevision);
-        if (snapshotRevision < requestedRevision) {
-          schedulePersistence(1_500);
-          return;
-        }
-      } else {
-        return;
-      }
-
-      const savedRevision = await saveBoardSnapshot(
-        boardId,
-        boardKey,
-        snapshot,
-        snapshotRevision,
-      );
-      if (Number(savedRevision ?? snapshotRevision) < snapshotRevision) {
-        throw new Error('Сервер сохранил снимок более старой ревизии');
-      }
-      // The JSON was built for snapshotRevision, so never claim that it represents a
-      // later drawing revision even if an older backend returns a larger service value.
-      lastSnapshotSavedRevisionRef.current = snapshotRevision;
-      snapshotCompactBaseRef.current = snapshot;
-      snapshotCompactBaseRevisionRef.current = snapshotRevision;
-      snapshotCompactActionsRef.current = snapshotCompactActionsRef.current.filter(
-        (action) => Number(action?.revision ?? 0) > snapshotRevision,
-      );
-      snapshotCompactTargetRevisionRef.current = snapshotCompactActionsRef.current.length
-        ? Number(snapshotCompactActionsRef.current.at(-1)?.revision ?? snapshotRevision)
-        : snapshotRevision;
-
-      await setCachedSnapshot(boardId, {
-        snapshot,
-        revision: snapshotRevision,
-        savedAt: Date.now(),
-      });
-      await pruneConfirmedActionsThrough(boardId, snapshotRevision);
-
-      if (Number(revisionRef.current ?? 0) > snapshotRevision) {
-        schedulePersistence();
-      } else {
-        snapshotCompactionNeededRef.current = false;
-      }
-    } catch (caught) {
-      console.warn('Не удалось сжать доску в быстрый снимок', caught);
-      schedulePersistence();
-    } finally {
-      snapshotPersistInFlightRef.current = false;
-      if (snapshotPersistQueuedRef.current) {
-        snapshotPersistQueuedRef.current = false;
-        schedulePersistence();
-      }
-    }
-  }, [boardId, boardKey, getLocalMutationIds, schedulePersistence]);
-
-  snapshotPersistRunnerRef.current = persistFullSnapshot;
-
   const retryPendingServerImages = useCallback(async () => {
     if (pendingImageRetryInFlightRef.current) return;
     const canvas = fabricCanvasRef.current;
@@ -4980,10 +4809,6 @@ function BoardWorkspace({
 
           revisionRef.current = Number(revision ?? revisionRef.current);
           viewingArchiveRef.current = false;
-          snapshotCompactBaseRef.current = sanitizedSnapshot;
-          snapshotCompactBaseRevisionRef.current = revisionRef.current;
-          snapshotCompactActionsRef.current = [];
-          snapshotCompactTargetRevisionRef.current = revisionRef.current;
           updateBackgroundTransform();
           updateSelectionState();
           updateSelectionStyleState();
@@ -8973,10 +8798,6 @@ function BoardWorkspace({
         snapshot: baseSnapshot, confirmedSnapshot: baseSnapshot,
         confirmedRevision: baseRevision, confirmedActions: [], confirmedRevisionGap: false,
       } : await rebuildInitialSnapshot(baseSnapshot, baseRevision);
-      snapshotCompactBaseRef.current = applyOpsToSnapshot(localState.confirmedSnapshot, []);
-      snapshotCompactBaseRevisionRef.current = localState.confirmedRevision;
-      snapshotCompactActionsRef.current = [];
-      snapshotCompactTargetRevisionRef.current = localState.confirmedRevision;
       seedAuthoritativeSnapshot(localState.confirmedSnapshot, localState.confirmedRevision);
       await paintInitialSnapshot(localState.snapshot, localState.confirmedRevision);
       if (disposed) return;
@@ -9033,13 +8854,6 @@ function BoardWorkspace({
       }
 
       await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
-      if (Number(revisionRef.current ?? 0) === recoveryRevision) {
-        snapshotCompactBaseRef.current = applyOpsToSnapshot(recovery.snapshot, []);
-        snapshotCompactBaseRevisionRef.current = recoveryRevision;
-        snapshotCompactActionsRef.current = [];
-        snapshotCompactTargetRevisionRef.current = recoveryRevision;
-        schedulePersistence(700);
-      }
     }
     loadInitialData().catch((caught) => {
       console.error(caught);
@@ -9245,7 +9059,6 @@ function BoardWorkspace({
           setSyncTone('saving');
         }
         if (count === 0) {
-          if (snapshotCompactionNeededRef.current) schedulePersistence();
           if (syncRequestedRef.current) {
             const force = syncForceRef.current;
             syncRequestedRef.current = false;
@@ -9298,10 +9111,6 @@ function BoardWorkspace({
       },
     });
 
-    const syncInterval = window.setInterval(
-      () => syncFromServer(false),
-      INSURANCE_SYNC_INTERVAL,
-    );
     const localLockRefreshInterval = window.setInterval(() => {
       const ids = [...new Set((localLockIdsRef.current ?? []).filter(Boolean).map(String))];
       if (ids.length) realtimeRef.current?.sendLock?.(ids, true);
@@ -12491,7 +12300,6 @@ function BoardWorkspace({
     }
 
     function handlePalmPointerDown(event) {
-      lastBoardInteractionAtRef.current = Date.now();
       clearNativeBoardSelection();
       if (event.pointerType === 'pen') {
         pencilDiagnosticsRef.current?.record('APP capture pointerdown', {
@@ -12513,10 +12321,6 @@ function BoardWorkspace({
       if (event.pointerType === 'touch' && event.pointerId != null) {
         activeBoardTouchPointerIds.add(event.pointerId);
       }
-      // A scheduled whole-board compaction must never begin during the next Pencil
-      // gesture. It will be re-armed only after a long genuine idle period.
-      window.clearTimeout(snapshotPersistTimerRef.current);
-      snapshotPersistTimerRef.current = null;
       if (shouldRejectNativePenAfterTouchFallback(event)) {
         pencilDiagnosticsRef.current?.record('APP pointerdown rejected as duplicate', {
           pointerId: event.pointerId ?? null,
@@ -12862,8 +12666,6 @@ function BoardWorkspace({
         // synchronously lets the same palm-up event finish or split the Pencil stroke.
         window.setTimeout(() => rejectedPointerIdsRef.current.delete(event.pointerId), 0);
       }
-      lastBoardInteractionAtRef.current = Date.now();
-      if (snapshotCompactionNeededRef.current) schedulePersistence();
     }
 
 
@@ -13572,7 +13374,6 @@ function BoardWorkspace({
       host.removeEventListener('drop', handleDrop);
       window.removeEventListener('pointerup', finishBoardScreenSharePointerTransform);
       window.removeEventListener('pointercancel', finishBoardScreenSharePointerTransform);
-      window.clearInterval(syncInterval);
       window.clearInterval(localLockRefreshInterval);
       window.clearInterval(pendingImageRetryInterval);
       window.clearInterval(lockCleanupInterval);
@@ -13672,9 +13473,6 @@ function BoardWorkspace({
       }
       localSelectionTransactionRef.current = null;
       window.clearTimeout(transientStatusTimerRef.current);
-      window.clearTimeout(snapshotPersistTimerRef.current);
-      snapshotPersistTimerRef.current = null;
-      snapshotPersistRunnerRef.current = null;
       window.removeEventListener('focus', syncOnFocus);
       window.removeEventListener('pageshow', syncOnPageShow);
       window.removeEventListener('pagehide', syncOnPageHide);

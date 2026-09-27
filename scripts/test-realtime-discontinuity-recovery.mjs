@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createAblyBrowserTransport } from '../src/lib/browserAuthorityRealtime.js';
 
 let connectionHandler = null;
@@ -81,4 +82,11 @@ await new Promise((resolve) => setTimeout(resolve, 0));
 assert.equal(recoveries, 3, 'Ably UPDATE discontinuity must recover browser-authority state');
 
 await transport.disconnect();
+
+const boardSource = await readFile(new URL('../src/components/Board.jsx', import.meta.url), 'utf8');
+assert.equal(boardSource.includes('INSURANCE_SYNC_INTERVAL'), false, 'periodic 30s insurance sync must stay removed');
+assert.equal(boardSource.includes('const syncInterval = window.setInterval'), false, 'Board must not poll sync on a fixed interval');
+assert.equal(boardSource.includes('persistFullSnapshot'), false, 'automatic snapshot compaction must stay removed');
+assert.equal(boardSource.includes('saveBoardSnapshot('), false, 'Board must not write automatic compacted snapshots');
+
 console.log('Realtime discontinuity recovery regression passed.');
