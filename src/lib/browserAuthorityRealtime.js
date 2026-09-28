@@ -572,18 +572,20 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     },
   });
 
-  // Start the durable runtime and the Ably presence/signaling plane in parallel.
-  // A slow owner authority bootstrap must never make the owner look offline.
-  Promise.resolve(session.start?.()).catch((error) => {
-    if (disconnected) return;
-    console.error('Could not start browser board authority session', error);
-    onStatus?.('SAVE_ERROR');
-  });
-  Promise.resolve(transport.start?.()).catch((error) => {
-    if (disconnected) return;
-    console.error('Could not start Ably board transport', error);
-    onStatus?.('CHANNEL_ERROR');
-  });
+  Promise.resolve(session.start?.())
+    .then(() => {
+      if (disconnected) return;
+      return Promise.resolve(transport.start?.()).catch((error) => {
+        if (disconnected) return;
+        console.error('Could not start Ably board transport', error);
+        onStatus?.('CHANNEL_ERROR');
+      });
+    })
+    .catch((error) => {
+      if (disconnected) return;
+      console.error('Could not start browser board authority session', error);
+      onStatus?.('SAVE_ERROR');
+    });
 
   return {
     ...core,

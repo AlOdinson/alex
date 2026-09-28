@@ -302,7 +302,7 @@ test('teacher teardown retires every connected device and its pending transfer',
   }
   network.close();
   assert.equal(network.getPeerCount(), 0, 'teardown must not leave later devices connected to a retired authority');
-  assert.equal(closedPeers, 3);
+  assert.equal(closedPeers, 6, 'dual-path teardown must retire both candidates for all three peers');
 });
 
 for (const source of ['frame', 'handler']) {

@@ -35,8 +35,11 @@ test('student peer network forwards lock requests to the active session', async 
     /data channel is not ready/i,
   );
 
-  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  const starting = network.start();
   await Promise.resolve();
+  assert.ok(connectionOptions, 'student path should be created on start');
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1', close() {} });
+  await starting;
   const result = await network.requestLock('refresh', {
     lockToken: 'token-student-a', ttlMs: 12_000,
   });

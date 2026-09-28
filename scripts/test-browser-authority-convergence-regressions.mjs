@@ -241,11 +241,12 @@ test('student network turns a DataChannel-only close into terminal recovery even
   assert.equal(states.at(-1), 'failed', 'closed DataChannel must enter the existing reconnect path');
 });
 
-test('teacher network removes a peer when only its DataChannel closes', async () => {
-  let connectionOptions;
+test('teacher network removes a peer when the selected DataChannel closes', async () => {
+  const connectionOptions = [];
   let transportOptions;
   const removed = [];
   const network = createTeacherPeerNetwork({
+    clientId: 'teacher-a',
     signaling: { send: async () => {} },
     peerHub: {
       addPeer: () => () => {},
@@ -253,8 +254,8 @@ test('teacher network removes a peer when only its DataChannel closes', async ()
       async handleMessage() {},
     },
     createConnection: (options) => {
-      connectionOptions = options;
-      return { async start() {}, async handleSignal() {}, close() {} };
+      connectionOptions.push(options);
+      return { async start() {}, async handleSignal() {}, resendSignaling() {}, close() {} };
     },
     createTransport: (options) => {
       transportOptions = options;
@@ -262,10 +263,17 @@ test('teacher network removes a peer when only its DataChannel closes', async ()
     },
   });
 
-  await network.handleSignal({ sourceId: 'student-a', signal: { type: 'offer' } });
-  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await network.handleSignal({
+    sourceId: 'student-a',
+    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'student-a-1',
+      description: { type: 'offer', sdp: 'x' } },
+  });
+  const ownerPath = connectionOptions.find((options) => options.initiator === true);
+  assert.ok(ownerPath);
+  ownerPath.onChannel({ label: 'alex-board-durable-v1', close() {} });
+
   assert.equal(network.getPeerCount(), 1);
-  assert.equal(typeof transportOptions.onClose, 'function', 'teacher transport must observe DataChannel close');
+  assert.equal(typeof transportOptions?.onClose, 'function', 'selected teacher transport must observe DataChannel close');
 
   transportOptions.onClose();
   assert.equal(network.getPeerCount(), 0);

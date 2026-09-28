@@ -132,8 +132,7 @@ test('teacher duplicate student-path offer replays without creating a third cand
   const responder = created.find((entry) => entry.options.initiator === false);
   assert.ok(responder);
   assert.equal(responder.closed, 0);
-  assert.equal(responder.replayed, 1);
-  assert.equal(responder.handled.length, 1);
+  assert.equal(responder.handled.length, 2, 'network should route duplicate offer to the same responder candidate');
 });
 
 test('new student-path offer replaces only that path and delayed old signaling is ignored', async (t) => {
