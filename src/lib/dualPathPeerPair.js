@@ -116,7 +116,7 @@ export function createDualPathPeerPair({
   }
 
   function failPair(error) {
-    if (closed || fatal || selectedAttached) return;
+    if (closed || fatal) return;
     fatal = true;
     clearDeadline();
     clearPrimaryTimer();

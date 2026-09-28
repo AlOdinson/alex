@@ -36,9 +36,17 @@ test('student peer network forwards lock requests to the active session', async 
   );
 
   const starting = network.start();
-  await Promise.resolve();
-  assert.ok(connectionOptions, 'student path should be created on start');
+  await network.handleSignal({
+    sourceId: 'teacher-a',
+    signal: { type: 'offer', path: 'owner-initiated', negotiationId: 'lock-owner',
+      description: { type: 'offer', sdp: 'x' } },
+  });
+  assert.ok(connectionOptions, 'owner path offer should create the responder');
   connectionOptions.onChannel({ label: 'alex-board-durable-v1', close() {} });
+  await network.handleSignal({
+    sourceId: 'teacher-a',
+    signal: { type: 'path-select', path: 'owner-initiated' },
+  });
   await starting;
   const result = await network.requestLock('refresh', {
     lockToken: 'token-student-a', ttlMs: 12_000,

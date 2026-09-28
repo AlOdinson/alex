@@ -21,6 +21,24 @@ class Channel extends EventTarget {
   receive(frame) { this.dispatchEvent(new MessageEvent('message', { data: frame })); }
 }
 
+async function openStudentOwnerPath(network, teacherId, getOptions, channel = new Channel()) {
+  await network.handleSignal({
+    sourceId: teacherId,
+    signal: {
+      type: 'offer',
+      path: 'owner-initiated',
+      negotiationId: 'owner-filled-test',
+      description: { type: 'offer', sdp: 'owner-filled-test' },
+    },
+  });
+  getOptions().onChannel(channel);
+  await network.handleSignal({
+    sourceId: teacherId,
+    signal: { type: 'path-select', path: 'owner-initiated' },
+  });
+  return channel;
+}
+
 for (const head of [0, 200]) {
   test(`fresh device receives the full filled snapshot at revision ${head} without replaying history`, async () => {
     const snapshot = { version: 2, background: 'dots', canvas: { objects: [
@@ -148,7 +166,7 @@ test('silent WebRTC startup has a deadline even when signaling never settles', a
   const network = createStudentPeerNetwork({
     teacherId: 'teacher', signaling: { send: async () => {} },
     getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
-    connectTimeoutMs: 100,
+    connectTimeoutMs: 100, primaryPathTimeoutMs: 40,
     onState: (state) => states.push(state),
     createConnection: () => ({ start: () => new Promise(() => {}), close: () => { closes += 1; } }),
   });
@@ -170,13 +188,13 @@ test('stalled initial snapshot transfer closes and rejects the peer', async (t) 
     teacherId: 'teacher', signaling: { send: async () => {} },
     getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
     connectTimeoutMs: 100, initialSyncTimeoutMs: 200,
-    createConnection: (input) => { options = input; return { async start() {}, close() {} }; },
+    createConnection: (input) => { options = input; return { async start() {}, async handleSignal() {}, close() {} }; },
     createTransport: () => ({ send: async () => {}, close() {} }),
     createSession: () => ({ start: () => new Promise(() => {}), close() {} }),
   });
   network.start().catch((error) => { failure = error; });
   t.after(() => network.close());
-  options.onChannel(new Channel());
+  await openStudentOwnerPath(network, 'teacher', () => options);
   t.mock.timers.tick(201);
   await turn();
   assert.match(failure?.message ?? '', /timed out/i);
@@ -193,13 +211,13 @@ test('healthy slow snapshot progress extends the idle deadline', async (t) => {
     teacherId: 'teacher', signaling: { send: async () => {} },
     getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
     connectTimeoutMs: 100, initialSyncTimeoutMs: 200,
-    createConnection: (input) => { connectionOptions = input; return { async start() {}, close() {} }; },
+    createConnection: (input) => { connectionOptions = input; return { async start() {}, async handleSignal() {}, close() {} }; },
     createTransport: (input) => { transportOptions = input; return { send: async () => {}, close() {} }; },
     createSession: () => ({ start: () => new Promise((resolve) => { finish = resolve; }), close() {} }),
   });
   const starting = network.start().catch((error) => { failure = error; });
   t.after(() => network.close());
-  connectionOptions.onChannel(new Channel());
+  await openStudentOwnerPath(network, 'teacher', () => connectionOptions);
   for (let i = 0; i < 4; i += 1) {
     t.mock.timers.tick(150);
     transportOptions.onProgress?.();
@@ -211,13 +229,13 @@ test('healthy slow snapshot progress extends the idle deadline', async (t) => {
   assert.equal(network.isReady(), true);
 });
 
-test('new offer replaces only the silent student-path candidate; late old channel cannot hijack selection', async () => {
+test('new fallback offer replaces only the stale fallback responder; late old channel cannot hijack selection', async () => {
   const peers = [];
   const added = [];
   const network = createTeacherPeerNetwork({
     clientId: 'teacher',
     signaling: { send: async () => {} },
-    peerHub: { addPeer: (id, transport) => { added.push(transport); return () => {}; }, removePeer() {}, async handleMessage() {} },
+    peerHub: { addPeer: (_id, transport) => { added.push(transport); return () => {}; }, removePeer() {}, async handleMessage() {} },
     createConnection: (options) => {
       const record = { options, closes: 0 };
       peers.push(record);
@@ -225,26 +243,30 @@ test('new offer replaces only the silent student-path candidate; late old channe
     },
     createTransport: ({ channel }) => ({ channel, send: async () => {}, sendTextTransfer: async () => {}, close() {} }),
   });
+
   await network.handleSignal({
     sourceId: 'student',
-    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'old', description: { type: 'offer', sdp: 'old' } },
+    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'old',
+      description: { type: 'offer', sdp: 'old' } },
   });
   const oldResponder = peers.find((peer) => peer.options.initiator === false);
-  const ownerCandidate = peers.find((peer) => peer.options.initiator === true);
+
   await network.handleSignal({
     sourceId: 'student',
-    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'new', description: { type: 'offer', sdp: 'new' } },
+    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'new',
+      description: { type: 'offer', sdp: 'new' } },
   });
   const responders = peers.filter((peer) => peer.options.initiator === false);
+  const currentResponder = responders.at(-1);
+
   assert.equal(peers.length, 3);
   assert.equal(oldResponder.closes, 1);
 
   oldResponder.options.onChannel(new Channel());
-  assert.equal(added.length, 0, 'late old DataChannel must stay isolated');
+  assert.equal(added.length, 0, 'late retired fallback DataChannel must stay isolated');
 
-  ownerCandidate.options.onChannel(new Channel());
-  assert.equal(added.length, 1, 'selected owner path should register exactly once');
-  assert.equal(responders.at(-1).closes, 1, 'losing replacement responder should retire after owner path wins');
+  currentResponder.options.onChannel(new Channel());
+  assert.equal(added.length, 1, 'current fallback responder should become selected transport');
   network.close();
 });
 
@@ -266,9 +288,9 @@ test('teacher closes a failed snapshot sender instead of leaving the joining stu
     signal: { type: 'offer', path: 'student-initiated', negotiationId: 'student-1',
       description: { type: 'offer', sdp: 'student' } },
   });
-  const ownerPath = options.find((input) => input.initiator === true);
-  assert.ok(ownerPath);
-  ownerPath.onChannel(new Channel());
+  const fallbackPath = options.findLast((input) => input.initiator === false);
+  assert.ok(fallbackPath);
+  fallbackPath.onChannel(new Channel());
   assert.ok(transportOptions);
   await transportOptions.onMessage({ type: 'snapshot-request', payload: {} });
   assert.equal(network.getPeerCount(), 0);
@@ -341,7 +363,7 @@ for (const source of ['frame', 'handler']) {
       getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
       createConnection: (options) => {
         connectionOptions = options;
-        return { async start() {}, close() { closes += 1; } };
+        return { async start() {}, async handleSignal() {}, close() { closes += 1; } };
       },
       createTransport: (options) => {
         transportOptions = options;
@@ -355,7 +377,7 @@ for (const source of ['frame', 'handler']) {
     });
     t.after(() => network.close());
     network.start().catch((value) => { failure = value; });
-    connectionOptions.onChannel(new Channel());
+    await openStudentOwnerPath(network, 'teacher', () => connectionOptions);
     if (source === 'frame') transportOptions.onError(error);
     else {
       try { await transportOptions.onTransfer({ kind: 'snapshot' }); }

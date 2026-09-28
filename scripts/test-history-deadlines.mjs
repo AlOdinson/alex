@@ -16,7 +16,7 @@ for (const operation of ['proposeActionAndWait', 'requestLock']) {
       onState: (state) => states.push(state),
       createConnection: (options) => {
         connectionOptions = options;
-        return { start: async () => {}, close: () => { closes++; } };
+        return { start: async () => {}, async handleSignal() {}, close: () => { closes++; } };
       },
       createTransport: () => ({ send: async () => {}, close() {} }),
       createSession: () => ({ start: async () => {}, close() {},
@@ -25,7 +25,16 @@ for (const operation of ['proposeActionAndWait', 'requestLock']) {
     });
     t.after(() => network.close());
     const start = network.start();
+    await network.handleSignal({
+      sourceId: 'teacher',
+      signal: { type: 'offer', path: 'owner-initiated', negotiationId: 'history-owner',
+        description: { type: 'offer', sdp: 'x' } },
+    });
     connectionOptions.onChannel({});
+    await network.handleSignal({
+      sourceId: 'teacher',
+      signal: { type: 'path-select', path: 'owner-initiated' },
+    });
     await start;
     let error;
     network[operation]({ actionId: 'same-id-on-retry' }).catch((reason) => { error = reason; });

@@ -79,14 +79,23 @@ test('default initial snapshot inactivity deadline tolerates a slow WebKit bulk 
     installSnapshot: async () => {},
     createConnection: (options) => {
       connectionOptions = options;
-      return { start: async () => {}, close() {} };
+      return { start: async () => {}, async handleSignal() {}, close() {} };
     },
     createTransport: () => ({ send: async () => {}, close() {} }),
     createSession: () => ({ start: () => new Promise(() => {}), close() {} }),
   });
   t.after(() => network.close());
   network.start().catch((error) => { failure = error; });
+  await network.handleSignal({
+    sourceId: 'teacher',
+    signal: { type: 'offer', path: 'owner-initiated', negotiationId: 'large-owner',
+      description: { type: 'offer', sdp: 'x' } },
+  });
   connectionOptions.onChannel({});
+  await network.handleSignal({
+    sourceId: 'teacher',
+    signal: { type: 'path-select', path: 'owner-initiated' },
+  });
   await flush();
   t.mock.timers.tick(31_000);
   await flush();
