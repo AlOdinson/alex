@@ -1,6 +1,7 @@
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { signalingNegotiationId } from './peerSignalingAssistance.js';
 
+// Network direction is independent from board authority; only one winning path is attached.
 export const OWNER_INITIATED_PATH = 'owner-initiated';
 export const STUDENT_INITIATED_PATH = 'student-initiated';
 
