@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createStudentPeerNetwork } from '../src/lib/studentPeerNetwork.js';
 
-test('student treats disconnected as terminal failure because teacher already retires that peer', async () => {
+test('student gives disconnected peer 3.5 seconds to recover', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   let connectionOptions = null;
+  let closedCount = 0;
   const states = [];
-
   const network = createStudentPeerNetwork({
     teacherId: 'teacher-a',
     signaling: { send: async () => {} },
@@ -18,32 +19,26 @@ test('student treats disconnected as terminal failure because teacher already re
       return {
         async start() {},
         async handleSignal() {},
-        close() {},
+        close() { closedCount += 1; },
       };
     },
     createTransport: () => ({ send: async () => {}, close() {} }),
-    // This test is about the connection-state recovery path, not the sync protocol.
-    // Satisfy the new readiness contract explicitly so `start()` means the durable
-    // student runtime is fully usable before we simulate the disconnect.
-    createSession: () => ({
-      async start() {},
-      close() {},
-    }),
+    createSession: () => ({ async start() {}, close() {} }),
   });
 
   const starting = network.start();
   await Promise.resolve();
-  assert.ok(connectionOptions, 'student peer connection was not created');
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
   await starting;
-  assert.equal(network.isReady(), true);
-
   connectionOptions.onConnectionState('disconnected');
-  assert.deepEqual(
-    states,
-    ['failed'],
-    'student must enter the existing terminal recovery path immediately when teacher has already dropped disconnected peers',
-  );
+  assert.deepEqual(states, ['disconnected']);
+  t.mock.timers.tick(3499);
+  assert.equal(network.isReady(), true);
+  assert.equal(closedCount, 0);
 
+  connectionOptions.onConnectionState('connected');
+  t.mock.timers.tick(10000);
+  assert.equal(network.isReady(), true);
+  assert.equal(closedCount, 0);
   network.close();
 });

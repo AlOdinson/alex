@@ -5,6 +5,7 @@ export const BOARD_DURABLE_DATA_CHANNEL = 'alex-board-durable-v1';
 export const BOARD_LIVE_DATA_CHANNEL = 'alex-board-live-v1';
 
 export const DEFAULT_BROWSER_RTC_CONFIG = Object.freeze({
+  iceCandidatePoolSize: 2,
   iceServers: Object.freeze([
     Object.freeze({ urls: Object.freeze(['stun:stun.cloudflare.com:3478']) }),
   ]),
@@ -12,9 +13,13 @@ export const DEFAULT_BROWSER_RTC_CONFIG = Object.freeze({
 
 function resolveRtcConfig(rtcConfig) {
   const source = rtcConfig && typeof rtcConfig === 'object' ? rtcConfig : {};
-  if (Object.prototype.hasOwnProperty.call(source, 'iceServers')) return source;
-  return {
+  const resolved = {
+    iceCandidatePoolSize: DEFAULT_BROWSER_RTC_CONFIG.iceCandidatePoolSize,
     ...source,
+  };
+  if (Object.prototype.hasOwnProperty.call(source, 'iceServers')) return resolved;
+  return {
+    ...resolved,
     iceServers: DEFAULT_BROWSER_RTC_CONFIG.iceServers.map((server) => ({
       ...server,
       urls: Array.isArray(server.urls) ? [...server.urls] : server.urls,

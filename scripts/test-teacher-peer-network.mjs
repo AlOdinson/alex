@@ -79,7 +79,8 @@ test('attaches an opened data channel to the teacher hub and removes it on failu
   assert.deepEqual(removed, ['student-b']);
 });
 
-test('late terminal state from a replaced connection cannot close the reconnect', async () => {
+test('late terminal state from a replaced connection cannot close the reconnect', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const created = [];
   const removed = [];
   const network = createTeacherPeerNetwork({
@@ -110,6 +111,9 @@ test('late terminal state from a replaced connection cannot close the reconnect'
   // The first connection disconnects and is removed. A new offer can now create the
   // replacement before the old RTCPeerConnection emits its final "closed" state.
   created[0].options.onConnectionState('disconnected');
+  assert.equal(network.getPeerCount(), 1);
+  t.mock.timers.tick(3500);
+  await Promise.resolve();
   assert.equal(network.getPeerCount(), 0);
   await network.handleSignal({ sourceId: 'student-reload', signal: { type: 'offer', generation: 2 } });
   assert.equal(created.length, 2);

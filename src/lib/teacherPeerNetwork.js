@@ -3,7 +3,8 @@ import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { createPeerDataChannelTransport } from './peerDataChannel.js';
 import { createPeerLiveChannel } from './peerLiveChannel.js';
 
-const TERMINAL_STATES = new Set(['failed', 'closed', 'disconnected']);
+const TERMINAL_STATES = new Set(['failed', 'closed']);
+const DISCONNECT_GRACE_MS = 3_500;
 
 export function createTeacherPeerNetwork({
   boardId = '',
@@ -12,6 +13,7 @@ export function createTeacherPeerNetwork({
   signaling,
   peerHub,
   rtcConfig = {},
+  disconnectGraceMs = DISCONNECT_GRACE_MS,
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
   createLiveTransport = createPeerLiveChannel,
@@ -26,21 +28,23 @@ export function createTeacherPeerNetwork({
   }
 
   const peers = new Map();
-  // Bounded tombstones for signaling attempts, not board data. Retransmission of
-  // a retired offer must never replace the current connection for a stable peer.
   const retiredOffers = new Set();
   const offerKey = (peerId, fingerprint) => JSON.stringify([peerId, fingerprint]);
   let closed = false;
+
+  const clearDisconnectTimer = (entry) => {
+    if (!entry?.disconnectTimer) return;
+    clearTimeout(entry.disconnectTimer);
+    entry.disconnectTimer = null;
+  };
 
   const closePeer = (peerId, expectedEntry = null) => {
     const id = String(peerId ?? '');
     const entry = peers.get(id);
     if (!entry) return false;
-    // Connection-state callbacks can arrive after a reconnect has already replaced
-    // the entry for the same stable peer id. A stale callback must never tear down
-    // that newer connection.
     if (expectedEntry && entry !== expectedEntry) return false;
     peers.delete(id);
+    clearDisconnectTimer(entry);
     if (entry.offerFingerprint) {
       if (retiredOffers.size >= 128) retiredOffers.delete(retiredOffers.values().next().value);
       retiredOffers.add(offerKey(id, entry.offerFingerprint));
@@ -67,14 +71,14 @@ export function createTeacherPeerNetwork({
       return null;
     }
     if (entry.transport) return entry.transport;
+    clearDisconnectTimer(entry);
     let transport;
     transport = createTransport({
       channel,
       onMessage: (message) => Promise.resolve().then(() => {
         if (peers.get(peerId) !== entry || entry.transport !== transport) return;
         return peerHub.handleMessage(peerId, message);
-      })
-        .catch((error) => failPeer(peerId, entry, error)),
+      }).catch((error) => failPeer(peerId, entry, error)),
       onTransfer: () => {},
       onClose: () => {
         if (peers.get(peerId) !== entry || entry.transport !== transport) return;
@@ -120,7 +124,7 @@ export function createTeacherPeerNetwork({
     return liveTransport;
   };
 
-  const ensurePeer = (peerId) => {
+  const ensurePeer = (peerId, { initiator = false } = {}) => {
     const id = String(peerId ?? '').trim();
     if (!id) throw new Error('peerId is required');
     const existing = peers.get(id);
@@ -134,9 +138,12 @@ export function createTeacherPeerNetwork({
       unregister: null,
       offerFingerprint: null,
       negotiationId: '',
+      initiator: Boolean(initiator),
+      disconnectTimer: null,
     };
     const connection = createConnection({
-      initiator: false,
+      initiator: entry.initiator,
+      enableLiveChannel: entry.initiator,
       assistSignaling: true,
       rtcConfig,
       sendSignal: (signal) => signaling.send(id, signal),
@@ -144,14 +151,28 @@ export function createTeacherPeerNetwork({
       onLiveChannel: (channel) => attachLiveTransport(id, channel, entry),
       onConnectionState: (state) => {
         if (peers.get(id) !== entry) return;
-        onPeerState(id, state);
-        if (TERMINAL_STATES.has(String(state))) closePeer(id, entry);
+        const normalized = String(state ?? 'unknown');
+        try { onPeerState(id, normalized); } catch { /* observer errors are ignored */ }
+        if (normalized === 'disconnected') {
+          if (!entry.disconnectTimer) {
+            entry.disconnectTimer = setTimeout(() => {
+              entry.disconnectTimer = null;
+              if (peers.get(id) !== entry) return;
+              try { onPeerState(id, 'failed'); } catch { /* observer errors are ignored */ }
+              closePeer(id, entry);
+            }, Math.max(1, Number(disconnectGraceMs) || DISCONNECT_GRACE_MS));
+            entry.disconnectTimer?.unref?.();
+          }
+          return;
+        }
+        clearDisconnectTimer(entry);
+        if (TERMINAL_STATES.has(normalized)) closePeer(id, entry);
       },
       onError,
     });
     entry.connection = connection;
     peers.set(id, entry);
-    Promise.resolve(connection.start?.()).catch(onError);
+    Promise.resolve(connection.start?.()).catch((error) => failPeer(id, entry, error));
     return entry;
   };
 
@@ -159,32 +180,55 @@ export function createTeacherPeerNetwork({
     async handleSignal(message) {
       if (closed) return false;
       const peerId = String(message?.sourceId ?? '').trim();
-      if (!peerId || !message?.signal) return false;
-      const fingerprint = message.signal.type === 'offer' ? JSON.stringify(message.signal) : null;
+      const signal = message?.signal;
+      if (!peerId || !signal) return false;
+
       const previous = peers.get(peerId);
-      const negotiationId = signalingNegotiationId(message.signal);
+      if (signal.type === 'role-switch') {
+        if (previous?.initiator) {
+          previous.connection.resendSignaling?.();
+          return true;
+        }
+        if (previous) closePeer(peerId, previous);
+        ensurePeer(peerId, { initiator: true });
+        return true;
+      }
+
+      if (previous?.initiator) {
+        if (signal.type === 'offer') {
+          previous.connection.resendSignaling?.();
+          return true;
+        }
+        try {
+          await previous.connection.handleSignal(signal);
+        } catch (error) {
+          failPeer(peerId, previous, error);
+          throw error;
+        }
+        return true;
+      }
+
+      const fingerprint = signal.type === 'offer' ? JSON.stringify(signal) : null;
+      const negotiationId = signalingNegotiationId(signal);
       if (fingerprint && retiredOffers.has(offerKey(peerId, fingerprint))) return false;
       if (!fingerprint && negotiationId && previous?.negotiationId
         && negotiationId !== previous.negotiationId) return false;
-      // A student may time out/retry before the remote browser declares its old
-      // connection failed. Do not renegotiate the obsolete SCTP association.
+
       if (fingerprint && previous && (
         (previous.offerFingerprint && previous.offerFingerprint !== fingerprint)
         || (previous.negotiationId && negotiationId && previous.negotiationId !== negotiationId)
       )) {
         closePeer(peerId, previous);
       }
-      const entry = ensurePeer(peerId);
+      const entry = ensurePeer(peerId, { initiator: false });
       if (fingerprint && entry.offerFingerprint === fingerprint) {
-        // Receipt by Ably is not receipt by this browser. Re-send the cached
-        // answer/candidates; never setRemoteDescription or recreate SCTP here.
         entry.connection.resendSignaling?.();
         return true;
       }
       if (negotiationId && !entry.negotiationId) entry.negotiationId = negotiationId;
       if (fingerprint) entry.offerFingerprint = fingerprint;
       try {
-        await entry.connection.handleSignal(message.signal);
+        await entry.connection.handleSignal(signal);
       } catch (error) {
         failPeer(peerId, entry, error);
         throw error;

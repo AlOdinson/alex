@@ -1,7 +1,7 @@
 export const BOARD_PEER_SIGNAL_PROTOCOL = 'alex-board-peer-signal-v1';
 export const BOARD_PEER_SIGNAL_TYPE = 'board-peer-signal';
 
-const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice']);
+const SIGNAL_TYPES = new Set(['offer', 'answer', 'ice', 'role-switch']);
 
 function safeId(value) {
   return String(value ?? '').trim();

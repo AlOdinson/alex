@@ -1,6 +1,7 @@
 // Recovery of bootstrap signaling only. Never carries board actions or replaces
 // ICE/TURN routing. The existing network startup deadline still owns failure.
 export const SIGNALING_ASSIST_DELAYS_MS = Object.freeze([3000, 8000]);
+export const RESPONDER_SIGNALING_ASSIST_DELAYS_MS = Object.freeze([2000, 5000]);
 const MAX_REPLAYS = 2;
 const MAX_CACHED_CANDIDATES = 16;
 const CANDIDATE_SPACING_MS = 150;
@@ -31,18 +32,18 @@ export function createPeerSignalingAssistance({ enabled = false, initiator = fal
     const timer = setTimeout(() => { timers.delete(timer); if (available()) fn(); }, delay);
     timer?.unref?.(); timers.add(timer);
   };
-  const stop = () => {
-    stopped = true; active = false; description = null; candidates.clear();
+  const clearTimers = () => {
     for (const timer of timers) clearTimeout(timer);
     timers.clear();
   };
-  // A missing Ably publish receipt must not block a later finite replay. Sends
-  // are paced and bounded independently of receipt promises; errors are reported
-  // by the original send wrapper and never become orphan rejections here.
+  const stop = () => {
+    stopped = true; active = false; description = null; candidates.clear();
+    clearTimers();
+  };
   const publish = (message) => {
     Promise.resolve().then(() => available() ? send(message) : undefined).catch(() => undefined);
   };
-  const replay = () => {
+  const replayOnce = () => {
     if (!available() || active || replays >= MAX_REPLAYS || !description) return false;
     replays++; active = true;
     const pending = [...candidates.values()];
@@ -56,13 +57,24 @@ export function createPeerSignalingAssistance({ enabled = false, initiator = fal
     if (pending.length) later(next, CANDIDATE_SPACING_MS); else active = false;
     return true;
   };
+  const replay = () => {
+    // An explicit remote retry proves that signaling reached the other browser.
+    // Replay immediately and cancel the remaining scheduled bootstrap retries.
+    clearTimers();
+    return replayOnce();
+  };
   return {
     rememberDescription(signal) {
       if (!available()) return;
       description = boundedCopy(signal, 48000);
-      if (!armed && initiator && description?.type === 'offer') {
+      const delays = initiator && description?.type === 'offer'
+        ? SIGNALING_ASSIST_DELAYS_MS
+        : (!initiator && description?.type === 'answer'
+          ? RESPONDER_SIGNALING_ASSIST_DELAYS_MS
+          : null);
+      if (!armed && delays) {
         armed = true;
-        for (const delay of SIGNALING_ASSIST_DELAYS_MS) later(replay, delay);
+        for (const delay of delays) later(replayOnce, delay);
       }
     },
     rememberCandidate(signal) {
