@@ -155,11 +155,13 @@ try {
 
       const allSignals = after.flatMap((evidence) => evidence.signals);
       assert.ok(allSignals.some((signal) => signal.path === 'owner-initiated'),
-        'owner-initiated path must be tested');
-      assert.ok(allSignals.some((signal) => signal.path === 'student-initiated'),
-        'student-initiated path must be tested');
+        'owner-initiated primary path must always be tested');
+      if (mode === 'owner-path-dead') {
+        assert.ok(allSignals.some((signal) => signal.path === 'student-initiated'),
+          'student-initiated fallback must be tested when the owner path is fully dead');
+      }
 
-      if (mode !== 'clean') {
+      if (!['clean', 'student-path-dead'].includes(mode)) {
         assert.ok(allSignals.some((signal) => signal.dropped), 'fault injection must occur');
       }
       if (mode === 'offer') {
