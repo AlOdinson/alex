@@ -79,7 +79,7 @@ test('attaches an opened data channel to the teacher hub and removes it on failu
   assert.deepEqual(removed, ['student-b']);
 });
 
-test('late terminal state from a replaced connection cannot close the reconnect', async (t) => {
+test('late terminal state from promoted responder cannot close owner initiator fallback', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const created = [];
   const removed = [];
@@ -91,10 +91,11 @@ test('late terminal state from a replaced connection cannot close the reconnect'
       async handleMessage() {},
     },
     createConnection: (options) => {
-      const record = { options, closed: 0 };
+      const record = { options, closed: 0, replayed: 0 };
       const connection = {
         async start() {},
         async handleSignal() {},
+        resendSignaling() { record.replayed += 1; },
         close() { record.closed += 1; },
       };
       record.connection = connection;
@@ -106,26 +107,33 @@ test('late terminal state from a replaced connection cannot close the reconnect'
 
   await network.handleSignal({ sourceId: 'student-reload', signal: { type: 'offer', generation: 1 } });
   assert.equal(created.length, 1);
+  assert.equal(created[0].options.initiator, false);
   assert.equal(network.getPeerCount(), 1);
 
-  // The first connection disconnects and is removed. A new offer can now create the
-  // replacement before the old RTCPeerConnection emits its final "closed" state.
   created[0].options.onConnectionState('disconnected');
   assert.equal(network.getPeerCount(), 1);
   t.mock.timers.tick(3500);
   await Promise.resolve();
-  assert.equal(network.getPeerCount(), 0);
-  await network.handleSignal({ sourceId: 'student-reload', signal: { type: 'offer', generation: 2 } });
-  assert.equal(created.length, 2);
+
+  assert.equal(created.length, 2, 'stalled responder should be replaced by owner initiator');
+  assert.equal(created[0].closed, 1);
+  assert.equal(created[1].options.initiator, true);
   assert.equal(network.getPeerCount(), 1);
 
-  // This callback belongs to connection #1. It must not resolve student-reload to the
-  // newly-created connection #2 and close that replacement.
+  // A late callback belongs to the retired responder and must not close the
+  // owner-initiated fallback that replaced it.
   created[0].options.onConnectionState('closed');
+  assert.equal(network.getPeerCount(), 1);
+  assert.equal(created[1].closed, 0);
 
-  assert.equal(network.getPeerCount(), 1, 'stale old connection callback removed the replacement peer');
-  assert.equal(created[1].closed, 0, 'stale old connection callback closed the replacement connection');
-  assert.equal(removed.length, 1, 'replacement peer was removed from the hub by stale cleanup');
+  // A delayed old student offer must not switch the pair back to the broken
+  // orientation. It only asks the current owner initiator to resend its offer.
+  await network.handleSignal({ sourceId: 'student-reload', signal: { type: 'offer', generation: 2 } });
+  assert.equal(created.length, 2);
+  assert.equal(created[1].replayed, 1);
+  assert.equal(network.getPeerCount(), 1);
+  assert.equal(removed.length, 1);
+  network.close();
 });
 
 
