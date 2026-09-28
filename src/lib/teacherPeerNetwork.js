@@ -5,7 +5,7 @@ import { createPeerLiveChannel } from './peerLiveChannel.js';
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const DISCONNECT_GRACE_MS = 3_500;
-const OWNER_PREFERENCE_GRACE_MS = 1_500;
+const PRIMARY_PATH_TIMEOUT_MS = 4_000;
 
 export function createTeacherPeerNetwork({
   boardId = '',
@@ -16,7 +16,7 @@ export function createTeacherPeerNetwork({
   rtcConfig = {},
   connectTimeoutMs = CONNECT_TIMEOUT_MS,
   disconnectGraceMs = DISCONNECT_GRACE_MS,
-  ownerPreferenceGraceMs = OWNER_PREFERENCE_GRACE_MS,
+  primaryPathTimeoutMs = PRIMARY_PATH_TIMEOUT_MS,
   createPair = createDualPathPeerPair,
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
@@ -140,7 +140,7 @@ export function createTeacherPeerNetwork({
       enableLiveChannel: true,
       connectTimeoutMs,
       disconnectGraceMs,
-      ownerPreferenceGraceMs,
+      primaryPathTimeoutMs,
       createConnection,
       onSelectedChannel: (channel, path) => {
         if (peers.get(id) !== entry) return;

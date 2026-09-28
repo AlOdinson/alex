@@ -148,8 +148,8 @@ try {
         'healthy selected channel must stop bootstrap signaling');
 
       for (const evidence of after) {
-        assert.ok(evidence.pcCount >= 1 && evidence.pcCount <= 3,
-          'dual-path bootstrap should stay bounded to the two candidates plus at most one same-path retry');
+        assert.ok(evidence.pcCount >= 1 && evidence.pcCount <= 2,
+          'sequential two-path bootstrap must never run more than one path at a time');
         assert.equal(evidence.protocolMismatch, 0);
       }
 
