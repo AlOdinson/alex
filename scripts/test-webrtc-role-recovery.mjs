@@ -223,7 +223,7 @@ test('pre-connect disconnected reverses roles after the 3.5s grace period', asyn
   network.close();
 });
 
-test('teacher pre-connect failure does not retire the offer and accepts its retry', async () => {
+test('teacher pre-connect failure promotes to initiator and old offer cannot undo fallback', async () => {
   const created = [];
   let currentOptions = null;
   const network = createTeacherPeerNetwork({
@@ -231,10 +231,11 @@ test('teacher pre-connect failure does not retire the offer and accepts its retr
     peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
     createConnection: (options) => {
       currentOptions = options;
-      const record = { options, closed: 0, handled: 0 };
+      const record = { options, closed: 0, handled: 0, replayed: 0 };
       record.connection = {
         async start() {},
         async handleSignal() { record.handled += 1; },
+        resendSignaling() { record.replayed += 1; },
         close() { record.closed += 1; },
       };
       created.push(record);
@@ -246,12 +247,17 @@ test('teacher pre-connect failure does not retire the offer and accepts its retr
   const offer = { sourceId: 'student-retry', signal: { type: 'offer', generation: 1 } };
   await network.handleSignal(offer);
   assert.equal(created.length, 1);
+  assert.equal(created[0].options.initiator, false);
+
   currentOptions.onConnectionState('failed');
-  assert.equal(network.getPeerCount(), 0);
+  await flush();
+  assert.equal(created.length, 2);
+  assert.equal(created[1].options.initiator, true);
+  assert.equal(network.getPeerCount(), 1);
 
   await network.handleSignal(offer);
-  assert.equal(created.length, 2, 'same offer should be allowed to recreate a pre-connect failed responder');
-  assert.equal(created[1].handled, 1);
+  assert.equal(created.length, 2, 'old student offer must not recreate the retired responder path');
+  assert.equal(created[1].replayed, 1, 'current owner-initiator should resend its offer instead');
   assert.equal(network.getPeerCount(), 1);
   network.close();
 });
