@@ -61,7 +61,7 @@ export function createTeacherTabAuthority({
   let activeAbortController = null;
   let retryTimer = null;
   let heartbeatTimer = null;
-  let resolveFallbackRun = null;
+  let resolveActiveProbe = null;
   let usingFallback = false;
 
   const setAuthority = (next) => {
@@ -92,14 +92,12 @@ export function createTeacherTabAuthority({
       if (written && verified) {
         setAuthority(true);
         heartbeatTimer = setTimeout(fallbackAcquire, FALLBACK_HEARTBEAT_MS);
-        heartbeatTimer?.unref?.();
         return;
       }
     }
 
     setAuthority(false);
     retryTimer = setTimeout(fallbackAcquire, FALLBACK_RETRY_MS);
-    retryTimer?.unref?.();
   };
 
   const startFallback = () => {
@@ -118,8 +116,10 @@ export function createTeacherTabAuthority({
       const settleDecision = (value) => {
         if (decisionSettled) return;
         decisionSettled = true;
+        if (resolveActiveProbe === settleDecision) resolveActiveProbe = null;
         decide(value);
       };
+      resolveActiveProbe = settleDecision;
 
       const requestTask = Promise.resolve().then(() => locks.request(
         lockName,
@@ -148,8 +148,7 @@ export function createTeacherTabAuthority({
       });
 
       const watchdog = new Promise((resolve) => {
-        const timer = setTimeout(() => resolve('timeout'), WEB_LOCK_PROBE_TIMEOUT_MS);
-        timer?.unref?.();
+        setTimeout(() => resolve('timeout'), WEB_LOCK_PROBE_TIMEOUT_MS);
       });
       const outcome = await Promise.race([decision, watchdog]);
 
@@ -169,11 +168,15 @@ export function createTeacherTabAuthority({
         await requestTask;
         return;
       }
+      if (outcome === 'stopped') {
+        try { controller.abort(); } catch { /* ignored */ }
+        requestTask.catch(() => undefined);
+        return;
+      }
       await requestTask.catch(() => undefined);
       if (stopped) return;
       await new Promise((resolve) => {
         retryTimer = setTimeout(resolve, WEB_LOCK_RETRY_MS);
-        retryTimer?.unref?.();
       });
       retryTimer = null;
     }
@@ -187,7 +190,7 @@ export function createTeacherTabAuthority({
 
       if (!locks?.request) {
         startFallback();
-        runningPromise = new Promise((resolve) => { resolveFallbackRun = resolve; });
+        runningPromise = Promise.resolve();
         return runningPromise;
       }
 
@@ -207,6 +210,8 @@ export function createTeacherTabAuthority({
       stopped = true;
       clearTimers();
       try { activeAbortController?.abort(); } catch { /* ignored */ }
+      resolveActiveProbe?.('stopped');
+      resolveActiveProbe = null;
       releaseCurrentLock?.();
       releaseCurrentLock = null;
       if (usingFallback) {
@@ -214,8 +219,6 @@ export function createTeacherTabAuthority({
         setAuthority(false);
         usingFallback = false;
         started = false;
-        resolveFallbackRun?.();
-        resolveFallbackRun = null;
       }
     },
 
