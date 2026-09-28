@@ -509,9 +509,12 @@ export function createBrowserBoardSession({
         participantCapabilities.set(id, normalizeCollaborationCapabilities(user?.capabilities));
       }
       if (isOwner) {
+        // Durable authority always uses WebRTC, even when the peer is in legacy-live
+        // mode. Presence capability timing must never suppress the owner-initiated
+        // fallback path.
         const peerIds = list
           .map((user) => safeId(user?.clientId))
-          .filter((id) => id && id !== safeClientId && collaborationModeFor(id) === 'webrtc-live-v1');
+          .filter((id) => id && id !== safeClientId);
         try { runtime?.updateParticipants?.(peerIds); } catch (error) { onError(error); }
         return Promise.resolve(runtime);
       }
