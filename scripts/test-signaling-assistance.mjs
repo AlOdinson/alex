@@ -179,19 +179,28 @@ test('a slow answer publish receipt does not block incoming ICE on the responder
   assert.equal(native.added.length, 1);
 });
 
-test('Ably publication alone never declares editing ready; existing 15s failure path remains', async (t) => {
+test('Ably publication alone never declares editing ready; role reversal precedes the 20s failure path', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const native = new NativeStub(), sent = [];
+  const natives = [], sent = [];
   const student = createStudentPeerNetwork({ teacherId: 'teacher', signaling: { send: async (_id, s) => sent.push(s) },
     getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
-    createConnection: options => createBrowserPeerConnection({ ...options, createPeerConnection: () => native }),
+    createConnection: options => {
+      const native = new NativeStub();
+      natives.push({ native, options });
+      return createBrowserPeerConnection({ ...options, createPeerConnection: () => native });
+    },
   });
   t.after(() => student.close());
   const result = student.start().catch(e => e); await flush();
   t.mock.timers.tick(3000); await flush(); t.mock.timers.tick(5000); await flush();
-  assert.equal(sent.filter(s => s.type === 'offer').length, 3); assert.equal(student.isReady(), false);
-  t.mock.timers.tick(7000); await flush(); assert.match((await result).message, /timed out/);
-  t.mock.timers.tick(30000); await flush(); assert.equal(sent.length, 3);
+  assert.equal(sent.filter(s => s.type === 'offer').length, 3);
+  assert.equal(student.isReady(), false);
+  t.mock.timers.tick(2000); await flush();
+  assert.equal(natives.length, 2, '10s fallback must rebuild the student as responder');
+  assert.equal(natives[1].options.initiator, false);
+  assert.equal(sent.some(s => s.type === 'role-switch'), true);
+  t.mock.timers.tick(10000); await flush();
+  assert.match((await result).message, /timed out/);
 });
 
 test('untagged legacy answers still work with an updated student', async (t) => {
