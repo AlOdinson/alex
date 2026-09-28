@@ -32,14 +32,14 @@ function fixture(t, options = {}) {
   return { native, sent, errors, connection };
 }
 
-test('unfinished setup resends the exact offer at 3s/8s, only twice, without a second channel', async (t) => {
+test('unfinished setup resends the exact offer at 1.5s/3s, only twice, without a second channel', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { connection, native, sent } = fixture(t);
   await connection.start();
   assert.equal(sent.length, 1);
-  t.mock.timers.tick(2999); await flush(); assert.equal(sent.length, 1);
+  t.mock.timers.tick(1499); await flush(); assert.equal(sent.length, 1);
   t.mock.timers.tick(1); await flush(); assert.equal(sent.filter(s => s.type === 'offer').length, 2);
-  t.mock.timers.tick(5000); await flush(); assert.equal(sent.filter(s => s.type === 'offer').length, 3);
+  t.mock.timers.tick(1500); await flush(); assert.equal(sent.filter(s => s.type === 'offer').length, 3);
   t.mock.timers.tick(100000); await flush(); assert.equal(sent.length, 3);
   assert.deepEqual(sent[0], sent[1]); assert.deepEqual(sent[0], sent[2]);
   assert.equal(native.created.length, 1);
@@ -65,8 +65,8 @@ test('a lost publish receipt does not prevent the timed assistance attempt', asy
   let calls = 0;
   const { connection } = fixture(t, { sendSignal: () => { calls++; return new Promise(() => {}); } });
   void connection.start(); await flush(); assert.equal(calls, 1);
-  t.mock.timers.tick(3000); await flush(); assert.equal(calls, 2);
-  t.mock.timers.tick(5000); await flush(); assert.equal(calls, 3);
+  t.mock.timers.tick(1500); await flush(); assert.equal(calls, 2);
+  t.mock.timers.tick(1500); await flush(); assert.equal(calls, 3);
 });
 
 test('ICE assistance is bounded and paced; opening mid-replay cancels the rest', async (t) => {
@@ -75,10 +75,10 @@ test('ICE assistance is bounded and paced; opening mid-replay cancels the rest',
   await connection.start();
   for (let i = 0; i < 50; i++) native.onicecandidate({ candidate: { candidate: `candidate:${i}`, usernameFragment: 'local' } });
   await flush(); assert.equal(sent.length, 51, 'normal candidate delivery must not be truncated');
-  t.mock.timers.tick(3000); await flush(); assert.equal(sent.length, 52, 'only description immediately, not a burst of ICE');
-  for (let i = 0; i < 20; i++) { t.mock.timers.tick(150); await flush(); }
+  t.mock.timers.tick(1500); await flush(); assert.equal(sent.length, 52, 'only description immediately, not a burst of ICE');
+  for (let i = 0; i < 16; i++) { t.mock.timers.tick(75); await flush(); }
   assert.equal(sent.length, 68, 'at most 16 candidates cached for replay');
-  t.mock.timers.tick(2000); await flush(); assert.equal(sent.length, 69);
+  t.mock.timers.tick(300); await flush(); assert.equal(sent.length, 69);
   native.open(); t.mock.timers.tick(30000); await flush(); assert.equal(sent.length, 69);
 });
 
@@ -179,7 +179,7 @@ test('a slow answer publish receipt does not block incoming ICE on the responder
   assert.equal(native.added.length, 1);
 });
 
-test('Ably publication alone never declares editing ready; role reversal precedes the 20s failure path', async (t) => {
+test('Ably publication alone never declares editing ready; role reversal precedes the 10s failure path', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const natives = [], sent = [];
   const student = createStudentPeerNetwork({ teacherId: 'teacher', signaling: { send: async (_id, s) => sent.push(s) },
@@ -192,14 +192,14 @@ test('Ably publication alone never declares editing ready; role reversal precede
   });
   t.after(() => student.close());
   const result = student.start().catch(e => e); await flush();
-  t.mock.timers.tick(3000); await flush(); t.mock.timers.tick(5000); await flush();
+  t.mock.timers.tick(1500); await flush(); t.mock.timers.tick(1500); await flush();
   assert.equal(sent.filter(s => s.type === 'offer').length, 3);
   assert.equal(student.isReady(), false);
   t.mock.timers.tick(2000); await flush();
-  assert.equal(natives.length, 2, '10s fallback must rebuild the student as responder');
+  assert.equal(natives.length, 2, '5s fallback must rebuild the student as responder');
   assert.equal(natives[1].options.initiator, false);
   assert.equal(sent.some(s => s.type === 'role-switch'), true);
-  t.mock.timers.tick(10000); await flush();
+  t.mock.timers.tick(5000); await flush();
   assert.match((await result).message, /timed out/);
 });
 

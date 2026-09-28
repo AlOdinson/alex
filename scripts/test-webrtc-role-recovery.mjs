@@ -37,7 +37,7 @@ test('default WebRTC config pre-gathers ICE candidates', () => {
   assert.equal(config.iceCandidatePoolSize, 2);
 });
 
-test('responder retries answer at 2s and 5s when the durable channel is still absent', async (t) => {
+test('responder retries answer at 1s and 2.5s when the durable channel is still absent', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const sent = [];
   const peer = createBrowserPeerConnection({
@@ -52,9 +52,9 @@ test('responder retries answer at 2s and 5s when the durable channel is still ab
     description: { type: 'offer', sdp: 'v=0\r\na=ice-ufrag:remote\r\n' },
   });
   assert.equal(sent.filter((signal) => signal.type === 'answer').length, 1);
-  t.mock.timers.tick(2000); await flush();
+  t.mock.timers.tick(1000); await flush();
   assert.equal(sent.filter((signal) => signal.type === 'answer').length, 2);
-  t.mock.timers.tick(3000); await flush();
+  t.mock.timers.tick(1500); await flush();
   assert.equal(sent.filter((signal) => signal.type === 'answer').length, 3);
   peer.close();
 });
@@ -70,7 +70,7 @@ test('role-switch is a valid board signaling message', () => {
   assert.equal(parsed.signal.type, 'role-switch');
 });
 
-test('student reverses to responder after 10s and asks teacher to become initiator', async (t) => {
+test('student reverses to responder after 5s and asks teacher to become initiator', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const created = [];
   const sent = [];
@@ -96,7 +96,7 @@ test('student reverses to responder after 10s and asks teacher to become initiat
   const starting = network.start();
   await flush();
   assert.equal(created[0].options.initiator, true);
-  t.mock.timers.tick(10000); await flush();
+  t.mock.timers.tick(5000); await flush();
   assert.equal(created[0].closed, 1);
   assert.equal(created[1].options.initiator, false);
   assert.deepEqual(sent.at(-1), { peerId: 'teacher', signal: { type: 'role-switch' } });

@@ -4,10 +4,10 @@ import { createStudentPeerSession } from './studentPeerSession.js';
 import { createPeerLiveChannel } from './peerLiveChannel.js';
 
 const TERMINAL_STATES = new Set(['failed', 'closed']);
-const CONNECT_TIMEOUT_MS = 20_000;
+const CONNECT_TIMEOUT_MS = 10_000;
 const INITIAL_SYNC_IDLE_TIMEOUT_MS = 90_000;
 const DISCONNECT_GRACE_MS = 3_500;
-const ROLE_SWITCH_DELAY_MS = 10_000;
+const ROLE_SWITCH_DELAY_MS = 5_000;
 const ROLE_SWITCH_REPLAY_DELAY_MS = 2_500;
 
 function positiveTimeout(value, fallback) {

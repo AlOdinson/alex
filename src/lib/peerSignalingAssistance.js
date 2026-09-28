@@ -1,10 +1,10 @@
 // Recovery of bootstrap signaling only. Never carries board actions or replaces
 // ICE/TURN routing. The existing network startup deadline still owns failure.
-export const SIGNALING_ASSIST_DELAYS_MS = Object.freeze([3000, 8000]);
-export const RESPONDER_SIGNALING_ASSIST_DELAYS_MS = Object.freeze([2000, 5000]);
+export const SIGNALING_ASSIST_DELAYS_MS = Object.freeze([1500, 3000]);
+export const RESPONDER_SIGNALING_ASSIST_DELAYS_MS = Object.freeze([1000, 2500]);
 const MAX_REPLAYS = 2;
 const MAX_CACHED_CANDIDATES = 16;
-const CANDIDATE_SPACING_MS = 150;
+const CANDIDATE_SPACING_MS = 75;
 
 export function signalingNegotiationId(signal) {
   const value = signal?.negotiationId;
