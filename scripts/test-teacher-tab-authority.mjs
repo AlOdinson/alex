@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createTeacherTabAuthority } from '../src/lib/teacherTabAuthority.js';
 
+const flush = async () => { for (let i = 0; i < 30; i += 1) await Promise.resolve(); };
+
 test('holds an exclusive board-scoped Web Lock until stopped', async () => {
   const events = [];
   let requestedName = '';
@@ -94,10 +96,11 @@ test('does not fall back when another tab legitimately holds the Web Lock', asyn
     },
   });
   const running = authority.start();
-  await Promise.resolve();
+  await flush();
   assert.equal(authority.isAuthority(), false);
+  assert.equal(calls, 1);
   t.mock.timers.tick(750);
-  await Promise.resolve();
+  await flush();
   assert.ok(calls >= 2);
   authority.stop();
   await running;
@@ -117,9 +120,9 @@ test('falls back when a present Web Locks API never answers', async (t) => {
     lockManager: { request: () => new Promise(() => {}) },
   });
   const running = authority.start();
-  await Promise.resolve();
+  await flush();
   t.mock.timers.tick(1500);
-  await Promise.resolve();
+  await flush();
   assert.equal(authority.isAuthority(), true);
   assert.equal(authority.isBestEffortFallback(), true);
   authority.stop();
