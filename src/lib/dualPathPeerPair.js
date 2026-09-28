@@ -7,6 +7,7 @@ export const STUDENT_INITIATED_PATH = 'student-initiated';
 const VALID_PATHS = new Set([OWNER_INITIATED_PATH, STUDENT_INITIATED_PATH]);
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_DISCONNECT_GRACE_MS = 3_500;
+// Probe directions sequentially so a dead ICE route cannot interfere with the viable route.
 const DEFAULT_PRIMARY_PATH_TIMEOUT_MS = 4_000;
 const CONTROL_REPLAY_DELAYS_MS = Object.freeze([500, 1_500]);
 
