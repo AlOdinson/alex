@@ -19,14 +19,63 @@ async function wait(label, fn, ms = 40000) {
 }
 async function instrument(context, mode, owner) {
   await context.addInitScript(({ mode, owner, relay }) => {
-    window.__signalEvidence = { signals: [], pcCount: 0, protocolMismatch: 0 };
+    window.__signalEvidence = { signals: [], pcCount: 0, protocolMismatch: 0, peerEvents: [] };
     const NativePeer = window.RTCPeerConnection;
+    const record = (pcId, event, extra = {}) => {
+      window.__signalEvidence.peerEvents.push({
+        pcId,
+        event,
+        at: performance.now(),
+        ...extra,
+      });
+    };
+    const watchChannel = (pcId, channel, origin) => {
+      if (!channel) return channel;
+      record(pcId, 'datachannel-seen', {
+        origin,
+        label: channel.label,
+        state: channel.readyState,
+      });
+      channel.addEventListener?.('open', () => record(pcId, 'datachannel-open', {
+        origin, label: channel.label, state: channel.readyState,
+      }));
+      channel.addEventListener?.('close', () => record(pcId, 'datachannel-close', {
+        origin, label: channel.label, state: channel.readyState,
+      }));
+      channel.addEventListener?.('error', () => record(pcId, 'datachannel-error', {
+        origin, label: channel.label, state: channel.readyState,
+      }));
+      return channel;
+    };
     window.RTCPeerConnection = class extends NativePeer {
       constructor(config) {
         super(relay ? { ...config, iceTransportPolicy: 'relay', iceServers: [{
           urls: 'turn:127.0.0.1:3478?transport=udp', username: 'bounded-ci', credential: 'bounded-ci-loopback-only-20260925',
         }] } : config);
-        window.__signalEvidence.pcCount++;
+        const pcId = ++window.__signalEvidence.pcCount;
+        record(pcId, 'pc-created', {
+          connectionState: this.connectionState,
+          iceConnectionState: this.iceConnectionState,
+          signalingState: this.signalingState,
+        });
+        this.addEventListener('connectionstatechange', () => record(pcId, 'connectionstatechange', {
+          connectionState: this.connectionState,
+          iceConnectionState: this.iceConnectionState,
+          signalingState: this.signalingState,
+        }));
+        this.addEventListener('iceconnectionstatechange', () => record(pcId, 'iceconnectionstatechange', {
+          connectionState: this.connectionState,
+          iceConnectionState: this.iceConnectionState,
+          signalingState: this.signalingState,
+        }));
+        this.addEventListener('signalingstatechange', () => record(pcId, 'signalingstatechange', {
+          connectionState: this.connectionState,
+          iceConnectionState: this.iceConnectionState,
+          signalingState: this.signalingState,
+        }));
+        this.addEventListener('datachannel', (event) => watchChannel(pcId, event.channel, 'remote'));
+        const nativeCreateDataChannel = this.createDataChannel.bind(this);
+        this.createDataChannel = (...args) => watchChannel(pcId, nativeCreateDataChannel(...args), 'local');
       }
     };
 
