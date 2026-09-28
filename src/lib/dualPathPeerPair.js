@@ -272,26 +272,10 @@ export function createDualPathPeerPair({
     candidate.durableChannel = channel;
     candidate.failed = false;
 
-    if (pendingSelectedPath === candidate.path) {
-      selectPath(candidate.path, { notify: false });
-      return;
-    }
-
-    if (role === 'owner') {
-      selectPath(candidate.path, { notify: true });
-      return;
-    }
-
-    // The owner arbitrates the selected path. Ask for the decision if its
-    // path-select was delayed/lost. A rolling old owner will simply ignore it.
-    sendControl({ type: 'path-select-request', path: candidate.path });
-    later(() => {
-      if (!closed && !selectedAttached && candidate.path === activePath && candidate.durableChannel) {
-        // Rolling compatibility with the pre-selection protocol: after a short
-        // grace, a physically open single path is safe to use.
-        selectPath(candidate.path, { notify: false });
-      }
-    }, 1_500);
+    // Sequential probing guarantees there is only one active native path.
+    // Therefore an open durable channel is itself the selection proof; never block
+    // editing on a second Ably control message after SCTP is already usable.
+    selectPath(candidate.path, { notify: role === 'owner' });
   }
 
   function handleLiveOpen(candidate, channel) {
@@ -410,9 +394,9 @@ export function createDualPathPeerPair({
       if (started) return Promise.resolve();
       started = true;
       activePath = OWNER_INITIATED_PATH;
-      if (role === 'owner') {
-        activatePath(OWNER_INITIATED_PATH);
-      }
+      // Both browsers own exactly one RTCPeerConnection for the active direction:
+      // owner starts as initiator, student starts as a silent responder.
+      activatePath(OWNER_INITIATED_PATH);
       armPrimaryTimer();
       armDeadline();
       return Promise.resolve();
@@ -436,6 +420,7 @@ export function createDualPathPeerPair({
         if (role !== 'student') return false;
         const path = safePath(signal.path);
         if (!path) return false;
+        if (selectedPath === path) return true;
         if (path === STUDENT_INITIATED_PATH && activePath !== STUDENT_INITIATED_PATH) {
           switchToStudentPath({ notify: false });
         }

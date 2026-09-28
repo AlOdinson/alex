@@ -214,14 +214,15 @@ test('Ably publication alone never declares editing ready without a usable peer 
   const result = student.start().catch(e => e);
   await flush();
 
-  assert.equal(natives.length, 0, 'student must not compete with the owner during the primary window');
+  assert.equal(natives.length, 1, 'student should precreate one silent owner-path responder');
+  assert.equal(natives[0].options.initiator, false);
   await student.handleSignal({
     sourceId: 'teacher',
     signal: { type: 'path-switch', path: 'student-initiated' },
   });
   await flush();
-  assert.equal(natives.length, 1);
-  assert.equal(natives[0].options.initiator, true);
+  assert.equal(natives.length, 2);
+  assert.equal(natives[1].options.initiator, true);
 
   t.mock.timers.tick(1500); await flush();
   t.mock.timers.tick(1500); await flush();

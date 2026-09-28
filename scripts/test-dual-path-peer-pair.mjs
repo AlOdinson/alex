@@ -43,10 +43,11 @@ test('owner tests only the preferred owner-initiated path first', async () => {
   pair.close();
 });
 
-test('student does not create a competing initiator while owner path is being tested', async () => {
+test('student precreates only a silent responder while owner path is being tested', async () => {
   const { pair, created } = harness('student');
   await pair.start();
-  assert.equal(created.length, 0);
+  assert.equal(created.length, 1);
+  assert.equal(created[0].options.initiator, false);
   await pair.handleSignal({
     type: 'offer',
     path: OWNER_INITIATED_PATH,
@@ -54,7 +55,6 @@ test('student does not create a competing initiator while owner path is being te
     description: { type: 'offer', sdp: 'owner' },
   });
   assert.equal(created.length, 1);
-  assert.equal(created[0].options.initiator, false);
   pair.close();
 });
 
@@ -107,7 +107,7 @@ test('owner selects the currently active path when its durable channel opens', a
   pair.close();
 });
 
-test('student attaches only after matching owner selection', async () => {
+test('student attaches immediately when the only active durable path opens', async () => {
   const { pair, created, selected } = harness('student');
   await pair.start();
   await pair.handleSignal({
@@ -117,8 +117,6 @@ test('student attaches only after matching owner selection', async () => {
     description: { type: 'offer', sdp: 'owner' },
   });
   created[0].options.onChannel({ label: 'alex-board-durable-v1', close() {} });
-  assert.deepEqual(selected, []);
-  await pair.handleSignal({ type: 'path-select', path: OWNER_INITIATED_PATH });
   assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
   pair.close();
 });

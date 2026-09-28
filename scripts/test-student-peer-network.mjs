@@ -48,9 +48,10 @@ test('waits for owner path, then starts student fallback only after path-switch'
 
   const starting = network.start();
   await Promise.resolve();
-  assert.equal(started, 0);
-  await startFallback(network, 'teacher-a');
   assert.equal(started, 1);
+  assert.equal(options.initiator, false);
+  await startFallback(network, 'teacher-a');
+  assert.equal(started, 2);
   assert.equal(options.initiator, true);
 
   await options.sendSignal({ type: 'offer' });
