@@ -1,9 +1,9 @@
 // Authority acquisition is bounded so presence can distinguish pending from ready.
-const WEB_LOCK_PROBE_TIMEOUT_MS = 1_500;
-const WEB_LOCK_RETRY_MS = 750;
+const probeTimeout = 1_500;
+const lockRetry = 750;
 const FALLBACK_LEASE_TTL_MS = 6_000;
-const FALLBACK_HEARTBEAT_MS = 2_000;
-const FALLBACK_RETRY_MS = 750;
+const heartbeat = 2_000;
+const fallbackRetry = 750;
 
 function safeStorage(storage) {
   if (storage) return storage;
@@ -44,11 +44,21 @@ export function createTeacherTabAuthority({
   lockManager,
   storage = null,
   onChange = () => {},
+  webLockProbeTimeoutMs = WEB_LOCK_PROBE_TIMEOUT_MS,
+  webLockRetryMs = WEB_LOCK_RETRY_MS,
+  fallbackLeaseTtlMs = FALLBACK_LEASE_TTL_MS,
+  fallbackHeartbeatMs = FALLBACK_HEARTBEAT_MS,
+  fallbackRetryMs = FALLBACK_RETRY_MS,
 } = {}) {
   const safeBoardId = String(boardId ?? '').trim();
   if (!safeBoardId) throw new Error('boardId is required');
 
   const locks = lockManager ?? globalThis.navigator?.locks;
+  const probeTimeout = Math.max(1, Number(webLockProbeTimeoutMs) || WEB_LOCK_PROBE_TIMEOUT_MS);
+  const lockRetry = Math.max(1, Number(webLockRetryMs) || WEB_LOCK_RETRY_MS);
+  const leaseTtl = Math.max(100, Number(fallbackLeaseTtlMs) || FALLBACK_LEASE_TTL_MS);
+  const heartbeat = Math.max(10, Number(fallbackHeartbeatMs) || FALLBACK_HEARTBEAT_MS);
+  const fallbackRetry = Math.max(10, Number(fallbackRetryMs) || FALLBACK_RETRY_MS);
   const lockName = `alex-board-authority:${safeBoardId}`;
   const leaseKey = `alex-board-authority-lease:${safeBoardId}`;
   const fallbackStorage = safeStorage(storage);
@@ -90,18 +100,18 @@ export function createTeacherTabAuthority({
     const expiresAt = Number(current?.expiresAt ?? 0);
 
     if (!fallbackStorage?.setItem || !currentToken || currentToken === token || expiresAt <= now) {
-      const lease = { token, expiresAt: now + FALLBACK_LEASE_TTL_MS };
+      const lease = { token, expiresAt: now + leaseTtl };
       const written = fallbackStorage?.setItem ? writeLease(fallbackStorage, leaseKey, lease) : true;
       const verified = !fallbackStorage?.getItem || String(readLease(fallbackStorage, leaseKey)?.token ?? token) === token;
       if (written && verified) {
         setAuthority(true);
-        heartbeatTimer = setTimeout(fallbackAcquire, FALLBACK_HEARTBEAT_MS);
+        heartbeatTimer = setTimeout(fallbackAcquire, heartbeat);
         return;
       }
     }
 
     setAuthority(false);
-    retryTimer = setTimeout(fallbackAcquire, FALLBACK_RETRY_MS);
+    retryTimer = setTimeout(fallbackAcquire, fallbackRetry);
   };
 
   const startFallback = () => {
@@ -153,7 +163,7 @@ export function createTeacherTabAuthority({
 
       let watchdogTimer = null;
       const watchdog = new Promise((resolve) => {
-        watchdogTimer = setTimeout(() => resolve('timeout'), WEB_LOCK_PROBE_TIMEOUT_MS);
+        watchdogTimer = setTimeout(() => resolve('timeout'), probeTimeout);
       });
       const outcome = await Promise.race([decision, watchdog]);
       clearTimeout(watchdogTimer);
@@ -188,7 +198,7 @@ export function createTeacherTabAuthority({
           resolve();
         };
         resolveRetryWait = finish;
-        retryTimer = setTimeout(finish, WEB_LOCK_RETRY_MS);
+        retryTimer = setTimeout(finish, lockRetry);
       });
     }
   };

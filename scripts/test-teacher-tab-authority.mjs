@@ -77,11 +77,12 @@ test('falls back to best-effort single-tab authority when Web Locks are unavaila
 });
 
 
-test('does not fall back when another tab legitimately holds the Web Lock', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+test('does not fall back when another tab legitimately holds the Web Lock', async () => {
   let calls = 0;
   const authority = createTeacherTabAuthority({
     boardId: 'board-busy',
+    webLockProbeTimeoutMs: 30,
+    webLockRetryMs: 5,
     storage: {
       getItem() { return null; },
       setItem() { throw new Error('fallback must not be used for a busy real lock'); },
@@ -96,18 +97,15 @@ test('does not fall back when another tab legitimately holds the Web Lock', asyn
     },
   });
   const running = authority.start();
-  await flush();
+  await new Promise((resolve) => setTimeout(resolve, 18));
   assert.equal(authority.isAuthority(), false);
-  assert.equal(calls, 1);
-  t.mock.timers.tick(751);
-  await flush();
   assert.ok(calls >= 2);
+  assert.equal(authority.isBestEffortFallback(), false);
   authority.stop();
   await running;
 });
 
-test('falls back when a present Web Locks API never answers', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
+test('falls back when a present Web Locks API never answers', async () => {
   const values = new Map();
   const storage = {
     getItem(key) { return values.get(key) ?? null; },
@@ -117,12 +115,12 @@ test('falls back when a present Web Locks API never answers', async (t) => {
   const authority = createTeacherTabAuthority({
     boardId: 'board-hung-locks',
     storage,
+    webLockProbeTimeoutMs: 5,
+    fallbackHeartbeatMs: 50,
     lockManager: { request: () => new Promise(() => {}) },
   });
   const running = authority.start();
-  await flush();
-  t.mock.timers.tick(1501);
-  await flush();
+  await new Promise((resolve) => setTimeout(resolve, 15));
   assert.equal(authority.isAuthority(), true);
   assert.equal(authority.isBestEffortFallback(), true);
   authority.stop();
