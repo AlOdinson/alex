@@ -21,6 +21,7 @@ import {
 
 const TERMINAL_STUDENT_STATES = new Set(['failed', 'closed']);
 const RUNTIME_STATE_EVENT = 'alex-board-runtime-state';
+const MAX_PENDING_REALTIME_SIGNALS = 128;
 
 function safeId(value) {
   return String(value ?? '').trim();
@@ -128,6 +129,29 @@ export function createBrowserBoardSession({
   const participantCapabilities = new Map();
   let studentRetryTimer = null;
   let studentRetryFailures = 0;
+  const pendingRealtimeSignals = [];
+
+  const queueRealtimeSignal = (payload) => {
+    if (!payload || typeof payload !== 'object') return false;
+    if (pendingRealtimeSignals.length >= MAX_PENDING_REALTIME_SIGNALS) pendingRealtimeSignals.shift();
+    pendingRealtimeSignals.push(payload);
+    return true;
+  };
+
+  const flushPendingRealtimeSignals = async (targetRuntime) => {
+    if (!targetRuntime?.handleRealtimeSignal || pendingRealtimeSignals.length === 0) return 0;
+    const queued = pendingRealtimeSignals.splice(0);
+    let handled = 0;
+    for (const payload of queued) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        if (await targetRuntime.handleRealtimeSignal(payload)) handled += 1;
+      } catch (error) {
+        try { onError(error); } catch { /* signaling recovery observers are best effort */ }
+      }
+    }
+    return handled;
+  };
 
   const collaborationModeFor = (peerId) => resolveCollaborationMode({
     enabled: Boolean(webrtcLiveV1),
@@ -454,6 +478,10 @@ export function createBrowserBoardSession({
     connectingTeacherId = resolvedTeacherId;
     connectingRuntime = nextRuntime;
     try {
+      // A reverse-role offer can arrive through Ably while presence is still
+      // constructing this runtime. Apply that bounded inbox before starting the
+      // native peer so no valid offer/ICE is lost in the transition window.
+      await flushPendingRealtimeSignals(nextRuntime);
       await nextRuntime.start();
     } catch (error) {
       clearConnectingRuntime(nextRuntime);
@@ -508,16 +536,7 @@ export function createBrowserBoardSession({
         if (!id) continue;
         participantCapabilities.set(id, normalizeCollaborationCapabilities(user?.capabilities));
       }
-      if (isOwner) {
-        // Durable authority always uses WebRTC, even when the peer is in legacy-live
-        // mode. Presence capability timing must never suppress the owner-initiated
-        // fallback path.
-        const peerIds = list
-          .map((user) => safeId(user?.clientId))
-          .filter((id) => id && id !== safeClientId);
-        try { runtime?.updateParticipants?.(peerIds); } catch (error) { onError(error); }
-        return Promise.resolve(runtime);
-      }
+      if (isOwner) return Promise.resolve(runtime);
 
       const ownerIds = list
         .filter((user) => user?.permission === 'owner')
@@ -549,9 +568,12 @@ export function createBrowserBoardSession({
       return enqueueTransition(() => startStudent(nextTeacherId));
     },
     handleRealtimeSignal(payload) {
-      return connectingRuntime?.handleRealtimeSignal?.(payload)
-        ?? runtime?.handleRealtimeSignal?.(payload)
-        ?? false;
+      const targetRuntime = connectingRuntime ?? runtime;
+      if (targetRuntime?.handleRealtimeSignal) return targetRuntime.handleRealtimeSignal(payload);
+      // Owners finish installing their teacher runtime before Ably starts. Students
+      // can legitimately receive a reverse-role offer during presence/runtime setup.
+      if (!isOwner) return queueRealtimeSignal(payload);
+      return false;
     },
     async sendOps(ops, options = {}) {
       if (!durableBridge) throw new Error('Browser durable runtime is unavailable');
@@ -612,6 +634,7 @@ export function createBrowserBoardSession({
       closed = true;
       desiredTeacherId = '';
       cancelStudentRetry();
+      pendingRealtimeSignals.length = 0;
       teacherId = '';
       const closeError = new Error('Board session is closed');
       rejectRuntimeWaiters(closeError);

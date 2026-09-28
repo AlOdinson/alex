@@ -495,3 +495,52 @@ test('board session forwards reliable board-control through runtime and receives
   }]);
   session.close();
 });
+
+
+test('student buffers peer signaling until presence creates its runtime', async () => {
+  const handled = [];
+  const order = [];
+  let created = 0;
+  const session = createBrowserBoardSession({
+    boardId: 'board-early-signal',
+    clientId: 'student-early-signal',
+    permission: 'edit',
+    sendScreenShareSignal: async () => {},
+    getReplica: () => ({ revision: 0 }),
+    createStudentRuntime: () => {
+      created += 1;
+      return {
+        handleRealtimeSignal(payload) {
+          handled.push(payload);
+          order.push('signal');
+          return true;
+        },
+        async start() { order.push('start'); },
+        proposeActionAndWait: async () => ({ accepted: true, revision: 0 }),
+        close() {},
+      };
+    },
+    registerRuntime: () => () => {},
+  });
+
+  await session.start();
+  const early = {
+    protocol: 'alex-board-peer-signal-v1',
+    type: 'board-peer-signal',
+    sourceId: 'teacher-early-signal',
+    targetId: 'student-early-signal',
+    signal: { type: 'offer', description: { type: 'offer', sdp: 'early' } },
+  };
+  assert.equal(session.handleRealtimeSignal(early), true);
+  assert.equal(created, 0);
+
+  await session.updateParticipants([{
+    clientId: 'teacher-early-signal',
+    permission: 'owner',
+  }]);
+
+  assert.equal(created, 1);
+  assert.deepEqual(handled, [early]);
+  assert.deepEqual(order.slice(0, 2), ['signal', 'start']);
+  session.close();
+});

@@ -7,7 +7,6 @@ const flush = async () => { for (let i = 0; i < 30; i += 1) await Promise.resolv
 function fixture() {
   let options;
   let transportOptions;
-  const connections = [];
   let rejectSignaling;
   let closed = 0;
   const signalingStart = new Promise((_, reject) => { rejectSignaling = reject; });
@@ -19,12 +18,7 @@ function fixture() {
     onError: (error) => { errors.push(error); },
     createConnection: (nextOptions) => {
       options = nextOptions;
-      connections.push(nextOptions);
-      return {
-        start: () => nextOptions.initiator ? signalingStart : Promise.resolve(),
-        async handleSignal() {},
-        close: () => { closed += 1; },
-      };
+      return { start: () => signalingStart, close: () => { closed += 1; } };
     },
     createTransport: (nextOptions) => {
       transportOptions = nextOptions;
@@ -43,7 +37,6 @@ function fixture() {
     open: () => options.onChannel({ label: 'alex-board-durable-v1' }),
     progress: () => transportOptions.onProgress(),
     state: () => state, failure: () => failure, closed: () => closed,
-    connections: () => [...connections],
   };
 }
 
@@ -62,24 +55,15 @@ test('late join: an open channel with installed snapshot completes despite a los
   assert.equal(f.closed(), 0);
 });
 
-test('late join: signaling failure before readiness falls back to responder', async (t) => {
+test('late join: signaling failure before readiness closes and rejects the attempt', async (t) => {
   const f = fixture();
   t.after(() => f.network.close());
   const failure = new Error('Offer publish failed');
   f.rejectSignaling(failure);
-  await flush();
-
-  assert.equal(f.state(), 'pending');
-  assert.equal(f.closed(), 1, 'failed initiator should be retired');
-  assert.equal(f.connections().length, 2);
-  assert.equal(f.connections()[0].initiator, true);
-  assert.equal(f.connections()[1].initiator, false);
-
-  f.open();
   await f.starting;
-  assert.equal(f.state(), 'fulfilled');
-  assert.equal(f.network.isReady(), true);
-  assert.ok(f.errors.includes(failure), 'the original signaling error remains observable');
+  assert.equal(f.state(), 'rejected');
+  assert.equal(f.failure(), failure);
+  assert.equal(f.closed(), 1);
 });
 
 test('late join: late signaling rejection cannot tear down an already synchronized channel', async (t) => {

@@ -223,7 +223,7 @@ test('pre-connect disconnected reverses roles after the 3.5s grace period', asyn
   network.close();
 });
 
-test('teacher pre-connect failure promotes to initiator and old offer cannot undo fallback', async () => {
+test('teacher pre-connect failure does not retire the offer and accepts its retry', async () => {
   const created = [];
   let currentOptions = null;
   const network = createTeacherPeerNetwork({
@@ -231,11 +231,10 @@ test('teacher pre-connect failure promotes to initiator and old offer cannot und
     peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
     createConnection: (options) => {
       currentOptions = options;
-      const record = { options, closed: 0, handled: 0, replayed: 0 };
+      const record = { options, closed: 0, handled: 0 };
       record.connection = {
         async start() {},
         async handleSignal() { record.handled += 1; },
-        resendSignaling() { record.replayed += 1; },
         close() { record.closed += 1; },
       };
       created.push(record);
@@ -247,134 +246,32 @@ test('teacher pre-connect failure promotes to initiator and old offer cannot und
   const offer = { sourceId: 'student-retry', signal: { type: 'offer', generation: 1 } };
   await network.handleSignal(offer);
   assert.equal(created.length, 1);
-  assert.equal(created[0].options.initiator, false);
-
   currentOptions.onConnectionState('failed');
-  await flush();
-  assert.equal(created.length, 2);
-  assert.equal(created[1].options.initiator, true);
-  assert.equal(network.getPeerCount(), 1);
+  assert.equal(network.getPeerCount(), 0);
 
   await network.handleSignal(offer);
-  assert.equal(created.length, 2, 'old student offer must not recreate the retired responder path');
-  assert.equal(created[1].replayed, 1, 'current owner-initiator should resend its offer instead');
+  assert.equal(created.length, 2, 'same offer should be allowed to recreate a pre-connect failed responder');
+  assert.equal(created[1].handled, 1);
   assert.equal(network.getPeerCount(), 1);
   network.close();
 });
 
 
-test('owner presence autonomously starts the reverse initiator path after 4 seconds', async (t) => {
+test('role reversal receives a fresh full connection deadline', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const created = [];
-  const network = createTeacherPeerNetwork({
-    clientId: 'teacher',
+  const network = createStudentPeerNetwork({
+    teacherId: 'teacher-full-reverse-window',
     signaling: { send: async () => {} },
-    peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
-    createConnection: (options) => {
-      const record = { options, started: 0, closed: 0 };
-      record.connection = {
-        async start() { record.started += 1; },
-        async handleSignal() {},
-        resendSignaling() {},
-        close() { record.closed += 1; },
-      };
-      created.push(record);
-      return record.connection;
-    },
-    createTransport: () => ({ send: async () => {}, close() {} }),
-  });
-
-  network.updateParticipants(['student-presence']);
-  t.mock.timers.tick(3999);
-  await flush();
-  assert.equal(created.length, 0);
-
-  t.mock.timers.tick(1);
-  await flush();
-  assert.equal(created.length, 1);
-  assert.equal(created[0].options.initiator, true);
-  assert.equal(created[0].started, 1);
-  network.close();
-});
-
-test('owner responder promotes itself to initiator when bootstrap fails', async () => {
-  const created = [];
-  const network = createTeacherPeerNetwork({
-    clientId: 'teacher',
-    signaling: { send: async () => {} },
-    peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
-    createConnection: (options) => {
-      const record = { options, started: 0, closed: 0 };
-      record.connection = {
-        async start() { record.started += 1; },
-        async handleSignal() {},
-        resendSignaling() {},
-        close() { record.closed += 1; },
-      };
-      created.push(record);
-      return record.connection;
-    },
-    createTransport: () => ({ send: async () => {}, close() {} }),
-  });
-
-  await network.handleSignal({ sourceId: 'student-fail', signal: { type: 'offer' } });
-  assert.equal(created[0].options.initiator, false);
-  created[0].options.onConnectionState('failed');
-  await flush();
-
-  assert.equal(created[0].closed, 1);
-  assert.equal(created[1].options.initiator, true);
-  assert.equal(created[1].started, 1);
-  network.close();
-});
-
-test('opening the responder data channel cancels owner autonomous fallback', async (t) => {
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const created = [];
-  const network = createTeacherPeerNetwork({
-    clientId: 'teacher',
-    signaling: { send: async () => {} },
-    peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    connectTimeoutMs: 100,
+    roleSwitchDelayMs: 50,
     createConnection: (options) => {
       const record = { options, closed: 0 };
       record.connection = {
         async start() {},
-        async handleSignal() {},
-        resendSignaling() {},
-        close() { record.closed += 1; },
-      };
-      created.push(record);
-      return record.connection;
-    },
-    createTransport: () => ({ send: async () => {}, close() {} }),
-  });
-
-  network.updateParticipants(['student-healthy']);
-  await network.handleSignal({ sourceId: 'student-healthy', signal: { type: 'offer' } });
-  created[0].options.onChannel({ label: 'alex-board-durable-v1' });
-  t.mock.timers.tick(10000);
-  await flush();
-
-  assert.equal(created.length, 1);
-  assert.equal(created[0].closed, 0);
-  network.close();
-});
-
-test('student offer publication failure falls back to responder instead of closing bootstrap', async () => {
-  const created = [];
-  const sent = [];
-  const network = createStudentPeerNetwork({
-    teacherId: 'teacher-publish-fail',
-    signaling: { send: async (peerId, signal) => sent.push({ peerId, signal }) },
-    getRevision: () => 0,
-    applyCommit: async () => {},
-    installSnapshot: async () => {},
-    createConnection: (options) => {
-      const record = { options, closed: 0 };
-      record.connection = {
-        async start() {
-          if (options.initiator) throw new Error('offer publish failed');
-        },
         async handleSignal() {},
         close() { record.closed += 1; },
       };
@@ -385,12 +282,23 @@ test('student offer publication failure falls back to responder instead of closi
     createSession: () => ({ async start() {}, close() {} }),
   });
 
-  const starting = network.start();
+  let settled = false;
+  const starting = network.start().then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
+  await flush();
+
+  t.mock.timers.tick(50);
   await flush();
   assert.equal(created.length, 2);
-  assert.equal(created[0].options.initiator, true);
   assert.equal(created[1].options.initiator, false);
-  assert.equal(sent.some(({ signal }) => signal.type === 'role-switch'), true);
+
+  // We are now past the original 100 ms deadline, but still inside the new
+  // responder attempt's fresh 100 ms window.
+  t.mock.timers.tick(60);
+  await flush();
+  assert.equal(settled, false, 'reverse attempt inherited the expired first-attempt watchdog');
 
   created[1].options.onChannel({ label: 'alex-board-durable-v1' });
   await starting;

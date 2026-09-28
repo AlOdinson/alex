@@ -163,10 +163,6 @@ export async function createTeacherBoardRuntime({
       return signaling.handle(payload);
     },
 
-    updateParticipants(peerIds = []) {
-      return network?.updateParticipants?.(peerIds) ?? 0;
-    },
-
     getPeerCount() {
       return network?.getPeerCount?.() ?? 0;
     },

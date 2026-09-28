@@ -141,6 +141,14 @@ export function createStudentPeerNetwork({
     closeResources(error, { reportState: 'failed' });
   };
 
+  const armConnectTimer = () => {
+    clearTimeout(connectTimer);
+    connectTimer = setTimeout(() => {
+      closeResources(new Error('Teacher peer connection timed out'), { reportState: 'failed' });
+    }, positiveTimeout(connectTimeoutMs, CONNECT_TIMEOUT_MS));
+    connectTimer?.unref?.();
+  };
+
   const recordInitialSyncProgress = () => {
     if (closed || readinessSettled) return;
     clearTimeout(initialSyncTimer);
@@ -305,6 +313,9 @@ export function createStudentPeerNetwork({
     liveState = 'idle';
 
     const responder = createActiveConnection(false);
+    // The reverse orientation is a real second attempt. Give it the same complete
+    // startup window rather than only the time left on the first orientation.
+    armConnectTimer();
     await responder.start();
     if (closed || transport) return true;
 
@@ -326,9 +337,7 @@ export function createStudentPeerNetwork({
       if (closed) return Promise.reject(new Error('Student peer network is closed'));
       if (startPromise) return startPromise;
       if (!transport && !readinessSettled) {
-        connectTimer = setTimeout(() => {
-          closeResources(new Error('Teacher peer connection timed out'), { reportState: 'failed' });
-        }, positiveTimeout(connectTimeoutMs, CONNECT_TIMEOUT_MS));
+        armConnectTimer();
         roleSwitchTimer = setTimeout(() => {
           roleSwitchTimer = null;
           if (closed || transport || roleSwitched) return;
@@ -342,10 +351,6 @@ export function createStudentPeerNetwork({
           Promise.resolve(initialConnection.start()).catch((error) => {
             if (closed || initialConnection !== connection) return;
             try { onError(error); } catch { /* observer errors are ignored */ }
-            if (!ready && !transport && !roleSwitched) {
-              switchToResponder().catch(failConnection);
-              return;
-            }
             if (!ready) closeResources(error, { reportState: 'failed' });
           });
           await readiness;
@@ -364,17 +369,7 @@ export function createStudentPeerNetwork({
       if (message.signal.type === 'offer' && currentInitiator && !transport) {
         await switchToResponder({ notifyTeacher: false });
       }
-      try {
-        await connection?.handleSignal?.(message.signal);
-      } catch (error) {
-        try { onError(error); } catch { /* observer errors are ignored */ }
-        if (!transport && !roleSwitched && currentInitiator) {
-          await switchToResponder();
-          return true;
-        }
-        failConnection(error);
-        return false;
-      }
+      await connection?.handleSignal?.(message.signal);
       return true;
     },
 

@@ -5,7 +5,6 @@ import { createPeerLiveChannel } from './peerLiveChannel.js';
 
 const TERMINAL_STATES = new Set(['failed', 'closed']);
 const DISCONNECT_GRACE_MS = 3_500;
-const OWNER_INITIATOR_FALLBACK_MS = 4_000;
 
 export function createTeacherPeerNetwork({
   boardId = '',
@@ -15,7 +14,6 @@ export function createTeacherPeerNetwork({
   peerHub,
   rtcConfig = {},
   disconnectGraceMs = DISCONNECT_GRACE_MS,
-  ownerInitiatorFallbackMs = OWNER_INITIATOR_FALLBACK_MS,
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
   createLiveTransport = createPeerLiveChannel,
@@ -31,17 +29,8 @@ export function createTeacherPeerNetwork({
 
   const peers = new Map();
   const retiredOffers = new Set();
-  const observedPeers = new Set();
-  const fallbackTimers = new Map();
   const offerKey = (peerId, fingerprint) => JSON.stringify([peerId, fingerprint]);
   let closed = false;
-
-  const cancelOwnerFallback = (peerId) => {
-    const id = String(peerId ?? '').trim();
-    const timer = fallbackTimers.get(id);
-    if (timer) clearTimeout(timer);
-    fallbackTimers.delete(id);
-  };
 
   const clearDisconnectTimer = (entry) => {
     if (!entry?.disconnectTimer) return;
@@ -55,7 +44,6 @@ export function createTeacherPeerNetwork({
     if (!entry) return false;
     if (expectedEntry && entry !== expectedEntry) return false;
     peers.delete(id);
-    cancelOwnerFallback(id);
     clearDisconnectTimer(entry);
     if (retireOffer && entry.offerFingerprint) {
       if (retiredOffers.size >= 128) retiredOffers.delete(retiredOffers.values().next().value);
@@ -69,6 +57,13 @@ export function createTeacherPeerNetwork({
     return true;
   };
 
+  const failPeer = (peerId, entry, error) => {
+    if (peers.get(peerId) !== entry) return;
+    try { onError(error); } catch { /* observer errors are ignored */ }
+    try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
+    closePeer(peerId, entry);
+  };
+
   const attachTransport = (peerId, channel, expectedEntry) => {
     const entry = peers.get(peerId);
     if (!entry || entry !== expectedEntry) {
@@ -76,7 +71,6 @@ export function createTeacherPeerNetwork({
       return null;
     }
     if (entry.transport) return entry.transport;
-    cancelOwnerFallback(peerId);
     clearDisconnectTimer(entry);
     let transport;
     transport = createTransport({
@@ -84,23 +78,14 @@ export function createTeacherPeerNetwork({
       onMessage: (message) => Promise.resolve().then(() => {
         if (peers.get(peerId) !== entry || entry.transport !== transport) return;
         return peerHub.handleMessage(peerId, message);
-      }).catch((error) => {
-        try { onError(error); } catch { /* observer errors are ignored */ }
-        try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
-        closePeer(peerId, entry);
-      }),
+      }).catch((error) => failPeer(peerId, entry, error)),
       onTransfer: () => {},
       onClose: () => {
         if (peers.get(peerId) !== entry || entry.transport !== transport) return;
         try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
         closePeer(peerId, entry);
       },
-      onError: (error) => {
-        if (peers.get(peerId) !== entry) return;
-        try { onError(error); } catch { /* observer errors are ignored */ }
-        try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
-        closePeer(peerId, entry);
-      },
+      onError: (error) => failPeer(peerId, entry, error),
     });
     entry.transport = transport;
     entry.unregister = peerHub.addPeer(peerId, transport);
@@ -139,7 +124,7 @@ export function createTeacherPeerNetwork({
     return liveTransport;
   };
 
-  function ensurePeer(peerId, { initiator = false } = {}) {
+  const ensurePeer = (peerId, { initiator = false } = {}) => {
     const id = String(peerId ?? '').trim();
     if (!id) throw new Error('peerId is required');
     const existing = peers.get(id);
@@ -168,16 +153,11 @@ export function createTeacherPeerNetwork({
         if (peers.get(id) !== entry) return;
         const normalized = String(state ?? 'unknown');
         try { onPeerState(id, normalized); } catch { /* observer errors are ignored */ }
-
         if (normalized === 'disconnected') {
           if (!entry.disconnectTimer) {
             entry.disconnectTimer = setTimeout(() => {
               entry.disconnectTimer = null;
               if (peers.get(id) !== entry) return;
-              if (!entry.transport && !entry.initiator) {
-                promotePeerToInitiator(id, entry);
-                return;
-              }
               try { onPeerState(id, 'failed'); } catch { /* observer errors are ignored */ }
               closePeer(id, entry, { retireOffer: Boolean(entry.transport) });
             }, Math.max(1, Number(disconnectGraceMs) || DISCONNECT_GRACE_MS));
@@ -185,14 +165,7 @@ export function createTeacherPeerNetwork({
           }
           return;
         }
-
         clearDisconnectTimer(entry);
-
-        if (normalized === 'failed' && !entry.transport && !entry.initiator) {
-          promotePeerToInitiator(id, entry);
-          return;
-        }
-
         if (TERMINAL_STATES.has(normalized)) {
           closePeer(id, entry, { retireOffer: Boolean(entry.transport) });
         }
@@ -201,92 +174,25 @@ export function createTeacherPeerNetwork({
     });
     entry.connection = connection;
     peers.set(id, entry);
-    Promise.resolve(connection.start?.()).catch((error) => {
-      if (peers.get(id) !== entry) return;
-      try { onError(error); } catch { /* observer errors are ignored */ }
-      if (!entry.transport && !entry.initiator) {
-        promotePeerToInitiator(id, entry);
-        return;
-      }
-      try { onPeerState(id, 'failed'); } catch { /* observer errors are ignored */ }
-      closePeer(id, entry, { retireOffer: Boolean(entry.transport) });
-    });
+    Promise.resolve(connection.start?.()).catch((error) => failPeer(id, entry, error));
     return entry;
-  }
-
-  function promotePeerToInitiator(peerId, expectedEntry = null) {
-    const id = String(peerId ?? '').trim();
-    if (!id || closed) return false;
-    const entry = peers.get(id);
-    if (expectedEntry && entry !== expectedEntry) return false;
-    cancelOwnerFallback(id);
-    if (entry?.transport) return false;
-    if (entry?.initiator) {
-      entry.connection.resendSignaling?.();
-      return true;
-    }
-    if (entry) closePeer(id, entry, { retireOffer: false });
-    observedPeers.add(id);
-    ensurePeer(id, { initiator: true });
-    return true;
-  }
-
-  const scheduleOwnerFallback = (peerId) => {
-    const id = String(peerId ?? '').trim();
-    if (!id || closed || !observedPeers.has(id) || fallbackTimers.has(id)) return false;
-    const entry = peers.get(id);
-    if (entry?.transport || entry?.initiator) return false;
-    const timer = setTimeout(() => {
-      fallbackTimers.delete(id);
-      if (closed || !observedPeers.has(id)) return;
-      const current = peers.get(id);
-      if (current?.transport || current?.initiator) return;
-      promotePeerToInitiator(id, current ?? null);
-    }, Math.max(1, Number(ownerInitiatorFallbackMs) || OWNER_INITIATOR_FALLBACK_MS));
-    timer?.unref?.();
-    fallbackTimers.set(id, timer);
-    return true;
-  };
-
-  const failPeer = (peerId, entry, error) => {
-    if (peers.get(peerId) !== entry) return;
-    try { onError(error); } catch { /* observer errors are ignored */ }
-    try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
-    if (!entry.transport && !entry.initiator) {
-      promotePeerToInitiator(peerId, entry);
-      return;
-    }
-    closePeer(peerId, entry, { retireOffer: Boolean(entry.transport) });
   };
 
   return {
-    updateParticipants(peerIds = []) {
-      const next = new Set((Array.isArray(peerIds) ? peerIds : [])
-        .map((value) => String(value ?? '').trim())
-        .filter((value) => value && value !== String(clientId ?? '').trim()));
-
-      for (const id of observedPeers) {
-        if (!next.has(id)) cancelOwnerFallback(id);
-      }
-      observedPeers.clear();
-      for (const id of next) {
-        observedPeers.add(id);
-        scheduleOwnerFallback(id);
-      }
-      return observedPeers.size;
-    },
-
     async handleSignal(message) {
       if (closed) return false;
       const peerId = String(message?.sourceId ?? '').trim();
       const signal = message?.signal;
       if (!peerId || !signal) return false;
 
-      observedPeers.add(peerId);
-
       const previous = peers.get(peerId);
       if (signal.type === 'role-switch') {
-        promotePeerToInitiator(peerId, previous ?? null);
+        if (previous?.initiator) {
+          previous.connection.resendSignaling?.();
+          return true;
+        }
+        if (previous) closePeer(peerId, previous);
+        ensurePeer(peerId, { initiator: true });
         return true;
       }
 
@@ -316,10 +222,7 @@ export function createTeacherPeerNetwork({
       )) {
         closePeer(peerId, previous);
       }
-
       const entry = ensurePeer(peerId, { initiator: false });
-      scheduleOwnerFallback(peerId);
-
       if (fingerprint && entry.offerFingerprint === fingerprint) {
         entry.connection.resendSignaling?.();
         return true;
@@ -370,9 +273,6 @@ export function createTeacherPeerNetwork({
     close() {
       if (closed) return;
       closed = true;
-      for (const timer of fallbackTimers.values()) clearTimeout(timer);
-      fallbackTimers.clear();
-      observedPeers.clear();
       [...peers.keys()].forEach((peerId) => closePeer(peerId));
       retiredOffers.clear();
     },
