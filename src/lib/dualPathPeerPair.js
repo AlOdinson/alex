@@ -498,7 +498,22 @@ export function createDualPathPeerPair({
       if (negotiationId && retiredNegotiations.has(negotiationId)) return false;
       const path = inferSignalPath(signal);
       if (!path) return false;
-      const candidate = ensureCandidate(path);
+
+      let candidate = candidates.get(path) ?? null;
+      if (type === 'offer' && candidate && negotiationId && candidate.negotiationId
+        && negotiationId !== candidate.negotiationId) {
+        // A retry of one direction is a new native negotiation for that direction
+        // only. Replace the stale candidate without disturbing the other path.
+        if (selectedPath === path || candidate.durableChannel) return false;
+        closeCandidate(candidate);
+        candidates.delete(path);
+        candidate = null;
+      }
+      if (candidate?.closed && type === 'offer') {
+        candidates.delete(path);
+        candidate = null;
+      }
+      candidate ??= ensureCandidate(path);
       if (candidate.closed) return false;
       if (negotiationId && !candidate.negotiationId) candidate.negotiationId = negotiationId;
       startCandidate(candidate);

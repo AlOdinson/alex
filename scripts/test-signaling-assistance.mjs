@@ -123,30 +123,53 @@ function teacherFixture(t) {
 }
 const packet = (id, type = 'offer') => ({ sourceId: 'student', signal: { type, negotiationId: id, ...(type === 'offer' ? { description: desc(type, id) } : { candidate: { candidate: `candidate:${id}` } }) } });
 
-test('teacher duplicate offer replays answer/ICE without replacing the connection', async (t) => {
+test('teacher duplicate student-path offer replays without creating a third candidate', async (t) => {
   const { network, created } = teacherFixture(t);
-  const offer = packet('attempt-a'); await network.handleSignal(offer); await network.handleSignal(offer);
-  assert.equal(created.length, 1); assert.equal(created[0].closed, 0);
-  assert.equal(created[0].replayed, 1); assert.equal(created[0].handled.length, 1);
+  const offer = packet('attempt-a');
+  await network.handleSignal(offer);
+  await network.handleSignal(offer);
+  assert.equal(created.length, 2, 'owner and student paths should coexist');
+  const responder = created.find((entry) => entry.options.initiator === false);
+  assert.ok(responder);
+  assert.equal(responder.closed, 0);
+  assert.equal(responder.replayed, 1);
+  assert.equal(responder.handled.length, 1);
 });
 
-test('delayed old offers and old ICE cannot replace a newer teacher connection', async (t) => {
+test('new student-path offer replaces only that path and delayed old signaling is ignored', async (t) => {
   const { network, created } = teacherFixture(t);
-  await network.handleSignal(packet('attempt-a')); await network.handleSignal(packet('attempt-b'));
-  await network.handleSignal(packet('attempt-a')); await network.handleSignal(packet('attempt-a', 'ice'));
-  assert.equal(created.length, 2); assert.equal(created[1].closed, 0);
-  assert.equal(created[1].handled.length, 1); assert.equal(network.getPeerCount(), 1);
+  await network.handleSignal(packet('attempt-a'));
+  await network.handleSignal(packet('attempt-b'));
+  await network.handleSignal(packet('attempt-a'));
+  await network.handleSignal(packet('attempt-a', 'ice'));
+
+  assert.equal(created.length, 3, 'one owner candidate plus two generations of the student candidate');
+  const responders = created.filter((entry) => entry.options.initiator === false);
+  assert.equal(responders.length, 2);
+  assert.equal(responders[0].closed, 1);
+  assert.equal(responders[1].closed, 0);
+  assert.equal(responders[1].handled.length, 1);
+  assert.equal(network.getPeerCount(), 1);
 });
 
-test('production teacher and student networks enable the same signaling helper', async (t) => {
-  const { network, created } = teacherFixture(t); await network.handleSignal(packet('attempt-a'));
-  assert.equal(created[0].options.assistSignaling, true);
-  let opts;
+test('production dual-path candidates all enable signaling assistance', async (t) => {
+  const { network, created } = teacherFixture(t);
+  await network.handleSignal(packet('attempt-a'));
+  assert.ok(created.length >= 2);
+  assert.ok(created.every((entry) => entry.options.assistSignaling === true));
+
+  let opts = null;
   const student = createStudentPeerNetwork({ teacherId: 'teacher', signaling: { send: async () => {} },
     getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
-    createConnection: input => { opts = input; return { start: async () => {}, close() {} }; },
+    createConnection: input => {
+      opts = input;
+      return { start: async () => {}, async handleSignal() {}, close() {} };
+    },
   });
-  t.after(() => student.close()); assert.equal(opts.assistSignaling, true);
+  t.after(() => student.close());
+  void student.start();
+  await flush();
+  assert.equal(opts?.assistSignaling, true);
 });
 
 test('responder echoes the attempt ID and replays its cached answer, not a new negotiation', async (t) => {

@@ -29,7 +29,10 @@ test('starts an initiator connection and targets teacher signaling', async () =>
   assert.equal(started, 1);
   assert.equal(options.initiator, true);
   await options.sendSignal({ type: 'offer' });
-  assert.deepEqual(sentSignals, [{ peerId: 'teacher-a', signal: { type: 'offer' } }]);
+  assert.deepEqual(sentSignals, [{
+    peerId: 'teacher-a',
+    signal: { type: 'offer', path: 'student-initiated' },
+  }]);
   options.onChannel({ label: 'alex-board-durable-v1' });
   await starting;
   assert.equal(network.isReady(), true);
@@ -140,8 +143,10 @@ test('closing the student network closes the active peer session', async () => {
     }),
   });
 
-  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  const starting = network.start();
   await Promise.resolve();
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
   network.close();
 
   assert.equal(sessionCloseCount, 1);
@@ -202,6 +207,9 @@ test('student live transport is independent from durable readiness and closure',
   await Promise.resolve();
 
   connectionOptions.onLiveChannel({ label: 'alex-board-live-v1' });
+  assert.equal(network.sendLive('cursor', { x: 2 }, { streamKey: 'cursor' }), 'unavailable');
+  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
   assert.equal(network.sendLive('cursor', { x: 2 }, { streamKey: 'cursor' }), 'sent');
   assert.deepEqual(sentLive[0], {
     type: 'cursor',
@@ -216,8 +224,6 @@ test('student live transport is independent from durable readiness and closure',
   assert.equal(durableClosed, 0);
   assert.equal(connectionClosed, 0, 'live-only close must not close the peer connection');
 
-  connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
-  await starting;
   assert.equal(network.isReady(), true);
 
   network.close();
