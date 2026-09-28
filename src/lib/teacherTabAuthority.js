@@ -1,9 +1,9 @@
 // Authority acquisition is bounded so presence can distinguish pending from ready.
-const probeTimeout = 1_500;
-const lockRetry = 750;
+const WEB_LOCK_PROBE_TIMEOUT_MS = 1_500;
+const WEB_LOCK_RETRY_MS = 750;
 const FALLBACK_LEASE_TTL_MS = 6_000;
-const heartbeat = 2_000;
-const fallbackRetry = 750;
+const FALLBACK_HEARTBEAT_MS = 2_000;
+const FALLBACK_RETRY_MS = 750;
 
 function safeStorage(storage) {
   if (storage) return storage;
