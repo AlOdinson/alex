@@ -123,6 +123,18 @@ export function createBrowserBoardRepository({
     const secret = String(key ?? '').trim();
     if (!id) return null;
     let board = await getBoard(id);
+    if (!board && /^[A-Za-z0-9_-]{38}$/.test(secret)) {
+      // Some mobile/WebView IndexedDB implementations briefly return no record
+      // immediately after a hard navigation even though createBoard already committed.
+      // Retry the exact owner lookup before treating the owner URL as a remote guest.
+      for (const delay of [40, 120]) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        // eslint-disable-next-line no-await-in-loop
+        board = await getBoard(id);
+        if (board) break;
+      }
+    }
     if (!board && secret) {
       board = await recoverFreshOwnerBootstrap({
         boardId: id,

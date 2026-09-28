@@ -163,3 +163,19 @@ test('compat applyBoardAction preserves an authoritative no-op outcome', async (
   assert.deepEqual(result.rejectedObjectIds, ['x']);
   assert.deepEqual(result.skippedConflicts, skippedConflicts);
 });
+
+
+test('owner access retries a transiently invisible authority record before downgrading to remote edit', async () => {
+  let reads = 0;
+  const ownerKey = 'A'.repeat(38);
+  const { repo } = makeRepository({
+    getBoard: async (boardId) => {
+      if (boardId !== 'board-a') return null;
+      reads += 1;
+      return reads >= 2 ? { ...board, ownerKey } : null;
+    },
+  });
+  const access = await repo.getBoardAccess('board-a', ownerKey);
+  assert.equal(access.permission, 'owner');
+  assert.ok(reads >= 2);
+});

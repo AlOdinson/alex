@@ -1,38 +1,68 @@
-export function createTeacherTabAuthority({ boardId, lockManager, onChange = () => {} }) {
+const WEB_LOCK_PROBE_TIMEOUT_MS = 1_500;
+const WEB_LOCK_RETRY_MS = 750;
+const FALLBACK_LEASE_TTL_MS = 6_000;
+const FALLBACK_HEARTBEAT_MS = 2_000;
+const FALLBACK_RETRY_MS = 750;
+
+function safeStorage(storage) {
+  if (storage) return storage;
+  try { return globalThis.localStorage ?? null; } catch { return null; }
+}
+
+function leaseToken() {
+  try { return globalThis.crypto?.randomUUID?.() ?? `lease-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+  catch { return `lease-${Date.now()}-${Math.random().toString(36).slice(2)}`; }
+}
+
+function readLease(storage, key) {
+  if (!storage?.getItem) return null;
+  try {
+    const value = JSON.parse(storage.getItem(key) ?? 'null');
+    return value && typeof value === 'object' ? value : null;
+  } catch { return null; }
+}
+
+function writeLease(storage, key, value) {
+  if (!storage?.setItem) return false;
+  try {
+    storage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch { return false; }
+}
+
+function removeOwnLease(storage, key, token) {
+  if (!storage?.removeItem) return;
+  try {
+    const current = readLease(storage, key);
+    if (String(current?.token ?? '') === token) storage.removeItem(key);
+  } catch { /* best effort */ }
+}
+
+export function createTeacherTabAuthority({
+  boardId,
+  lockManager,
+  storage = null,
+  onChange = () => {},
+} = {}) {
   const safeBoardId = String(boardId ?? '').trim();
   if (!safeBoardId) throw new Error('boardId is required');
 
   const locks = lockManager ?? globalThis.navigator?.locks;
   const lockName = `alex-board-authority:${safeBoardId}`;
+  const leaseKey = `alex-board-authority-lease:${safeBoardId}`;
+  const fallbackStorage = safeStorage(storage);
+  const token = leaseToken();
 
-  if (!locks?.request) {
-    let started = false;
-    let authority = false;
-    return {
-      start() {
-        if (started) throw new Error('Teacher tab authority is already started');
-        started = true;
-        authority = true;
-        onChange(true);
-        return Promise.resolve();
-      },
-      stop() {
-        if (!started) return;
-        started = false;
-        authority = false;
-        onChange(false);
-      },
-      isAuthority() { return authority; },
-      getLockName() { return lockName; },
-      isBestEffortFallback() { return true; },
-    };
-  }
   let started = false;
   let stopped = false;
   let authority = false;
-  let releaseCurrentLock = null;
-  let abortController = null;
   let runningPromise = null;
+  let releaseCurrentLock = null;
+  let activeAbortController = null;
+  let retryTimer = null;
+  let heartbeatTimer = null;
+  let resolveFallbackRun = null;
+  let usingFallback = false;
 
   const setAuthority = (next) => {
     const value = Boolean(next);
@@ -41,19 +71,70 @@ export function createTeacherTabAuthority({ boardId, lockManager, onChange = () 
     onChange(value);
   };
 
-  return {
-    start() {
-      if (started) throw new Error('Teacher tab authority is already started');
-      started = true;
-      stopped = false;
-      abortController = new AbortController();
+  const clearTimers = () => {
+    clearTimeout(retryTimer);
+    clearTimeout(heartbeatTimer);
+    retryTimer = null;
+    heartbeatTimer = null;
+  };
 
-      runningPromise = Promise.resolve(locks.request(
+  const fallbackAcquire = () => {
+    if (stopped) return;
+    const now = Date.now();
+    const current = readLease(fallbackStorage, leaseKey);
+    const currentToken = String(current?.token ?? '');
+    const expiresAt = Number(current?.expiresAt ?? 0);
+
+    if (!fallbackStorage?.setItem || !currentToken || currentToken === token || expiresAt <= now) {
+      const lease = { token, expiresAt: now + FALLBACK_LEASE_TTL_MS };
+      const written = fallbackStorage?.setItem ? writeLease(fallbackStorage, leaseKey, lease) : true;
+      const verified = !fallbackStorage?.getItem || String(readLease(fallbackStorage, leaseKey)?.token ?? token) === token;
+      if (written && verified) {
+        setAuthority(true);
+        heartbeatTimer = setTimeout(fallbackAcquire, FALLBACK_HEARTBEAT_MS);
+        heartbeatTimer?.unref?.();
+        return;
+      }
+    }
+
+    setAuthority(false);
+    retryTimer = setTimeout(fallbackAcquire, FALLBACK_RETRY_MS);
+    retryTimer?.unref?.();
+  };
+
+  const startFallback = () => {
+    if (usingFallback || stopped) return;
+    usingFallback = true;
+    fallbackAcquire();
+  };
+
+  const webLockLoop = async () => {
+    while (!stopped && !usingFallback) {
+      const controller = new AbortController();
+      activeAbortController = controller;
+      let decide;
+      const decision = new Promise((resolve) => { decide = resolve; });
+      let decisionSettled = false;
+      const settleDecision = (value) => {
+        if (decisionSettled) return;
+        decisionSettled = true;
+        decide(value);
+      };
+
+      const requestTask = Promise.resolve().then(() => locks.request(
         lockName,
-        { mode: 'exclusive', signal: abortController.signal },
+        { mode: 'exclusive', ifAvailable: true, signal: controller.signal },
         async (lock) => {
-          if (!lock || stopped) return;
+          if (stopped) {
+            settleDecision('stopped');
+            return;
+          }
+          if (!lock) {
+            settleDecision('busy');
+            return;
+          }
           setAuthority(true);
+          settleDecision('acquired');
           await new Promise((resolve) => {
             releaseCurrentLock = resolve;
             if (stopped) resolve();
@@ -63,27 +144,83 @@ export function createTeacherTabAuthority({ boardId, lockManager, onChange = () 
         },
       )).catch((error) => {
         if (stopped && error?.name === 'AbortError') return;
-        throw error;
-      }).finally(() => {
-        setAuthority(false);
-        releaseCurrentLock = null;
-        abortController = null;
-        started = false;
+        settleDecision({ error });
       });
 
+      const watchdog = new Promise((resolve) => {
+        const timer = setTimeout(() => resolve('timeout'), WEB_LOCK_PROBE_TIMEOUT_MS);
+        timer?.unref?.();
+      });
+      const outcome = await Promise.race([decision, watchdog]);
+
+      if (outcome === 'timeout') {
+        try { controller.abort(); } catch { /* ignored */ }
+        startFallback();
+        requestTask.catch(() => undefined);
+        return;
+      }
+      if (outcome && typeof outcome === 'object' && outcome.error) {
+        try { controller.abort(); } catch { /* ignored */ }
+        startFallback();
+        requestTask.catch(() => undefined);
+        return;
+      }
+      if (outcome === 'acquired') {
+        await requestTask;
+        return;
+      }
+      await requestTask.catch(() => undefined);
+      if (stopped) return;
+      await new Promise((resolve) => {
+        retryTimer = setTimeout(resolve, WEB_LOCK_RETRY_MS);
+        retryTimer?.unref?.();
+      });
+      retryTimer = null;
+    }
+  };
+
+  return {
+    start() {
+      if (started) throw new Error('Teacher tab authority is already started');
+      started = true;
+      stopped = false;
+
+      if (!locks?.request) {
+        startFallback();
+        runningPromise = new Promise((resolve) => { resolveFallbackRun = resolve; });
+        return runningPromise;
+      }
+
+      runningPromise = webLockLoop().finally(() => {
+        if (!usingFallback) {
+          setAuthority(false);
+          activeAbortController = null;
+          releaseCurrentLock = null;
+          started = false;
+        }
+      });
       return runningPromise;
     },
+
     stop() {
       if (!started) return;
       stopped = true;
-      abortController?.abort();
+      clearTimers();
+      try { activeAbortController?.abort(); } catch { /* ignored */ }
       releaseCurrentLock?.();
+      releaseCurrentLock = null;
+      if (usingFallback) {
+        removeOwnLease(fallbackStorage, leaseKey, token);
+        setAuthority(false);
+        usingFallback = false;
+        started = false;
+        resolveFallbackRun?.();
+        resolveFallbackRun = null;
+      }
     },
-    isAuthority() {
-      return authority;
-    },
-    getLockName() {
-      return lockName;
-    },
+
+    isAuthority() { return authority; },
+    getLockName() { return lockName; },
+    isBestEffortFallback() { return usingFallback || !locks?.request; },
   };
 }

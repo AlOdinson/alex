@@ -548,8 +548,13 @@ export function createBrowserBoardSession({
         return Promise.resolve(runtime);
       }
 
+      const pendingOwnerIds = list
+        .filter((user) => user?.permission === 'owner' && user?.authorityReady === false)
+        .map((user) => safeId(user?.clientId))
+        .filter((id) => id && id !== safeClientId)
+        .sort();
       const ownerIds = list
-        .filter((user) => user?.permission === 'owner')
+        .filter((user) => user?.permission === 'owner' && user?.authorityReady !== false)
         .map((user) => safeId(user?.clientId))
         .filter((id) => id && id !== safeClientId)
         .sort();
@@ -572,7 +577,9 @@ export function createBrowserBoardSession({
       desiredTeacherMode = nextTeacherMode;
       cancelStudentRetry();
       if (!nextTeacherId) {
-        if (!runtime && !connectingRuntime) reportRuntimeState('teacher-offline');
+        if (!runtime && !connectingRuntime) {
+          reportRuntimeState(pendingOwnerIds.length ? 'waiting' : 'teacher-offline');
+        }
         return Promise.resolve(runtime);
       }
       return enqueueTransition(() => startStudent(nextTeacherId));

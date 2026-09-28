@@ -171,9 +171,11 @@ test('terminal student peer failure refreshes Ably presence so the same teacher 
   await realtime.disconnect();
 });
 
-test('owner Ably transport starts only after exclusive teacher session startup resolves', async () => {
+test('owner enters signaling presence immediately but is promoted only after teacher authority is ready', async () => {
   let resolveSessionStart;
   let transportStarts = 0;
+  const presenceUpdates = [];
+  let transportOptions = null;
   const sessionStarted = new Promise((resolve) => { resolveSessionStart = resolve; });
 
   const realtime = connectBoardRealtime({
@@ -194,21 +196,27 @@ test('owner Ably transport starts only after exclusive teacher session startup r
       async disconnect() {},
       async sendScreenShareSignal() {},
     }),
-    createTransport: () => ({
-      async start() { transportStarts += 1; },
-      async publish() { return 'ok'; },
-      async disconnect() {},
-    }),
+    createTransport: (options) => {
+      transportOptions = options;
+      return {
+        async start() { transportStarts += 1; },
+        async updatePresence(patch) { presenceUpdates.push(patch); },
+        async publish() { return 'ok'; },
+        async disconnect() {},
+      };
+    },
   });
 
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal(transportStarts, 0, 'owner presence must not start before this tab owns teacher authority');
+  assert.equal(transportStarts, 1);
+  assert.equal(transportOptions.authorityReady, false);
+  assert.deepEqual(presenceUpdates, []);
 
   resolveSessionStart();
   await Promise.resolve();
   await Promise.resolve();
-  assert.equal(transportStarts, 1);
+  assert.deepEqual(presenceUpdates, [{ authorityReady: true }]);
   await realtime.disconnect();
 });
 
@@ -514,4 +522,53 @@ test('realtime exposes transport diagnostics for measuring WebRTC live adoption'
   });
 
   await realtime.disconnect();
+});
+
+
+test('Ably presence exposes authority readiness and can promote an owner in place', async () => {
+  const users = [];
+  let entered = null;
+  let updated = null;
+  const transport = createAblyBrowserTransport({
+    boardId: 'board-ready',
+    roomKey: 'room-ready',
+    clientId: 'owner-ready',
+    name: 'Owner',
+    permission: 'owner',
+    authorityReady: false,
+    onUsers: (value) => users.push(value),
+    tokenRequest: async () => ({ token: 'test' }),
+    AblyRuntime: { Realtime: class {
+      constructor() {
+        this.connection = {
+          state: 'connected',
+          on() {},
+          once: async () => {},
+        };
+        this.channel = {
+          on() {},
+          subscribe: async () => {},
+          publish: async () => {},
+          presence: {
+            subscribe: async () => {},
+            enter: async (value) => { entered = value; },
+            update: async (value) => { updated = value; },
+            get: async () => [{
+              clientId: 'owner-ready',
+              data: entered ?? { permission: 'owner', authorityReady: false },
+            }],
+          },
+        };
+        this.channels = { get: () => this.channel };
+      }
+      close() {}
+    } },
+  });
+
+  await transport.start();
+  assert.equal(entered.authorityReady, false);
+  assert.equal(users.at(-1)[0].authorityReady, false);
+  await transport.updatePresence({ authorityReady: true });
+  assert.equal(updated.authorityReady, true);
+  await transport.disconnect();
 });

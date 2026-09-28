@@ -544,3 +544,43 @@ test('student buffers peer signaling until presence creates its runtime', async 
   assert.deepEqual(order.slice(0, 2), ['signal', 'start']);
   session.close();
 });
+
+
+test('student waits for authorityReady owner presence without declaring the owner offline', async () => {
+  let created = 0;
+  const states = [];
+  const session = createBrowserBoardSession({
+    boardId: 'board-owner-pending',
+    clientId: 'student-pending',
+    permission: 'edit',
+    sendScreenShareSignal: async () => {},
+    onRuntimeState: (state) => states.push(state),
+    getReplica: () => ({ revision: 0 }),
+    createStudentRuntime: () => {
+      created += 1;
+      return {
+        async start() {},
+        proposeActionAndWait: async () => ({ accepted: true, revision: 0 }),
+        close() {},
+      };
+    },
+    registerRuntime: () => () => {},
+  });
+
+  await session.start();
+  await session.updateParticipants([{
+    clientId: 'teacher-pending',
+    permission: 'owner',
+    authorityReady: false,
+  }]);
+  assert.equal(created, 0);
+  assert.notEqual(states.at(-1), 'teacher-offline');
+
+  await session.updateParticipants([{
+    clientId: 'teacher-pending',
+    permission: 'owner',
+    authorityReady: true,
+  }]);
+  assert.equal(created, 1);
+  session.close();
+});

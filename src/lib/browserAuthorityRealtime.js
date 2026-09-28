@@ -122,6 +122,7 @@ export function createAblyBrowserTransport({
   name,
   permission,
   capabilities = null,
+  authorityReady = permission !== 'owner',
   color = participantColor(clientId),
   onEvent = () => {},
   onUsers = () => {},
@@ -146,6 +147,16 @@ export function createAblyBrowserTransport({
     ? normalizeCollaborationCapabilities(capabilities)
     : null;
   if (!safeBoardId || !safeRoomKey || !safeClientId) throw new Error('Ably board identity is incomplete');
+
+  let presenceState = {
+    clientId: safeClientId,
+    name,
+    permission,
+    color,
+    authorityReady: Boolean(authorityReady),
+    ...(safeCapabilities ? { capabilities: safeCapabilities } : {}),
+  };
+  let joinedAt = 0;
 
   let resolvedAblyRuntime = AblyRuntime;
   const resolveAblyRuntime = async () => {
@@ -198,6 +209,7 @@ export function createAblyBrowserTransport({
         clientId: memberClientId,
         name: data.name ?? 'Участник',
         permission: data.permission ?? 'view',
+        authorityReady: data.authorityReady !== false,
         color: data.color ?? participantColor(memberClientId),
         capabilities: normalizeCollaborationCapabilities(data.capabilities),
       });
@@ -296,13 +308,10 @@ export function createAblyBrowserTransport({
       presenceRefresh = presenceRefresh.catch(() => undefined).then(() => current() ? refreshUsers() : []).catch(onError);
     }), CONNECT_TIMEOUT_MS, 'Timed out while subscribing to Ably board presence', lifetime.signal);
     assertCurrent();
+    joinedAt ||= Date.now();
     await withTimeout(attemptChannel.presence.enter({
-      clientId: safeClientId,
-      name,
-      permission,
-      color,
-      joinedAt: Date.now(),
-      ...(safeCapabilities ? { capabilities: safeCapabilities } : {}),
+      ...presenceState,
+      joinedAt,
     }), CONNECT_TIMEOUT_MS, 'Timed out while entering Ably board presence', lifetime.signal);
     assertCurrent();
     await refreshUsers();
@@ -357,6 +366,22 @@ export function createAblyBrowserTransport({
         if (closed) return 'closed';
         throw error;
       }
+    },
+
+    async updatePresence(patch = {}) {
+      if (closed) return 'closed';
+      const source = patch && typeof patch === 'object' ? patch : {};
+      presenceState = {
+        ...presenceState,
+        ...(Object.hasOwn(source, 'authorityReady') ? { authorityReady: Boolean(source.authorityReady) } : {}),
+      };
+      if (!channel?.presence?.update) return channel ? 'unsupported' : 'starting';
+      joinedAt ||= Date.now();
+      await withTimeout(channel.presence.update({
+        ...presenceState,
+        joinedAt,
+      }), CONNECT_TIMEOUT_MS, 'Timed out while updating Ably board presence', lifetime.signal);
+      return closed ? 'closed' : 'ok';
     },
 
     async refreshUsers() {
@@ -541,6 +566,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     name,
     permission,
     capabilities: localCapabilities,
+    authorityReady: permission !== 'owner',
     color,
     onEvent: (event, payload) => routeBrowserRealtimeEvent(event, payload, {
       localClientId: clientId,
@@ -572,13 +598,22 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     },
   });
 
+  // Presence/signaling must not be blocked behind owner IndexedDB/Web-Lock startup.
+  // Owners enter as authorityReady=false; students ignore them as authoritative
+  // teachers until session.start() succeeds and presence is promoted to ready.
+  Promise.resolve(transport.start?.()).catch((error) => {
+    if (disconnected) return;
+    console.error('Could not start Ably board transport', error);
+    onStatus?.('CHANNEL_ERROR');
+  });
+
   Promise.resolve(session.start?.())
     .then(() => {
-      if (disconnected) return;
-      return Promise.resolve(transport.start?.()).catch((error) => {
+      if (disconnected || permission !== 'owner') return;
+      return Promise.resolve(transport.updatePresence?.({ authorityReady: true })).catch((error) => {
         if (disconnected) return;
-        console.error('Could not start Ably board transport', error);
-        onStatus?.('CHANNEL_ERROR');
+        console.warn('Could not promote owner presence to authority-ready', error);
+        onStatus?.('RECOVERING');
       });
     })
     .catch((error) => {
