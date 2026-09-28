@@ -68,6 +68,7 @@ export function createStudentPeerSession({
     initialProbeTimer = null;
   };
 
+  // Retry this idempotent probe until the teacher has definitely installed its message listener.
   const sendInitialHeadProbe = () => {
     if (closed || initialSyncSettled || initialHandshakeConfirmed) return;
     Promise.resolve(transport.send('head-request', {})).catch(failInitialSync);
