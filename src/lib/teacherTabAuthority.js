@@ -62,6 +62,7 @@ export function createTeacherTabAuthority({
   let activeAbortController = null;
   let retryTimer = null;
   let heartbeatTimer = null;
+  let resolveRetryWait = null;
   let resolveActiveProbe = null;
   let usingFallback = false;
 
@@ -77,6 +78,8 @@ export function createTeacherTabAuthority({
     clearTimeout(heartbeatTimer);
     retryTimer = null;
     heartbeatTimer = null;
+    resolveRetryWait?.();
+    resolveRetryWait = null;
   };
 
   const fallbackAcquire = () => {
@@ -148,10 +151,12 @@ export function createTeacherTabAuthority({
         settleDecision({ error });
       });
 
+      let watchdogTimer = null;
       const watchdog = new Promise((resolve) => {
-        setTimeout(() => resolve('timeout'), WEB_LOCK_PROBE_TIMEOUT_MS);
+        watchdogTimer = setTimeout(() => resolve('timeout'), WEB_LOCK_PROBE_TIMEOUT_MS);
       });
       const outcome = await Promise.race([decision, watchdog]);
+      clearTimeout(watchdogTimer);
 
       if (outcome === 'timeout') {
         try { controller.abort(); } catch { /* ignored */ }
@@ -177,9 +182,14 @@ export function createTeacherTabAuthority({
       await requestTask.catch(() => undefined);
       if (stopped) return;
       await new Promise((resolve) => {
-        retryTimer = setTimeout(resolve, WEB_LOCK_RETRY_MS);
+        const finish = () => {
+          if (resolveRetryWait === finish) resolveRetryWait = null;
+          retryTimer = null;
+          resolve();
+        };
+        resolveRetryWait = finish;
+        retryTimer = setTimeout(finish, WEB_LOCK_RETRY_MS);
       });
-      retryTimer = null;
     }
   };
 

@@ -99,7 +99,7 @@ test('does not fall back when another tab legitimately holds the Web Lock', asyn
   await flush();
   assert.equal(authority.isAuthority(), false);
   assert.equal(calls, 1);
-  t.mock.timers.tick(750);
+  t.mock.timers.tick(751);
   await flush();
   assert.ok(calls >= 2);
   authority.stop();
@@ -121,7 +121,7 @@ test('falls back when a present Web Locks API never answers', async (t) => {
   });
   const running = authority.start();
   await flush();
-  t.mock.timers.tick(1500);
+  t.mock.timers.tick(1501);
   await flush();
   assert.equal(authority.isAuthority(), true);
   assert.equal(authority.isBestEffortFallback(), true);
