@@ -167,7 +167,7 @@ test('production dual-path candidates all enable signaling assistance', async (t
     },
   });
   t.after(() => student.close());
-  void student.start();
+  void student.start().catch(() => {});
   await flush();
   assert.equal(opts?.assistSignaling, true);
 });
