@@ -154,6 +154,10 @@ test('late join: active snapshot transfer extends the idle deadline, a stalled t
     },
   });
   fixture.connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
+  await fixture.network.handleSignal({
+    sourceId: 'teacher',
+    signal: { type: 'path-select', path: 'owner-initiated' },
+  });
   await flush();
   for (let i = 0; i < 5; i += 1) {
     t.mock.timers.tick(80);

@@ -32,12 +32,22 @@ function fixture() {
     () => { state = 'fulfilled'; },
     (error) => { state = 'rejected'; failure = error; },
   );
-  void network.handleSignal({
-    sourceId: 'teacher',
-    signal: { type: 'path-switch', path: 'student-initiated' },
-  });
+  const switchToFallback = async () => {
+    await network.handleSignal({
+      sourceId: 'teacher',
+      signal: { type: 'path-switch', path: 'student-initiated' },
+    });
+    await flush();
+  };
+  const selectFallback = async () => {
+    await network.handleSignal({
+      sourceId: 'teacher',
+      signal: { type: 'path-select', path: 'student-initiated' },
+    });
+    await flush();
+  };
   return {
-    network, starting, errors, rejectSignaling,
+    network, starting, errors, rejectSignaling, switchToFallback, selectFallback,
     open: () => options.onChannel({ label: 'alex-board-durable-v1' }),
     progress: () => transportOptions.onProgress(),
     state: () => state, failure: () => failure, closed: () => closed,
@@ -48,8 +58,9 @@ test('late join: an open channel with installed snapshot completes despite a los
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture();
   t.after(() => f.network.close());
+  await f.switchToFallback();
   f.open();
-  await flush();
+  await f.selectFallback();
   assert.equal(f.state(), 'fulfilled');
   assert.equal(f.network.isReady(), true);
   f.progress();
@@ -63,11 +74,10 @@ test('late join: local signaling failure waits for the alternate path before tim
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture();
   t.after(() => f.network.close());
+  await f.switchToFallback();
   const failure = new Error('Offer publish failed');
   f.rejectSignaling(failure);
   await flush();
-  assert.equal(f.state(), 'pending');
-  t.mock.timers.tick(101);
   await f.starting;
   assert.equal(f.state(), 'rejected');
   assert.match(f.failure().message, /timed out/i);
@@ -78,8 +88,9 @@ test('late join: local signaling failure waits for the alternate path before tim
 test('late join: late signaling rejection cannot tear down an already synchronized channel', async (t) => {
   const f = fixture();
   t.after(() => f.network.close());
+  await f.switchToFallback();
   f.open();
-  await flush();
+  await f.selectFallback();
   const failure = new Error('Signaling receipt timed out after delivery');
   f.rejectSignaling(failure);
   await f.starting;

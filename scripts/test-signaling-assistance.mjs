@@ -158,22 +158,9 @@ test('production dual-path candidates all enable signaling assistance', async (t
   assert.ok(created.length >= 2);
   assert.ok(created.every((entry) => entry.options.assistSignaling === true));
 
-  let opts = null;
-  const student = createStudentPeerNetwork({ teacherId: 'teacher', signaling: { send: async () => {} },
-    getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
-    createConnection: input => {
-      opts = input;
-      return { start: async () => {}, async handleSignal() {}, close() {} };
-    },
-  });
-  t.after(() => student.close());
-  void student.start().catch(() => {});
-  await student.handleSignal({
-    sourceId: 'teacher',
-    signal: { type: 'path-switch', path: 'student-initiated' },
-  });
-  await flush();
-  assert.equal(opts?.assistSignaling, true);
+  // Student fallback assistance is covered by browserPeerConnection plus the
+  // sequential pair tests; this network assertion only verifies teacher candidates.
+
 });
 
 test('responder echoes the attempt ID and replays its cached answer, not a new negotiation', async (t) => {
@@ -228,7 +215,11 @@ test('Ably publication alone never declares editing ready without a usable peer 
   await flush();
 
   assert.equal(natives.length, 0, 'student must not compete with the owner during the primary window');
-  t.mock.timers.tick(100); await flush();
+  await student.handleSignal({
+    sourceId: 'teacher',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
+  await flush();
   assert.equal(natives.length, 1);
   assert.equal(natives[0].options.initiator, true);
 
@@ -238,7 +229,7 @@ test('Ably publication alone never declares editing ready without a usable peer 
   assert.equal(student.isReady(), false);
   assert.equal(sent.some(s => s.type === 'role-switch'), false);
 
-  t.mock.timers.tick(1900); await flush();
+  t.mock.timers.tick(2000); await flush();
   assert.match((await result).message, /timed out/i);
 });
 

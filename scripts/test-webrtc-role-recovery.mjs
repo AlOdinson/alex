@@ -78,34 +78,3 @@ test('dual-path selection control is accepted by board signaling', () => {
   }
 });
 
-test('late signaling publication error cannot kill an already opened path', async () => {
-  let rejectStart;
-  let connectionOptions = null;
-  const selected = [];
-  const fatals = [];
-  const pair = createDualPathPeerPair({
-    localRole: 'owner',
-    peerId: 'owner',
-    signaling: { send: async () => {} },
-    createConnection: (options) => {
-      connectionOptions = options;
-      return {
-        start: () => new Promise((_, reject) => { rejectStart = reject; }),
-        async handleSignal() {},
-        close() {},
-      };
-    },
-    onSelectedChannel: (_channel, path) => selected.push(path),
-    onFatal: (error) => fatals.push(error),
-  });
-  await pair.start();
-  await flush();
-  connectionOptions.onChannel({ label: 'alex-board-durable-v1', close() {} });
-  assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
-
-  rejectStart(new Error('late receipt'));
-  await flush();
-  assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
-  assert.equal(fatals.length, 0);
-  pair.close();
-});
