@@ -29,55 +29,49 @@ async function instrument(context, mode, owner) {
         window.__signalEvidence.pcCount++;
       }
     };
-    // The actual Ably client/token/channel are retained. Only the selected
-    // outgoing bootstrap signal is dropped before publication; no board action,
-    // snapshot, WebRTC method or application handler is mocked.
-    let ably;
-    Object.defineProperty(window, 'Ably', { configurable: true, get: () => ably, set(sdk) {
-      // Modern Ably bundles expose Realtime through an export getter. Keep the
-      // native constructor and other exports, but replace the outer namespace;
-      // assignment to sdk.Realtime itself can silently leave it unchanged.
-      const property = Object.getOwnPropertyDescriptor(sdk, 'Realtime');
-      window.__signalEvidence.realtimeExport = { getter: Boolean(property?.get), writable: property?.writable ?? null };
-      ably = { ...sdk };
-      const NativeRealtime = sdk.Realtime;
-      ably.Realtime = new Proxy(NativeRealtime, { construct(Target, args) {
-        const client = Reflect.construct(Target, args);
-        const get = client.channels.get.bind(client.channels);
-        const wrapped = new WeakSet();
-        client.channels.get = (...args) => {
-          const channel = get(...args);
-          if (wrapped.has(channel)) return channel;
-          wrapped.add(channel);
-          const publish = channel.publish.bind(channel);
-          let descriptions = 0;
-          channel.publish = (name, data, ...rest) => {
-            const signal = data?.signal;
-            if (data?.protocol === 'alex-board-peer-signal-v1' && signal) {
-              if (signal.type === (owner ? 'answer' : 'offer')) descriptions++;
-              const drop = (mode === 'offer' && !owner && signal.type === 'offer' && descriptions === 1)
-                || (mode === 'answer' && owner && signal.type === 'answer' && descriptions === 1)
-                || (mode === 'ice' && signal.type === 'ice' && descriptions < 2);
-              window.__signalEvidence.signals.push({ type: signal.type, id: signal.negotiationId,
-                dropped: drop, at: performance.now() });
-              if (drop) return Promise.resolve();
-              if (mode === 'ice' && signal.description) {
-                // Remove embedded candidates as well, so lost trickle ICE cannot
-                // accidentally succeed via the SDP and disguise a missing repair.
-                data = { ...data, signal: { ...signal, description: { type: signal.description.type,
-                  sdp: signal.description.sdp.replace(/^a=candidate:.*\r?\n/gm, '') } } };
-              }
-              if (signal.description && data.signal.description.type !== signal.description.type) {
-                throw new Error('Test fault injector changed SDP type');
-              }
-            }
-            return publish(name, data, ...rest);
-          };
-          return channel;
+
+    let offerDescriptions = 0;
+    let answerDescriptions = 0;
+    let ownerPathIce = 0;
+    window.__alexBoardSignalingTestHook = (payload) => {
+      const signal = payload?.signal;
+      if (payload?.protocol !== 'alex-board-peer-signal-v1' || !signal) return { payload };
+
+      const path = String(signal.path ?? '');
+      if (signal.type === 'offer' && path === 'owner-initiated' && owner) offerDescriptions += 1;
+      if (signal.type === 'answer' && path === 'owner-initiated' && !owner) answerDescriptions += 1;
+      if (signal.type === 'ice' && path === 'owner-initiated') ownerPathIce += 1;
+
+      const drop = (mode === 'offer' && owner && signal.type === 'offer'
+          && path === 'owner-initiated' && offerDescriptions === 1)
+        || (mode === 'answer' && !owner && signal.type === 'answer'
+          && path === 'owner-initiated' && answerDescriptions === 1)
+        || (mode === 'ice' && signal.type === 'ice'
+          && path === 'owner-initiated' && ownerPathIce <= 2);
+
+      window.__signalEvidence.signals.push({
+        type: signal.type,
+        path,
+        id: signal.negotiationId ?? '',
+        dropped: drop,
+        at: performance.now(),
+      });
+
+      if (drop) return { drop: true };
+
+      if (mode === 'ice' && path === 'owner-initiated' && signal.description?.sdp) {
+        const nextSignal = {
+          ...signal,
+          description: {
+            ...signal.description,
+            sdp: signal.description.sdp.replace(/^a=candidate:.*\r?\n/gm, ''),
+          },
         };
-        return client;
-      } });
-    } });
+        return { payload: { ...payload, signal: nextSignal } };
+      }
+      return { payload };
+    };
+
     window.__signalCanvas = () => {
       let element = document.querySelector('canvas.upper-canvas');
       while (element) {
@@ -141,17 +135,41 @@ try {
       await stroke(student, 1); await equal(owner, student, 2);
       await student.getByRole('button', { name: /Отменить —/ }).click(); await equal(owner, student, 1);
       await student.getByRole('button', { name: /Вернуть —/ }).click(); await equal(owner, student, 2);
+      // Allow bounded path-select and signaling-assistance replays to settle, then
+      // prove a healthy selected channel becomes quiet.
+      await pause(2500);
       const before = await Promise.all(pages.map(p => p.evaluate(() => window.__signalEvidence)));
-      await pause(8500); // beyond both bootstrap retry deadlines
+      await pause(6000);
       const after = await Promise.all(pages.map(p => p.evaluate(() => window.__signalEvidence)));
-      assert.deepEqual(after.map(x => x.signals.length), before.map(x => x.signals.length), 'healthy channel must stop assistance');
-      assert.equal(after[1].pcCount, 1, 'must rescue the same student RTCPeerConnection, not wait for recreation');
-      assert.equal(after[0].pcCount, 1, 'replay must not replace the answering peer');
-      const offers = after[1].signals.filter(s => s.type === 'offer');
-      assert.equal(new Set(offers.map(s => s.id)).size, 1);
+      assert.deepEqual(after.map(x => x.signals.length), before.map(x => x.signals.length),
+        'healthy selected channel must stop bootstrap signaling');
+
+      for (const evidence of after) {
+        assert.ok(evidence.pcCount >= 1 && evidence.pcCount <= 3,
+          'dual-path bootstrap should stay bounded to the two candidates plus at most one same-path retry');
+        assert.equal(evidence.protocolMismatch, 0);
+      }
+
+      const allSignals = after.flatMap((evidence) => evidence.signals);
+      assert.ok(allSignals.some((signal) => signal.path === 'owner-initiated'),
+        'owner-initiated path must be tested');
+      assert.ok(allSignals.some((signal) => signal.path === 'student-initiated'),
+        'student-initiated path must be tested');
+
       if (mode !== 'clean') {
-        assert.ok(offers.length >= 2, 'must exercise actual retransmission');
-        assert.ok(after.some(e => e.signals.some(s => s.dropped)), 'fault injection must occur');
+        assert.ok(allSignals.some((signal) => signal.dropped), 'fault injection must occur');
+      }
+      if (mode === 'offer') {
+        const offers = allSignals.filter((signal) => signal.type === 'offer'
+          && signal.path === 'owner-initiated');
+        assert.ok(offers.length >= 2, 'lost preferred-path offer must be retried');
+        assert.equal(new Set(offers.map((signal) => signal.id)).size, 1,
+          'offer assistance must retry the same negotiation');
+      }
+      if (mode === 'answer') {
+        const answers = allSignals.filter((signal) => signal.type === 'answer'
+          && signal.path === 'owner-initiated');
+        assert.ok(answers.length >= 2, 'lost preferred-path answer must be retried');
       }
       assert.deepEqual(errors, []);
       results.push({ mode, engine, readyMs, owner: after[0], student: after[1], passed: true });

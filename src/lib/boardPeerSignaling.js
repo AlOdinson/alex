@@ -56,7 +56,7 @@ export function createBoardPeerSignalingBridge({
         throw new Error('Unsupported WebRTC peer signal');
       }
 
-      return sendScreenShareSignal({
+      let payload = {
         protocol: BOARD_PEER_SIGNAL_PROTOCOL,
         type: BOARD_PEER_SIGNAL_TYPE,
         sessionId: peerSessionId(localId, targetId),
@@ -64,7 +64,25 @@ export function createBoardPeerSignalingBridge({
         targetId,
         signal,
         timestamp: Date.now(),
-      });
+      };
+
+      // Localhost-only browser fault injection for the real WebRTC/Ably E2E suite.
+      // Production origins can never activate this hook.
+      try {
+        const hostname = String(globalThis?.location?.hostname ?? '');
+        const hook = (hostname === '127.0.0.1' || hostname === 'localhost')
+          ? globalThis.__alexBoardSignalingTestHook
+          : null;
+        if (typeof hook === 'function') {
+          const decision = hook(payload);
+          if (decision?.drop) return 'test-dropped';
+          if (decision?.payload && typeof decision.payload === 'object') payload = decision.payload;
+        }
+      } catch {
+        // Test instrumentation must never affect application signaling.
+      }
+
+      return sendScreenShareSignal(payload);
     },
 
     async handle(payload) {
