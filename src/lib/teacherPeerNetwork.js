@@ -179,6 +179,7 @@ export function createTeacherPeerNetwork({
       const signal = message?.signal;
       if (!peerId || !signal) return false;
       const entry = ensurePeer(peerId);
+      Promise.resolve(entry.pair.start()).catch((error) => failPeer(peerId, entry, error));
       return entry.pair.handleSignal(signal);
     },
 

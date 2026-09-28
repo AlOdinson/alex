@@ -55,14 +55,19 @@ test('late join: an open channel with installed snapshot completes despite a los
   assert.equal(f.closed(), 0);
 });
 
-test('late join: signaling failure before readiness closes and rejects the attempt', async (t) => {
+test('late join: local signaling failure waits for the alternate path before timing out', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const f = fixture();
   t.after(() => f.network.close());
   const failure = new Error('Offer publish failed');
   f.rejectSignaling(failure);
+  await flush();
+  assert.equal(f.state(), 'pending');
+  t.mock.timers.tick(101);
   await f.starting;
   assert.equal(f.state(), 'rejected');
-  assert.equal(f.failure(), failure);
+  assert.match(f.failure().message, /timed out/i);
+  assert.ok(f.errors.includes(failure));
   assert.equal(f.closed(), 1);
 });
 

@@ -56,3 +56,19 @@ test('rejects starting the same authority lease twice', async () => {
   releaseCallback?.();
   await first;
 });
+
+
+test('falls back to best-effort single-tab authority when Web Locks are unavailable', async () => {
+  const events = [];
+  const authority = createTeacherTabAuthority({
+    boardId: 'board-no-locks',
+    lockManager: {},
+    onChange: (value) => events.push(value),
+  });
+  await authority.start();
+  assert.equal(authority.isAuthority(), true);
+  assert.equal(authority.isBestEffortFallback(), true);
+  authority.stop();
+  assert.equal(authority.isAuthority(), false);
+  assert.deepEqual(events, [true, false]);
+});

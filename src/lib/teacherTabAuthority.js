@@ -3,9 +3,30 @@ export function createTeacherTabAuthority({ boardId, lockManager, onChange = () 
   if (!safeBoardId) throw new Error('boardId is required');
 
   const locks = lockManager ?? globalThis.navigator?.locks;
-  if (!locks?.request) throw new Error('Web Locks API is unavailable');
-
   const lockName = `alex-board-authority:${safeBoardId}`;
+
+  if (!locks?.request) {
+    let started = false;
+    let authority = false;
+    return {
+      start() {
+        if (started) throw new Error('Teacher tab authority is already started');
+        started = true;
+        authority = true;
+        onChange(true);
+        return Promise.resolve();
+      },
+      stop() {
+        if (!started) return;
+        started = false;
+        authority = false;
+        onChange(false);
+      },
+      isAuthority() { return authority; },
+      getLockName() { return lockName; },
+      isBestEffortFallback() { return true; },
+    };
+  }
   let started = false;
   let stopped = false;
   let authority = false;

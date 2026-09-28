@@ -129,6 +129,7 @@ export function createBrowserBoardSession({
   const participantCapabilities = new Map();
   let studentRetryTimer = null;
   let studentRetryFailures = 0;
+  let pendingOwnerPeerIds = [];
   const pendingRealtimeSignals = [];
 
   const queueRealtimeSignal = (payload) => {
@@ -394,6 +395,8 @@ export function createBrowserBoardSession({
       releaseTeacherTabAuthority(error);
       throw error;
     }
+    await flushPendingRealtimeSignals(nextRuntime);
+    try { nextRuntime.updateParticipants?.(pendingOwnerPeerIds); } catch (error) { onError(error); }
     return installRuntime(nextRuntime);
   };
 
@@ -540,6 +543,7 @@ export function createBrowserBoardSession({
         const peerIds = list
           .map((user) => safeId(user?.clientId))
           .filter((id) => id && id !== safeClientId);
+        pendingOwnerPeerIds = peerIds;
         try { runtime?.updateParticipants?.(peerIds); } catch (error) { onError(error); }
         return Promise.resolve(runtime);
       }
@@ -576,10 +580,10 @@ export function createBrowserBoardSession({
     handleRealtimeSignal(payload) {
       const targetRuntime = connectingRuntime ?? runtime;
       if (targetRuntime?.handleRealtimeSignal) return targetRuntime.handleRealtimeSignal(payload);
-      // Owners finish installing their teacher runtime before Ably starts. Students
-      // can legitimately receive a reverse-role offer during presence/runtime setup.
-      if (!isOwner) return queueRealtimeSignal(payload);
-      return false;
+      // Presence/signaling can legitimately become ready before either durable
+      // runtime. Keep a bounded inbox for both roles and drain it as soon as the
+      // matching teacher/student runtime exists.
+      return queueRealtimeSignal(payload);
     },
     async sendOps(ops, options = {}) {
       if (!durableBridge) throw new Error('Browser durable runtime is unavailable');
@@ -641,6 +645,7 @@ export function createBrowserBoardSession({
       desiredTeacherId = '';
       cancelStudentRetry();
       pendingRealtimeSignals.length = 0;
+      pendingOwnerPeerIds = [];
       teacherId = '';
       const closeError = new Error('Board session is closed');
       rejectRuntimeWaiters(closeError);

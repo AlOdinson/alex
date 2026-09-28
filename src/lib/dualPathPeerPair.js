@@ -55,6 +55,7 @@ export function createDualPathPeerPair({
   let closed = false;
   let fatal = false;
   let selectedPath = '';
+  let pendingSelectedPath = '';
   let selectedAttached = false;
   let selectedLiveAttached = false;
   let remoteDualPathSeen = false;
@@ -175,6 +176,15 @@ export function createDualPathPeerPair({
     const resolved = safePath(path);
     if (!resolved || closed) return false;
     if (selectedPath && selectedPath !== resolved) return false;
+    if (pendingSelectedPath && pendingSelectedPath !== resolved) return false;
+
+    const candidate = candidates.get(resolved);
+    if (role === 'student' && !candidate?.durableChannel) {
+      pendingSelectedPath = resolved;
+      return true;
+    }
+
+    pendingSelectedPath = '';
     selectedPath = resolved;
     if (notify) replaySelection(resolved);
     return attachSelectedIfReady() || true;
@@ -232,6 +242,11 @@ export function createDualPathPeerPair({
     if (selectedPath) {
       if (selectedPath === candidate.path) attachSelectedIfReady();
       else closeCandidate(candidate);
+      return;
+    }
+
+    if (pendingSelectedPath) {
+      if (pendingSelectedPath === candidate.path) selectPath(candidate.path, { notify: false });
       return;
     }
 
@@ -354,6 +369,10 @@ export function createDualPathPeerPair({
     candidate.started = true;
     Promise.resolve(candidate.connection?.start?.()).catch((error) => {
       reportError(error);
+      // A publish receipt may fail after the remote browser already received the
+      // offer and opened SCTP. Never let a late signaling receipt destroy a
+      // proven usable DataChannel.
+      if (candidate.durableChannel) return;
       handleCandidateFailure(candidate, error);
     });
   }
@@ -420,7 +439,7 @@ export function createDualPathPeerPair({
         }
       }
 
-      failPair(new Error('No WebRTC path became usable before the connection deadline'));
+      failPair(new Error('WebRTC connection timed out: no path became usable'));
     }, positiveTimeout(connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS));
     deadlineTimer?.unref?.();
   }
@@ -430,9 +449,11 @@ export function createDualPathPeerPair({
       if (closed) return Promise.reject(new Error('Dual-path peer pair is closed'));
       if (!started) {
         started = true;
-        const candidate = ensureCandidate(localInitiatedPath);
-        startCandidate(candidate);
-        armDeadline();
+        if (!selectedAttached) {
+          const candidate = ensureCandidate(localInitiatedPath);
+          startCandidate(candidate);
+          armDeadline();
+        }
       }
       return Promise.resolve();
     },
@@ -486,7 +507,7 @@ export function createDualPathPeerPair({
         await candidate.connection.handleSignal(signal);
       } catch (error) {
         reportError(error);
-        handleCandidateFailure(candidate, error);
+        if (!candidate.durableChannel) handleCandidateFailure(candidate, error);
         return false;
       }
       return true;
