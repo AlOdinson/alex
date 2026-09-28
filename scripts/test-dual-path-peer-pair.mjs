@@ -74,7 +74,7 @@ test('owner switches to student-initiated fallback after primary timeout', async
 
 test('student never switches by itself and changes role only after owner path-switch', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
-  const { pair, created, sent } = harness('student');
+  const { pair, created, sent } = harness('student', { connectTimeoutMs: 10_000 });
   await pair.start();
   assert.equal(created.length, 1);
   assert.equal(created[0].options.initiator, false);

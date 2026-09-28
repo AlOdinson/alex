@@ -133,7 +133,7 @@ for (const stalledSignaling of [false, true]) {
     assert.equal(starting.state, 'rejected');
     assert.match(starting.error.message, /timed out/i);
     assert.equal(fixture.network.isReady(), false);
-    assert.equal(fixture.closed, 2, 'primary and fallback peers must both be retired at total timeout');
+    assert.equal(fixture.closed, 1, 'student must not create fallback without an owner path-switch');
     assert.ok(fixture.states.includes('failed'));
   });
 }
