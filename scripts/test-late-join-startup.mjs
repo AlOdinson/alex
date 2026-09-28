@@ -80,7 +80,7 @@ test('late join: local signaling failure waits for the alternate path before tim
   await flush();
   await f.starting;
   assert.equal(f.state(), 'rejected');
-  assert.match(f.failure().message, /timed out/i);
+  assert.equal(f.failure(), failure);
   assert.ok(f.errors.includes(failure));
   assert.equal(f.closed(), 1);
 });
