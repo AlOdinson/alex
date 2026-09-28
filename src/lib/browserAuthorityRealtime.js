@@ -11,6 +11,25 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const LOCK_TTL = 12_000;
 const ABLY_SIGNAL_EVENT = 'screen-share-signal';
 
+let defaultAblyRuntimePromise = null;
+
+async function loadDefaultAblyRuntime() {
+  if (!defaultAblyRuntimePromise) {
+    defaultAblyRuntimePromise = import('ably')
+      .then((module) => {
+        const loaded = module?.Realtime ? module : module?.default;
+        if (!loaded?.Realtime) throw new Error('Ably SDK did not load');
+        return loaded;
+      })
+      .catch((error) => {
+        // A transient chunk/network failure must not poison every later reconnect.
+        defaultAblyRuntimePromise = null;
+        throw error;
+      });
+  }
+  return defaultAblyRuntimePromise;
+}
+
 function participantColor(clientId) {
   const palette = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626'];
   let hash = 0;
@@ -118,6 +137,7 @@ export function createAblyBrowserTransport({
     return data;
   },
   AblyRuntime = typeof window !== 'undefined' ? window.Ably : null,
+  loadAblyRuntime = loadDefaultAblyRuntime,
 } = {}) {
   const safeBoardId = String(boardId ?? '').trim();
   const safeRoomKey = String(roomKey ?? '').trim();
@@ -126,6 +146,17 @@ export function createAblyBrowserTransport({
     ? normalizeCollaborationCapabilities(capabilities)
     : null;
   if (!safeBoardId || !safeRoomKey || !safeClientId) throw new Error('Ably board identity is incomplete');
+
+  let resolvedAblyRuntime = AblyRuntime;
+  const resolveAblyRuntime = async () => {
+    if (resolvedAblyRuntime?.Realtime) return resolvedAblyRuntime;
+    if (typeof loadAblyRuntime !== 'function') throw new Error('Ably SDK loader is unavailable');
+    const loaded = await loadAblyRuntime();
+    const nextRuntime = loaded?.Realtime ? loaded : loaded?.default;
+    if (!nextRuntime?.Realtime) throw new Error('Ably SDK did not load');
+    resolvedAblyRuntime = nextRuntime;
+    return resolvedAblyRuntime;
+  };
 
   let client = null;
   let channel = null;
@@ -200,7 +231,8 @@ export function createAblyBrowserTransport({
   };
 
   const startAttempt = async () => {
-    const attemptClient = new AblyRuntime.Realtime({
+    const runtime = await resolveAblyRuntime();
+    const attemptClient = new runtime.Realtime({
       clientId: safeClientId,
       useTokenAuth: true,
       echoMessages: false,
@@ -283,7 +315,6 @@ export function createAblyBrowserTransport({
     start() {
       if (closed) return Promise.reject(new Error('Ably transport is closed'));
       if (startTask) return startTask;
-      if (!AblyRuntime?.Realtime) return Promise.reject(new Error('Ably SDK did not load'));
       // SDK reconnection alone cannot finish a start() abandoned before channel /
       // presence setup. Retire that partial client and retry the entire bootstrap.
       startTask = (async () => {
