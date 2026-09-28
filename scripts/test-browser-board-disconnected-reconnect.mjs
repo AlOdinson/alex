@@ -31,7 +31,7 @@ test('student gives disconnected peer 3.5 seconds to recover', async (t) => {
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
   await starting;
   connectionOptions.onConnectionState('disconnected');
-  assert.deepEqual(states, ['disconnected']);
+  assert.deepEqual(states, ['connected', 'disconnected']);
   t.mock.timers.tick(3499);
   assert.equal(network.isReady(), true);
   assert.equal(closedCount, 0);

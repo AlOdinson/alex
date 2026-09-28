@@ -211,41 +211,65 @@ test('healthy slow snapshot progress extends the idle deadline', async (t) => {
   assert.equal(network.isReady(), true);
 });
 
-test('new offer replaces a silent old teacher peer; late old channel cannot hijack the replacement', async () => {
+test('new offer replaces only the silent student-path candidate; late old channel cannot hijack selection', async () => {
   const peers = [];
   const added = [];
   const network = createTeacherPeerNetwork({
+    clientId: 'teacher',
     signaling: { send: async () => {} },
     peerHub: { addPeer: (id, transport) => { added.push(transport); return () => {}; }, removePeer() {}, async handleMessage() {} },
     createConnection: (options) => {
       const record = { options, closes: 0 };
       peers.push(record);
-      return { async start() {}, async handleSignal() {}, close() { record.closes += 1; } };
+      return { async start() {}, async handleSignal() {}, resendSignaling() {}, close() { record.closes += 1; } };
     },
     createTransport: ({ channel }) => ({ channel, send: async () => {}, sendTextTransfer: async () => {}, close() {} }),
   });
-  await network.handleSignal({ sourceId: 'student', signal: { type: 'offer', description: { sdp: 'old' } } });
-  await network.handleSignal({ sourceId: 'student', signal: { type: 'offer', description: { sdp: 'new' } } });
-  assert.equal(peers.length, 2);
-  assert.equal(peers[0].closes, 1);
-  peers[0].options.onChannel(new Channel());
-  assert.equal(added.length, 0, 'late old datachannel must not be registered as the new connection');
-  peers[1].options.onChannel(new Channel());
-  assert.equal(added.length, 1);
+  await network.handleSignal({
+    sourceId: 'student',
+    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'old', description: { type: 'offer', sdp: 'old' } },
+  });
+  const oldResponder = peers.find((peer) => peer.options.initiator === false);
+  const ownerCandidate = peers.find((peer) => peer.options.initiator === true);
+  await network.handleSignal({
+    sourceId: 'student',
+    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'new', description: { type: 'offer', sdp: 'new' } },
+  });
+  const responders = peers.filter((peer) => peer.options.initiator === false);
+  assert.equal(peers.length, 3);
+  assert.equal(oldResponder.closes, 1);
+
+  oldResponder.options.onChannel(new Channel());
+  assert.equal(added.length, 0, 'late old DataChannel must stay isolated');
+
+  ownerCandidate.options.onChannel(new Channel());
+  assert.equal(added.length, 1, 'selected owner path should register exactly once');
+  assert.equal(responders.at(-1).closes, 1, 'losing replacement responder should retire after owner path wins');
   network.close();
 });
 
 test('teacher closes a failed snapshot sender instead of leaving the joining student waiting', async () => {
-  let options;
+  const options = [];
   let transportOptions;
   const network = createTeacherPeerNetwork({
+    clientId: 'teacher',
     signaling: { send: async () => {} },
     peerHub: { addPeer: () => () => {}, removePeer() {}, async handleMessage() { throw new Error('snapshot send failed'); } },
-    createConnection: (input) => { options = input; return { async start() {}, async handleSignal() {}, close() {} }; },
+    createConnection: (input) => {
+      options.push(input);
+      return { async start() {}, async handleSignal() {}, resendSignaling() {}, close() {} };
+    },
     createTransport: (input) => { transportOptions = input; return { send: async () => {}, sendTextTransfer: async () => {}, close() {} }; },
   });
-  await network.handleSignal({ sourceId: 'student', signal: { type: 'offer' } });
-  options.onChannel(new Channel());
+  await network.handleSignal({
+    sourceId: 'student',
+    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'student-1',
+      description: { type: 'offer', sdp: 'student' } },
+  });
+  const ownerPath = options.find((input) => input.initiator === true);
+  assert.ok(ownerPath);
+  ownerPath.onChannel(new Channel());
+  assert.ok(transportOptions);
   await transportOptions.onMessage({ type: 'snapshot-request', payload: {} });
   assert.equal(network.getPeerCount(), 0);
 });
