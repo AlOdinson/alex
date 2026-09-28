@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createBrowserBoardRepository } from '../src/lib/browserBoardRepositoryCompat.js';
 import { deriveShareKey } from '../src/lib/ids.js';
 import { createStudentPeerSession } from '../src/lib/studentPeerSession.js';
+import { createTeacherPeerHub } from '../src/lib/teacherPeerHub.js';
 import { createStudentPeerNetwork } from '../src/lib/studentPeerNetwork.js';
 import { createPeerDataChannelTransport } from '../src/lib/peerDataChannel.js';
 import { createPeerMessage } from '../src/lib/peerProtocol.js';
