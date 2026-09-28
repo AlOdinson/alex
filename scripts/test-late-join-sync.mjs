@@ -54,8 +54,10 @@ test('late join: a clean replica requests a full snapshot and installs it once',
   const starting = observe(session.start());
   t.after(async () => { session.close(); await starting.done; });
   await flush();
-  assert.equal(sent[0]?.type, 'snapshot-request');
+  assert.equal(sent[0]?.type, 'head-request');
   assert.equal(starting.state, 'pending');
+  await session.handleMessage({ type: 'head', payload: { revision: 0 } });
+  assert.equal(sent.at(-1)?.type, 'snapshot-request');
   const snapshot = { version: 2, background: 'grid', canvas: { objects: [
     { boardObjectId: 'text-1', type: 'IText', text: 'Already on the board' },
     { boardObjectId: 'stroke-1', type: 'Path', path: [['M', 0, 0], ['L', 20, 20]] },
@@ -182,4 +184,47 @@ test('late join: transport reports progress only for valid protocol frames', () 
     channel.dispatchEvent(new MessageEvent('message', { data: 'not-json' }));
     assert.equal(progress, 1);
   } finally { transport.close(); }
+});
+
+
+test('late join: losing the first handshake frame still reaches the snapshot', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let revision = 0;
+  let student;
+  let dropFirst = true;
+  const snapshot = { version: 2, canvas: { objects: [{ boardObjectId: 'survives-race' }] } };
+  const hub = createTeacherPeerHub({
+    authority: { getRevision: () => 0, commitAction: async () => {} },
+    getSnapshot: async () => ({ snapshot, revision: 0 }),
+    getCommitsAfter: async () => [],
+  });
+
+  const teacherTransport = {
+    send: (type, payload) => student.handleMessage({ type, payload }),
+    sendTextTransfer: (kind, text) => student.handleTransfer({ kind, text }),
+  };
+  hub.addPeer('student-race', teacherTransport);
+
+  student = createStudentPeerSession({
+    transport: {
+      async send(type, payload) {
+        if (dropFirst) {
+          dropFirst = false;
+          return;
+        }
+        return hub.handleMessage('student-race', { type, payload });
+      },
+    },
+    getRevision: () => revision,
+    applyCommit: async () => {},
+    installSnapshot: async (_value, nextRevision) => { revision = nextRevision; },
+  });
+
+  const starting = student.start();
+  await Promise.resolve();
+  t.mock.timers.tick(150);
+  await Promise.resolve();
+  await starting;
+  assert.equal(revision, 0);
+  student.close();
 });

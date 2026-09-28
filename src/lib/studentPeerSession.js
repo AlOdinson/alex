@@ -32,6 +32,10 @@ export function createStudentPeerSession({
   let initialSyncSettled = false;
   let awaitingInitialSnapshot = false;
   let initialSyncTargetRevision = 0;
+  let initialHandshakeConfirmed = false;
+  let initialSnapshotRequested = false;
+  let initialProbeTimer = null;
+  let initialProbeCount = 0;
   let resolveInitialSync;
   let rejectInitialSync;
   const initialSync = new Promise((resolve, reject) => {
@@ -59,15 +63,45 @@ export function createStudentPeerSession({
     revision: safeRevision(getRevision()),
   });
 
+  const clearInitialProbe = () => {
+    clearTimeout(initialProbeTimer);
+    initialProbeTimer = null;
+  };
+
+  const sendInitialHeadProbe = () => {
+    if (closed || initialSyncSettled || initialHandshakeConfirmed) return;
+    Promise.resolve(transport.send('head-request', {})).catch(failInitialSync);
+    clearInitialProbe();
+    const delays = [150, 400, 900, 1_500, 2_500];
+    const delay = delays[Math.min(initialProbeCount, delays.length - 1)];
+    initialProbeCount += 1;
+    initialProbeTimer = setTimeout(sendInitialHeadProbe, delay);
+    initialProbeTimer?.unref?.();
+  };
+
+  const requestInitialSnapshot = () => {
+    if (closed || initialSyncSettled || initialSnapshotRequested) return;
+    initialSnapshotRequested = true;
+    Promise.resolve(transport.send('snapshot-request', {})).catch(failInitialSync);
+  };
+
+  const confirmInitialHandshake = () => {
+    if (initialHandshakeConfirmed) return;
+    initialHandshakeConfirmed = true;
+    clearInitialProbe();
+  };
+
   const markInitialSyncReady = () => {
     if (initialSyncSettled || closed) return;
     initialSyncSettled = true;
+    clearInitialProbe();
     resolveInitialSync();
   };
 
   const failInitialSync = (error) => {
     if (initialSyncSettled) return;
     initialSyncSettled = true;
+    clearInitialProbe();
     rejectInitialSync(error instanceof Error ? error : new Error(String(error)));
   };
 
@@ -98,13 +132,12 @@ export function createStudentPeerSession({
         initialSyncTargetRevision = safeRevision(getRevision());
         awaitingInitialSnapshot = initialSyncTargetRevision === 0;
         try {
-          // A clean replica needs the full baseline, including imported/copied
-          // objects at revision zero. Replaying every historical stroke is both
-          // expensive to render and insufficient for a populated revision-zero board.
-          const request = awaitingInitialSnapshot
-            ? transport.send('snapshot-request', {})
-            : requestSync();
-          Promise.resolve(request).catch(failInitialSync);
+          // First prove that the teacher has installed its DataChannel message
+          // listener. Chromium can open the remote channel a few milliseconds before
+          // the local owner's "open" callback installs TeacherPeerHub; sending the
+          // snapshot/sync request in that gap loses the one-shot request forever.
+          // A tiny idempotent head probe is safe to retry until the teacher answers.
+          sendInitialHeadProbe();
         } catch (error) {
           failInitialSync(error);
         }
@@ -120,6 +153,7 @@ export function createStudentPeerSession({
         : {};
 
       if (type === 'head') {
+        confirmInitialHandshake();
         learnVerificationMode(payload);
         const reply = payload.verification;
         if (verificationWaiter && reply?.requestId === verificationWaiter.requestId
@@ -134,7 +168,10 @@ export function createStudentPeerSession({
           if (!initialSyncSettled) {
             initialSyncTargetRevision = Math.max(initialSyncTargetRevision, headRevision);
           }
-          if (awaitingInitialSnapshot) return;
+          if (awaitingInitialSnapshot) {
+            requestInitialSnapshot();
+            return;
+          }
           if (headRevision > safeRevision(getRevision())
             || (!initialSyncSettled && initialSyncTargetRevision > safeRevision(getRevision()))) {
             await requestSync();
@@ -194,6 +231,9 @@ export function createStudentPeerSession({
 
     handleTransfer(transfer) {
       if (closed || transfer?.kind !== 'snapshot') return Promise.resolve();
+      // Rolling compatibility: an older teacher may send a snapshot without the
+      // explicit head handshake. Receiving a valid transfer proves the peer is ready.
+      confirmInitialHandshake();
       return enqueue(async () => {
         const parsed = JSON.parse(String(transfer?.text ?? ''));
         const revision = safeRevision(parsed?.revision);
@@ -302,6 +342,7 @@ export function createStudentPeerSession({
     close(error = new Error('Student peer session is closed')) {
       if (closed) return;
       closed = true;
+      clearInitialProbe();
       const reason = error instanceof Error
         ? error
         : new Error(String(error ?? 'Student peer session is closed'));

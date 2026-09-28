@@ -9,7 +9,7 @@ function makeTransport() {
   };
 }
 
-test('starts by requesting sync and waits for an authoritative head', async () => {
+test('starts with a head handshake and waits for an authoritative head', async () => {
   const transport = makeTransport();
   const session = createStudentPeerSession({
     transport,
@@ -20,7 +20,7 @@ test('starts by requesting sync and waits for an authoritative head', async () =
   let settled = false;
   const starting = session.start().then(() => { settled = true; });
   await Promise.resolve();
-  assert.deepEqual(transport.sent, [{ type: 'sync-request', payload: { revision: 12 } }]);
+  assert.deepEqual(transport.sent, [{ type: 'head-request', payload: {} }]);
   assert.equal(settled, false);
   await session.handleMessage({ type: 'head', payload: { revision: 12 } });
   await starting;
@@ -267,4 +267,57 @@ test('student session sends and receives reliable board-control messages', async
     session.sendBoardControl('draw', { points: [] }),
     /board control event/i,
   );
+});
+
+
+test('clean replica requests snapshot only after teacher answers the head handshake', async () => {
+  const transport = makeTransport();
+  let revision = 0;
+  const session = createStudentPeerSession({
+    transport,
+    getRevision: () => revision,
+    applyCommit: async () => {},
+    installSnapshot: async (_snapshot, nextRevision) => { revision = nextRevision; },
+  });
+  const starting = session.start();
+  await Promise.resolve();
+  assert.deepEqual(transport.sent, [{ type: 'head-request', payload: {} }]);
+
+  await session.handleMessage({ type: 'head', payload: { revision: 0 } });
+  assert.deepEqual(transport.sent, [
+    { type: 'head-request', payload: {} },
+    { type: 'snapshot-request', payload: {} },
+  ]);
+
+  await session.handleTransfer({
+    kind: 'snapshot',
+    text: JSON.stringify({ snapshot: { version: 2, canvas: { objects: [] } }, revision: 0 }),
+  });
+  await starting;
+  session.close();
+});
+
+test('lost first head probe is retried without duplicating snapshot requests', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const transport = makeTransport();
+  const session = createStudentPeerSession({
+    transport,
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+  });
+  const starting = session.start().catch(() => {});
+  await Promise.resolve();
+  assert.equal(transport.sent.filter((item) => item.type === 'head-request').length, 1);
+
+  t.mock.timers.tick(150);
+  await Promise.resolve();
+  assert.equal(transport.sent.filter((item) => item.type === 'head-request').length, 2);
+
+  await session.handleMessage({ type: 'head', payload: { revision: 0 } });
+  await session.handleMessage({ type: 'head', payload: { revision: 0 } });
+  assert.equal(transport.sent.filter((item) => item.type === 'snapshot-request').length, 1);
+
+  session.close();
+  await starting;
 });
