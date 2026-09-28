@@ -248,18 +248,30 @@ export function createStudentPeerNetwork({
         if (closed || generation !== connectionGeneration) return;
         const normalized = String(state ?? 'unknown');
         try { onState(normalized); } catch { /* observer errors are ignored */ }
+
         if (normalized === 'disconnected') {
           if (!disconnectTimer) {
             disconnectTimer = setTimeout(() => {
               disconnectTimer = null;
               if (closed || generation !== connectionGeneration) return;
+              if (!transport && !roleSwitched) {
+                switchToResponder().catch(failConnection);
+                return;
+              }
               closeResources(new Error('Student peer connection remained disconnected'), { reportState: 'failed' });
             }, positiveTimeout(disconnectGraceMs, DISCONNECT_GRACE_MS));
             disconnectTimer?.unref?.();
           }
           return;
         }
+
         clearDisconnectTimer();
+
+        if (normalized === 'failed' && !transport && !roleSwitched) {
+          switchToResponder().catch(failConnection);
+          return;
+        }
+
         if (TERMINAL_STATES.has(normalized)) {
           closeResources(new Error('Student peer connection ' + normalized));
         }

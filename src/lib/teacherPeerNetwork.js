@@ -38,14 +38,14 @@ export function createTeacherPeerNetwork({
     entry.disconnectTimer = null;
   };
 
-  const closePeer = (peerId, expectedEntry = null) => {
+  const closePeer = (peerId, expectedEntry = null, { retireOffer = true } = {}) => {
     const id = String(peerId ?? '');
     const entry = peers.get(id);
     if (!entry) return false;
     if (expectedEntry && entry !== expectedEntry) return false;
     peers.delete(id);
     clearDisconnectTimer(entry);
-    if (entry.offerFingerprint) {
+    if (retireOffer && entry.offerFingerprint) {
       if (retiredOffers.size >= 128) retiredOffers.delete(retiredOffers.values().next().value);
       retiredOffers.add(offerKey(id, entry.offerFingerprint));
     }
@@ -159,14 +159,16 @@ export function createTeacherPeerNetwork({
               entry.disconnectTimer = null;
               if (peers.get(id) !== entry) return;
               try { onPeerState(id, 'failed'); } catch { /* observer errors are ignored */ }
-              closePeer(id, entry);
+              closePeer(id, entry, { retireOffer: Boolean(entry.transport) });
             }, Math.max(1, Number(disconnectGraceMs) || DISCONNECT_GRACE_MS));
             entry.disconnectTimer?.unref?.();
           }
           return;
         }
         clearDisconnectTimer(entry);
-        if (TERMINAL_STATES.has(normalized)) closePeer(id, entry);
+        if (TERMINAL_STATES.has(normalized)) {
+          closePeer(id, entry, { retireOffer: Boolean(entry.transport) });
+        }
       },
       onError,
     });

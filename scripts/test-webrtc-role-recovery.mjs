@@ -136,3 +136,122 @@ test('teacher turns a role-switch request into a new initiator peer', async () =
   assert.equal(created[1].replayed, 1);
   network.close();
 });
+
+
+test('pre-connect failed immediately reverses roles instead of killing the student runtime', async () => {
+  const created = [];
+  const sent = [];
+  const network = createStudentPeerNetwork({
+    teacherId: 'teacher-fast-fail',
+    signaling: { send: async (peerId, signal) => sent.push({ peerId, signal }) },
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    createConnection: (options) => {
+      const record = { options, closed: 0, started: 0 };
+      record.connection = {
+        async start() { record.started += 1; },
+        async handleSignal() {},
+        close() { record.closed += 1; },
+      };
+      created.push(record);
+      return record.connection;
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+    createSession: () => ({ async start() {}, close() {} }),
+  });
+
+  const starting = network.start();
+  await flush();
+  created[0].options.onConnectionState('failed');
+  await flush();
+
+  assert.equal(created[0].closed, 1);
+  assert.equal(created[1].options.initiator, false);
+  assert.deepEqual(sent.at(-1), {
+    peerId: 'teacher-fast-fail',
+    signal: { type: 'role-switch' },
+  });
+
+  created[1].options.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  assert.equal(network.isReady(), true);
+  network.close();
+});
+
+test('pre-connect disconnected reverses roles after the 3.5s grace period', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const created = [];
+  const sent = [];
+  const network = createStudentPeerNetwork({
+    teacherId: 'teacher-disconnect-bootstrap',
+    signaling: { send: async (peerId, signal) => sent.push({ peerId, signal }) },
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    createConnection: (options) => {
+      const record = { options, closed: 0 };
+      record.connection = {
+        async start() {},
+        async handleSignal() {},
+        close() { record.closed += 1; },
+      };
+      created.push(record);
+      return record.connection;
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+    createSession: () => ({ async start() {}, close() {} }),
+  });
+
+  const starting = network.start();
+  await flush();
+  created[0].options.onConnectionState('disconnected');
+  t.mock.timers.tick(3499);
+  await flush();
+  assert.equal(created.length, 1);
+  assert.equal(sent.some(({ signal }) => signal.type === 'role-switch'), false);
+
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(created[0].closed, 1);
+  assert.equal(created[1].options.initiator, false);
+  assert.equal(sent.some(({ signal }) => signal.type === 'role-switch'), true);
+
+  created[1].options.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  assert.equal(network.isReady(), true);
+  network.close();
+});
+
+test('teacher pre-connect failure does not retire the offer and accepts its retry', async () => {
+  const created = [];
+  let currentOptions = null;
+  const network = createTeacherPeerNetwork({
+    signaling: { send: async () => {} },
+    peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
+    createConnection: (options) => {
+      currentOptions = options;
+      const record = { options, closed: 0, handled: 0 };
+      record.connection = {
+        async start() {},
+        async handleSignal() { record.handled += 1; },
+        close() { record.closed += 1; },
+      };
+      created.push(record);
+      return record.connection;
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+  });
+
+  const offer = { sourceId: 'student-retry', signal: { type: 'offer', generation: 1 } };
+  await network.handleSignal(offer);
+  assert.equal(created.length, 1);
+  currentOptions.onConnectionState('failed');
+  assert.equal(network.getPeerCount(), 0);
+
+  await network.handleSignal(offer);
+  assert.equal(created.length, 2, 'same offer should be allowed to recreate a pre-connect failed responder');
+  assert.equal(created[1].handled, 1);
+  assert.equal(network.getPeerCount(), 1);
+  network.close();
+});
