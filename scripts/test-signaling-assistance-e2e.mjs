@@ -42,12 +42,15 @@ async function instrument(context, mode, owner) {
       if (signal.type === 'answer' && path === 'owner-initiated' && !owner) answerDescriptions += 1;
       if (signal.type === 'ice' && path === 'owner-initiated') ownerPathIce += 1;
 
+      const bootstrapSignal = signal.type === 'offer' || signal.type === 'answer' || signal.type === 'ice';
       const drop = (mode === 'offer' && owner && signal.type === 'offer'
           && path === 'owner-initiated' && offerDescriptions === 1)
         || (mode === 'answer' && !owner && signal.type === 'answer'
           && path === 'owner-initiated' && answerDescriptions === 1)
         || (mode === 'ice' && signal.type === 'ice'
-          && path === 'owner-initiated' && ownerPathIce <= 2);
+          && path === 'owner-initiated' && ownerPathIce <= 2)
+        || (mode === 'owner-path-dead' && path === 'owner-initiated' && bootstrapSignal)
+        || (mode === 'student-path-dead' && path === 'student-initiated' && bootstrapSignal);
 
       window.__signalEvidence.signals.push({
         type: signal.type,
@@ -117,7 +120,7 @@ async function equal(owner, student, count) {
   });
 }
 try {
-  for (const mode of ['clean', 'offer', 'answer', 'ice']) {
+  for (const mode of ['clean', 'offer', 'answer', 'ice', 'owner-path-dead', 'student-path-dead']) {
     const contexts = await Promise.all([0, 1].map(() => browser.newContext({ viewport: { width: 1100, height: 800 } })));
     const pages = await Promise.all(contexts.map(c => c.newPage()));
     const [owner, student] = pages; const errors = [];
@@ -170,6 +173,17 @@ try {
         const answers = allSignals.filter((signal) => signal.type === 'answer'
           && signal.path === 'owner-initiated');
         assert.ok(answers.length >= 2, 'lost preferred-path answer must be retried');
+      }
+      const selectedPaths = allSignals
+        .filter((signal) => signal.type === 'path-select')
+        .map((signal) => signal.path);
+      if (mode === 'owner-path-dead') {
+        assert.ok(selectedPaths.includes('student-initiated'),
+          'a completely dead owner path must fall back to the student-initiated path');
+      }
+      if (mode === 'student-path-dead') {
+        assert.ok(selectedPaths.includes('owner-initiated'),
+          'a completely dead student path must keep the owner-initiated path');
       }
       assert.deepEqual(errors, []);
       results.push({ mode, engine, readyMs, owner: after[0], student: after[1], passed: true });
