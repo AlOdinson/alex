@@ -18,6 +18,17 @@ async function wait(label, check, ms = 60000) {
 }
 async function instrument(context) {
   await context.addInitScript((relay) => {
+    window.__runtimeEvidence = [];
+    window.addEventListener('alex-board-runtime-state', (event) => {
+      const detail = event?.detail && typeof event.detail === 'object' ? event.detail : {};
+      window.__runtimeEvidence.push({
+        state: String(detail.state ?? ''),
+        permission: String(detail.permission ?? ''),
+        teacherId: String(detail.teacherId ?? ''),
+        error: detail.error == null ? null : String(detail.error),
+        at: performance.now(),
+      });
+    });
     if (relay) {
       const Peer = window.RTCPeerConnection;
       window.RTCPeerConnection = class extends Peer {
@@ -168,7 +179,7 @@ try {
     } catch(error) {
       for (const [name, page] of [['owner',owner],['student',student]]) if (!page.isClosed()) {
         await page.screenshot({ path: `${out}/${engine}-${touch}-${name}-failure.png` }).catch(()=>{});
-        await writeFile(`${out}/${engine}-${touch}-${name}-failure.json`, JSON.stringify({error:String(error),errors,state:await state(page).catch(()=>null), details:await page.evaluate(()=>({data:{...document.documentElement.dataset},text:document.body.innerText})).catch(()=>null)},null,2));
+        await writeFile(`${out}/${engine}-${touch}-${name}-failure.json`, JSON.stringify({error:String(error),errors,state:await state(page).catch(()=>null), details:await page.evaluate(()=>({data:{...document.documentElement.dataset},text:document.body.innerText,runtimeEvidence:Array.isArray(window.__runtimeEvidence)?window.__runtimeEvidence:[]})).catch(()=>null)},null,2));
       }
       throw error;
     } finally { stage = 'context-teardown'; await Promise.allSettled([ownerContext.close(),studentContext.close()]); }
