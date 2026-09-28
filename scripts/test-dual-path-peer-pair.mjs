@@ -76,8 +76,9 @@ test('student switches to its initiator fallback when owner requests it', async 
   const { pair, created } = harness('student');
   await pair.start();
   await pair.handleSignal({ type: 'path-switch', path: STUDENT_INITIATED_PATH });
-  assert.equal(created.length, 1);
-  assert.equal(created[0].options.initiator, true);
+  assert.equal(created.length, 2);
+  assert.equal(created[0].closes, 1);
+  assert.equal(created[1].options.initiator, true);
   pair.close();
 });
 

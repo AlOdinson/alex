@@ -67,7 +67,7 @@ test('late join: an open channel with installed snapshot completes despite a los
   t.mock.timers.tick(1000);
   await flush();
   assert.equal(f.network.isReady(), true, 'completed startup must clear all watchdogs');
-  assert.equal(f.closed(), 0);
+  assert.equal(f.closed(), 1, 'switching to fallback retires the silent primary responder');
 });
 
 test('late join: local signaling failure waits for the alternate path before timing out', async (t) => {
@@ -82,7 +82,7 @@ test('late join: local signaling failure waits for the alternate path before tim
   assert.equal(f.state(), 'rejected');
   assert.equal(f.failure(), failure);
   assert.ok(f.errors.includes(failure));
-  assert.equal(f.closed(), 1);
+  assert.equal(f.closed(), 2, 'primary and failed fallback are both retired');
 });
 
 test('late join: late signaling rejection cannot tear down an already synchronized channel', async (t) => {
@@ -97,6 +97,6 @@ test('late join: late signaling rejection cannot tear down an already synchroniz
   await flush();
   assert.equal(f.state(), 'fulfilled');
   assert.equal(f.network.isReady(), true);
-  assert.equal(f.closed(), 0);
+  assert.equal(f.closed(), 1, 'only the retired primary responder should be closed');
   assert.ok(f.errors.includes(failure), 'the late error remains observable');
 });
