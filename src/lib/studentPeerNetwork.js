@@ -1,14 +1,12 @@
+import { createDualPathPeerPair } from './dualPathPeerPair.js';
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { createPeerDataChannelTransport } from './peerDataChannel.js';
 import { createStudentPeerSession } from './studentPeerSession.js';
 import { createPeerLiveChannel } from './peerLiveChannel.js';
 
-const TERMINAL_STATES = new Set(['failed', 'closed']);
 const CONNECT_TIMEOUT_MS = 10_000;
 const INITIAL_SYNC_IDLE_TIMEOUT_MS = 90_000;
 const DISCONNECT_GRACE_MS = 3_500;
-const ROLE_SWITCH_DELAY_MS = 5_000;
-const ROLE_SWITCH_REPLAY_DELAY_MS = 2_500;
 
 function positiveTimeout(value, fallback) {
   const milliseconds = Number(value);
@@ -34,8 +32,7 @@ export function createStudentPeerNetwork({
   initialSyncTimeoutMs = INITIAL_SYNC_IDLE_TIMEOUT_MS,
   requestTimeoutMs = 30_000,
   disconnectGraceMs = DISCONNECT_GRACE_MS,
-  roleSwitchDelayMs = ROLE_SWITCH_DELAY_MS,
-  roleSwitchReplayDelayMs = ROLE_SWITCH_REPLAY_DELAY_MS,
+  createPair = createDualPathPeerPair,
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
   createLiveTransport = createPeerLiveChannel,
@@ -54,56 +51,21 @@ export function createStudentPeerNetwork({
   let liveTransport = null;
   let liveState = 'idle';
   let session = null;
-  let connection = null;
-  let connectionGeneration = 0;
-  let currentInitiator = true;
-  let roleSwitched = false;
+  let selectedPath = '';
   let closed = false;
   let ready = false;
   let readinessSettled = false;
   let channelStart = Promise.resolve();
   let startPromise = null;
-  let connectTimer = null;
   let initialSyncTimer = null;
-  let disconnectTimer = null;
-  let roleSwitchTimer = null;
-  let roleSwitchReplayTimer = null;
   let resolveReady;
   let rejectReady;
+
   const readiness = new Promise((resolve, reject) => {
     resolveReady = resolve;
     rejectReady = reject;
   });
   readiness.catch(() => undefined);
-
-  const clearDisconnectTimer = () => {
-    clearTimeout(disconnectTimer);
-    disconnectTimer = null;
-  };
-
-  const clearRoleSwitchTimers = () => {
-    clearTimeout(roleSwitchTimer);
-    clearTimeout(roleSwitchReplayTimer);
-    roleSwitchTimer = null;
-    roleSwitchReplayTimer = null;
-  };
-
-  const clearStartupTimers = () => {
-    clearTimeout(connectTimer);
-    clearTimeout(initialSyncTimer);
-    connectTimer = null;
-    initialSyncTimer = null;
-    clearDisconnectTimer();
-    clearRoleSwitchTimers();
-  };
-
-  const settleReady = () => {
-    if (readinessSettled || closed) return;
-    clearStartupTimers();
-    readinessSettled = true;
-    ready = true;
-    resolveReady();
-  };
 
   const rejectReadiness = (error) => {
     if (readinessSettled) return;
@@ -111,50 +73,26 @@ export function createStudentPeerNetwork({
     rejectReady(error instanceof Error ? error : new Error(String(error)));
   };
 
-  const closeResources = (reason, { reportState = null } = {}) => {
-    if (closed) return false;
-    closed = true;
-    ready = false;
-    clearStartupTimers();
-    const error = reason instanceof Error ? reason : new Error(String(reason ?? 'Student peer network closed'));
-    rejectReadiness(error);
-    try { session?.close?.(error); } catch (caught) { onError(caught); }
-    try { liveTransport?.close?.(); } catch (caught) { onError(caught); }
-    liveTransport = null;
-    liveState = 'closed';
-    try { transport?.close?.(); } catch (caught) { onError(caught); }
-    transport = null;
-    session = null;
-    const previousConnection = connection;
-    connection = null;
-    connectionGeneration += 1;
-    try { previousConnection?.close?.(); } catch (caught) { onError(caught); }
-    if (reportState) {
-      try { onState(reportState); } catch { /* observer errors are ignored */ }
-    }
-    return true;
-  };
-
-  const failConnection = (error) => {
-    if (closed) return;
-    try { onError(error); } catch { /* observer errors are ignored */ }
-    closeResources(error, { reportState: 'failed' });
-  };
-
-  const armConnectTimer = () => {
-    clearTimeout(connectTimer);
-    connectTimer = setTimeout(() => {
-      closeResources(new Error('Teacher peer connection timed out'), { reportState: 'failed' });
-    }, positiveTimeout(connectTimeoutMs, CONNECT_TIMEOUT_MS));
-    connectTimer?.unref?.();
+  const clearInitialSyncTimer = () => {
+    clearTimeout(initialSyncTimer);
+    initialSyncTimer = null;
   };
 
   const recordInitialSyncProgress = () => {
     if (closed || readinessSettled) return;
-    clearTimeout(initialSyncTimer);
+    clearInitialSyncTimer();
     initialSyncTimer = setTimeout(() => {
       closeResources(new Error('Initial board snapshot timed out'), { reportState: 'failed' });
     }, positiveTimeout(initialSyncTimeoutMs, INITIAL_SYNC_IDLE_TIMEOUT_MS));
+    initialSyncTimer?.unref?.();
+  };
+
+  const settleReady = () => {
+    if (readinessSettled || closed) return;
+    clearInitialSyncTimer();
+    readinessSettled = true;
+    ready = true;
+    resolveReady();
   };
 
   const awaitAcknowledgement = (task) => {
@@ -169,190 +107,123 @@ export function createStudentPeerNetwork({
     return Promise.race([task, timeout]).finally(() => clearTimeout(timer));
   };
 
-  const attachChannel = (channel, generation) => {
-    if (generation !== connectionGeneration || closed || transport) {
-      if (generation !== connectionGeneration || closed) {
-        try { channel?.close?.(); } catch { /* stale channel */ }
+  const pair = createPair({
+    localRole: 'student',
+    peerId: targetTeacherId,
+    signaling,
+    rtcConfig,
+    enableLiveChannel: Boolean(liveEnabled),
+    connectTimeoutMs,
+    disconnectGraceMs,
+    createConnection,
+    onSelectedChannel: (channel, path) => {
+      if (closed || transport) {
+        if (closed) {
+          try { channel?.close?.(); } catch { /* stale */ }
+        }
+        return;
       }
-      return;
-    }
-    clearTimeout(connectTimer);
-    connectTimer = null;
-    clearRoleSwitchTimers();
-    clearDisconnectTimer();
-    recordInitialSyncProgress();
-    let nextSession;
-    transport = createTransport({
-      channel,
-      onMessage: (message) => Promise.resolve().then(() => nextSession?.handleMessage?.(message)).catch(failConnection),
-      onTransfer: (transfer) => Promise.resolve().then(() => nextSession?.handleTransfer?.(transfer)).catch(failConnection),
-      onProgress: recordInitialSyncProgress,
-      onClose: () => {
-        if (closed) return;
-        const error = new Error('Teacher peer data channel closed');
-        closeResources(error, { reportState: 'failed' });
-      },
-      onError: failConnection,
-    });
-    nextSession = createSession({
-      onVerificationMode,
-      transport,
-      getRevision,
-      applyCommit,
-      installSnapshot,
-      onAck,
-      onError,
-      onBoardControl,
-    });
-    session = nextSession;
-    channelStart = Promise.resolve(session.start());
-    channelStart.then(settleReady, failConnection);
-  };
-
-  const attachLiveChannel = (channel, generation) => {
-    if (generation !== connectionGeneration || !liveEnabled || closed) {
-      try { channel?.close?.(); } catch { /* stale or legacy live channel */ }
-      return;
-    }
-    if (liveTransport) {
-      try { channel?.close?.(); } catch { /* duplicate live channel */ }
-      return;
-    }
-    liveTransport = createLiveTransport({
-      channel,
-      boardId: String(boardId ?? ''),
-      localClientId: String(clientId ?? ''),
-      remoteClientId: targetTeacherId,
-      getRevision,
-      onEvent: (type, payload, envelope) => {
-        if (closed) return;
-        try { onLiveEvent(type, payload, envelope); } catch (error) { onError(error); }
-      },
-      onState: (state) => {
-        if (closed) return;
-        liveState = String(state ?? 'unknown');
-        try { onLiveState(liveState); } catch (error) { onError(error); }
-      },
-      onError: (error) => {
-        if (closed) return;
-        try { onError(error); } catch { /* observer errors are ignored */ }
-      },
-    });
-    if (liveState === 'idle') liveState = channel?.readyState === 'open' ? 'open' : 'connecting';
-  };
-
-  const createActiveConnection = (initiator) => {
-    const generation = ++connectionGeneration;
-    currentInitiator = Boolean(initiator);
-    const nextConnection = createConnection({
-      initiator: currentInitiator,
-      enableLiveChannel: Boolean(liveEnabled),
-      assistSignaling: true,
-      rtcConfig,
-      sendSignal: (signal) => signaling.send(targetTeacherId, signal),
-      onChannel: (channel) => attachChannel(channel, generation),
-      onLiveChannel: (channel) => attachLiveChannel(channel, generation),
-      onConnectionState: (state) => {
-        if (closed || generation !== connectionGeneration) return;
-        const normalized = String(state ?? 'unknown');
-        try { onState(normalized); } catch { /* observer errors are ignored */ }
-
-        if (normalized === 'disconnected') {
-          if (!disconnectTimer) {
-            disconnectTimer = setTimeout(() => {
-              disconnectTimer = null;
-              if (closed || generation !== connectionGeneration) return;
-              if (!transport && !roleSwitched) {
-                switchToResponder().catch(failConnection);
-                return;
-              }
-              closeResources(new Error('Student peer connection remained disconnected'), { reportState: 'failed' });
-            }, positiveTimeout(disconnectGraceMs, DISCONNECT_GRACE_MS));
-            disconnectTimer?.unref?.();
+      selectedPath = path;
+      recordInitialSyncProgress();
+      let nextSession;
+      transport = createTransport({
+        channel,
+        onMessage: (message) => Promise.resolve().then(() => nextSession?.handleMessage?.(message)).catch(failConnection),
+        onTransfer: (transfer) => Promise.resolve().then(() => nextSession?.handleTransfer?.(transfer)).catch(failConnection),
+        onProgress: recordInitialSyncProgress,
+        onClose: () => {
+          if (!closed) closeResources(new Error('Teacher peer data channel closed'), { reportState: 'failed' });
+        },
+        onError: failConnection,
+      });
+      nextSession = createSession({
+        onVerificationMode,
+        transport,
+        getRevision,
+        applyCommit,
+        installSnapshot,
+        onAck,
+        onError,
+        onBoardControl,
+      });
+      session = nextSession;
+      channelStart = Promise.resolve(session.start());
+      channelStart.then(settleReady, failConnection);
+    },
+    onSelectedLiveChannel: (channel) => {
+      if (!liveEnabled || closed) {
+        try { channel?.close?.(); } catch { /* unused */ }
+        return;
+      }
+      if (liveTransport) {
+        try { channel?.close?.(); } catch { /* duplicate */ }
+        return;
+      }
+      liveTransport = createLiveTransport({
+        channel,
+        boardId: String(boardId ?? ''),
+        localClientId: String(clientId ?? ''),
+        remoteClientId: targetTeacherId,
+        getRevision,
+        onEvent: (type, payload, envelope) => {
+          if (closed) return;
+          try { onLiveEvent(type, payload, envelope); } catch (error) { onError(error); }
+        },
+        onState: (state) => {
+          if (closed) return;
+          liveState = String(state ?? 'unknown');
+          try { onLiveState(liveState); } catch (error) { onError(error); }
+        },
+        onError: (error) => {
+          if (!closed) {
+            try { onError(error); } catch { /* observer */ }
           }
-          return;
-        }
-
-        clearDisconnectTimer();
-
-        if (normalized === 'failed' && !transport && !roleSwitched) {
-          switchToResponder().catch(failConnection);
-          return;
-        }
-
-        if (TERMINAL_STATES.has(normalized)) {
-          closeResources(new Error('Student peer connection ' + normalized));
-        }
-      },
-      onError,
-    });
-    connection = nextConnection;
-    return nextConnection;
-  };
-
-  const publishRoleSwitch = () => Promise.resolve(
-    signaling.send(targetTeacherId, { type: 'role-switch' }),
-  ).catch((error) => {
-    if (closed) return;
-    try { onError(error); } catch { /* observer errors are ignored */ }
+        },
+      });
+      liveState = channel?.readyState === 'open' ? 'open' : 'connecting';
+    },
+    onState: (state) => {
+      if (closed) return;
+      try { onState(state); } catch { /* observer */ }
+    },
+    onFatal: (error) => failConnection(error),
+    onError,
   });
 
-  const switchToResponder = async ({ notifyTeacher = true } = {}) => {
-    if (closed || transport || roleSwitched) return false;
-    roleSwitched = true;
-    clearRoleSwitchTimers();
-    clearDisconnectTimer();
-
-    const previousConnection = connection;
-    connection = null;
-    connectionGeneration += 1;
-    try { previousConnection?.close?.(); } catch (error) { onError(error); }
-
-    try { liveTransport?.close?.(); } catch (error) { onError(error); }
+  function closeResources(reason, { reportState = null } = {}) {
+    if (closed) return false;
+    closed = true;
+    ready = false;
+    clearInitialSyncTimer();
+    const error = reason instanceof Error ? reason : new Error(String(reason ?? 'Student peer network closed'));
+    rejectReadiness(error);
+    try { session?.close?.(error); } catch (caught) { onError(caught); }
+    try { liveTransport?.close?.(); } catch (caught) { onError(caught); }
     liveTransport = null;
-    liveState = 'idle';
-
-    const responder = createActiveConnection(false);
-    // The reverse orientation is a real second attempt. Give it the same complete
-    // startup window rather than only the time left on the first orientation.
-    armConnectTimer();
-    await responder.start();
-    if (closed || transport) return true;
-
-    if (notifyTeacher) {
-      void publishRoleSwitch();
-      roleSwitchReplayTimer = setTimeout(() => {
-        roleSwitchReplayTimer = null;
-        if (!closed && !transport) void publishRoleSwitch();
-      }, positiveTimeout(roleSwitchReplayDelayMs, ROLE_SWITCH_REPLAY_DELAY_MS));
-      roleSwitchReplayTimer?.unref?.();
+    liveState = 'closed';
+    try { transport?.close?.(); } catch (caught) { onError(caught); }
+    transport = null;
+    session = null;
+    try { pair?.close?.(); } catch (caught) { onError(caught); }
+    if (reportState) {
+      try { onState(reportState); } catch { /* observer */ }
     }
     return true;
-  };
+  }
 
-  createActiveConnection(true);
+  function failConnection(error) {
+    if (closed) return;
+    try { onError(error); } catch { /* observer */ }
+    closeResources(error, { reportState: 'failed' });
+  }
 
   return {
     start() {
       if (closed) return Promise.reject(new Error('Student peer network is closed'));
       if (startPromise) return startPromise;
-      if (!transport && !readinessSettled) {
-        armConnectTimer();
-        roleSwitchTimer = setTimeout(() => {
-          roleSwitchTimer = null;
-          if (closed || transport || roleSwitched) return;
-          switchToResponder().catch(failConnection);
-        }, positiveTimeout(roleSwitchDelayMs, ROLE_SWITCH_DELAY_MS));
-        roleSwitchTimer?.unref?.();
-      }
-      const initialConnection = connection;
       startPromise = (async () => {
         try {
-          Promise.resolve(initialConnection.start()).catch((error) => {
-            if (closed || initialConnection !== connection) return;
-            try { onError(error); } catch { /* observer errors are ignored */ }
-            if (!ready) closeResources(error, { reportState: 'failed' });
-          });
+          await pair.start();
           await readiness;
         } catch (error) {
           if (!closed) closeResources(error, { reportState: 'failed' });
@@ -365,12 +236,7 @@ export function createStudentPeerNetwork({
     async handleSignal(message) {
       if (closed) return false;
       if (String(message?.sourceId ?? '') !== targetTeacherId || !message?.signal) return false;
-      if (message.signal.type === 'role-switch') return false;
-      if (message.signal.type === 'offer' && currentInitiator && !transport) {
-        await switchToResponder({ notifyTeacher: false });
-      }
-      await connection?.handleSignal?.(message.signal);
-      return true;
+      return pair.handleSignal(message.signal);
     },
 
     async proposeAction(action) {
@@ -411,7 +277,12 @@ export function createStudentPeerNetwork({
 
     getLiveStats() { return liveTransport?.stats?.() ?? null; },
 
-    getVerificationMode() { return session?.getVerificationMode?.() ?? { version: 0, epoch: '' }; },
+    getSelectedPath() { return selectedPath; },
+
+    getVerificationMode() {
+      return session?.getVerificationMode?.() ?? { version: 0, epoch: '' };
+    },
+
     verifyObjects(request) {
       return session?.verifyObjects?.(request) ?? Promise.reject(new Error('Verification session is unavailable'));
     },

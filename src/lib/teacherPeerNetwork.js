@@ -1,10 +1,11 @@
-import { signalingNegotiationId } from './peerSignalingAssistance.js';
+import { createDualPathPeerPair } from './dualPathPeerPair.js';
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { createPeerDataChannelTransport } from './peerDataChannel.js';
 import { createPeerLiveChannel } from './peerLiveChannel.js';
 
-const TERMINAL_STATES = new Set(['failed', 'closed']);
+const CONNECT_TIMEOUT_MS = 10_000;
 const DISCONNECT_GRACE_MS = 3_500;
+const OWNER_PREFERENCE_GRACE_MS = 1_500;
 
 export function createTeacherPeerNetwork({
   boardId = '',
@@ -13,7 +14,10 @@ export function createTeacherPeerNetwork({
   signaling,
   peerHub,
   rtcConfig = {},
+  connectTimeoutMs = CONNECT_TIMEOUT_MS,
   disconnectGraceMs = DISCONNECT_GRACE_MS,
+  ownerPreferenceGraceMs = OWNER_PREFERENCE_GRACE_MS,
+  createPair = createDualPathPeerPair,
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
   createLiveTransport = createPeerLiveChannel,
@@ -28,50 +32,37 @@ export function createTeacherPeerNetwork({
   }
 
   const peers = new Map();
-  const retiredOffers = new Set();
-  const offerKey = (peerId, fingerprint) => JSON.stringify([peerId, fingerprint]);
   let closed = false;
 
-  const clearDisconnectTimer = (entry) => {
-    if (!entry?.disconnectTimer) return;
-    clearTimeout(entry.disconnectTimer);
-    entry.disconnectTimer = null;
-  };
-
-  const closePeer = (peerId, expectedEntry = null, { retireOffer = true } = {}) => {
-    const id = String(peerId ?? '');
+  const closePeer = (peerId, expectedEntry = null) => {
+    const id = String(peerId ?? '').trim();
     const entry = peers.get(id);
     if (!entry) return false;
     if (expectedEntry && entry !== expectedEntry) return false;
     peers.delete(id);
-    clearDisconnectTimer(entry);
-    if (retireOffer && entry.offerFingerprint) {
-      if (retiredOffers.size >= 128) retiredOffers.delete(retiredOffers.values().next().value);
-      retiredOffers.add(offerKey(id, entry.offerFingerprint));
-    }
+    entry.closed = true;
     try { entry.liveTransport?.close?.(); } catch (error) { onError(error); }
     try { entry.transport?.close?.(); } catch (error) { onError(error); }
     try { entry.unregister?.(); } catch (error) { onError(error); }
     try { peerHub.removePeer(id); } catch (error) { onError(error); }
-    try { entry.connection?.close?.(); } catch (error) { onError(error); }
+    try { entry.pair?.close?.(); } catch (error) { onError(error); }
     return true;
   };
 
   const failPeer = (peerId, entry, error) => {
     if (peers.get(peerId) !== entry) return;
-    try { onError(error); } catch { /* observer errors are ignored */ }
-    try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
+    try { onError(error); } catch { /* observer */ }
+    try { onPeerState(peerId, 'failed'); } catch { /* observer */ }
     closePeer(peerId, entry);
   };
 
-  const attachTransport = (peerId, channel, expectedEntry) => {
-    const entry = peers.get(peerId);
-    if (!entry || entry !== expectedEntry) {
-      try { channel?.close?.(); } catch { /* stale channel is already retired */ }
+  const attachTransport = (peerId, entry, channel) => {
+    if (peers.get(peerId) !== entry || entry.closed) {
+      try { channel?.close?.(); } catch { /* stale */ }
       return null;
     }
     if (entry.transport) return entry.transport;
-    clearDisconnectTimer(entry);
+
     let transport;
     transport = createTransport({
       channel,
@@ -81,9 +72,9 @@ export function createTeacherPeerNetwork({
       }).catch((error) => failPeer(peerId, entry, error)),
       onTransfer: () => {},
       onClose: () => {
-        if (peers.get(peerId) !== entry || entry.transport !== transport) return;
-        try { onPeerState(peerId, 'failed'); } catch { /* observer errors are ignored */ }
-        closePeer(peerId, entry);
+        if (peers.get(peerId) === entry && entry.transport === transport) {
+          failPeer(peerId, entry, new Error('Teacher peer data channel closed'));
+        }
       },
       onError: (error) => failPeer(peerId, entry, error),
     });
@@ -92,13 +83,13 @@ export function createTeacherPeerNetwork({
     return transport;
   };
 
-  const attachLiveTransport = (peerId, channel, expectedEntry) => {
-    const entry = peers.get(peerId);
-    if (!entry || entry !== expectedEntry) {
-      try { channel?.close?.(); } catch { /* stale channel is already retired */ }
+  const attachLiveTransport = (peerId, entry, channel) => {
+    if (peers.get(peerId) !== entry || entry.closed) {
+      try { channel?.close?.(); } catch { /* stale */ }
       return null;
     }
     if (entry.liveTransport) return entry.liveTransport;
+
     const liveTransport = createLiveTransport({
       channel,
       boardId: String(boardId ?? ''),
@@ -115,127 +106,80 @@ export function createTeacherPeerNetwork({
         try { onLiveState(peerId, entry.liveState); } catch (error) { onError(error); }
       },
       onError: (error) => {
-        if (peers.get(peerId) !== entry) return;
-        try { onError(error); } catch { /* observer errors are ignored */ }
+        if (peers.get(peerId) === entry) {
+          try { onError(error); } catch { /* observer */ }
+        }
       },
     });
     entry.liveTransport = liveTransport;
-    if (entry.liveState === 'idle') entry.liveState = channel?.readyState === 'open' ? 'open' : 'connecting';
+    entry.liveState = channel?.readyState === 'open' ? 'open' : 'connecting';
     return liveTransport;
   };
 
-  const ensurePeer = (peerId, { initiator = false } = {}) => {
+  const ensurePeer = (peerId) => {
     const id = String(peerId ?? '').trim();
     if (!id) throw new Error('peerId is required');
     const existing = peers.get(id);
     if (existing) return existing;
 
     const entry = {
-      connection: null,
+      pair: null,
       transport: null,
       liveTransport: null,
       liveState: 'idle',
       unregister: null,
-      offerFingerprint: null,
-      negotiationId: '',
-      initiator: Boolean(initiator),
-      disconnectTimer: null,
+      selectedPath: '',
+      closed: false,
     };
-    const connection = createConnection({
-      initiator: entry.initiator,
-      enableLiveChannel: entry.initiator,
-      assistSignaling: true,
+
+    const pair = createPair({
+      localRole: 'owner',
+      peerId: id,
+      signaling,
       rtcConfig,
-      sendSignal: (signal) => signaling.send(id, signal),
-      onChannel: (channel) => attachTransport(id, channel, entry),
-      onLiveChannel: (channel) => attachLiveTransport(id, channel, entry),
-      onConnectionState: (state) => {
+      enableLiveChannel: true,
+      connectTimeoutMs,
+      disconnectGraceMs,
+      ownerPreferenceGraceMs,
+      createConnection,
+      onSelectedChannel: (channel, path) => {
         if (peers.get(id) !== entry) return;
-        const normalized = String(state ?? 'unknown');
-        try { onPeerState(id, normalized); } catch { /* observer errors are ignored */ }
-        if (normalized === 'disconnected') {
-          if (!entry.disconnectTimer) {
-            entry.disconnectTimer = setTimeout(() => {
-              entry.disconnectTimer = null;
-              if (peers.get(id) !== entry) return;
-              try { onPeerState(id, 'failed'); } catch { /* observer errors are ignored */ }
-              closePeer(id, entry, { retireOffer: Boolean(entry.transport) });
-            }, Math.max(1, Number(disconnectGraceMs) || DISCONNECT_GRACE_MS));
-            entry.disconnectTimer?.unref?.();
-          }
-          return;
-        }
-        clearDisconnectTimer(entry);
-        if (TERMINAL_STATES.has(normalized)) {
-          closePeer(id, entry, { retireOffer: Boolean(entry.transport) });
-        }
+        entry.selectedPath = path;
+        attachTransport(id, entry, channel);
       },
+      onSelectedLiveChannel: (channel) => attachLiveTransport(id, entry, channel),
+      onState: (state) => {
+        if (peers.get(id) !== entry) return;
+        try { onPeerState(id, state); } catch { /* observer */ }
+      },
+      onFatal: (error) => failPeer(id, entry, error),
       onError,
     });
-    entry.connection = connection;
+    entry.pair = pair;
     peers.set(id, entry);
-    Promise.resolve(connection.start?.()).catch((error) => failPeer(id, entry, error));
     return entry;
   };
 
   return {
+    updateParticipants(peerIds = []) {
+      if (closed) return 0;
+      const ids = [...new Set((Array.isArray(peerIds) ? peerIds : [])
+        .map((value) => String(value ?? '').trim())
+        .filter((value) => value && value !== String(clientId ?? '').trim()))];
+      for (const id of ids) {
+        const entry = ensurePeer(id);
+        Promise.resolve(entry.pair.start()).catch((error) => failPeer(id, entry, error));
+      }
+      return ids.length;
+    },
+
     async handleSignal(message) {
       if (closed) return false;
       const peerId = String(message?.sourceId ?? '').trim();
       const signal = message?.signal;
       if (!peerId || !signal) return false;
-
-      const previous = peers.get(peerId);
-      if (signal.type === 'role-switch') {
-        if (previous?.initiator) {
-          previous.connection.resendSignaling?.();
-          return true;
-        }
-        if (previous) closePeer(peerId, previous);
-        ensurePeer(peerId, { initiator: true });
-        return true;
-      }
-
-      if (previous?.initiator) {
-        if (signal.type === 'offer') {
-          previous.connection.resendSignaling?.();
-          return true;
-        }
-        try {
-          await previous.connection.handleSignal(signal);
-        } catch (error) {
-          failPeer(peerId, previous, error);
-          throw error;
-        }
-        return true;
-      }
-
-      const fingerprint = signal.type === 'offer' ? JSON.stringify(signal) : null;
-      const negotiationId = signalingNegotiationId(signal);
-      if (fingerprint && retiredOffers.has(offerKey(peerId, fingerprint))) return false;
-      if (!fingerprint && negotiationId && previous?.negotiationId
-        && negotiationId !== previous.negotiationId) return false;
-
-      if (fingerprint && previous && (
-        (previous.offerFingerprint && previous.offerFingerprint !== fingerprint)
-        || (previous.negotiationId && negotiationId && previous.negotiationId !== negotiationId)
-      )) {
-        closePeer(peerId, previous);
-      }
-      const entry = ensurePeer(peerId, { initiator: false });
-      if (fingerprint && entry.offerFingerprint === fingerprint) {
-        entry.connection.resendSignaling?.();
-        return true;
-      }
-      if (negotiationId && !entry.negotiationId) entry.negotiationId = negotiationId;
-      if (fingerprint) entry.offerFingerprint = fingerprint;
-      try {
-        await entry.connection.handleSignal(signal);
-      } catch (error) {
-        failPeer(peerId, entry, error);
-        throw error;
-      }
-      return true;
+      const entry = ensurePeer(peerId);
+      return entry.pair.handleSignal(signal);
     },
 
     getPeerCount() {
@@ -251,11 +195,12 @@ export function createTeacherPeerNetwork({
     broadcastLive(type, payload, options = {}) {
       const results = [];
       for (const [peerId, entry] of peers.entries()) {
-        if (!entry?.liveTransport?.send) {
-          results.push({ peerId, result: 'unavailable' });
-          continue;
-        }
-        results.push({ peerId, result: entry.liveTransport.send(type, payload, options) });
+        results.push({
+          peerId,
+          result: entry?.liveTransport?.send
+            ? entry.liveTransport.send(type, payload, options)
+            : 'unavailable',
+        });
       }
       return results;
     },
@@ -268,13 +213,16 @@ export function createTeacherPeerNetwork({
       return peers.get(String(peerId ?? '').trim())?.liveTransport?.stats?.() ?? null;
     },
 
+    getSelectedPath(peerId) {
+      return peers.get(String(peerId ?? '').trim())?.selectedPath ?? '';
+    },
+
     closePeer,
 
     close() {
       if (closed) return;
       closed = true;
-      [...peers.keys()].forEach((peerId) => closePeer(peerId));
-      retiredOffers.clear();
+      for (const peerId of [...peers.keys()]) closePeer(peerId);
     },
   };
 }
