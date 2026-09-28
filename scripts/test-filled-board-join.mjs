@@ -176,7 +176,7 @@ test('silent WebRTC startup has a deadline even when signaling never settles', a
   await turn();
   assert.match(failure?.message ?? '', /timed out/i);
   assert.equal(network.isReady(), false);
-  assert.equal(closes, 2, 'sequential timeout retires both primary and fallback peers');
+  assert.equal(closes, 1, 'student must not create fallback without an owner path-switch');
   assert.equal(states.at(-1), 'failed');
 });
 
