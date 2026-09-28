@@ -179,7 +179,7 @@ test('a slow answer publish receipt does not block incoming ICE on the responder
   assert.equal(native.added.length, 1);
 });
 
-test('Ably publication alone never declares editing ready; role reversal precedes the 10s failure path', async (t) => {
+test('Ably publication alone never declares editing ready; reverse role receives its own 10s deadline', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const natives = [], sent = [];
   const student = createStudentPeerNetwork({ teacherId: 'teacher', signaling: { send: async (_id, s) => sent.push(s) },
@@ -191,7 +191,12 @@ test('Ably publication alone never declares editing ready; role reversal precede
     },
   });
   t.after(() => student.close());
-  const result = student.start().catch(e => e); await flush();
+  let settled = false;
+  const result = student.start().then(
+    () => { settled = true; return null; },
+    (error) => { settled = true; return error; },
+  );
+  await flush();
   t.mock.timers.tick(1500); await flush(); t.mock.timers.tick(1500); await flush();
   assert.equal(sent.filter(s => s.type === 'offer').length, 3);
   assert.equal(student.isReady(), false);
@@ -199,8 +204,15 @@ test('Ably publication alone never declares editing ready; role reversal precede
   assert.equal(natives.length, 2, '5s fallback must rebuild the student as responder');
   assert.equal(natives[1].options.initiator, false);
   assert.equal(sent.some(s => s.type === 'role-switch'), true);
+
+  // The original 10 second wall-clock deadline has passed, but the reversed
+  // orientation still owns a fresh 10 second attempt that started at second 5.
   t.mock.timers.tick(5000); await flush();
-  assert.match((await result).message, /timed out/);
+  assert.equal(settled, false);
+
+  t.mock.timers.tick(5000); await flush();
+  const error = await result;
+  assert.match(error.message, /timed out/);
 });
 
 test('untagged legacy answers still work with an updated student', async (t) => {
