@@ -342,6 +342,10 @@ export function createStudentPeerNetwork({
           Promise.resolve(initialConnection.start()).catch((error) => {
             if (closed || initialConnection !== connection) return;
             try { onError(error); } catch { /* observer errors are ignored */ }
+            if (!ready && !transport && !roleSwitched) {
+              switchToResponder().catch(failConnection);
+              return;
+            }
             if (!ready) closeResources(error, { reportState: 'failed' });
           });
           await readiness;
@@ -360,7 +364,17 @@ export function createStudentPeerNetwork({
       if (message.signal.type === 'offer' && currentInitiator && !transport) {
         await switchToResponder({ notifyTeacher: false });
       }
-      await connection?.handleSignal?.(message.signal);
+      try {
+        await connection?.handleSignal?.(message.signal);
+      } catch (error) {
+        try { onError(error); } catch { /* observer errors are ignored */ }
+        if (!transport && !roleSwitched && currentInitiator) {
+          await switchToResponder();
+          return true;
+        }
+        failConnection(error);
+        return false;
+      }
       return true;
     },
 

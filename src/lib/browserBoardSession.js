@@ -508,7 +508,13 @@ export function createBrowserBoardSession({
         if (!id) continue;
         participantCapabilities.set(id, normalizeCollaborationCapabilities(user?.capabilities));
       }
-      if (isOwner) return Promise.resolve(runtime);
+      if (isOwner) {
+        const peerIds = list
+          .map((user) => safeId(user?.clientId))
+          .filter((id) => id && id !== safeClientId && collaborationModeFor(id) === 'webrtc-live-v1');
+        try { runtime?.updateParticipants?.(peerIds); } catch (error) { onError(error); }
+        return Promise.resolve(runtime);
+      }
 
       const ownerIds = list
         .filter((user) => user?.permission === 'owner')

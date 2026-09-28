@@ -255,3 +255,139 @@ test('teacher pre-connect failure does not retire the offer and accepts its retr
   assert.equal(network.getPeerCount(), 1);
   network.close();
 });
+
+
+test('owner presence autonomously starts the reverse initiator path after 4 seconds', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const created = [];
+  const network = createTeacherPeerNetwork({
+    clientId: 'teacher',
+    signaling: { send: async () => {} },
+    peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
+    createConnection: (options) => {
+      const record = { options, started: 0, closed: 0 };
+      record.connection = {
+        async start() { record.started += 1; },
+        async handleSignal() {},
+        resendSignaling() {},
+        close() { record.closed += 1; },
+      };
+      created.push(record);
+      return record.connection;
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+  });
+
+  network.updateParticipants(['student-presence']);
+  t.mock.timers.tick(3999);
+  await flush();
+  assert.equal(created.length, 0);
+
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(created.length, 1);
+  assert.equal(created[0].options.initiator, true);
+  assert.equal(created[0].started, 1);
+  network.close();
+});
+
+test('owner responder promotes itself to initiator when bootstrap fails', async () => {
+  const created = [];
+  const network = createTeacherPeerNetwork({
+    clientId: 'teacher',
+    signaling: { send: async () => {} },
+    peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
+    createConnection: (options) => {
+      const record = { options, started: 0, closed: 0 };
+      record.connection = {
+        async start() { record.started += 1; },
+        async handleSignal() {},
+        resendSignaling() {},
+        close() { record.closed += 1; },
+      };
+      created.push(record);
+      return record.connection;
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+  });
+
+  await network.handleSignal({ sourceId: 'student-fail', signal: { type: 'offer' } });
+  assert.equal(created[0].options.initiator, false);
+  created[0].options.onConnectionState('failed');
+  await flush();
+
+  assert.equal(created[0].closed, 1);
+  assert.equal(created[1].options.initiator, true);
+  assert.equal(created[1].started, 1);
+  network.close();
+});
+
+test('opening the responder data channel cancels owner autonomous fallback', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const created = [];
+  const network = createTeacherPeerNetwork({
+    clientId: 'teacher',
+    signaling: { send: async () => {} },
+    peerHub: { addPeer: () => () => {}, removePeer: () => {}, handleMessage: async () => {} },
+    createConnection: (options) => {
+      const record = { options, closed: 0 };
+      record.connection = {
+        async start() {},
+        async handleSignal() {},
+        resendSignaling() {},
+        close() { record.closed += 1; },
+      };
+      created.push(record);
+      return record.connection;
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+  });
+
+  network.updateParticipants(['student-healthy']);
+  await network.handleSignal({ sourceId: 'student-healthy', signal: { type: 'offer' } });
+  created[0].options.onChannel({ label: 'alex-board-durable-v1' });
+  t.mock.timers.tick(10000);
+  await flush();
+
+  assert.equal(created.length, 1);
+  assert.equal(created[0].closed, 0);
+  network.close();
+});
+
+test('student offer publication failure falls back to responder instead of closing bootstrap', async () => {
+  const created = [];
+  const sent = [];
+  const network = createStudentPeerNetwork({
+    teacherId: 'teacher-publish-fail',
+    signaling: { send: async (peerId, signal) => sent.push({ peerId, signal }) },
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    createConnection: (options) => {
+      const record = { options, closed: 0 };
+      record.connection = {
+        async start() {
+          if (options.initiator) throw new Error('offer publish failed');
+        },
+        async handleSignal() {},
+        close() { record.closed += 1; },
+      };
+      created.push(record);
+      return record.connection;
+    },
+    createTransport: () => ({ send: async () => {}, close() {} }),
+    createSession: () => ({ async start() {}, close() {} }),
+  });
+
+  const starting = network.start();
+  await flush();
+  assert.equal(created.length, 2);
+  assert.equal(created[0].options.initiator, true);
+  assert.equal(created[1].options.initiator, false);
+  assert.equal(sent.some(({ signal }) => signal.type === 'role-switch'), true);
+
+  created[1].options.onChannel({ label: 'alex-board-durable-v1' });
+  await starting;
+  assert.equal(network.isReady(), true);
+  network.close();
+});
