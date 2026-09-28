@@ -210,8 +210,16 @@ try {
           'student-initiated fallback must be tested when the owner path is fully dead');
       }
 
-      if (!['clean', 'student-path-dead'].includes(mode)) {
+      if (!['clean', 'student-path-dead', 'ice'].includes(mode)) {
         assert.ok(allSignals.some((signal) => signal.dropped), 'fault injection must occur');
+      }
+      if (mode === 'ice') {
+        const trickleIce = allSignals.filter((signal) => signal.type === 'ice'
+          && signal.path === 'owner-initiated');
+        if (trickleIce.length) {
+          assert.ok(trickleIce.some((signal) => signal.dropped),
+            'available owner-path trickle ICE must exercise the drop hook');
+        }
       }
       if (mode === 'offer') {
         const offers = allSignals.filter((signal) => signal.type === 'offer'
