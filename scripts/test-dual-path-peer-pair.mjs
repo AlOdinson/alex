@@ -16,7 +16,7 @@ function harness(role, overrides = {}) {
     localRole: role,
     peerId: role === 'owner' ? 'student' : 'owner',
     signaling: { send: async (_peerId, signal) => { sent.push(signal); } },
-    primaryPathTimeoutMs: 40,
+    primaryPathTimeoutMs: 50,
     connectTimeoutMs: 200,
     createConnection: (options) => {
       const record = { options, starts: 0, closes: 0, handled: [] };
@@ -62,7 +62,7 @@ test('owner switches to student-initiated fallback after primary timeout', async
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const { pair, created, sent } = harness('owner');
   await pair.start();
-  t.mock.timers.tick(40);
+  t.mock.timers.tick(50);
   await flush();
   assert.equal(created[0].closes, 1);
   assert.equal(created.length, 2);
@@ -72,9 +72,19 @@ test('owner switches to student-initiated fallback after primary timeout', async
   pair.close();
 });
 
-test('student switches to its initiator fallback when owner requests it', async () => {
-  const { pair, created } = harness('student');
+test('student never switches by itself and changes role only after owner path-switch', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { pair, created, sent } = harness('student');
   await pair.start();
+  assert.equal(created.length, 1);
+  assert.equal(created[0].options.initiator, false);
+
+  t.mock.timers.tick(6000);
+  await flush();
+  assert.equal(created.length, 1, 'student coordination timer must not change native role');
+  assert.ok(sent.some((signal) => signal.type === 'path-select-request'
+    && signal.path === STUDENT_INITIATED_PATH));
+
   await pair.handleSignal({ type: 'path-switch', path: STUDENT_INITIATED_PATH });
   assert.equal(created.length, 2);
   assert.equal(created[0].closes, 1);
@@ -117,6 +127,21 @@ test('student attaches immediately when the only active durable path opens', asy
     negotiationId: 'owner-1',
     description: { type: 'offer', sdp: 'owner' },
   });
+  created[0].options.onChannel({ label: 'alex-board-durable-v1', close() {} });
+  assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
+  pair.close();
+});
+
+
+test('student timer skew cannot kill a primary path before owner switches it', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { pair, created, selected } = harness('student', { primaryPathTimeoutMs: 50 });
+  await pair.start();
+  t.mock.timers.tick(55);
+  await flush();
+  assert.equal(created.length, 1);
+  assert.equal(created[0].closes, 0);
+
   created[0].options.onChannel({ label: 'alex-board-durable-v1', close() {} });
   assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
   pair.close();

@@ -8,7 +8,8 @@ const VALID_PATHS = new Set([OWNER_INITIATED_PATH, STUDENT_INITIATED_PATH]);
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_DISCONNECT_GRACE_MS = 3_500;
 // Probe directions sequentially so a dead ICE route cannot interfere with the viable route.
-const DEFAULT_PRIMARY_PATH_TIMEOUT_MS = 4_000;
+const DEFAULT_PRIMARY_PATH_TIMEOUT_MS = 5_000;
+const STUDENT_FALLBACK_REQUEST_DELAY_MS = 6_000;
 const CONTROL_REPLAY_DELAYS_MS = Object.freeze([500, 1_500]);
 
 function positiveTimeout(value, fallback) {
@@ -258,6 +259,7 @@ export function createDualPathPeerPair({
 
     const candidate = createCandidate(STUDENT_INITIATED_PATH);
     startCandidate(candidate);
+    armDeadline();
 
     if (notify) {
       replayControl({ type: 'path-switch', path: STUDENT_INITIATED_PATH });
@@ -301,8 +303,14 @@ export function createDualPathPeerPair({
 
     if (candidate.path === OWNER_INITIATED_PATH && !fallbackStarted) {
       removeCandidate(OWNER_INITIATED_PATH);
-      if (role === 'owner') switchToStudentPath({ notify: true });
-      else switchToStudentPath({ notify: false });
+      if (role === 'owner') {
+        switchToStudentPath({ notify: true });
+      } else {
+        // Owner coordinates direction changes. Student never unilaterally flips
+        // roles, which avoids timer skew killing a primary path that is opening
+        // successfully on the owner side.
+        replayControl({ type: 'path-select-request', path: STUDENT_INITIATED_PATH });
+      }
       return;
     }
 
@@ -359,12 +367,23 @@ export function createDualPathPeerPair({
 
   function armPrimaryTimer() {
     clearPrimaryTimer();
+    const delay = role === 'owner'
+      ? positiveTimeout(primaryPathTimeoutMs, DEFAULT_PRIMARY_PATH_TIMEOUT_MS)
+      : Math.max(
+        positiveTimeout(primaryPathTimeoutMs, DEFAULT_PRIMARY_PATH_TIMEOUT_MS) + 1_000,
+        STUDENT_FALLBACK_REQUEST_DELAY_MS,
+      );
     primaryTimer = setTimeout(() => {
       primaryTimer = null;
       if (closed || selectedAttached || fallbackStarted) return;
-      if (role === 'owner') switchToStudentPath({ notify: true });
-      else switchToStudentPath({ notify: false });
-    }, positiveTimeout(primaryPathTimeoutMs, DEFAULT_PRIMARY_PATH_TIMEOUT_MS));
+      if (role === 'owner') {
+        switchToStudentPath({ notify: true });
+      } else {
+        // Coordination watchdog only: ask owner to switch/replay; never change
+        // the student's native role without an owner decision.
+        replayControl({ type: 'path-select-request', path: STUDENT_INITIATED_PATH });
+      }
+    }, delay);
     primaryTimer?.unref?.();
   }
 
@@ -373,17 +392,6 @@ export function createDualPathPeerPair({
     deadlineTimer = setTimeout(() => {
       deadlineTimer = null;
       if (closed || selectedAttached) return;
-      if (!fallbackStarted) {
-        switchToStudentPath({ notify: role === 'owner' });
-        // Give the fallback a small final window even if the custom total timeout
-        // was shorter than the normal primary+fallback budget.
-        deadlineTimer = setTimeout(() => {
-          deadlineTimer = null;
-          if (!closed && !selectedAttached) failPair(new Error('WebRTC connection timed out: no path became usable'));
-        }, 3_000);
-        deadlineTimer?.unref?.();
-        return;
-      }
       failPair(new Error('WebRTC connection timed out: no path became usable'));
     }, positiveTimeout(connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS));
     deadlineTimer?.unref?.();
@@ -441,8 +449,12 @@ export function createDualPathPeerPair({
           });
           return true;
         }
-        if (activePath === OWNER_INITIATED_PATH && signal.path === STUDENT_INITIATED_PATH) {
-          switchToStudentPath({ notify: true });
+        if (signal.path === STUDENT_INITIATED_PATH) {
+          if (activePath === OWNER_INITIATED_PATH) {
+            switchToStudentPath({ notify: true });
+          } else if (activePath === STUDENT_INITIATED_PATH && !selectedAttached) {
+            replayControl({ type: 'path-switch', path: STUDENT_INITIATED_PATH });
+          }
         }
         return true;
       }
