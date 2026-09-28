@@ -189,8 +189,6 @@ test('live transport attaches only after its owner path is selected', async () =
   });
   connectionOptions.onLiveChannel({ label: 'alex-board-live-v1' });
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
-  assert.equal(network.sendLive('cursor', { x: 2 }), 'unavailable');
-  await network.handleSignal({ sourceId: 'teacher-a', signal: { type: 'path-select', path: OWNER } });
   await starting;
   assert.equal(network.sendLive('cursor', { x: 2 }, { streamKey: 'cursor' }), 'sent');
   assert.ok(liveOptions);

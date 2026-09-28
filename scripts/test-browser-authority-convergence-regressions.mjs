@@ -263,11 +263,8 @@ test('teacher network removes a peer when the selected DataChannel closes', asyn
     },
   });
 
-  await network.handleSignal({
-    sourceId: 'student-a',
-    signal: { type: 'offer', path: 'student-initiated', negotiationId: 'student-a-1',
-      description: { type: 'offer', sdp: 'x' } },
-  });
+  network.updateParticipants(['student-a']);
+  await Promise.resolve();
   const ownerPath = connectionOptions.find((options) => options.initiator === true);
   assert.ok(ownerPath);
   ownerPath.onChannel({ label: 'alex-board-durable-v1', close() {} });
