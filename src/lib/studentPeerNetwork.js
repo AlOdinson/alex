@@ -7,6 +7,7 @@ import { createPeerLiveChannel } from './peerLiveChannel.js';
 const CONNECT_TIMEOUT_MS = 10_000;
 const INITIAL_SYNC_IDLE_TIMEOUT_MS = 90_000;
 const DISCONNECT_GRACE_MS = 3_500;
+const PRIMARY_PATH_TIMEOUT_MS = 4_000;
 
 function positiveTimeout(value, fallback) {
   const milliseconds = Number(value);
@@ -32,6 +33,7 @@ export function createStudentPeerNetwork({
   initialSyncTimeoutMs = INITIAL_SYNC_IDLE_TIMEOUT_MS,
   requestTimeoutMs = 30_000,
   disconnectGraceMs = DISCONNECT_GRACE_MS,
+  primaryPathTimeoutMs = PRIMARY_PATH_TIMEOUT_MS,
   createPair = createDualPathPeerPair,
   createConnection = createBrowserPeerConnection,
   createTransport = createPeerDataChannelTransport,
@@ -115,6 +117,7 @@ export function createStudentPeerNetwork({
     enableLiveChannel: Boolean(liveEnabled),
     connectTimeoutMs,
     disconnectGraceMs,
+    primaryPathTimeoutMs,
     createConnection,
     onSelectedChannel: (channel, path) => {
       if (closed || transport) {

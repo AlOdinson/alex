@@ -168,6 +168,10 @@ test('production dual-path candidates all enable signaling assistance', async (t
   });
   t.after(() => student.close());
   void student.start().catch(() => {});
+  await student.handleSignal({
+    sourceId: 'teacher',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
   await flush();
   assert.equal(opts?.assistSignaling, true);
 });
@@ -205,8 +209,14 @@ test('a slow answer publish receipt does not block incoming ICE on the responder
 test('Ably publication alone never declares editing ready without a usable peer path', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const natives = [], sent = [];
-  const student = createStudentPeerNetwork({ teacherId: 'teacher', signaling: { send: async (_id, s) => sent.push(s) },
-    getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
+  const student = createStudentPeerNetwork({
+    teacherId: 'teacher',
+    signaling: { send: async (_id, s) => sent.push(s) },
+    getRevision: () => 0,
+    applyCommit: async () => {},
+    installSnapshot: async () => {},
+    primaryPathTimeoutMs: 100,
+    connectTimeoutMs: 5_000,
     createConnection: options => {
       const native = new NativeStub();
       natives.push({ native, options });
@@ -214,12 +224,21 @@ test('Ably publication alone never declares editing ready without a usable peer 
     },
   });
   t.after(() => student.close());
-  const result = student.start().catch(e => e); await flush();
-  t.mock.timers.tick(1500); await flush(); t.mock.timers.tick(1500); await flush();
+  const result = student.start().catch(e => e);
+  await flush();
+
+  assert.equal(natives.length, 0, 'student must not compete with the owner during the primary window');
+  t.mock.timers.tick(100); await flush();
+  assert.equal(natives.length, 1);
+  assert.equal(natives[0].options.initiator, true);
+
+  t.mock.timers.tick(1500); await flush();
+  t.mock.timers.tick(1500); await flush();
   assert.equal(sent.filter(s => s.type === 'offer').length, 3);
   assert.equal(student.isReady(), false);
   assert.equal(sent.some(s => s.type === 'role-switch'), false);
-  t.mock.timers.tick(7000); await flush();
+
+  t.mock.timers.tick(1900); await flush();
   assert.match((await result).message, /timed out/i);
 });
 

@@ -32,6 +32,10 @@ function fixture() {
     () => { state = 'fulfilled'; },
     (error) => { state = 'rejected'; failure = error; },
   );
+  void network.handleSignal({
+    sourceId: 'teacher',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
   return {
     network, starting, errors, rejectSignaling,
     open: () => options.onChannel({ label: 'alex-board-durable-v1' }),

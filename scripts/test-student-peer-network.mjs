@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createStudentPeerNetwork } from '../src/lib/studentPeerNetwork.js';
 
-test('starts an initiator connection and targets teacher signaling', async () => {
+test('waits for owner path, then starts student-initiated fallback when requested', async () => {
   const sentSignals = [];
   let options;
   let started = 0;
@@ -26,6 +26,12 @@ test('starts an initiator connection and targets teacher signaling', async () =>
 
   const starting = network.start();
   await Promise.resolve();
+  assert.equal(started, 0);
+  assert.equal(options, undefined);
+  await network.handleSignal({
+    sourceId: 'teacher-a',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
   assert.equal(started, 1);
   assert.equal(options.initiator, true);
   await options.sendSignal({ type: 'offer' });
@@ -71,6 +77,10 @@ test('starts student sync when data channel opens and routes messages/transfers'
 
   const starting = network.start();
   await Promise.resolve();
+  await network.handleSignal({
+    sourceId: 'teacher-a',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
   await starting;
   assert.equal(sessionStartCount, 1);
@@ -145,6 +155,10 @@ test('closing the student network closes the active peer session', async () => {
 
   const starting = network.start();
   await Promise.resolve();
+  await network.handleSignal({
+    sourceId: 'teacher-a',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
   await starting;
   network.close();
@@ -205,6 +219,10 @@ test('student live transport is independent from durable readiness and closure',
 
   const starting = network.start();
   await Promise.resolve();
+  await network.handleSignal({
+    sourceId: 'teacher-a',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
 
   connectionOptions.onLiveChannel({ label: 'alex-board-live-v1' });
   assert.equal(network.sendLive('cursor', { x: 2 }, { streamKey: 'cursor' }), 'unavailable');
@@ -254,6 +272,10 @@ test('student peer network disables live DataChannel for legacy teacher mode', a
 
   const starting = network.start();
   await Promise.resolve();
+  await network.handleSignal({
+    sourceId: 'teacher-legacy',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
   assert.equal(connectionOptions.enableLiveChannel, false);
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
   await starting;
@@ -288,6 +310,10 @@ test('student peer network forwards board-control through the durable session', 
   });
   const starting = network.start();
   await Promise.resolve();
+  await network.handleSignal({
+    sourceId: 'teacher-a',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
   await starting;
   assert.equal(await network.sendBoardControl('mode', { mode: 'edit' }), true);
@@ -341,6 +367,10 @@ test('durable channel failure retires live transport and reports failed state', 
 
   const starting = network.start();
   await Promise.resolve();
+  await network.handleSignal({
+    sourceId: 'teacher-a',
+    signal: { type: 'path-switch', path: 'student-initiated' },
+  });
   connectionOptions.onLiveChannel({ label: 'alex-board-live-v1' });
   connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
   await starting;

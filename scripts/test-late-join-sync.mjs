@@ -105,7 +105,7 @@ function pendingNetwork({ stalledSignaling = false } = {}) {
   state.network = createStudentPeerNetwork({
     teacherId: 'teacher', signaling: { send: async () => {} },
     getRevision: () => 0, applyCommit: async () => {}, installSnapshot: async () => {},
-    connectTimeoutMs: 100, initialSyncTimeoutMs: 100,
+    connectTimeoutMs: 100, primaryPathTimeoutMs: 40, initialSyncTimeoutMs: 100,
     onState: (value) => { state.states.push(value); },
     createConnection: (options) => {
       state.connectionOptions = options;
@@ -144,6 +144,15 @@ test('late join: active snapshot transfer extends the idle deadline, a stalled t
   const starting = observe(fixture.network.start());
   t.after(() => fixture.network.close());
   await flush();
+  await fixture.network.handleSignal({
+    sourceId: 'teacher',
+    signal: {
+      type: 'offer',
+      path: 'owner-initiated',
+      negotiationId: 'owner-late-join',
+      description: { type: 'offer', sdp: 'v=0\r\na=ice-ufrag:owner-late-join\r\n' },
+    },
+  });
   fixture.connectionOptions.onChannel({ label: 'alex-board-durable-v1' });
   await flush();
   for (let i = 0; i < 5; i += 1) {

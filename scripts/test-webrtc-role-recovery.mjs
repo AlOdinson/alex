@@ -84,7 +84,7 @@ test('late signaling publication error cannot kill an already opened path', asyn
   const selected = [];
   const fatals = [];
   const pair = createDualPathPeerPair({
-    localRole: 'student',
+    localRole: 'owner',
     peerId: 'owner',
     signaling: { send: async () => {} },
     createConnection: (options) => {
@@ -101,11 +101,11 @@ test('late signaling publication error cannot kill an already opened path', asyn
   await pair.start();
   await flush();
   connectionOptions.onChannel({ label: 'alex-board-durable-v1', close() {} });
-  assert.deepEqual(selected, [STUDENT_INITIATED_PATH]);
+  assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
 
   rejectStart(new Error('late receipt'));
   await flush();
-  assert.deepEqual(selected, [STUDENT_INITIATED_PATH]);
+  assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
   assert.equal(fatals.length, 0);
   pair.close();
 });
