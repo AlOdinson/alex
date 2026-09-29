@@ -402,12 +402,13 @@ export function createDualPathPeerPair({
       if (closed) return Promise.reject(new Error('Dual-path peer pair is closed'));
       if (started) return Promise.resolve();
       started = true;
-      activePath = OWNER_INITIATED_PATH;
-      // Both browsers own exactly one RTCPeerConnection for the active direction:
-      // owner starts as initiator, student starts as a silent responder.
-      activatePath(OWNER_INITIATED_PATH);
-      armPrimaryTimer();
-      armDeadline();
+      // Buffered signaling can already have switched or opened the fallback
+      // before the session calls start(). Preserve that negotiated direction:
+      // resetting it here creates a competing primary and rejects fallback opens.
+      if (selectedAttached || fatal) return Promise.resolve();
+      activatePath(activePath);
+      if (!fallbackStarted) armPrimaryTimer();
+      if (!deadlineTimer) armDeadline();
       return Promise.resolve();
     },
 

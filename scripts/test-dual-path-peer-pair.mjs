@@ -8,6 +8,33 @@ import {
 
 const flush = async () => { for (let i = 0; i < 30; i += 1) await Promise.resolve(); };
 
+for (const role of ['owner', 'student']) {
+  for (const openBeforeStart of [false, true]) {
+    test(`${role} preserves early fallback across start (open=${openBeforeStart})`, async (t) => {
+      t.mock.timers.enable({ apis: ['setTimeout'] });
+      const failures = [];
+      const { pair, created, selected } = harness(role, { onFatal: error => failures.push(error) });
+      t.after(() => pair.close());
+      await pair.handleSignal(role === 'student'
+        ? { type: 'path-switch', path: STUDENT_INITIATED_PATH }
+        : { type: 'offer', path: STUDENT_INITIATED_PATH, negotiationId: 'early-fallback',
+          description: { type: 'offer', sdp: 'student' } });
+      const channel = { label: 'alex-board-durable-v1', close() { throw new Error('Viable channel retired'); } };
+      if (openBeforeStart) created[0].options.onChannel(channel);
+      await pair.start();
+      await pair.start();
+      assert.equal(pair.getCandidateCount(), 1, 'startup must not create a competing primary');
+      assert.equal(pair.getCandidateState(OWNER_INITIATED_PATH), null);
+      if (!openBeforeStart) created[0].options.onChannel(channel);
+      assert.deepEqual(selected, [STUDENT_INITIATED_PATH]);
+      t.mock.timers.tick(1000);
+      await flush();
+      assert.equal(failures.length, 0);
+      assert.equal(pair.getSelectedPath(), STUDENT_INITIATED_PATH);
+    });
+  }
+}
+
 function harness(role, overrides = {}) {
   const created = [];
   const sent = [];
@@ -33,6 +60,36 @@ function harness(role, overrides = {}) {
   });
   return { pair, created, sent, selected };
 }
+
+test('late start preserves the existing fallback deadline and cannot revive a failed pair', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const failures = [];
+  const { pair, created } = harness('student', { onFatal: error => failures.push(error) });
+  t.after(() => pair.close());
+  await pair.handleSignal({ type: 'path-switch', path: STUDENT_INITIATED_PATH });
+  t.mock.timers.tick(150);
+  await pair.start();
+  t.mock.timers.tick(51);
+  await flush();
+  assert.equal(failures.length, 1, 'start must not extend the already running fallback deadline');
+  await pair.start();
+  assert.equal(created.length, 1, 'failed startup must not create another native connection');
+});
+
+test('first explicit start cannot revive a fallback that already timed out', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const failures = [];
+  const { pair, created } = harness('student', { onFatal: error => failures.push(error) });
+  t.after(() => pair.close());
+  await pair.handleSignal({ type: 'path-switch', path: STUDENT_INITIATED_PATH });
+  t.mock.timers.tick(201);
+  await flush();
+  assert.equal(failures.length, 1);
+  await pair.start();
+  t.mock.timers.tick(1000);
+  assert.equal(created.length, 1);
+  assert.equal(failures.length, 1);
+});
 
 test('owner tests only the preferred owner-initiated path first', async () => {
   const { pair, created } = harness('owner');
