@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - fix/connection-reliability-20260930
+      - 'fix/connection-reliability-*'
   workflow_dispatch:
 
 permissions:
