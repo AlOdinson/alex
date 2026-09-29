@@ -284,3 +284,14 @@ test('expired recovery rechecks channel health before destroying a resumed route
   t.mock.timers.tick(101);await flush();assert.equal(probes,1);assert.deepEqual(failures,[]);
   assert.equal((await pair.getDiagnostics()).recovering,false);assert.equal(created[0].closes,0);
 });
+
+test('native primary failure keeps its generation in the owner fallback command', async t => {
+  const owner=harness('owner');const student=harness('student');t.after(()=>{owner.pair.close();student.pair.close();});
+  await owner.pair.start();await student.pair.start();
+  await owner.created[0].options.sendSignal({type:'offer',negotiationId:'failed-native',description:{type:'offer',sdp:'offer'}});
+  await student.pair.handleSignal(owner.sent.at(-1));
+  owner.created[0].options.onConnectionState('failed');await flush();
+  const command=owner.sent.find(s=>s.type==='path-switch');
+  assert.equal(await student.pair.handleSignal(command),true);
+  assert.equal(student.created.length,2);assert.equal(student.created[0].closes,1);
+});

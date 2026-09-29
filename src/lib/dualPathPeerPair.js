@@ -355,10 +355,10 @@ export function createDualPathPeerPair({
     }
 
     if (candidate.path === OWNER_INITIATED_PATH && !fallbackStarted) {
-      removeCandidate(OWNER_INITIATED_PATH);
       if (role === 'owner') {
         switchToStudentPath({ notify: true });
       } else {
+        removeCandidate(OWNER_INITIATED_PATH);
         // Owner coordinates direction changes. Student never unilaterally flips
         // roles, which avoids timer skew killing a primary path that is opening
         // successfully on the owner side.
