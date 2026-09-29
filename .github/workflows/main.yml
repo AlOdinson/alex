@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'fix/connection-reliability-*'
   workflow_dispatch:
 
 permissions:
@@ -12,11 +13,56 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test:connections
+      - run: npm run test:browser-authority
+      - run: npm run test:sync:ci
+      - run: npm run test:screen-share
+      - run: npm run build
+
+  direct-browser:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, engine: chromium}
+          - {os: macos-latest, engine: webkit}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - name: Direct connection, live repair, ICE restart and owner tab handoff (no TURN)
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+          WEBKIT_LOCAL_ICE: '1'
+        run: bash scripts/run-connection-direct-ci.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connection-direct-${{ matrix.engine }}
+          path: connection-direct-results/
+          retention-days: 7
+
   build:
+    if: github.ref == 'refs/heads/main'
+    needs: [verify, direct-browser]
     runs-on: ubuntu-latest
 
     steps:
@@ -29,7 +75,7 @@ jobs:
           node-version: 22
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Build Alex Board
         env:

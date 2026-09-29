@@ -196,3 +196,39 @@ test('initiator defaults to legacy durable-only channel unless live capability i
   await peer.start();
   assert.deepEqual(pc.createdChannels.map((channel) => channel.label), ['alex-board-durable-v1']);
 });
+
+test('ICE restart keeps durable channel and rejects retired ICE rounds', async t => {
+  const pc=new FakePeerConnection();const sent=[];const offers=[];
+  pc.restartIce=()=>{};pc.createOffer=async options=>{offers.push(options);return {type:'offer',sdp:`offer-${offers.length}`};};
+  const peer=createBrowserPeerConnection({initiator:true,assistSignaling:true,createPeerConnection:()=>pc,sendSignal:async s=>sent.push(s)});
+  t.after(()=>peer.close());await peer.start();const first=sent[0];const channel=peer.getDataChannel();
+  await peer.handleSignal({type:'answer',negotiationId:first.negotiationId,description:{type:'answer',sdp:'first-answer'}});
+  assert.equal(await peer.restartIce(),true);
+  assert.equal(offers[1].iceRestart,true);
+  const restart=sent.at(-1);assert.equal(restart.negotiationId,first.negotiationId);assert.equal(restart.iceRevision,1);
+  assert.equal(peer.getDataChannel(),channel);
+  await peer.handleSignal({type:'ice',negotiationId:first.negotiationId,candidate:{candidate:'stale'}});
+  assert.equal(pc.addedCandidates.length,0);
+  await peer.handleSignal({type:'answer',negotiationId:first.negotiationId,iceRevision:1,description:{type:'answer',sdp:'restart-answer'}});
+  assert.equal(pc.remoteDescription.sdp,'restart-answer');
+});
+
+test('responder accepts restart offer in same native generation and echoes its round', async t => {
+  const pc=new FakePeerConnection();const sent=[];
+  const peer=createBrowserPeerConnection({assistSignaling:true,createPeerConnection:()=>pc,sendSignal:async s=>sent.push(s)});
+  t.after(()=>peer.close());
+  await peer.handleSignal({type:'offer',negotiationId:'pair-native',description:{type:'offer',sdp:'first'}});
+  await peer.handleSignal({type:'offer',negotiationId:'pair-native',iceRevision:1,description:{type:'offer',sdp:'restart'}});
+  assert.equal(sent.at(-1).iceRevision,1);
+  await peer.handleSignal({type:'offer',negotiationId:'pair-native',description:{type:'offer',sdp:'retired'}});
+  assert.equal(pc.remoteDescription.sdp,'restart');
+});
+
+test('only native offerer replaces a closed live channel and retains durable channel', async t => {
+  const pc=new FakePeerConnection();const live=[];
+  const peer=createBrowserPeerConnection({initiator:true,enableLiveChannel:true,createPeerConnection:()=>pc,sendSignal:async()=>{},onLiveChannel:c=>live.push(c)});
+  t.after(()=>peer.close());await peer.start();const durable=peer.getDataChannel();
+  peer.getLiveDataChannel().close();assert.equal(peer.recoverLiveChannel(),true);
+  assert.equal(live.length,2);assert.equal(peer.getDataChannel(),durable);assert.equal(pc.createdChannels.length,3);
+  assert.equal(peer.recoverLiveChannel(),false,'duplicate repair preserves an open live channel');
+});

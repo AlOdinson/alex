@@ -9091,6 +9091,15 @@ function BoardWorkspace({
           setSaveStatus('Не удалось сохранить');
           setSyncTone('error');
         }
+        if (status === 'LIVE_DEGRADED') {
+          window.clearTimeout(transientStatusTimerRef.current);
+          setSaveStatus('Восстанавливаю живое рисование…');
+          setSyncTone('recovering');
+        }
+        if (status === 'LIVE_CONNECTED') {
+          setSaveStatus('Живое рисование подключено');
+          setSyncTone('recovered');
+        }
         if (status === 'RECOVERING') {
           setSaveStatus('Восстанавливаю синхронизацию…');
           setSyncTone('recovering');
@@ -9286,6 +9295,7 @@ function BoardWorkspace({
       }
     }, 1500);
     const syncOnFocus = () => {
+      realtimeRef.current?.recoverConnections?.();
       realtimeRef.current?.flushPending?.();
       syncFromServer(true);
     };

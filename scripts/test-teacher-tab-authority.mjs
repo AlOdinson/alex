@@ -33,7 +33,7 @@ test('holds an exclusive board-scoped Web Lock until stopped', async () => {
   assert.equal(requestedName, 'alex-board-authority:board-a');
   assert.equal(requestedOptions.mode, 'exclusive');
   assert.equal(requestedOptions.ifAvailable, true);
-  assert.ok(requestedOptions.signal);
+  assert.equal(requestedOptions.signal, undefined);
   assert.equal(authority.isAuthority(), true);
 
   authority.stop();

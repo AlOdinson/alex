@@ -215,3 +215,83 @@ test('student timer skew cannot kill a primary path before owner switches it', a
   assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
   pair.close();
 });
+
+
+test('stale pair controls cannot switch a current negotiation', async t => {
+  const {pair,created}=harness('student'); t.after(()=>pair.close()); await pair.start();
+  await pair.handleSignal({type:'offer',path:OWNER_INITIATED_PATH,attemptId:'fresh-pair',negotiationId:'fresh-native',description:{type:'offer',sdp:'offer'}});
+  assert.equal(await pair.handleSignal({type:'path-switch',path:STUDENT_INITIATED_PATH,attemptId:'old-pair',pathSequence:1}),false);
+  assert.equal(created[0].closes,0);
+  assert.equal(await pair.handleSignal({type:'path-switch',path:STUDENT_INITIATED_PATH,attemptId:'fresh-pair',pathSequence:1,negotiationId:'fresh-native'}),true);
+  assert.equal(created[0].closes,1);
+});
+
+test('primary timeout follows real progress but overall deadline remains bounded', async t => {
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const {pair,created}=harness('owner');t.after(()=>pair.close());await pair.start();
+  t.mock.timers.tick(40);created[0].options.onProgress({step:3,detail:'route'});
+  t.mock.timers.tick(15);assert.equal(created.length,1);
+  t.mock.timers.tick(35);assert.equal(created.length,2);
+});
+
+test('selected failed route gets one coordinated ICE restart before bounded teardown', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});let restarts=0;const failures=[];
+  const {pair,created}=harness('owner',{recoveryTimeoutMs:100,onFatal:e=>failures.push(e)});t.after(()=>pair.close());await pair.start();
+  created[0].connection.restartIce=async()=>{restarts++;return true;};
+  await pair.handleSignal({type:'answer',recoveryVersion:1,description:{type:'answer',sdp:'answer'}});
+  created[0].options.onChannel({readyState:'open',close(){}});
+  created[0].options.onConnectionState('failed');await flush();
+  assert.equal(restarts,1);assert.equal(failures.length,0);
+  created[0].options.onConnectionState('failed');await flush();assert.equal(restarts,1);
+  t.mock.timers.tick(101);await flush();assert.equal(failures.length,1);
+});
+
+test('intentionally disabled remote live channel is not repaired or made fatal', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});let repairs=0;const failures=[];
+  const {pair,created}=harness('owner',{onFatal:e=>failures.push(e)});t.after(()=>pair.close());await pair.start();
+  created[0].connection.recoverLiveChannel=()=>{repairs++;return true;};
+  await pair.handleSignal({type:'answer',recoveryVersion:1,liveVersion:0,description:{type:'answer',sdp:'answer'}});
+  created[0].options.onChannel({readyState:'open',close(){}});
+  pair.repairLiveChannel();await flush();t.mock.timers.tick(9000);await flush();
+  assert.equal(repairs,0);assert.deepEqual(failures,[]);assert.equal(created[0].closes,0);
+});
+
+test('adopting a new owner attempt cancels old control replay', async t => {
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const {pair,sent}=harness('student',{connectTimeoutMs:10000});t.after(()=>pair.close());await pair.start();
+  await pair.handleSignal({type:'offer',path:OWNER_INITIATED_PATH,attemptId:'old-attempt',negotiationId:'old-native',description:{type:'offer',sdp:'old'}});
+  t.mock.timers.tick(6000);await flush();
+  assert.ok(sent.some(s=>s.type==='path-select-request'&&s.attemptId==='old-attempt'));
+  await pair.handleSignal({type:'offer',path:OWNER_INITIATED_PATH,attemptId:'new-attempt',negotiationId:'new-native',description:{type:'offer',sdp:'new'}});
+  const before=sent.length;t.mock.timers.tick(1600);await flush();
+  assert.equal(sent.length,before,'retired attempt replay must be cancelled');
+});
+
+test('tagged path request must match the current native generation', async t => {
+  const {pair,created,sent}=harness('owner');t.after(()=>pair.close());await pair.start();
+  await created[0].options.sendSignal({type:'offer',negotiationId:'current-native',description:{type:'offer',sdp:'current'}});
+  const attemptId=sent.at(-1).attemptId;
+  assert.equal(await pair.handleSignal({type:'path-select-request',path:STUDENT_INITIATED_PATH,attemptId,pathSequence:0,negotiationId:'old-native'}),false);
+  assert.equal(created[0].closes,0);assert.equal(created.length,1);
+});
+
+test('expired recovery rechecks channel health before destroying a resumed route', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});let probes=0;const failures=[];
+  const {pair,created}=harness('owner',{recoveryTimeoutMs:100,checkHealth:async()=>{probes++;return true;},onFatal:e=>failures.push(e)});
+  t.after(()=>pair.close());await pair.start();created[0].connection.restartIce=async()=>true;
+  await pair.handleSignal({type:'answer',recoveryVersion:1,description:{type:'answer',sdp:'answer'}});
+  created[0].options.onChannel({readyState:'open',close(){}});pair.recover();await flush();
+  t.mock.timers.tick(101);await flush();assert.equal(probes,1);assert.deepEqual(failures,[]);
+  assert.equal((await pair.getDiagnostics()).recovering,false);assert.equal(created[0].closes,0);
+});
+
+test('native primary failure keeps its generation in the owner fallback command', async t => {
+  const owner=harness('owner');const student=harness('student');t.after(()=>{owner.pair.close();student.pair.close();});
+  await owner.pair.start();await student.pair.start();
+  await owner.created[0].options.sendSignal({type:'offer',negotiationId:'failed-native',description:{type:'offer',sdp:'offer'}});
+  await student.pair.handleSignal(owner.sent.at(-1));
+  owner.created[0].options.onConnectionState('failed');await flush();
+  const command=owner.sent.find(s=>s.type==='path-switch');
+  assert.equal(await student.pair.handleSignal(command),true);
+  assert.equal(student.created.length,2);assert.equal(student.created[0].closes,1);
+});

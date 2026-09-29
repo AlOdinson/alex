@@ -133,3 +133,12 @@ test('decode rejects malformed JSON and unknown live event types', () => {
     highestSeqByStream: new Map(),
   }), /live event type/i);
 });
+
+test('only a trusted teacher channel may relay another student identity', () => {
+  const encoded=encodeLiveEvent(base({streamSessionId:'student-session',payload:{clientId:'student-a',x:1}}));
+  assert.equal(decodeLiveEvent(encoded,{boardId:'board-a',remoteClientId:'teacher'}),null);
+  const event=decodeLiveEvent(encoded,{boardId:'board-a',remoteClientId:'teacher',allowRelayed:true});
+  assert.equal(event.clientId,'student-a');assert.equal(event.streamSessionId,'student-session');
+  const spoof=encodeLiveEvent(base({payload:{clientId:'someone-else',x:1}}));
+  assert.equal(decodeLiveEvent(spoof,{boardId:'board-a',remoteClientId:'student-a'}),null);
+});

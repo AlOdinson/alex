@@ -54,9 +54,13 @@ export function createBrowserPeerConnection({
   const addedIce = new Set();
   let negotiationId = initiator && assistSignaling ? randomToken(12) : '';
   let signalQueue = Promise.resolve();
+  let iceRevision = 0;
+  let restartPending = false;
+  let lastReply = null;
+  const futureIce = new Map();
   let lastRemoteOffer = null;
   let lastRemoteAnswer = null;
-  const tagSignal = (signal) => negotiationId ? { ...signal, negotiationId } : signal;
+  const tagSignal = (signal) => ({ ...signal, ...(negotiationId ? { negotiationId } : {}), ...(iceRevision ? { iceRevision } : {}) });
   const candidateKey = (candidate) => JSON.stringify([
     candidate.candidate, candidate.sdpMid, candidate.sdpMLineIndex, candidate.usernameFragment,
   ]);
@@ -76,10 +80,11 @@ export function createBrowserPeerConnection({
     throw error;
   });
 
-  const assistance = createPeerSignalingAssistance({
+  const makeAssistance = () => createPeerSignalingAssistance({
     enabled: assistSignaling, initiator, send: publishSignal,
-    isOpen: () => dataChannel?.readyState === 'open', isClosed: () => closed,
+    isOpen: () => iceRevision ? !restartPending : dataChannel?.readyState === 'open', isClosed: () => closed,
   });
+  let assistance = makeAssistance();
 
   const attachDurableChannel = (channel) => {
     if (!channel || channel.label !== BOARD_DURABLE_DATA_CHANNEL || closed) return false;
@@ -96,6 +101,10 @@ export function createBrowserPeerConnection({
 
   const attachLiveChannel = (channel) => {
     if (!channel || channel.label !== BOARD_LIVE_DATA_CHANNEL || closed) return false;
+    if (liveDataChannel && liveDataChannel !== channel && liveDataChannel.readyState === 'open') {
+      try { channel.close?.(); } catch { /* duplicate */ }
+      return true;
+    }
     liveDataChannel = channel;
     const opened = () => {
       if (closed || liveDataChannel !== channel) return;
@@ -152,12 +161,17 @@ export function createBrowserPeerConnection({
   peerConnection.onicecandidate = (event) => {
     if (closed || !event?.candidate) return;
     const signal = tagSignal({ type: 'ice', candidate: event.candidate });
+    reportConnectionProgress(onProgress, 3, 'candidate');
     assistance.rememberCandidate(signal);
     publishSignal(signal).catch(() => undefined);
   };
 
   peerConnection.ondatachannel = (event) => {
     attachChannel(event?.channel);
+  };
+
+  peerConnection.oniceconnectionstatechange = () => {
+    if (peerConnection.iceConnectionState === 'checking') reportConnectionProgress(onProgress, 3, 'route');
   };
 
   peerConnection.onconnectionstatechange = () => {
@@ -172,6 +186,22 @@ export function createBrowserPeerConnection({
     // An earlier attempt's delayed answer/candidates must never poison this one.
     // Untagged legacy peers remain compatible during a rolling update.
     if (incomingId && negotiationId && incomingId !== negotiationId) return null;
+    const revision = Number(signal.iceRevision ?? 0);
+    if (!Number.isSafeInteger(revision) || revision < iceRevision || revision < 0) return null;
+    if (revision > iceRevision) {
+      if (signal.type === 'ice') {
+        if (revision <= iceRevision + 1 && signal.candidate) {
+          const queued = futureIce.get(revision) ?? [];
+          if (queued.length < 256) queued.push(signal.candidate);
+          futureIce.set(revision, queued);
+        }
+        return null;
+      }
+      if (signal.type !== 'offer' || initiator || revision !== iceRevision + 1) return null;
+      iceRevision = revision; restartPending = true; addedIce.clear();
+      assistance.stop(); assistance = makeAssistance();
+      pendingIce.push(...(futureIce.get(revision) ?? [])); futureIce.clear();
+    }
     if (signal.type === 'ice') {
       if (signal.candidate) await addRemoteIce(signal.candidate);
       return null;
@@ -180,7 +210,10 @@ export function createBrowserPeerConnection({
       if (!signal.description) throw new Error('WebRTC offer has no description');
       if (initiator) return null; // Only the student offers in the board protocol.
       const fingerprint = JSON.stringify(signal.description);
-      if (lastRemoteOffer === fingerprint) { assistance.replay(); return null; }
+      if (lastRemoteOffer === fingerprint) {
+        if (iceRevision && lastReply) return lastReply;
+        assistance.replay(); return null;
+      }
       if (incomingId) negotiationId = incomingId;
       await peerConnection.setRemoteDescription(signal.description);
       if (closed) return null;
@@ -191,6 +224,7 @@ export function createBrowserPeerConnection({
       if (closed) return null;
       lastRemoteOffer = fingerprint;
       const reply = tagSignal({ type: 'answer', description: peerConnection.localDescription ?? answer });
+      lastReply = reply;
       assistance.rememberDescription(reply);
       reportConnectionProgress(onProgress, 3, 'answer');
       return reply;
@@ -203,7 +237,7 @@ export function createBrowserPeerConnection({
       const fingerprint = JSON.stringify(signal.description);
       if (lastRemoteAnswer === fingerprint) return null;
       await peerConnection.setRemoteDescription(signal.description);
-      if (!closed) { lastRemoteAnswer = fingerprint; await flushPendingIce(); }
+      if (!closed) { lastRemoteAnswer = fingerprint; restartPending = false; if (iceRevision) assistance.stop(); await flushPendingIce(); }
       if (!closed) reportConnectionProgress(onProgress, 3, 'route');
     }
     return null;
@@ -243,6 +277,50 @@ export function createBrowserPeerConnection({
       return task.then((outgoing) => outgoing ? publishSignal(outgoing) : undefined);
     },
 
+    restartIce() {
+      if (closed || !initiator || restartPending || !peerConnection.remoteDescription) return Promise.resolve(false);
+      restartPending = true;
+      const task = signalQueue.then(async () => {
+        if (closed) return null;
+        iceRevision += 1; addedIce.clear(); lastRemoteAnswer = null;
+        assistance.stop(); assistance = makeAssistance();
+        peerConnection.restartIce?.();
+        const offer = await peerConnection.createOffer({ iceRestart: true });
+        if (closed) return null;
+        await peerConnection.setLocalDescription(offer);
+        if (closed) return null;
+        const signal = tagSignal({ type: 'offer', description: peerConnection.localDescription ?? offer });
+        assistance.rememberDescription(signal);
+        return signal;
+      });
+      signalQueue = task.then(() => undefined, () => undefined);
+      return task.then(async signal => { if (!signal) return false; await publishSignal(signal); return true; })
+        .catch(error => { restartPending = false; throw error; });
+    },
+
+    recoverLiveChannel() {
+      if (closed || !initiator || !enableLiveChannel || dataChannel?.readyState !== 'open') return false;
+      if (liveDataChannel && ['open', 'connecting'].includes(liveDataChannel.readyState)) return false;
+      return attachLiveChannel(peerConnection.createDataChannel(BOARD_LIVE_DATA_CHANNEL, { ordered: false, maxRetransmits: 0 }));
+    },
+
+    async getDiagnostics() {
+      const result = { connectionState: peerConnection.connectionState ?? 'unknown',
+        iceState: peerConnection.iceConnectionState ?? 'unknown', iceRevision,
+        durableState: dataChannel?.readyState ?? 'missing', liveState: liveDataChannel?.readyState ?? 'missing' };
+      try {
+        const stats = await peerConnection.getStats?.();
+        if (stats) for (const stat of stats.values()) {
+          if (stat.type !== 'candidate-pair' || stat.state !== 'succeeded' || !stat.nominated) continue;
+          const local = stats.get(stat.localCandidateId); const remote = stats.get(stat.remoteCandidateId);
+          result.route = { localType: local?.candidateType, remoteType: remote?.candidateType,
+            protocol: local?.protocol, rttMs: Number.isFinite(stat.currentRoundTripTime) ? Math.round(stat.currentRoundTripTime * 1000) : null };
+          break;
+        }
+      } catch { /* browser may be closing */ }
+      return result;
+    },
+
     resendSignaling() { return assistance.replay(); },
 
     getDataChannel() {
@@ -263,6 +341,7 @@ export function createBrowserPeerConnection({
       assistance.stop();
       pendingIce.length = 0;
       addedIce.clear();
+      futureIce.clear();
       try {
         dataChannel?.close?.();
       } catch (error) {

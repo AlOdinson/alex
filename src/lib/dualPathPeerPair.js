@@ -1,3 +1,4 @@
+import { randomToken } from './ids.js';
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { signalingNegotiationId } from './peerSignalingAssistance.js';
 import { reportConnectionProgress } from './connectionProgress.js';
@@ -32,6 +33,7 @@ export function createDualPathPeerPair({
   connectTimeoutMs = DEFAULT_CONNECT_TIMEOUT_MS,
   disconnectGraceMs = DEFAULT_DISCONNECT_GRACE_MS,
   primaryPathTimeoutMs = DEFAULT_PRIMARY_PATH_TIMEOUT_MS,
+  recoveryTimeoutMs = 8_000,
   // Kept for rolling compatibility with callers from the parallel-race release.
   ownerPreferenceGraceMs: _ownerPreferenceGraceMs = null,
   createConnection = createBrowserPeerConnection,
@@ -42,6 +44,7 @@ export function createDualPathPeerPair({
   onFatal = () => {},
   onError = () => {},
   onProgress = () => {},
+  checkHealth = () => false,
 } = {}) {
   const role = String(localRole ?? '');
   if (role !== 'owner' && role !== 'student') throw new Error('localRole must be owner or student');
@@ -55,6 +58,13 @@ export function createDualPathPeerPair({
   const retiredNegotiations = new Set();
   const controlTimers = new Set();
 
+  let attemptId = role === 'owner' ? randomToken(12) : '';
+  const retiredAttempts = new Set();
+  let primaryStartedAt = 0;
+  let remoteRecovery = false;
+  let remoteLiveEnabled = null;
+  const recoveryRequests = new Set();
+  let switchedFromId = '';
   let started = false;
   let closed = false;
   let fatal = false;
@@ -106,6 +116,8 @@ export function createDualPathPeerPair({
     if (!candidate || candidate.closed) return;
     candidate.closed = true;
     clearTimeout(candidate.disconnectTimer);
+    clearTimeout(candidate.recoveryTimer);
+    clearTimeout(candidate.liveRepairTimer);
     candidate.disconnectTimer = null;
     retireNegotiation(candidate);
     try { candidate.connection?.close?.(); } catch (error) { reportError(error); }
@@ -138,13 +150,24 @@ export function createDualPathPeerPair({
     try { onFatal(error instanceof Error ? error : new Error(String(error))); } catch { /* observer */ }
   }
 
+  function tagControl(signal) {
+    return { ...signal,
+      ...(attemptId ? { attemptId } : {}), recoveryVersion: 1, liveVersion: enableLiveChannel ? 1 : 0,
+      pathSequence: activePath === STUDENT_INITIATED_PATH ? 1 : 0,
+    };
+  }
+
   function sendControl(signal) {
-    Promise.resolve(signaling.send(remoteId, signal)).catch(reportError);
+    Promise.resolve(signaling.send(remoteId, tagControl(signal))).catch(reportError);
   }
 
   function replayControl(signal) {
-    sendControl(signal);
-    for (const delay of CONTROL_REPLAY_DELAYS_MS) later(() => sendControl(signal), delay);
+    // A replay belongs to the generation that scheduled it, even if the pair
+    // adopts a new owner attempt before its timer runs.
+    const tagged = tagControl(signal);
+    const send = () => Promise.resolve(signaling.send(remoteId, tagged)).catch(reportError);
+    send();
+    for (const delay of CONTROL_REPLAY_DELAYS_MS) later(send, delay);
   }
 
   function attachSelectedIfReady() {
@@ -212,6 +235,9 @@ export function createDualPathPeerPair({
       failed: false,
       closed: false,
       disconnectTimer: null,
+      recoveryTimer: null,
+      recoveryEpoch: 0,
+      liveRepairTimer: null,
       progressStep: 3,
     };
 
@@ -219,7 +245,10 @@ export function createDualPathPeerPair({
       onProgress: (event) => {
         if (!closed && !candidate.closed && candidate.path === activePath && !selectedAttached) {
           if (event.step < candidate.progressStep) return;
+          const progressed = event.step > candidate.progressStep || event.detail !== candidate.progressDetail;
           candidate.progressStep = event.step;
+          candidate.progressDetail = event.detail;
+          if (progressed && role === 'owner' && !fallbackStarted) armPrimaryTimer();
           reportConnectionProgress(onProgress, event.step, event.detail, { path: resolved });
         }
       },
@@ -230,7 +259,8 @@ export function createDualPathPeerPair({
       sendSignal: (signal) => {
         const negotiationId = signalingNegotiationId(signal);
         if (negotiationId) candidate.negotiationId = negotiationId;
-        return signaling.send(remoteId, { ...signal, path: resolved });
+        return signaling.send(remoteId, { ...signal, path: resolved, recoveryVersion: 1, liveVersion: enableLiveChannel ? 1 : 0, ...(attemptId ? { attemptId } : {}),
+          pathSequence: resolved === STUDENT_INITIATED_PATH ? 1 : 0 });
       },
       onChannel: (channel) => handleDurableOpen(candidate, channel),
       onLiveChannel: (channel) => handleLiveOpen(candidate, channel),
@@ -271,6 +301,7 @@ export function createDualPathPeerPair({
     if (activePath === STUDENT_INITIATED_PATH && fallbackStarted) return true;
 
     fallbackStarted = true;
+    switchedFromId = candidates.get(OWNER_INITIATED_PATH)?.negotiationId || switchedFromId;
     clearPrimaryTimer();
     clearControlTimers();
     removeCandidate(OWNER_INITIATED_PATH);
@@ -282,7 +313,7 @@ export function createDualPathPeerPair({
     armDeadline();
 
     if (notify) {
-      replayControl({ type: 'path-switch', path: STUDENT_INITIATED_PATH });
+      replayControl({ type: 'path-switch', path: STUDENT_INITIATED_PATH, ...(switchedFromId ? { negotiationId: switchedFromId } : {}) });
     }
     return true;
   }
@@ -306,7 +337,9 @@ export function createDualPathPeerPair({
       try { channel?.close?.(); } catch { /* unused */ }
       return;
     }
+    if (candidate.liveChannel !== channel) selectedLiveAttached = false;
     candidate.liveChannel = channel;
+    clearTimeout(candidate.liveRepairTimer); candidate.liveRepairTimer = null;
     if (selectedPath === candidate.path) attachSelectedIfReady();
   }
 
@@ -322,10 +355,10 @@ export function createDualPathPeerPair({
     }
 
     if (candidate.path === OWNER_INITIATED_PATH && !fallbackStarted) {
-      removeCandidate(OWNER_INITIATED_PATH);
       if (role === 'owner') {
         switchToStudentPath({ notify: true });
       } else {
+        removeCandidate(OWNER_INITIATED_PATH);
         // Owner coordinates direction changes. Student never unilaterally flips
         // roles, which avoids timer skew killing a primary path that is opening
         // successfully on the owner side.
@@ -340,9 +373,59 @@ export function createDualPathPeerPair({
     failPair(error ?? new Error('Fallback WebRTC path failed'), candidate.negotiationId);
   }
 
+  function recoverCandidate(candidate, mode = 'ice') {
+    if (closed || fatal || !candidate || candidate.closed || !selectedAttached) return false;
+    if (mode === 'live' && (!enableLiveChannel || remoteLiveEnabled !== true || !remoteRecovery)) return false;
+    const timerKey = mode === 'live' ? 'liveRepairTimer' : 'recoveryTimer';
+    if (candidate[timerKey]) return true;
+    if (mode === 'live' && candidate.liveChannel?.readyState === 'open') return true;
+    if (!remoteRecovery) { failPair(new Error('Peer requires full reconnection')); return false; }
+    const epoch = mode === 'ice' ? ++candidate.recoveryEpoch : null;
+    candidate[timerKey] = setTimeout(async () => {
+      // A suspended tab may resume after this timer expired while its data
+      // channel already works again. Confirm actual health before teardown.
+      let healthy = false;
+      if (mode === 'ice') {
+        try { healthy = await checkHealth(); } catch { /* failed probe */ }
+        if (candidate.recoveryEpoch !== epoch) return;
+      }
+      if (closed || candidate.closed) return;
+      if (healthy === true) confirmCandidateHealthy(candidate);
+      else {
+        candidate[timerKey] = null;
+        failPair(new Error(mode === 'live' ? 'Live channel recovery timed out' : 'ICE recovery timed out'));
+      }
+    }, positiveTimeout(recoveryTimeoutMs, 8_000));
+    candidate[timerKey]?.unref?.();
+    if (mode === 'ice') { try { onState('recovering', candidate.path); } catch { /* observer */ } }
+    if (candidate.initiator) {
+      Promise.resolve().then(() => mode === 'live'
+        ? candidate.connection.recoverLiveChannel?.()
+        : candidate.connection.restartIce?.()).catch(error => failPair(error));
+    } else {
+      replayControl({ type: 'connection-recover', mode, path: candidate.path,
+        negotiationId: candidate.negotiationId, requestId: randomToken(12) });
+    }
+    return true;
+  }
+
+  function confirmCandidateHealthy(candidate) {
+    if (closed || fatal || !candidate || candidate.closed) return false;
+    const wasRecovering = Boolean(candidate.recoveryTimer);
+    candidate.recoveryEpoch += 1;
+    clearTimeout(candidate.recoveryTimer); candidate.recoveryTimer = null;
+    clearTimeout(candidate.disconnectTimer); candidate.disconnectTimer = null;
+    if (wasRecovering) { try { onState('connected', candidate.path); } catch { /* observer */ } }
+    return true;
+  }
+
   function handleConnectionState(candidate, state) {
     if (closed || candidate.closed) return;
     const normalized = String(state ?? 'unknown');
+    if (selectedPath === candidate.path && normalized === 'failed') { recoverCandidate(candidate); return; }
+    if (normalized === 'connected') {
+      confirmCandidateHealthy(candidate);
+    }
 
     if (selectedPath === candidate.path) {
       try { onState(normalized, candidate.path); } catch { /* observer */ }
@@ -353,7 +436,8 @@ export function createDualPathPeerPair({
         candidate.disconnectTimer = setTimeout(() => {
           candidate.disconnectTimer = null;
           if (!closed && !candidate.closed) {
-            handleCandidateFailure(candidate, new Error('WebRTC path remained disconnected'));
+            if (selectedPath === candidate.path) recoverCandidate(candidate);
+            else handleCandidateFailure(candidate, new Error('WebRTC path remained disconnected'));
           }
         }, positiveTimeout(disconnectGraceMs, DEFAULT_DISCONNECT_GRACE_MS));
         candidate.disconnectTimer?.unref?.();
@@ -389,8 +473,10 @@ export function createDualPathPeerPair({
 
   function armPrimaryTimer() {
     clearPrimaryTimer();
+    const primaryBudget = positiveTimeout(connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS) * 0.8;
+    const remaining = Math.max(1, primaryBudget - (Date.now() - primaryStartedAt));
     const delay = role === 'owner'
-      ? positiveTimeout(primaryPathTimeoutMs, DEFAULT_PRIMARY_PATH_TIMEOUT_MS)
+      ? Math.min(positiveTimeout(primaryPathTimeoutMs, DEFAULT_PRIMARY_PATH_TIMEOUT_MS), remaining)
       : Math.max(
         positiveTimeout(primaryPathTimeoutMs, DEFAULT_PRIMARY_PATH_TIMEOUT_MS) + 1_000,
         STUDENT_FALLBACK_REQUEST_DELAY_MS,
@@ -427,6 +513,7 @@ export function createDualPathPeerPair({
       if (closed) return Promise.reject(new Error('Dual-path peer pair is closed'));
       if (started) return Promise.resolve();
       started = true;
+      primaryStartedAt = Date.now();
       // Buffered signaling can already have switched or opened the fallback
       // before the session calls start(). Preserve that negotiated direction:
       // resetting it here creates a competing primary and rejects fallback opens.
@@ -440,6 +527,48 @@ export function createDualPathPeerPair({
     async handleSignal(signal) {
       if (closed || !signal || typeof signal !== 'object') return false;
       const type = String(signal.type ?? '');
+      const incomingAttempt = typeof signal.attemptId === 'string' && signal.attemptId.length <= 128 ? signal.attemptId : '';
+      if (signal.attemptId != null && !incomingAttempt) return false;
+      if (incomingAttempt && retiredAttempts.has(incomingAttempt)) return false;
+      if (incomingAttempt && attemptId && incomingAttempt !== attemptId) {
+        if (role !== 'student' || type !== 'offer' || signal.path !== OWNER_INITIATED_PATH || selectedAttached) return false;
+        if (retiredAttempts.size >= 64) retiredAttempts.delete(retiredAttempts.values().next().value);
+        retiredAttempts.add(attemptId);
+        clearControlTimers(); clearPrimaryTimer(); clearDeadline();
+        removeCandidate(activePath); activePath = OWNER_INITIATED_PATH; fallbackStarted = false;
+        switchedFromId = ''; pendingSelectedPath = ''; remoteRecovery = false; remoteLiveEnabled = null;
+        recoveryRequests.clear(); primaryStartedAt = Date.now();
+        attemptId = incomingAttempt;
+        if (started) { armPrimaryTimer(); armDeadline(); }
+      }
+      if (incomingAttempt && !attemptId) attemptId = incomingAttempt;
+      if (type.startsWith('path-')) {
+        const id = signalingNegotiationId(signal);
+        const current = candidates.get(activePath)?.negotiationId;
+        if (id && current && id !== current && id !== switchedFromId) return false;
+        if (incomingAttempt && type === 'path-switch' && signal.pathSequence !== 1) return false;
+        if (incomingAttempt && type === 'path-select'
+          && signal.pathSequence !== (signal.path === STUDENT_INITIATED_PATH ? 1 : 0)) return false;
+        if (incomingAttempt && type === 'path-select-request' && current
+          && signal.pathSequence !== (activePath === STUDENT_INITIATED_PATH && id !== switchedFromId ? 1 : 0)) return false;
+        if (type === 'path-select' && id && candidates.get(safePath(signal.path))?.negotiationId
+          && candidates.get(safePath(signal.path)).negotiationId !== id) return false;
+        if ((type === 'path-switch' || (incomingAttempt && type === 'path-select-request')) && current && !id) return false;
+      }
+
+      if (signal.recoveryVersion === 1) remoteRecovery = true;
+      if (signal.liveVersion === 0 || signal.liveVersion === 1) remoteLiveEnabled = signal.liveVersion === 1;
+      if (type === 'connection-recover') {
+        const candidate = candidates.get(selectedPath);
+        if (!selectedAttached || !candidate?.initiator || signal.path !== selectedPath
+          || signal.negotiationId !== candidate.negotiationId
+          || !['ice', 'live'].includes(signal.mode)
+          || typeof signal.requestId !== 'string' || !signal.requestId || signal.requestId.length > 128) return false;
+        if (recoveryRequests.has(signal.requestId)) return true;
+        if (recoveryRequests.size >= 64) recoveryRequests.delete(recoveryRequests.values().next().value);
+        recoveryRequests.add(signal.requestId);
+        return recoverCandidate(candidate, signal.mode);
+      }
 
       if (type === 'path-switch') {
         const path = safePath(signal.path);
@@ -484,7 +613,7 @@ export function createDualPathPeerPair({
           if (activePath === OWNER_INITIATED_PATH) {
             switchToStudentPath({ notify: true });
           } else if (activePath === STUDENT_INITIATED_PATH && !selectedAttached) {
-            replayControl({ type: 'path-switch', path: STUDENT_INITIATED_PATH });
+            replayControl({ type: 'path-switch', path: STUDENT_INITIATED_PATH, ...(switchedFromId ? { negotiationId: switchedFromId } : {}) });
           }
         }
         return true;
@@ -531,6 +660,18 @@ export function createDualPathPeerPair({
       return true;
     },
 
+    canProbe() { return remoteRecovery && selectedAttached && !closed; },
+    getAttemptId() { return attemptId; },
+    isLiveExpected() { return Boolean(enableLiveChannel) && remoteLiveEnabled !== false; },
+    confirmHealthy() { return confirmCandidateHealthy(candidates.get(selectedPath)); },
+    recover() { return recoverCandidate(candidates.get(selectedPath)); },
+    repairLiveChannel() { return recoverCandidate(candidates.get(selectedPath), 'live'); },
+    async getDiagnostics() {
+      const candidate = candidates.get(selectedPath || activePath);
+      return { attemptId, path: selectedPath || activePath, selected: selectedAttached,
+        recovering: Boolean(candidate?.recoveryTimer), repairingLive: Boolean(candidate?.liveRepairTimer),
+        ...(await candidate?.connection?.getDiagnostics?.() ?? {}) };
+    },
     getSelectedPath() { return selectedPath; },
 
     getCandidateCount() {

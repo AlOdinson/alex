@@ -69,7 +69,10 @@ export async function createTeacherBoardRuntime({
     peerHub: hub,
     rtcConfig,
     onPeerState,
-    onLiveEvent,
+    onLiveEvent: (peerId, type, payload, envelope) => {
+      network?.relayLive?.(peerId, envelope);
+      onLiveEvent(peerId, type, payload, envelope);
+    },
     onLiveState,
     onError,
   });
@@ -186,6 +189,9 @@ export async function createTeacherBoardRuntime({
     sendLiveTo(peerId, type, payload, options = {}) {
       return network?.sendLive?.(peerId, type, payload, options) ?? 'unavailable';
     },
+
+    recoverConnections() { return network?.recoverConnections?.(); },
+    getConnectionDiagnostics() { return network?.getConnectionDiagnostics?.(); },
 
     getLiveState(peerId) {
       return network?.getLiveState?.(peerId) ?? 'unavailable';

@@ -104,7 +104,8 @@ test('peer edit authorization follows fresh local guest mode and never trusts th
 test('exposes teacher live broadcast without changing durable authority', async () => {
   const live = [];
   let networkOptions = null;
-  const onLiveEvent = () => {};
+  const received = [];
+  const onLiveEvent = (...args) => received.push(args);
   const onLiveState = () => {};
   const runtime = await createTeacherBoardRuntime({
     boardId: 'board-live',
@@ -146,7 +147,8 @@ test('exposes teacher live broadcast without changing durable authority', async 
   assert.equal(networkOptions.boardId, 'board-live');
   assert.equal(networkOptions.clientId, 'teacher-live');
   assert.equal(networkOptions.getRevision(), 11);
-  assert.equal(networkOptions.onLiveEvent, onLiveEvent);
+  networkOptions.onLiveEvent('student-a', 'cursor', {x:2}, {});
+  assert.deepEqual(received, [['student-a', 'cursor', {x:2}, {}]]);
   assert.equal(networkOptions.onLiveState, onLiveState);
 
   assert.deepEqual(

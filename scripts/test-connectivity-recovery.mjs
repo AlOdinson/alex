@@ -82,7 +82,7 @@ test('student retries a failed startup even when presence never changes again', 
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let starts = 0;
   const working = readyRuntime();
-  const session = createBrowserBoardSession(sessionOptions({
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0,
     createStudentRuntime: () => ({
       ...working,
       start: async () => { if (++starts === 1) throw new Error('temporary connection failure'); },
@@ -101,7 +101,7 @@ test('student retries a failed startup even when presence never changes again', 
 test('a disconnected student retries without another presence notification', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const options = [];
-  const session = createBrowserBoardSession(sessionOptions({ createStudentRuntime: (opts) => { options.push(opts); return readyRuntime(); } }));
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0, createStudentRuntime: (opts) => { options.push(opts); return readyRuntime(); } }));
   t.after(() => session.close());
   await session.start();
   await session.updateParticipants(presence);
@@ -116,7 +116,7 @@ test('a disconnected student retries without another presence notification', asy
 test('startup rejected after closure must not overwrite the closed state', async () => {
   let rejectStart;
   const events = [];
-  const session = createBrowserBoardSession(sessionOptions({
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0,
     onRuntimeState: (state) => events.push(state),
     createStudentRuntime: () => ({
       start: () => new Promise((_, reject) => { rejectStart = reject; }), close() {},
@@ -135,7 +135,7 @@ test('startup rejected after closure must not overwrite the closed state', async
 
 test('a queued presence update does not start a new runtime after session closure', async () => {
   let creates = 0;
-  const session = createBrowserBoardSession(sessionOptions({ createStudentRuntime: () => { creates++; return readyRuntime(); } }));
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0, createStudentRuntime: () => { creates++; return readyRuntime(); } }));
   await session.start();
   const pending = session.updateParticipants(presence);
   session.close();
@@ -147,7 +147,7 @@ test('a queued presence update does not start a new runtime after session closur
 test('retry stops when the teacher leaves before the retry timer fires', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let creates = 0;
-  const session = createBrowserBoardSession(sessionOptions({ createStudentRuntime: () => {
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0, createStudentRuntime: () => {
     creates++;
     return { start: async () => { throw new Error('temporary'); }, close() {} };
   } }));
@@ -164,7 +164,7 @@ test('retry stops when the teacher leaves before the retry timer fires', async (
 test('closing a failed session cancels its automatic retry', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let creates = 0;
-  const session = createBrowserBoardSession(sessionOptions({ createStudentRuntime: () => {
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0, createStudentRuntime: () => {
     creates++;
     return { start: async () => { throw new Error('temporary'); }, close() {} };
   } }));
@@ -200,7 +200,7 @@ test('a genuine current-generation ICE error is not hidden by recovery', async (
 test('automatic retries back off instead of spinning on a persistently unavailable peer', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let starts = 0;
-  const session = createBrowserBoardSession(sessionOptions({ createStudentRuntime: () => ({
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0, createStudentRuntime: () => ({
     start: async () => { starts++; throw new Error('still unavailable'); }, close() {},
   }) }));
   t.after(() => session.close());
@@ -220,7 +220,7 @@ test('automatic retries back off instead of spinning on a persistently unavailab
 test('a runtime construction failure can recover without reloading the page', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let creates = 0;
-  const session = createBrowserBoardSession(sessionOptions({ createStudentRuntime: () => {
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0, createStudentRuntime: () => {
     if (++creates === 1) throw new Error('temporary construction failure');
     return readyRuntime();
   } }));
@@ -237,7 +237,7 @@ test('multiple presence notifications do not create parallel student runtimes', 
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let creates = 0;
   let finish;
-  const session = createBrowserBoardSession(sessionOptions({ createStudentRuntime: () => {
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0, createStudentRuntime: () => {
     creates++;
     return { ...readyRuntime(), start: () => new Promise((resolve) => { finish = resolve; }) };
   } }));
@@ -259,7 +259,7 @@ test('a stale failed callback must not disturb a replacement runtime', async (t)
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const options = [];
   const peerStates = [];
-  const session = createBrowserBoardSession(sessionOptions({
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0,
     onPeerState: (state) => peerStates.push(state),
     createStudentRuntime: (opts) => { options.push(opts); return readyRuntime(); },
   }));
@@ -268,6 +268,7 @@ test('a stale failed callback must not disturb a replacement runtime', async (t)
   await session.updateParticipants(presence);
   options[0].onState('failed');
   await session.updateParticipants(presence);
+  t.mock.timers.tick(1000);await flush();
   const current = session.getRuntime();
   const count = peerStates.length;
   options[0].onState('failed');
@@ -282,7 +283,7 @@ test('a stale failed callback must not disturb a replacement runtime', async (t)
 test('retry uses the latest teacher rather than stale presence from a failed attempt', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const teachers = [];
-  const session = createBrowserBoardSession(sessionOptions({ createStudentRuntime: ({ teacherId }) => {
+  const session = createBrowserBoardSession(sessionOptions({ retryRandom: () => 0, createStudentRuntime: ({ teacherId }) => {
     teachers.push(teacherId);
     return { ...readyRuntime(), start: async () => { if (teacherId === 'teacher-a') throw new Error('left'); } };
   } }));

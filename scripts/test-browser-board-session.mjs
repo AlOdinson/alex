@@ -240,7 +240,8 @@ test('student replaces the peer runtime when teacher presence changes and stale 
   assert.deepEqual(closed, [1]);
 });
 
-test('student can recreate a failed peer runtime for the same teacher after presence refresh', async () => {
+test('student recreates failed same-teacher runtime after the scheduled retry', async (t) => {
+  t.mock.timers.enable({apis:['setTimeout']});
   const runtimes = [];
   const closed = [];
   let currentRegistered = null;
@@ -283,6 +284,9 @@ test('student can recreate a failed peer runtime for the same teacher after pres
   assert.deepEqual(closed, [1]);
 
   await session.updateParticipants(presence);
+  assert.equal(currentRegistered, null, 'presence refresh must preserve the retry delay');
+  t.mock.timers.tick(2000);
+  for(let i=0;i<80;i++) await Promise.resolve();
   const second = currentRegistered;
   assert.equal(second?.number, 2);
   assert.notEqual(second, first);

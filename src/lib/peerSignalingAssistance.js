@@ -60,6 +60,7 @@ export function createPeerSignalingAssistance({ enabled = false, initiator = fal
   const replay = () => {
     // An explicit remote retry proves that signaling reached the other browser.
     // Replay immediately and cancel the remaining scheduled bootstrap retries.
+    if (active) return false; // preserve the in-flight candidate queue and its completion
     clearTimers();
     return replayOnce();
   };

@@ -53,6 +53,9 @@ export function createStudentPeerNetwork({
 
   let transport = null;
   let liveTransport = null;
+  let liveChannel = null;
+  const liveSequence = { value: 0 };
+  const liveReceived = new Map();
   let liveState = 'idle';
   let session = null;
   let selectedPath = '';
@@ -61,6 +64,7 @@ export function createStudentPeerNetwork({
   let readinessSettled = false;
   let channelStart = Promise.resolve();
   let startPromise = null;
+  let recoveryCheck = null;
   let initialSyncTimer = null;
   let initialStep = 4;
   let resolveReady;
@@ -173,7 +177,9 @@ export function createStudentPeerNetwork({
         try { channel?.close?.(); } catch { /* duplicate */ }
         return;
       }
+      liveChannel = channel;
       liveTransport = createLiveTransport({
+        sequence: liveSequence, highestSeqByStream: liveReceived, allowRelayed: true,
         channel,
         boardId: String(boardId ?? ''),
         localClientId: String(clientId ?? ''),
@@ -184,9 +190,17 @@ export function createStudentPeerNetwork({
           try { onLiveEvent(type, payload, envelope); } catch (error) { onError(error); }
         },
         onState: (state) => {
-          if (closed) return;
-          liveState = String(state ?? 'unknown');
+          if (closed || liveChannel !== channel) return;
+          const channelState = String(state ?? 'unknown');
+          liveState = pair.isLiveExpected?.() === false ? 'disabled' : channelState;
           try { onLiveState(liveState); } catch (error) { onError(error); }
+          if (channelState === 'closed' || channelState === 'error') {
+            const retired = liveTransport; liveTransport = null; liveChannel = null;
+            Promise.resolve().then(() => {
+              retired?.close?.();
+              if (!closed) pair.repairLiveChannel?.();
+            }).catch(failConnection);
+          }
         },
         onError: (error) => {
           if (!closed) {
@@ -201,6 +215,7 @@ export function createStudentPeerNetwork({
       try { onState(state); } catch { /* observer */ }
     },
     onFatal: (error) => failConnection(error),
+    checkHealth: () => transport?.probe?.() ?? false,
     onError,
   });
 
@@ -287,6 +302,21 @@ export function createStudentPeerNetwork({
       return liveTransport.send(type, payload, options);
     },
 
+    recoverConnections() {
+      if (closed || !ready || !transport || !pair.canProbe?.()) return Promise.resolve(false);
+      if (recoveryCheck) return recoveryCheck;
+      recoveryCheck = Promise.resolve(transport.probe?.()).then(healthy => {
+        if (closed) return false;
+        if (healthy === false) pair.recover?.();
+        else if (healthy === true) {
+          pair.confirmHealthy?.();
+          if (liveEnabled && liveState !== 'open') pair.repairLiveChannel?.();
+        }
+        return healthy === true;
+      }).finally(() => { recoveryCheck = null; });
+      return recoveryCheck;
+    },
+    getConnectionDiagnostics() { return pair.getDiagnostics?.() ?? Promise.resolve({}); },
     getLiveState() { return liveState; },
 
     getLiveStats() { return liveTransport?.stats?.() ?? null; },

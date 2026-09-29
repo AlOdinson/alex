@@ -55,6 +55,7 @@ export function createBrowserBoardSession({
   onRuntimeState = () => {},
   onProgress = () => {},
   onError = () => {},
+  retryRandom = Math.random,
   rtcConfig = {},
   createTeacherTabAuthority = createDefaultTeacherTabAuthority,
   createTeacherRuntime = createDefaultTeacherRuntime,
@@ -121,6 +122,7 @@ export function createBrowserBoardSession({
   let transitionQueue = Promise.resolve();
   let teacherTabAuthority = null;
   let teacherTabAuthorityHeld = false;
+  let teacherAuthorityEpoch = 0;
   let teacherTabReadyPromise = null;
   let rejectTeacherTabReady = null;
   let runtimeState = 'idle';
@@ -131,6 +133,7 @@ export function createBrowserBoardSession({
   const participantCapabilities = new Map();
   let studentRetryTimer = null;
   let studentRetryFailures = 0;
+  let studentNextRetryAt = 0;
   let pendingOwnerPeerIds = [];
   const pendingRealtimeSignals = [];
 
@@ -169,10 +172,12 @@ export function createBrowserBoardSession({
 
   const scheduleStudentRetry = () => {
     if (closed || isOwner || !desiredTeacherId || runtime || connectingRuntime || studentRetryTimer !== null) return;
-    const delay = Math.min(15_000, 1000 * (2 ** Math.min(studentRetryFailures++, 4)));
-    reportConnectionProgress(onProgress, null, null, { retrying: true });
+    const delay = Math.round(Math.min(15_000, 1000 * (2 ** Math.min(studentRetryFailures++, 4))) * (1 + Math.max(0, Math.min(1, Number(retryRandom()) || 0)) * 0.15));
+    studentNextRetryAt = Date.now() + delay;
+    reportConnectionProgress(onProgress, null, null, { retrying: true, nextRetryAt: studentNextRetryAt });
     studentRetryTimer = setTimeout(() => {
       studentRetryTimer = null;
+      studentNextRetryAt = 0;
       if (closed || !desiredTeacherId || runtime || connectingRuntime) return;
       // Retrying must not require a new presence event. A failed presence refresh
       // must not leave live Ably previews working with editing blocked forever.
@@ -305,8 +310,15 @@ export function createBrowserBoardSession({
       if (teacherTabAuthority !== authority) return;
       const wasAuthority = teacherTabAuthorityHeld;
       teacherTabAuthorityHeld = Boolean(nextAuthority);
+      if (wasAuthority !== teacherTabAuthorityHeld) teacherAuthorityEpoch += 1;
       if (teacherTabAuthorityHeld) {
+        const reacquired = settled;
         resolveOnce();
+        if (reacquired && !closed) enqueueTransition(async () => {
+          await startPromise?.catch(() => undefined);
+          if (!closed && teacherTabAuthorityHeld && !runtime) return startTeacher();
+          return runtime;
+        }).catch(() => undefined);
         return;
       }
       if (wasAuthority && !closed) {
@@ -321,10 +333,8 @@ export function createBrowserBoardSession({
         onChange: handleAuthorityChange,
       });
       teacherTabAuthority = authority;
-      Promise.resolve(authority.start()).then(() => {
-        if (teacherTabAuthority !== authority) return;
-        if (!teacherTabAuthorityHeld) rejectOnce(new Error('Teacher tab authority lock was not acquired'));
-      }).catch((error) => {
+      // start() starts the lease watcher; only onChange(true) proves ownership.
+      Promise.resolve(authority.start()).catch((error) => {
         if (teacherTabAuthority !== authority) return;
         if (!settled) rejectOnce(error);
         else if (!closed) {
@@ -350,6 +360,7 @@ export function createBrowserBoardSession({
     configureVerification(nextRuntime);
     cancelStudentRetry();
     studentRetryFailures = 0;
+    studentNextRetryAt = 0;
     unregisterRuntime = registerRuntime(safeBoardId, nextRuntime);
     durableBridge = createBrowserAuthorityDurableBridge({ runtime: nextRuntime, clientId: safeClientId });
     reportRuntimeState('ready');
@@ -361,7 +372,8 @@ export function createBrowserBoardSession({
   const startTeacher = async () => {
     await ensureTeacherTabAuthority();
     if (closed) return null;
-    if (!teacherTabAuthorityHeld) throw new Error('Teacher tab authority lock is not held');
+    if (!teacherTabAuthorityHeld) return null;
+    const startupEpoch = teacherAuthorityEpoch;
     let nextRuntime;
     try {
       nextRuntime = await createTeacherRuntime({
@@ -393,13 +405,15 @@ export function createBrowserBoardSession({
       nextRuntime?.close?.();
       return null;
     }
-    if (!teacherTabAuthorityHeld) {
+    if (!teacherTabAuthorityHeld || startupEpoch !== teacherAuthorityEpoch) {
       nextRuntime?.close?.();
-      const error = new Error('Teacher tab authority was lost before runtime startup');
-      releaseTeacherTabAuthority(error);
-      throw error;
+      return null; // the authority watcher owns reacquisition and the next startup
     }
     await flushPendingRealtimeSignals(nextRuntime);
+    if (closed || !teacherTabAuthorityHeld || startupEpoch !== teacherAuthorityEpoch) {
+      nextRuntime?.close?.();
+      return null;
+    }
     try { nextRuntime.updateParticipants?.(pendingOwnerPeerIds); } catch (error) { onError(error); }
     return installRuntime(nextRuntime);
   };
@@ -412,6 +426,7 @@ export function createBrowserBoardSession({
     if (runtime && teacherId === resolvedTeacherId) return runtime;
     if (runtime && teacherId !== resolvedTeacherId) clearRuntime();
     reportRuntimeState('waiting');
+    reportConnectionProgress(onProgress, 3, 'negotiating', {newAttempt: true, retrying: false});
 
     let nextRuntime = null;
     const handleStudentState = (state) => {
@@ -574,7 +589,8 @@ export function createBrowserBoardSession({
         && nextTeacherId === desiredTeacherId
         && nextTeacherMode !== desiredTeacherMode
       );
-      if (desiredTeacherId !== nextTeacherId || sameTeacherModeChanged) studentRetryFailures = 0;
+      const teacherChanged = desiredTeacherId !== nextTeacherId || sameTeacherModeChanged;
+      if (teacherChanged) { studentRetryFailures = 0; studentNextRetryAt = 0; cancelStudentRetry(); }
       if (sameTeacherModeChanged) {
         clearConnectingRuntime();
         if (runtime && teacherId === nextTeacherId && activeTeacherMode !== nextTeacherMode) {
@@ -584,10 +600,10 @@ export function createBrowserBoardSession({
       }
       desiredTeacherId = nextTeacherId;
       desiredTeacherMode = nextTeacherMode;
-      cancelStudentRetry();
+      if (!teacherChanged && (runtime || connectingRuntime || studentRetryTimer !== null || studentNextRetryAt > Date.now())) return Promise.resolve(runtime);
       if (!nextTeacherId) {
         if (!runtime && !connectingRuntime) {
-          reportConnectionProgress(onProgress, 2, 'teacher');
+          reportConnectionProgress(onProgress, 2, pendingOwnerIds.length ? 'teacher-pending' : 'teacher-offline');
           reportRuntimeState(pendingOwnerIds.length ? 'waiting' : 'teacher-offline');
         }
         return Promise.resolve(runtime);
@@ -613,6 +629,8 @@ export function createBrowserBoardSession({
       if (!runtime?.requestLock) return Promise.reject(new Error('Board lock runtime is unavailable'));
       return runtime.requestLock(operation, payload);
     },
+    recoverConnections() { return (runtime ?? connectingRuntime)?.recoverConnections?.(); },
+    getConnectionDiagnostics() { return (runtime ?? connectingRuntime)?.getConnectionDiagnostics?.(); },
     resumeVerification() {
       try { verifier?.resume?.(); } catch (error) { verificationError(error); }
     },

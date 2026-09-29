@@ -11,7 +11,7 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const LOCK_TTL = 12_000;
 const ABLY_SIGNAL_EVENT = 'screen-share-signal';
 
-import { CONNECTION_PROGRESS_EVENT } from './connectionProgress.js';
+import { CONNECTION_PROGRESS_EVENT, updateConnectionProgress } from './connectionProgress.js';
 let defaultAblyRuntimePromise = null;
 
 async function loadDefaultAblyRuntime() {
@@ -449,13 +449,52 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   let liveRouter = null;
   let controlRouter = null;
   let disconnected = false;
-  let progress = { step: 1, detail: 'room', since: Date.now(), path: '', retrying: false };
+  let desiredOwnerReady = false;
+  let presenceVersion = 0;
+  let presenceTask = null;
+  let presenceRetryTimer = null;
+  let presenceFailures = 0;
+  const reconcileOwnerPresence = () => {
+    if (disconnected || permission !== 'owner' || !transport?.updatePresence) return Promise.resolve();
+    clearTimeout(presenceRetryTimer); presenceRetryTimer = null;
+    if (presenceTask) return presenceTask;
+    const version = presenceVersion;
+    presenceTask = Promise.resolve().then(() => transport.updatePresence({ authorityReady: desiredOwnerReady }))
+      .then((result) => {
+        if (result === 'starting') throw new Error('Presence is still starting');
+        presenceFailures = 0;
+      }).catch(() => {
+        if (disconnected || presenceFailures >= 5) return;
+        const delay = Math.min(15000, 1000 * (2 ** presenceFailures++));
+        presenceRetryTimer = setTimeout(reconcileOwnerPresence, delay);
+        presenceRetryTimer?.unref?.();
+      }).finally(() => {
+        presenceTask = null;
+        if (!disconnected && version !== presenceVersion) reconcileOwnerPresence();
+      });
+    return presenceTask;
+  };
+  const setOwnerReady = (ready) => {
+    if (permission !== 'owner' || disconnected) return;
+    if (desiredOwnerReady !== Boolean(ready)) {
+      desiredOwnerReady = Boolean(ready); presenceVersion += 1; presenceFailures = 0;
+    }
+    reconcileOwnerPresence();
+  };
+  let progress = updateConnectionProgress(null);
+  const connectionEvents = [];
+  const recordConnection = (kind, fields = {}) => {
+    const event = { at: Date.now(), kind };
+    for (const key of ['step','detail','path','state','attempt','errorCode']) {
+      if (typeof fields[key] === 'string' || typeof fields[key] === 'number') event[key] = fields[key];
+    }
+    connectionEvents.push(event);
+    if (connectionEvents.length > 100) connectionEvents.shift();
+  };
   const onProgress = (event) => {
     if (disconnected || permission === 'owner') return;
-    const changed = event.restart === true || (event.step != null && (event.step !== progress.step || event.detail !== progress.detail || (event.path != null && event.path !== progress.path)));
-    progress = { ...progress, ...event, step: event.step ?? progress.step, detail: event.detail ?? progress.detail,
-      since: changed ? Date.now() : progress.since,
-      retrying: event.retrying ?? (changed ? false : progress.retrying) };
+    progress = updateConnectionProgress(progress, event);
+    recordConnection('progress', progress);
     try {
       if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(CONNECTION_PROGRESS_EVENT, {
         detail: { ...progress, boardId, permission },
@@ -486,6 +525,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
 
   session = createSession({
     onProgress,
+    onRuntimeState: (state) => { recordConnection('runtime', {state}); setOwnerReady(state === 'ready'); },
     offlineCacheKey: realtimeKey,
     boardId,
     clientId,
@@ -524,9 +564,10 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       callbacks,
       source: 'webrtc-control',
     }),
-    onPeerState: (state) => {
-      const peerState = String(state ?? '');
-      if (peerState === 'failed' || peerState === 'closed' || peerState === 'disconnected') {
+    onPeerState: (peerOrState, ownerPeerState) => {
+      const peerState = String(ownerPeerState ?? peerOrState ?? '');
+      recordConnection('peer', {state: peerState});
+      if (peerState === 'failed' || peerState === 'closed' || peerState === 'disconnected' || peerState === 'recovering') {
         onStatus?.('RECOVERING');
       }
       if (permission !== 'owner' && (peerState === 'failed' || peerState === 'closed')) {
@@ -599,6 +640,8 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     },
     onStatus,
     onRecover: async () => {
+      presenceFailures = 0;
+      reconcileOwnerPresence();
       // Presence refresh has already run inside the transport. Wake durable work without
       // blocking recovery on a possibly-reconnecting DataChannel, then ask Board to
       // reconcile against the teacher authority / local replica at its current revision.
@@ -626,11 +669,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   Promise.resolve(session.start?.())
     .then(() => {
       if (disconnected || permission !== 'owner') return;
-      return Promise.resolve(transport.updatePresence?.({ authorityReady: true })).catch((error) => {
-        if (disconnected) return;
-        console.warn('Could not promote owner presence to authority-ready', error);
-        onStatus?.('RECOVERING');
-      });
+      setOwnerReady(typeof session.getRuntimeState === 'function' ? session.getRuntimeState() === 'ready' : true);
     })
     .catch((error) => {
       if (disconnected) return;
@@ -638,8 +677,24 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       onStatus?.('SAVE_ERROR');
     });
 
+  let wakeTask = null;
+  let lastWake = 0;
   return {
     ...core,
+    recoverConnections() {
+      if (disconnected) return Promise.resolve();
+      if (wakeTask) return wakeTask;
+      if (Date.now() - lastWake < 2000) return Promise.resolve();
+      lastWake = Date.now(); recordConnection('wake');
+      reconcileOwnerPresence();
+      wakeTask = Promise.allSettled([Promise.resolve(session.recoverConnections?.()), Promise.resolve(transport.refreshUsers?.())])
+        .finally(() => { wakeTask = null; });
+      return wakeTask;
+    },
+    async getConnectionDiagnostics() {
+      return { progress: { ...progress }, events: connectionEvents.map(event => ({ ...event })),
+        peers: await session.getConnectionDiagnostics?.() ?? [] };
+    },
     resumeVerification: () => session.resumeVerification?.(),
     getVerificationStats: () => session.getVerificationStats?.() ?? { enabled: false },
     getTransportDiagnostics() {
@@ -658,6 +713,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     async disconnect() {
       if (disconnected) return;
       disconnected = true;
+      clearTimeout(presenceRetryTimer);
       liveRouter?.close?.();
       controlRouter?.close?.();
       await core.disconnect?.();

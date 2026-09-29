@@ -5,6 +5,8 @@ export const peerFrameByteLength = (frame) => encoder.encode(frame).byteLength;
 
 const MESSAGE_TYPES = new Set([
   'hello',
+  'ping',
+  'pong',
   'head-request',
   'head',
   'snapshot-request',

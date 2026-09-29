@@ -108,7 +108,9 @@ export function createTeacherPeerNetwork({
     }
     if (entry.liveTransport) return entry.liveTransport;
 
+    entry.liveChannel = channel;
     const liveTransport = createLiveTransport({
+      sequence: entry.liveSequence, highestSeqByStream: entry.liveReceived,
       channel,
       boardId: String(boardId ?? ''),
       localClientId: String(clientId ?? ''),
@@ -119,9 +121,17 @@ export function createTeacherPeerNetwork({
         try { onLiveEvent(peerId, type, payload, envelope); } catch (error) { onError(error); }
       },
       onState: (state) => {
-        if (peers.get(peerId) !== entry) return;
-        entry.liveState = String(state ?? 'unknown');
+        if (peers.get(peerId) !== entry || entry.liveChannel !== channel) return;
+        const channelState = String(state ?? 'unknown');
+        entry.liveState = entry.pair?.isLiveExpected?.() === false ? 'disabled' : channelState;
         try { onLiveState(peerId, entry.liveState); } catch (error) { onError(error); }
+        if (channelState === 'closed' || channelState === 'error') {
+          const retired = entry.liveTransport; entry.liveTransport = null; entry.liveChannel = null;
+          Promise.resolve().then(() => {
+            retired?.close?.();
+            if (peers.get(peerId) === entry) entry.pair.repairLiveChannel?.();
+          }).catch(error => failPeer(peerId, entry, error));
+        }
       },
       onError: (error) => {
         if (peers.get(peerId) === entry) {
@@ -145,6 +155,9 @@ export function createTeacherPeerNetwork({
       transport: null,
       liveTransport: null,
       liveState: 'idle',
+      liveSequence: { value: 0 },
+      liveReceived: new Map(),
+      liveChannel: null,
       unregister: null,
       selectedPath: '',
       closed: false,
@@ -161,6 +174,7 @@ export function createTeacherPeerNetwork({
       disconnectGraceMs,
       primaryPathTimeoutMs,
       createConnection,
+      checkHealth: () => entry.transport?.probe?.() ?? false,
       onSelectedChannel: (channel, path) => {
         if (peers.get(id) !== entry) return;
         entry.selectedPath = path;
@@ -200,12 +214,19 @@ export function createTeacherPeerNetwork({
       const negotiationId = signalingNegotiationId(signal);
       if (negotiationId && retiredNegotiations.get(peerId)?.has(negotiationId)) return false;
       let entry = ensurePeer(peerId);
+      // Validate before retiring a network entry: pair-level validation happens
+      // too late once its healthy transport and hub registration were removed.
+      if (signal.attemptId != null && (typeof signal.attemptId !== 'string'
+        || !signal.attemptId || signal.attemptId.length > 128
+        || (entry.pair?.getAttemptId?.() && signal.attemptId !== entry.pair.getAttemptId()))) return false;
       const selectedPath = entry.pair?.getSelectedPath?.();
       const freshOffer = signal.type === 'offer' && signal.description && negotiationId
-        && (!signal.path || signal.path === STUDENT_INITIATED_PATH);
+        && (!signal.path || signal.path === STUDENT_INITIATED_PATH)
+        && (!signal.attemptId || signal.pathSequence === 1);
       const failedPrimary = signal.type === 'path-select-request'
         && signal.path === STUDENT_INITIATED_PATH && signal.abandoned === true
         && selectedPath && negotiationId
+        && (!signal.attemptId || signal.pathSequence === (selectedPath === STUDENT_INITIATED_PATH ? 1 : 0))
         && entry.pair?.getCandidateState?.(selectedPath)?.negotiationId === negotiationId;
       if (failedPrimary || (freshOffer && selectedPath
         && entry.pair?.getCandidateState?.(selectedPath)?.negotiationId !== negotiationId
@@ -227,6 +248,25 @@ export function createTeacherPeerNetwork({
       return entry.pair.handleSignal(signal);
     },
 
+    recoverConnections() {
+      return Promise.allSettled([...peers.values()].map(entry => {
+        if (!entry.transport || !entry.pair.canProbe?.()) return false;
+        if (entry.recoveryCheck) return entry.recoveryCheck;
+        entry.recoveryCheck = Promise.resolve(entry.transport.probe?.()).then(healthy => {
+          if (entry.closed) return false;
+          if (healthy === false) entry.pair.recover?.();
+          else if (healthy === true) {
+            entry.pair.confirmHealthy?.();
+            if (entry.liveState !== 'open') entry.pair.repairLiveChannel?.();
+          }
+          return healthy === true;
+        }).finally(() => { entry.recoveryCheck = null; });
+        return entry.recoveryCheck;
+      }));
+    },
+    getConnectionDiagnostics() {
+      return Promise.all([...peers.values()].map(entry => entry.pair.getDiagnostics?.() ?? {}));
+    },
     getPeerCount() {
       return peers.size;
     },
@@ -235,6 +275,16 @@ export function createTeacherPeerNetwork({
       const entry = peers.get(String(peerId ?? '').trim());
       if (!entry?.liveTransport?.send) return 'unavailable';
       return entry.liveTransport.send(type, payload, options);
+    },
+
+    relayLive(sourceId, envelope) {
+      if (closed || envelope?.clientId !== sourceId || !peers.has(sourceId)) return [];
+      const results = [];
+      for (const [peerId, entry] of peers) {
+        if (peerId === sourceId) continue;
+        results.push({ peerId, result: entry.liveTransport?.relay?.(envelope) ?? 'unavailable' });
+      }
+      return results;
     },
 
     broadcastLive(type, payload, options = {}) {

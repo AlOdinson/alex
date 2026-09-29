@@ -52,6 +52,7 @@ export function createPeerDataChannelTransport({
   let closed = false;
   let closeReported = false;
   let sendQueue = Promise.resolve();
+  let pendingProbe = null;
   const pendingWaits = new Set();
 
   const cancelWaits = () => {
@@ -184,6 +185,15 @@ export function createPeerDataChannelTransport({
     if (closed || typeof event?.data !== 'string') return;
     try {
       const message = decodePeerMessage(event.data);
+      if (message.type === 'ping') {
+        const id = message.payload?.id;
+        if (typeof id === 'string' && id.length <= 128) enqueueEncodedFrames([createPeerMessage('pong', { id })]).catch(onError);
+        return;
+      }
+      if (message.type === 'pong') {
+        if (pendingProbe && message.payload?.id === pendingProbe.id) pendingProbe.finish(true);
+        return;
+      }
       if (TRANSFER_TYPES.has(message.type)) {
         const completed = assembler.accept(message);
         reportProgress();
@@ -205,6 +215,7 @@ export function createPeerDataChannelTransport({
   const handleChannelClose = () => {
     if (closed || closeReported) return;
     closeReported = true;
+    pendingProbe?.finish(false);
     cancelWaits();
     assembler.clear();
     try { onClose(); } catch (error) { onError(error); }
@@ -223,6 +234,21 @@ export function createPeerDataChannelTransport({
   const removeErrorListener = addListener(channel, 'error', handleChannelError);
 
   return {
+    probe(timeoutMs = 5000) {
+      if (closed || closeReported || channel.readyState !== 'open') return Promise.resolve(false);
+      if (pendingProbe) return pendingProbe.promise;
+      let resolve;
+      const promise = new Promise(r => { resolve = r; });
+      const probe = { id: defaultTransferId(), promise, timer: null, finish(value) {
+        if (pendingProbe !== probe) return;
+        clearTimeout(probe.timer); pendingProbe = null; resolve(value);
+      } };
+      pendingProbe = probe;
+      enqueueEncodedFrames([createPeerMessage('ping', { id: probe.id })]).then(() => {
+        if (pendingProbe === probe) probe.timer = setTimeout(() => probe.finish(false), Math.max(1, Number(timeoutMs) || 5000));
+      }).catch(() => probe.finish(false));
+      return promise;
+    },
     send(type, payload = {}) {
       const encoded = createPeerMessage(type, payload);
       if (encoded.length <= inlineLimit && peerFrameByteLength(encoded) <= MAX_PEER_FRAME_BYTES) {
@@ -280,6 +306,7 @@ export function createPeerDataChannelTransport({
     close({ closeChannel = false } = {}) {
       if (closed) return;
       closed = true;
+      pendingProbe?.finish(false);
       cancelWaits();
       assembler.clear();
       removeMessageListener();

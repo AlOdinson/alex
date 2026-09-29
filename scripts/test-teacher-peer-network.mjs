@@ -213,3 +213,23 @@ test('selected durable path failure removes teacher peer', async () => {
   assert.deepEqual(removed, ['student-a']);
   network.close();
 });
+
+test('unknown stale pair offer cannot evict a selected teacher transport', async t => {
+  const {network,created,removed}=makeNetwork();t.after(()=>network.close());network.updateParticipants(['student-a']);await flush();
+  const current=created[0];await current.options.sendSignal({type:'offer',negotiationId:'current-native',description:{type:'offer',sdp:'current'}});
+  current.options.onChannel({readyState:'open',close(){}});
+  assert.equal(await network.handleSignal({sourceId:'student-a',signal:{type:'offer',path:STUDENT_INITIATED_PATH,attemptId:'unseen-old-pair',negotiationId:'unseen-old-native',description:{type:'offer',sdp:'old'}}}),false);
+  assert.equal(current.closed,0);assert.equal(created.length,1);assert.deepEqual(removed,[]);
+});
+
+test('successful wake probe clears pending recovery watchdog even without a connected event', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});let healthy=false;
+  const {network,created,removed}=makeNetwork({createTransport:()=>({send:async()=>{},close(){},probe:async()=>healthy})});t.after(()=>network.close());
+  network.updateParticipants(['student-a']);await flush();const current=created[0];
+  current.connection.restartIce=async()=>true;
+  await network.handleSignal({sourceId:'student-a',signal:{type:'answer',recoveryVersion:1,liveVersion:0,description:{type:'answer',sdp:'answer'}}});
+  current.options.onChannel({readyState:'open',close(){}});
+  await network.recoverConnections();await flush();healthy=true;await network.recoverConnections();
+  assert.equal((await network.getConnectionDiagnostics())[0].recovering,false);
+  t.mock.timers.tick(9000);await flush();assert.deepEqual(removed,[]);assert.equal(current.closed,0);
+});
