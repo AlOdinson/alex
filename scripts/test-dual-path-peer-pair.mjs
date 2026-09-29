@@ -215,3 +215,33 @@ test('student timer skew cannot kill a primary path before owner switches it', a
   assert.deepEqual(selected, [OWNER_INITIATED_PATH]);
   pair.close();
 });
+
+
+test('stale pair controls cannot switch a current negotiation', async t => {
+  const {pair,created}=harness('student'); t.after(()=>pair.close()); await pair.start();
+  await pair.handleSignal({type:'offer',path:OWNER_INITIATED_PATH,attemptId:'fresh-pair',negotiationId:'fresh-native',description:{type:'offer',sdp:'offer'}});
+  assert.equal(await pair.handleSignal({type:'path-switch',path:STUDENT_INITIATED_PATH,attemptId:'old-pair',pathSequence:1}),false);
+  assert.equal(created[0].closes,0);
+  assert.equal(await pair.handleSignal({type:'path-switch',path:STUDENT_INITIATED_PATH,attemptId:'fresh-pair',pathSequence:1}),true);
+  assert.equal(created[0].closes,1);
+});
+
+test('primary timeout follows real progress but overall deadline remains bounded', async t => {
+  t.mock.timers.enable({apis:['setTimeout','Date']});
+  const {pair,created}=harness('owner');t.after(()=>pair.close());await pair.start();
+  t.mock.timers.tick(40);created[0].options.onProgress({step:3,detail:'route'});
+  t.mock.timers.tick(15);assert.equal(created.length,1);
+  t.mock.timers.tick(35);assert.equal(created.length,2);
+});
+
+test('selected failed route gets one coordinated ICE restart before bounded teardown', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});let restarts=0;const failures=[];
+  const {pair,created}=harness('owner',{recoveryTimeoutMs:100,onFatal:e=>failures.push(e)});t.after(()=>pair.close());await pair.start();
+  created[0].connection.restartIce=async()=>{restarts++;return true;};
+  await pair.handleSignal({type:'answer',recoveryVersion:1,description:{type:'answer',sdp:'answer'}});
+  created[0].options.onChannel({readyState:'open',close(){}});
+  created[0].options.onConnectionState('failed');await flush();
+  assert.equal(restarts,1);assert.equal(failures.length,0);
+  created[0].options.onConnectionState('failed');await flush();assert.equal(restarts,1);
+  t.mock.timers.tick(101);await flush();assert.equal(failures.length,1);
+});

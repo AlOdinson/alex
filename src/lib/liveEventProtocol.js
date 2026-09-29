@@ -51,6 +51,7 @@ function normalizeEvent(value) {
     type,
     boardId: requiredId(value.boardId, 'boardId'),
     clientId: requiredId(value.clientId, 'clientId'),
+    ...(value.streamSessionId ? { streamSessionId: requiredId(value.streamSessionId, 'streamSessionId') } : {}),
     seq: nonNegativeInteger(value.seq, 'seq'),
     baseRevision: nonNegativeInteger(value.baseRevision, 'revision'),
     timestamp: finiteNumber(value.timestamp, 'timestamp'),
@@ -70,6 +71,7 @@ export function decodeLiveEvent(value, {
   boardId,
   remoteClientId,
   highestSeqByStream = new Map(),
+  allowRelayed = false,
 } = {}) {
   const text = typeof value === 'string' ? value : JSON.stringify(value);
   if (frameBytes(text) > MAX_LIVE_FRAME_BYTES) throw new Error('Live frame is too large');
@@ -84,12 +86,14 @@ export function decodeLiveEvent(value, {
   }
   if (parsed.protocol !== BOARD_LIVE_PROTOCOL) return null;
   if (String(parsed.boardId ?? '').trim() !== String(boardId ?? '').trim()) return null;
-  if (String(parsed.clientId ?? '').trim() !== String(remoteClientId ?? '').trim()) return null;
+  if (!allowRelayed && String(parsed.clientId ?? '').trim() !== String(remoteClientId ?? '').trim()) return null;
 
   const normalized = normalizeEvent(parsed);
-  const streamId = `${normalized.clientId}:${normalized.type}:${normalized.streamKey}`;
+  if (normalized.payload.clientId != null && normalized.payload.clientId !== normalized.clientId) return null;
+  const streamId = `${normalized.clientId}:${normalized.type}:${normalized.streamKey}${normalized.streamSessionId ? ':' + normalized.streamSessionId : ''}`;
   const previous = Number(highestSeqByStream.get(streamId));
   if (Number.isFinite(previous) && normalized.seq <= previous) return null;
+  if (highestSeqByStream.size >= 1024 && !highestSeqByStream.has(streamId)) highestSeqByStream.delete(highestSeqByStream.keys().next().value);
   highestSeqByStream.set(streamId, normalized.seq);
   return normalized;
 }

@@ -137,9 +137,9 @@ export function createTeacherTabAuthority({
 
       const requestTask = Promise.resolve().then(() => locks.request(
         lockName,
-        { mode: 'exclusive', ifAvailable: true, signal: controller.signal },
+        { mode: 'exclusive', ifAvailable: true },
         async (lock) => {
-          if (stopped) {
+          if (stopped || usingFallback || decisionSettled) {
             settleDecision('stopped');
             return;
           }
@@ -182,7 +182,7 @@ export function createTeacherTabAuthority({
       }
       if (outcome === 'acquired') {
         await requestTask;
-        return;
+        continue;
       }
       if (outcome === 'stopped') {
         try { controller.abort(); } catch { /* ignored */ }

@@ -1,3 +1,4 @@
+import { randomToken } from './ids.js';
 import { decodeLiveEvent, encodeLiveEvent } from './liveEventProtocol.js';
 
 function addListener(target, type, listener) {
@@ -30,14 +31,17 @@ export function createPeerLiveChannel({
   highWaterMark = 256_000,
   lowWaterMark = 64_000,
   maxPendingStreams = 128,
+  sequence = { value: 0 },
+  highestSeqByStream = new Map(),
+  allowRelayed = false,
 } = {}) {
   if (!channel?.send) throw new Error('RTCDataChannel is required');
   const highWater = Math.max(1, Number(highWaterMark) || 256_000);
   const lowWater = Math.max(0, Math.min(highWater, Number(lowWaterMark) || 64_000));
   const maxPending = Math.max(1, Math.floor(Number(maxPendingStreams) || 128));
-  const highestSeqByStream = new Map();
+  sequence.sessionId ||= randomToken(12);
   const pending = new Map();
-  let seq = 0;
+  let disposed = false;
   let closed = false;
   let sent = 0;
   let received = 0;
@@ -93,6 +97,20 @@ export function createPeerLiveChannel({
     pending.set(streamId, encoded);
   };
 
+  const transmit = (streamId, encoded) => {
+    if (closed || channel.readyState === 'closed' || channel.readyState === 'closing') return 'closed';
+      if (channel.readyState === 'open' && Number(channel.bufferedAmount ?? 0) <= highWater && pending.size === 0) {
+        try {
+          sendEncoded(encoded);
+          return 'sent';
+        } catch (error) {
+          reportError(error);
+        }
+      }
+      queueLatest(streamId, encoded);
+      return 'coalesced';
+  };
+
   const handleMessage = (event) => {
     if (closed || typeof event?.data !== 'string') return;
     try {
@@ -100,6 +118,7 @@ export function createPeerLiveChannel({
         boardId,
         remoteClientId,
         highestSeqByStream,
+        allowRelayed,
       });
       if (!envelope) return;
       received += 1;
@@ -134,34 +153,32 @@ export function createPeerLiveChannel({
   return {
     send(type, payload = {}, { streamKey = type } = {}) {
       if (closed || channel.readyState === 'closed' || channel.readyState === 'closing') return 'closed';
-      seq += 1;
+      sequence.value += 1;
       const encoded = encodeLiveEvent({
         type,
         boardId,
         clientId: localClientId,
-        seq,
+        seq: sequence.value,
+        streamSessionId: sequence.sessionId,
         baseRevision: safeRevision(getRevision()),
         timestamp: Date.now(),
         streamKey,
         payload,
       });
-      const streamId = `${type}:${String(streamKey)}`;
-      if (channel.readyState === 'open' && Number(channel.bufferedAmount ?? 0) <= highWater && pending.size === 0) {
-        try {
-          sendEncoded(encoded);
-          return 'sent';
-        } catch (error) {
-          reportError(error);
-        }
-      }
-      queueLatest(streamId, encoded);
-      return 'coalesced';
+      const streamId = `${localClientId}:${type}:${String(streamKey)}`;
+      return transmit(streamId, encoded);
+    },
+
+    relay(envelope) {
+      if (String(envelope?.boardId) !== String(boardId)) return 'invalid';
+      return transmit(`${envelope.clientId}:${envelope.type}:${envelope.streamKey}`, encodeLiveEvent(envelope));
     },
 
     stats,
 
     close() {
-      if (closed) return;
+      if (disposed) return;
+      disposed = true;
       closed = true;
       pending.clear();
       removeMessage();

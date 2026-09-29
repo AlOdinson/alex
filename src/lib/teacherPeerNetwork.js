@@ -108,7 +108,9 @@ export function createTeacherPeerNetwork({
     }
     if (entry.liveTransport) return entry.liveTransport;
 
+    entry.liveChannel = channel;
     const liveTransport = createLiveTransport({
+      sequence: entry.liveSequence, highestSeqByStream: entry.liveReceived,
       channel,
       boardId: String(boardId ?? ''),
       localClientId: String(clientId ?? ''),
@@ -119,9 +121,16 @@ export function createTeacherPeerNetwork({
         try { onLiveEvent(peerId, type, payload, envelope); } catch (error) { onError(error); }
       },
       onState: (state) => {
-        if (peers.get(peerId) !== entry) return;
+        if (peers.get(peerId) !== entry || entry.liveChannel !== channel) return;
         entry.liveState = String(state ?? 'unknown');
         try { onLiveState(peerId, entry.liveState); } catch (error) { onError(error); }
+        if (entry.liveState === 'closed' || entry.liveState === 'error') {
+          const retired = entry.liveTransport; entry.liveTransport = null; entry.liveChannel = null;
+          Promise.resolve().then(() => {
+            retired?.close?.();
+            if (peers.get(peerId) === entry) entry.pair.repairLiveChannel?.();
+          }).catch(error => failPeer(peerId, entry, error));
+        }
       },
       onError: (error) => {
         if (peers.get(peerId) === entry) {
@@ -145,6 +154,9 @@ export function createTeacherPeerNetwork({
       transport: null,
       liveTransport: null,
       liveState: 'idle',
+      liveSequence: { value: 0 },
+      liveReceived: new Map(),
+      liveChannel: null,
       unregister: null,
       selectedPath: '',
       closed: false,
@@ -227,6 +239,22 @@ export function createTeacherPeerNetwork({
       return entry.pair.handleSignal(signal);
     },
 
+    recoverConnections() {
+      return Promise.allSettled([...peers.values()].map(entry => {
+        if (!entry.transport || !entry.pair.canProbe?.()) return false;
+        if (entry.recoveryCheck) return entry.recoveryCheck;
+        entry.recoveryCheck = Promise.resolve(entry.transport.probe?.()).then(healthy => {
+          if (entry.closed) return false;
+          if (healthy === false) entry.pair.recover?.();
+          else if (healthy === true && entry.liveState !== 'open') entry.pair.repairLiveChannel?.();
+          return healthy === true;
+        }).finally(() => { entry.recoveryCheck = null; });
+        return entry.recoveryCheck;
+      }));
+    },
+    getConnectionDiagnostics() {
+      return Promise.all([...peers.values()].map(entry => entry.pair.getDiagnostics?.() ?? {}));
+    },
     getPeerCount() {
       return peers.size;
     },
@@ -235,6 +263,16 @@ export function createTeacherPeerNetwork({
       const entry = peers.get(String(peerId ?? '').trim());
       if (!entry?.liveTransport?.send) return 'unavailable';
       return entry.liveTransport.send(type, payload, options);
+    },
+
+    relayLive(sourceId, envelope) {
+      if (closed || envelope?.clientId !== sourceId || !peers.has(sourceId)) return [];
+      const results = [];
+      for (const [peerId, entry] of peers) {
+        if (peerId === sourceId) continue;
+        results.push({ peerId, result: entry.liveTransport?.relay?.(envelope) ?? 'unavailable' });
+      }
+      return results;
     },
 
     broadcastLive(type, payload, options = {}) {

@@ -57,7 +57,7 @@ test('waits for owner path, then starts student fallback only after path-switch'
   await options.sendSignal({ type: 'offer' });
   assert.deepEqual(sentSignals.at(-1), {
     peerId: 'teacher-a',
-    signal: { type: 'offer', path: FALLBACK },
+    signal: { type: 'offer', path: FALLBACK, recoveryVersion: 1, pathSequence: 1 },
   });
 
   options.onChannel({ label: 'alex-board-durable-v1' });
@@ -290,4 +290,15 @@ test('durable selected channel failure retires network and live transport', asyn
   assert.equal(liveClosed, 1);
   assert.equal(connectionClosed, 1);
   assert.equal(states.at(-1), 'failed');
+});
+
+test('wake probes a ready channel and repairs only an unresponsive route', async t => {
+  let options;let healthy=true;let recoveries=0;let probes=0;
+  const network=createStudentPeerNetwork({teacherId:'owner',getRevision:()=>1,applyCommit:async()=>{},installSnapshot:async()=>{},signaling:{send:async()=>{}},
+    createPair:o=>{options=o;return {start:async()=>{},close(){},canProbe:()=>true,recover:()=>{recoveries++;}};},
+    createTransport:()=>({send:async()=>{},close(){},probe:async()=>{probes++;return healthy;}}),
+    createSession:()=>({start:async()=>{},close(){}})});
+  t.after(()=>network.close());const start=network.start();options.onSelectedChannel({readyState:'open'},'owner-initiated');await start;
+  await network.recoverConnections();assert.equal(probes,1);assert.equal(recoveries,0);
+  healthy=false;await network.recoverConnections();assert.equal(recoveries,1);
 });

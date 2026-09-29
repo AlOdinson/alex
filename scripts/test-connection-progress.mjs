@@ -77,3 +77,14 @@ test('student reports handshake, snapshot wait and installation at actual bounda
     await starting;
   } finally { session.close(); }
 });
+
+test('attempt and stage changes retain total connection time', async () => {
+  const {updateConnectionProgress}=await import('../src/lib/connectionProgress.js');
+  let progress=updateConnectionProgress(null,{step:1,detail:'room'},1000);
+  progress=updateConnectionProgress(progress,{step:3,detail:'negotiating',newAttempt:true},2000);
+  progress=updateConnectionProgress(progress,{step:3,detail:'offer',path:'student-initiated',restart:true},4000);
+  assert.equal(progress.startedAt,1000);assert.equal(progress.attempt,1);assert.equal(progress.since,4000);
+  progress=updateConnectionProgress(progress,{step:3,detail:'negotiating',newAttempt:true},6000);
+  assert.equal(progress.attempt,2);assert.equal(progress.startedAt,1000);
+  const text=connectionProgressText(progress,11000);assert.match(text,/Всего 10 с/);assert.match(text,/Попытка 2/);
+});

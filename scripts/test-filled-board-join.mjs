@@ -307,7 +307,8 @@ test('a new device reports that the owner is offline instead of an endless conne
   session.close();
 });
 
-test('retry after a failed canvas install requests a full snapshot, not an already-cached head', async () => {
+test('retry after a failed canvas install requests a full snapshot, not an already-cached head', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
   let replica = { revision: 0 };
   let attempts = 0;
   const snapshot = { canvas: { objects: [{ boardObjectId: 'restored' }] } };
@@ -331,6 +332,8 @@ test('retry after a failed canvas install requests a full snapshot, not an alrea
   await assert.rejects(session.updateParticipants(users), /canvas install failed/);
   assert.equal(replica.revision, 9, 'test reproduces the replica advancing before the canvas rejects');
   await session.updateParticipants(users);
+  t.mock.timers.tick(2000);
+  for(let i=0;i<80;i++) await Promise.resolve();
   assert.equal(session.getRuntimeState(), 'ready');
   assert.equal(session.getRevision(), 9);
   session.close();

@@ -123,3 +123,12 @@ test('live channel close reports its own state without touching any durable reso
   assert.equal(states.at(-1), 'closed');
   assert.equal(live.send('cursor', { x: 1 }, { streamKey: 'cursor' }), 'closed');
 });
+
+test('relaying preserves author and sequence and coalesces each author separately', () => {
+  const {live,channel}=createFixture();
+  try {
+    const envelope={type:'cursor',boardId:'board-a',clientId:'student-origin',seq:42,streamSessionId:'session-a',baseRevision:7,timestamp:123,streamKey:'cursor',payload:{clientId:'student-origin',x:9}};
+    assert.equal(live.relay(envelope),'sent');
+    assert.deepEqual(JSON.parse(channel.sent.at(-1)),{protocol:'alex-board-live-v1',...envelope});
+  } finally {live.close();}
+});

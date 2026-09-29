@@ -122,3 +122,20 @@ test('waits for bufferedamountlow before sending more data', async () => {
   assert.equal(completed, true);
   assert.equal(channel.sent.length, 1);
 });
+
+test('health probe confirms a round trip without entering the board message stream', async () => {
+  const left=new FakeChannel(),right=new FakeChannel();const received=[];
+  left.send=value=>queueMicrotask(()=>right.emit('message',{data:value}));
+  right.send=value=>queueMicrotask(()=>left.emit('message',{data:value}));
+  const a=createPeerDataChannelTransport({channel:left,onMessage:m=>received.push(m)});
+  const b=createPeerDataChannelTransport({channel:right,onMessage:m=>received.push(m)});
+  try {assert.equal(await a.probe(),true);assert.deepEqual(received,[]);} finally {a.close();b.close();}
+});
+
+test('health probe times out and close cancels an outstanding probe', async t => {
+  t.mock.timers.enable({apis:['setTimeout']});
+  const channel=new FakeChannel();const transport=createPeerDataChannelTransport({channel});
+  const pending=transport.probe(50);for(let n=0;n<10;n++)await Promise.resolve();
+  t.mock.timers.tick(50);assert.equal(await pending,false);
+  const second=transport.probe(50);transport.close();assert.equal(await second,false);
+});

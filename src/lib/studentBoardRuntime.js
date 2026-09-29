@@ -87,6 +87,9 @@ export function createStudentBoardRuntime({
       return network?.sendLive?.(type, payload, options) ?? 'unavailable';
     },
 
+    recoverConnections() { return network?.recoverConnections?.(); },
+    getConnectionDiagnostics() { return network?.getConnectionDiagnostics?.(); },
+
     getLiveState() {
       return network?.getLiveState?.() ?? 'unavailable';
     },

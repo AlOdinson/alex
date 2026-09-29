@@ -1,7 +1,7 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.36.0",
+  "version": "1.37.0",
   "type": "module",
   "scripts": {
     "test:connection-progress": "node --test scripts/test-connection-progress.mjs",
@@ -16,7 +16,8 @@
     "test:sync": "node scripts/test-board-fullscreen.mjs && node scripts/test-realtime-discontinuity-recovery.mjs && node scripts/test-settings-gear-layout.mjs && node scripts/test-dock-layout-controller.mjs && node scripts/test-dock-layout-switcher.mjs && node scripts/test-dock-contextual-direction.mjs && node scripts/test-dock-layout-css.mjs && node scripts/test-dock-layout-modes.mjs && node scripts/test-presence-menu.mjs && node scripts/test-floating-drawing-controls.mjs && node scripts/test-ipad-color-palette.mjs && node scripts/test-eraser-object-only.mjs && node scripts/test-desktop-sharescreen-button.mjs && node scripts/test-desktop-shape-palette-scale.mjs && node scripts/test-bottom-tool-dock.mjs && node scripts/test-dock-liquid-glass.mjs && node scripts/test-browser-button-visibility.mjs && node scripts/test-shape-palette.mjs && node scripts/test-solid-shape-geometry.mjs && node scripts/test-solid-drag-mirroring.mjs && node scripts/test-i18n.mjs && node scripts/test-screen-share.mjs && node scripts/test-mac-browser.mjs && node scripts/test-sync-convergence.mjs && node scripts/test-stale-draw-preview-regression.mjs && node scripts/test-authoritative-log.mjs && node scripts/test-collaboration-safety.mjs && node scripts/test-fast-board-library.mjs && node scripts/test-drawing-presets.mjs && node scripts/test-pencil-transform-regression.mjs && node scripts/test-pencil-precise-selection.mjs && node scripts/test-pencil-palm-regression.mjs && node scripts/test-pencil-contact-arbitration.mjs && node scripts/test-pencil-rapid-pinch-regression.mjs && node scripts/test-pencil-original-input-path.mjs && node scripts/test-pencil-tool-routing.mjs && node scripts/test-pencil-diagnostics.mjs && node scripts/test-pencil-diagnostics-runtime.mjs && node scripts/test-pencil-freeze-diagnostics-runtime.mjs && node scripts/test-ipad-stylus-touch-compatibility.mjs && node scripts/benchmark-transform-hotpath.mjs",
     "test:sync:ci": "node scripts/run-sync-ci.mjs",
     "test:selection-lease": "node --test scripts/test-selection-lease-transform.mjs",
-    "test:selection-lease:browser": "node scripts/test-selection-lease-transform-browser.mjs"
+    "test:selection-lease:browser": "node scripts/test-selection-lease-transform-browser.mjs",
+    "test:connections": "node --test scripts/test-connection-upgrades.mjs scripts/test-browser-peer-connection.mjs scripts/test-dual-path-peer-pair.mjs scripts/test-peer-data-channel.mjs scripts/test-peer-live-channel.mjs scripts/test-live-event-protocol.mjs scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs scripts/test-student-peer-network.mjs scripts/test-teacher-peer-network.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",
