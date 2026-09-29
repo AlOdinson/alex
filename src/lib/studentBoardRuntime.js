@@ -17,6 +17,7 @@ export function createStudentBoardRuntime({
   onLiveState = () => {},
   onBoardControl = () => {},
   onError = () => {},
+  onProgress = () => {},
   onVerificationMode = () => {},
   createSignaling = createBoardPeerSignalingBridge,
   createNetwork = createStudentPeerNetwork,
@@ -38,6 +39,7 @@ export function createStudentBoardRuntime({
   });
 
   network = createNetwork({
+    onProgress,
     onVerificationMode,
     boardId: safeBoardId,
     clientId: safeClientId,

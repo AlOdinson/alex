@@ -3,6 +3,7 @@ import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { createPeerDataChannelTransport } from './peerDataChannel.js';
 import { createStudentPeerSession } from './studentPeerSession.js';
 import { createPeerLiveChannel } from './peerLiveChannel.js';
+import { reportConnectionProgress } from './connectionProgress.js';
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const INITIAL_SYNC_IDLE_TIMEOUT_MS = 90_000;
@@ -27,6 +28,7 @@ export function createStudentPeerNetwork({
   onAck = () => {},
   onState = () => {},
   onError = () => {},
+  onProgress = () => {},
   onVerificationMode = () => {},
   onBoardControl = () => {},
   connectTimeoutMs = CONNECT_TIMEOUT_MS,
@@ -60,6 +62,7 @@ export function createStudentPeerNetwork({
   let channelStart = Promise.resolve();
   let startPromise = null;
   let initialSyncTimer = null;
+  let initialStep = 4;
   let resolveReady;
   let rejectReady;
 
@@ -119,6 +122,7 @@ export function createStudentPeerNetwork({
     disconnectGraceMs,
     primaryPathTimeoutMs,
     createConnection,
+    onProgress,
     onSelectedChannel: (channel, path) => {
       if (closed || transport) {
         if (closed) {
@@ -133,13 +137,20 @@ export function createStudentPeerNetwork({
         channel,
         onMessage: (message) => Promise.resolve().then(() => nextSession?.handleMessage?.(message)).catch(failConnection),
         onTransfer: (transfer) => Promise.resolve().then(() => nextSession?.handleTransfer?.(transfer)).catch(failConnection),
-        onProgress: recordInitialSyncProgress,
+        onProgress: () => {
+          recordInitialSyncProgress();
+          if (!readinessSettled && initialStep === 5) reportConnectionProgress(onProgress, 5, 'receiving');
+        },
         onClose: () => {
           if (!closed) closeResources(new Error('Teacher peer data channel closed'), { reportState: 'failed' });
         },
         onError: failConnection,
       });
       nextSession = createSession({
+        onProgress: (event) => {
+          initialStep = event.step;
+          reportConnectionProgress(onProgress, event.step, event.detail, event);
+        },
         onVerificationMode,
         transport,
         getRevision,

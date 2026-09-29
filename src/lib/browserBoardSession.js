@@ -1,4 +1,5 @@
 import { createStudentOfflineRecorder } from './studentOfflineCache.js';
+import { reportConnectionProgress } from './connectionProgress.js';
 import { createBoundedBoardVerifier } from './boundedBoardVerifier.js';
 import { createBrowserAuthorityDurableBridge } from './browserAuthorityDurableBridge.js';
 import { registerBoardRuntime as registerDefaultBoardRuntime } from './browserBoardRuntimeRegistry.js';
@@ -52,6 +53,7 @@ export function createBrowserBoardSession({
   onLiveState = () => {},
   onBoardControl = () => {},
   onRuntimeState = () => {},
+  onProgress = () => {},
   onError = () => {},
   rtcConfig = {},
   createTeacherTabAuthority = createDefaultTeacherTabAuthority,
@@ -168,6 +170,7 @@ export function createBrowserBoardSession({
   const scheduleStudentRetry = () => {
     if (closed || isOwner || !desiredTeacherId || runtime || connectingRuntime || studentRetryTimer !== null) return;
     const delay = Math.min(15_000, 1000 * (2 ** Math.min(studentRetryFailures++, 4)));
+    reportConnectionProgress(onProgress, null, null, { retrying: true });
     studentRetryTimer = setTimeout(() => {
       studentRetryTimer = null;
       if (closed || !desiredTeacherId || runtime || connectingRuntime) return;
@@ -350,6 +353,7 @@ export function createBrowserBoardSession({
     unregisterRuntime = registerRuntime(safeBoardId, nextRuntime);
     durableBridge = createBrowserAuthorityDurableBridge({ runtime: nextRuntime, clientId: safeClientId });
     reportRuntimeState('ready');
+    if (!isOwner) reportConnectionProgress(onProgress, 6, 'ready');
     settleRuntimeWaiters(nextRuntime);
     return nextRuntime;
   };
@@ -427,6 +431,11 @@ export function createBrowserBoardSession({
     };
 
     nextRuntime = createStudentRuntime({
+      onProgress: (event) => {
+        if (!closed && nextRuntime && (connectingRuntime === nextRuntime || runtime === nextRuntime)) {
+          reportConnectionProgress(onProgress, event.step, event.detail, event);
+        }
+      },
       boardId: safeBoardId,
       clientId: safeClientId,
       webrtcLiveEnabled: resolvedTeacherMode === 'webrtc-live-v1',
@@ -578,6 +587,7 @@ export function createBrowserBoardSession({
       cancelStudentRetry();
       if (!nextTeacherId) {
         if (!runtime && !connectingRuntime) {
+          reportConnectionProgress(onProgress, 2, 'teacher');
           reportRuntimeState(pendingOwnerIds.length ? 'waiting' : 'teacher-offline');
         }
         return Promise.resolve(runtime);

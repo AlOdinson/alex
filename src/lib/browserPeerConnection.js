@@ -1,4 +1,5 @@
 import { randomToken } from './ids.js';
+import { reportConnectionProgress } from './connectionProgress.js';
 import { createPeerSignalingAssistance, signalingNegotiationId } from './peerSignalingAssistance.js';
 
 export const BOARD_DURABLE_DATA_CHANNEL = 'alex-board-durable-v1';
@@ -36,6 +37,7 @@ export function createBrowserPeerConnection({
   onLiveChannel = () => {},
   onConnectionState = () => {},
   onError = () => {},
+  onProgress = () => {},
   createPeerConnection,
   assistSignaling = false,
 } = {}) {
@@ -159,6 +161,7 @@ export function createBrowserPeerConnection({
   };
 
   peerConnection.onconnectionstatechange = () => {
+    if (peerConnection.connectionState === 'connected') reportConnectionProgress(onProgress, 4, 'channel');
     onConnectionState(peerConnection.connectionState ?? 'unknown');
   };
 
@@ -189,6 +192,7 @@ export function createBrowserPeerConnection({
       lastRemoteOffer = fingerprint;
       const reply = tagSignal({ type: 'answer', description: peerConnection.localDescription ?? answer });
       assistance.rememberDescription(reply);
+      reportConnectionProgress(onProgress, 3, 'answer');
       return reply;
     }
     if (signal.type === 'answer') {
@@ -200,6 +204,7 @@ export function createBrowserPeerConnection({
       if (lastRemoteAnswer === fingerprint) return null;
       await peerConnection.setRemoteDescription(signal.description);
       if (!closed) { lastRemoteAnswer = fingerprint; await flushPendingIce(); }
+      if (!closed) reportConnectionProgress(onProgress, 3, 'route');
     }
     return null;
   };
@@ -227,6 +232,7 @@ export function createBrowserPeerConnection({
       const signal = tagSignal({ type: 'offer', description: peerConnection.localDescription ?? offer });
       assistance.rememberDescription(signal);
       await publishSignal(signal);
+      if (!closed && dataChannel?.readyState !== 'open') reportConnectionProgress(onProgress, 3, 'offer');
     },
 
     handleSignal(signal) {

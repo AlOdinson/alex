@@ -1,5 +1,6 @@
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { signalingNegotiationId } from './peerSignalingAssistance.js';
+import { reportConnectionProgress } from './connectionProgress.js';
 
 export const OWNER_INITIATED_PATH = 'owner-initiated';
 export const STUDENT_INITIATED_PATH = 'student-initiated';
@@ -40,6 +41,7 @@ export function createDualPathPeerPair({
   onState = () => {},
   onFatal = () => {},
   onError = () => {},
+  onProgress = () => {},
 } = {}) {
   const role = String(localRole ?? '');
   if (role !== 'owner' && role !== 'student') throw new Error('localRole must be owner or student');
@@ -201,9 +203,17 @@ export function createDualPathPeerPair({
       failed: false,
       closed: false,
       disconnectTimer: null,
+      progressStep: 3,
     };
 
     const connection = createConnection({
+      onProgress: (event) => {
+        if (!closed && !candidate.closed && candidate.path === activePath && !selectedAttached) {
+          if (event.step < candidate.progressStep) return;
+          candidate.progressStep = event.step;
+          reportConnectionProgress(onProgress, event.step, event.detail, { path: resolved });
+        }
+      },
       initiator,
       enableLiveChannel: Boolean(enableLiveChannel),
       assistSignaling: true,
@@ -226,6 +236,7 @@ export function createDualPathPeerPair({
   function startCandidate(candidate) {
     if (!candidate || candidate.started || candidate.closed) return;
     candidate.started = true;
+    reportConnectionProgress(onProgress, 3, 'negotiating', { path: candidate.path, retrying: false, restart: true });
     Promise.resolve(candidate.connection?.start?.()).catch((error) => {
       reportError(error);
       if (candidate.durableChannel) return;

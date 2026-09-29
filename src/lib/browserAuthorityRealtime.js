@@ -11,6 +11,7 @@ const CONNECT_TIMEOUT_MS = 10_000;
 const LOCK_TTL = 12_000;
 const ABLY_SIGNAL_EVENT = 'screen-share-signal';
 
+import { CONNECTION_PROGRESS_EVENT } from './connectionProgress.js';
 let defaultAblyRuntimePromise = null;
 
 async function loadDefaultAblyRuntime() {
@@ -448,6 +449,20 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   let liveRouter = null;
   let controlRouter = null;
   let disconnected = false;
+  let progress = { step: 1, detail: 'room', since: Date.now(), path: '', retrying: false };
+  const onProgress = (event) => {
+    if (disconnected || permission === 'owner') return;
+    const changed = event.restart === true || (event.step != null && (event.step !== progress.step || event.detail !== progress.detail || (event.path != null && event.path !== progress.path)));
+    progress = { ...progress, ...event, step: event.step ?? progress.step, detail: event.detail ?? progress.detail,
+      since: changed ? Date.now() : progress.since,
+      retrying: event.retrying ?? (changed ? false : progress.retrying) };
+    try {
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent(CONNECTION_PROGRESS_EVENT, {
+        detail: { ...progress, boardId, permission },
+      }));
+    } catch { /* optional loading indicator */ }
+  };
+  onProgress(progress);
 
   const callbacks = {
     onMode,
@@ -470,6 +485,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   };
 
   session = createSession({
+    onProgress,
     offlineCacheKey: realtimeKey,
     boardId,
     clientId,

@@ -1,3 +1,4 @@
+import { CONNECTION_PROGRESS_EVENT, connectionProgressText } from './lib/connectionProgress.js';
 const RUNTIME_STATE_EVENT = 'alex-board-runtime-state';
 const BOARD_ROUTE_PATTERN = /\/board\/([^/?#]+)/;
 const BLOCKED_INPUT_EVENTS = ['pointerdown', 'touchstart', 'mousedown'];
@@ -48,6 +49,8 @@ function installDurableEditGate() {
   let hasSnapshot = false;
   let blocked = false;
   let badge = null;
+  let progress = null;
+  let progressTimer = null;
 
   const updateDataset = () => {
     const root = document.documentElement;
@@ -67,6 +70,8 @@ function installDurableEditGate() {
   };
 
   const removeBadge = () => {
+    window.clearInterval?.(progressTimer);
+    progressTimer = null;
     badge?.remove?.();
     badge = null;
   };
@@ -96,10 +101,23 @@ function installDurableEditGate() {
         boxShadow: '0 6px 20px rgba(15,23,42,.22)',
         backdropFilter: 'blur(12px)',
         WebkitBackdropFilter: 'blur(12px)',
+        whiteSpace: 'pre-line',
       });
       document.body?.append?.(badge);
     }
-    badge.textContent = gateMessage(state, permission, hasSnapshot);
+    const renderMessage = () => {
+      if (permission === 'owner' || !progress) return gateMessage(state, permission, hasSnapshot);
+      const text = connectionProgressText(progress);
+      return state === 'teacher-offline' || state === 'error'
+        ? `${text}\n${gateMessage(state, permission, hasSnapshot)}` : text;
+    };
+    badge.textContent = renderMessage();
+    if (permission !== 'owner' && progress && progressTimer == null) {
+      progressTimer = window.setInterval?.(() => {
+        if (currentBoardId() !== activeBoardId) { syncRouteState(); return; }
+        if (badge && progress) badge.textContent = renderMessage();
+      }, 1000) ?? null;
+    }
   };
 
   const syncRouteState = () => {
@@ -117,6 +135,7 @@ function installDurableEditGate() {
     }
     if (activeBoardId !== routeBoardId) {
       activeBoardId = routeBoardId;
+      progress = null;
       hasSnapshot = false;
       state = 'booting';
       permission = '';
@@ -131,7 +150,11 @@ function installDurableEditGate() {
     const routeBoardId = syncRouteState();
     if (!routeBoardId || String(detail.boardId ?? '') !== routeBoardId) return;
     activeBoardId = routeBoardId;
+    if (state === 'ready' && detail.state !== 'ready') {
+      progress = { step: 2, detail: 'teacher', since: Date.now(), retrying: false };
+    }
     state = String(detail.state ?? 'waiting');
+    if (state === 'ready') progress = null;
     permission = String(detail.permission ?? '');
     blocked = shouldBlockDurableEdit({ state, permission });
     updateDataset();
@@ -149,6 +172,19 @@ function installDurableEditGate() {
   };
 
   syncRouteState();
+  window.addEventListener(CONNECTION_PROGRESS_EVENT, (event) => {
+    const detail = event.detail ?? {};
+    if (!syncRouteState() || String(detail.boardId ?? '') !== activeBoardId || detail.permission === 'owner') return;
+    if (detail.detail === 'ready' || state === 'ready') return;
+    progress = detail;
+    if (state === 'booting') {
+      permission = String(detail.permission ?? '');
+      state = 'waiting';
+      blocked = shouldBlockDurableEdit({ state, permission });
+      updateDataset();
+    }
+    showBadge();
+  });
   window.addEventListener(RUNTIME_STATE_EVENT, (event) => applyRuntimeState(event.detail ?? {}));
   window.addEventListener('alex-board-readonly-view', (event) => {
     if (!syncRouteState() || String(event.detail?.boardId ?? '') !== activeBoardId) return;

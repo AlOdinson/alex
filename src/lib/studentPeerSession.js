@@ -1,4 +1,5 @@
 import { normalizeBoardControl } from './boardControlProtocol.js';
+import { reportConnectionProgress } from './connectionProgress.js';
 
 function safeRevision(value) {
   const revision = Number(value ?? 0);
@@ -19,6 +20,7 @@ export function createStudentPeerSession({
   onError = () => {},
   onVerificationMode = () => {},
   onBoardControl = () => {},
+  onProgress = () => {},
   createRequestId = defaultRequestId,
 } = {}) {
   if (!transport?.send) throw new Error('peer transport is required');
@@ -59,9 +61,10 @@ export function createStudentPeerSession({
   };
 
 
-  const requestSync = () => transport.send('sync-request', {
-    revision: safeRevision(getRevision()),
-  });
+  const requestSync = () => {
+    if (!initialSyncSettled) reportConnectionProgress(onProgress, 5, 'sync');
+    return transport.send('sync-request', { revision: safeRevision(getRevision()) });
+  };
 
   const clearInitialProbe = () => {
     clearTimeout(initialProbeTimer);
@@ -83,6 +86,7 @@ export function createStudentPeerSession({
   const requestInitialSnapshot = () => {
     if (closed || initialSyncSettled || initialSnapshotRequested) return;
     initialSnapshotRequested = true;
+    reportConnectionProgress(onProgress, 5, 'snapshot-wait');
     Promise.resolve(transport.send('snapshot-request', {})).catch(failInitialSync);
   };
 
@@ -130,6 +134,7 @@ export function createStudentPeerSession({
       if (closed) return Promise.reject(new Error('Student peer session is closed'));
       if (!initialSyncStarted) {
         initialSyncStarted = true;
+        reportConnectionProgress(onProgress, 4, 'handshake');
         initialSyncTargetRevision = safeRevision(getRevision());
         awaitingInitialSnapshot = initialSyncTargetRevision === 0;
         try {
@@ -226,6 +231,7 @@ export function createStudentPeerSession({
           await requestSync();
           return;
         }
+        if (!initialSyncSettled) reportConnectionProgress(onProgress, 6, 'painting');
         await applyCommit(payload);
       });
     },
@@ -245,6 +251,7 @@ export function createStudentPeerSession({
           await requestSync();
           return;
         }
+        if (!initialSyncSettled) reportConnectionProgress(onProgress, 6, 'painting');
         await installSnapshot(parsed.snapshot, revision);
         learnVerificationMode(parsed);
         if (closed) return;
