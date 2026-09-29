@@ -119,12 +119,21 @@ export function createDualPathPeerPair({
     candidates.delete(resolved);
   }
 
-  function failPair(error) {
+  function failPair(error, failedNegotiationId = '') {
     if (closed || fatal) return;
     fatal = true;
     clearDeadline();
     clearPrimaryTimer();
     clearControlTimers();
+    if (role === 'student' && !selectedAttached) {
+      const negotiationId = failedNegotiationId || candidates.get(activePath)?.negotiationId;
+      // A watchdog request alone is not failure proof: its channel may open
+      // while Ably is delivering it. Announce abandonment only AFTER closing
+      // our native attempt, and identify exactly which generation was closed.
+      for (const candidate of candidates.values()) closeCandidate(candidate);
+      if (negotiationId) sendControl({ type: 'path-select-request', path: STUDENT_INITIATED_PATH,
+        negotiationId, abandoned: true });
+    }
     try { onState('failed', selectedPath || activePath); } catch { /* observer */ }
     try { onFatal(error instanceof Error ? error : new Error(String(error))); } catch { /* observer */ }
   }
@@ -320,13 +329,15 @@ export function createDualPathPeerPair({
         // Owner coordinates direction changes. Student never unilaterally flips
         // roles, which avoids timer skew killing a primary path that is opening
         // successfully on the owner side.
-        replayControl({ type: 'path-select-request', path: STUDENT_INITIATED_PATH });
+        replayControl({ type: 'path-select-request', path: STUDENT_INITIATED_PATH, abandoned: true,
+          ...(candidate.negotiationId ? { negotiationId: candidate.negotiationId } : {}),
+        });
       }
       return;
     }
 
     removeCandidate(candidate.path);
-    failPair(error ?? new Error('Fallback WebRTC path failed'));
+    failPair(error ?? new Error('Fallback WebRTC path failed'), candidate.negotiationId);
   }
 
   function handleConnectionState(candidate, state) {
@@ -392,7 +403,10 @@ export function createDualPathPeerPair({
       } else {
         // Coordination watchdog only: ask owner to switch/replay; never change
         // the student's native role without an owner decision.
-        replayControl({ type: 'path-select-request', path: STUDENT_INITIATED_PATH });
+        const negotiationId = candidates.get(OWNER_INITIATED_PATH)?.negotiationId;
+        replayControl({ type: 'path-select-request', path: STUDENT_INITIATED_PATH,
+          ...(negotiationId ? { negotiationId } : {}),
+        });
       }
     }, delay);
     primaryTimer?.unref?.();
@@ -445,6 +459,11 @@ export function createDualPathPeerPair({
         if (path === STUDENT_INITIATED_PATH && activePath !== STUDENT_INITIATED_PATH) {
           switchToStudentPath({ notify: false });
         }
+        // A fresh student may have missed the original offer. Remember the
+        // owner's advertised generation so a failed attempt can retire it.
+        const candidate = candidates.get(path);
+        const negotiationId = signalingNegotiationId(signal);
+        if (candidate && !candidate.negotiationId && negotiationId) candidate.negotiationId = negotiationId;
         selectPath(path, { notify: false });
         return true;
       }

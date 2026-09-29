@@ -2,6 +2,25 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createBrowserPeerConnection } from '../src/lib/browserPeerConnection.js';
 
+test('late offer receipt cannot overwrite an already processed answer status', async () => {
+  let acknowledge;
+  const receipt = new Promise(resolve => { acknowledge = resolve; });
+  const progress = [];
+  const pc = new FakePeerConnection();
+  const createChannel = pc.createDataChannel.bind(pc);
+  pc.createDataChannel = (...args) => { const channel = createChannel(...args); channel.readyState = 'connecting'; return channel; };
+  const peer = createBrowserPeerConnection({ initiator: true, sendSignal: () => receipt,
+    createPeerConnection: () => pc, onProgress: event => progress.push(event.detail) });
+  try {
+    const starting = peer.start();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    await peer.handleSignal({ type: 'answer', description: { type: 'answer', sdp: 'answer' } });
+    acknowledge();
+    await starting;
+    assert.equal(progress.at(-1), 'route');
+  } finally { peer.close(); }
+});
+
 class FakeDataChannel {
   constructor(label) {
     this.label = label;

@@ -232,7 +232,7 @@ export function createBrowserPeerConnection({
       const signal = tagSignal({ type: 'offer', description: peerConnection.localDescription ?? offer });
       assistance.rememberDescription(signal);
       await publishSignal(signal);
-      if (!closed && dataChannel?.readyState !== 'open') reportConnectionProgress(onProgress, 3, 'offer');
+      if (!closed && !lastRemoteAnswer && dataChannel?.readyState !== 'open') reportConnectionProgress(onProgress, 3, 'offer');
     },
 
     handleSignal(signal) {

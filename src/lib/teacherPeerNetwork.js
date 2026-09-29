@@ -1,4 +1,5 @@
-import { createDualPathPeerPair } from './dualPathPeerPair.js';
+import { createDualPathPeerPair, OWNER_INITIATED_PATH, STUDENT_INITIATED_PATH } from './dualPathPeerPair.js';
+import { signalingNegotiationId } from './peerSignalingAssistance.js';
 import { createBrowserPeerConnection } from './browserPeerConnection.js';
 import { createPeerDataChannelTransport } from './peerDataChannel.js';
 import { createPeerLiveChannel } from './peerLiveChannel.js';
@@ -32,6 +33,19 @@ export function createTeacherPeerNetwork({
   }
 
   const peers = new Map();
+  // Remember retired generations across pair replacement: delayed Ably offers
+  // must not evict the student's newer connection. Both dimensions are bounded.
+  const retiredNegotiations = new Map();
+  const retire = (peerId, negotiationId) => {
+    if (!negotiationId) return;
+    if (!retiredNegotiations.has(peerId)) {
+      if (retiredNegotiations.size >= 128) retiredNegotiations.delete(retiredNegotiations.keys().next().value);
+      retiredNegotiations.set(peerId, new Set());
+    }
+    const ids = retiredNegotiations.get(peerId);
+    if (ids.size >= 64) ids.delete(ids.values().next().value);
+    ids.add(negotiationId);
+  };
   let closed = false;
 
   const closePeer = (peerId, expectedEntry = null) => {
@@ -39,6 +53,10 @@ export function createTeacherPeerNetwork({
     const entry = peers.get(id);
     if (!entry) return false;
     if (expectedEntry && entry !== expectedEntry) return false;
+    for (const negotiationId of entry.offerIds) retire(id, negotiationId);
+    for (const path of [OWNER_INITIATED_PATH, STUDENT_INITIATED_PATH]) {
+      retire(id, entry.pair?.getCandidateState?.(path)?.negotiationId);
+    }
     peers.delete(id);
     entry.closed = true;
     try { entry.liveTransport?.close?.(); } catch (error) { onError(error); }
@@ -130,6 +148,7 @@ export function createTeacherPeerNetwork({
       unregister: null,
       selectedPath: '',
       closed: false,
+      offerIds: new Set(),
     };
 
     const pair = createPair({
@@ -178,7 +197,32 @@ export function createTeacherPeerNetwork({
       const peerId = String(message?.sourceId ?? '').trim();
       const signal = message?.signal;
       if (!peerId || !signal) return false;
-      const entry = ensurePeer(peerId);
+      const negotiationId = signalingNegotiationId(signal);
+      if (negotiationId && retiredNegotiations.get(peerId)?.has(negotiationId)) return false;
+      let entry = ensurePeer(peerId);
+      const selectedPath = entry.pair?.getSelectedPath?.();
+      const freshOffer = signal.type === 'offer' && signal.description && negotiationId
+        && (!signal.path || signal.path === STUDENT_INITIATED_PATH);
+      const failedPrimary = signal.type === 'path-select-request'
+        && signal.path === STUDENT_INITIATED_PATH && signal.abandoned === true
+        && selectedPath && negotiationId
+        && entry.pair?.getCandidateState?.(selectedPath)?.negotiationId === negotiationId;
+      if (failedPrimary || (freshOffer && selectedPath
+        && entry.pair?.getCandidateState?.(selectedPath)?.negotiationId !== negotiationId
+        && !entry.offerIds.has(negotiationId))) {
+        // The remote application has started a new generation even if our native
+        // channel has not yet noticed its closure. Release transport/hub/locks too.
+        closePeer(peerId, entry);
+        entry = ensurePeer(peerId);
+      }
+      if (freshOffer) {
+        if (entry.offerIds.size >= 64) {
+          const oldest = entry.offerIds.values().next().value;
+          retire(peerId, oldest);
+          entry.offerIds.delete(oldest);
+        }
+        entry.offerIds.add(negotiationId);
+      }
       Promise.resolve(entry.pair.start()).catch((error) => failPeer(peerId, entry, error));
       return entry.pair.handleSignal(signal);
     },
@@ -224,6 +268,7 @@ export function createTeacherPeerNetwork({
       if (closed) return;
       closed = true;
       for (const peerId of [...peers.keys()]) closePeer(peerId);
+      retiredNegotiations.clear();
     },
   };
 }

@@ -8,6 +8,18 @@ import {
 
 const flush = async () => { for (let i = 0; i < 30; i += 1) await Promise.resolve(); };
 
+test('student declares abandonment only after closing the timed-out advertised generation', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const { pair, created, sent } = harness('student');
+  t.after(() => pair.close());
+  await pair.start();
+  await pair.handleSignal({ type: 'path-select', path: OWNER_INITIATED_PATH, negotiationId: 'owner-stale' });
+  t.mock.timers.tick(201);
+  await flush();
+  assert.equal(created[0].closes, 1);
+  assert.ok(sent.some(signal => signal.abandoned === true && signal.negotiationId === 'owner-stale'));
+});
+
 for (const role of ['owner', 'student']) {
   for (const openBeforeStart of [false, true]) {
     test(`${role} preserves early fallback across start (open=${openBeforeStart})`, async (t) => {
