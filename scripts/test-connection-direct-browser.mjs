@@ -41,16 +41,18 @@ async function createPage(context,id,owner=false,createBoard=false) {
     const {createTeacherPeerNetwork}=await import('/alex/src/lib/teacherPeerNetwork.js');
     const {createStudentPeerNetwork}=await import('/alex/src/lib/studentPeerNetwork.js');
     const {createBrowserPeerConnection}=await import('/alex/src/lib/browserPeerConnection.js');
+    const {createDualPathPeerPair}=await import('/alex/src/lib/dualPathPeerPair.js');
     if(createBoard){const {createAuthorityBoard}=await import('/alex/src/lib/browserAuthorityStore.js');
       await createAuthorityBoard({boardId,ownerKey:'test-owner',shareKey:'test-share',realtimeKey:'test-share',guestMode:'edit',snapshot:{version:2,background:'grid',canvas:{objects:[]}}});}
-    window.__connections=[];window.__live=[];window.__states=[];window.__errors=[];
+    window.__connections=[];window.__pairs=[];window.__live=[];window.__states=[];window.__errors=[];
     const createConnection=options=>{const peer=createBrowserPeerConnection(options);window.__connections.push(peer);return peer;};
+    const createPair=options=>{const pair=createDualPathPeerPair(options);window.__pairs.push(pair);return pair;};
     const session=createBrowserBoardSession({boardId,clientId:id,permission:owner?'owner':'edit',webrtcLiveV1:true,
       sendScreenShareSignal:payload=>window.routeSignal(JSON.parse(JSON.stringify(payload))),
       onLiveEvent:(type,payload,envelope)=>window.__live.push({type,payload,envelope}),
       onRuntimeState:(state,detail)=>window.__states.push({state,detail}),onError:error=>window.__errors.push(error.message),
-      createTeacherRuntime:options=>createTeacherBoardRuntime({...options,createNetwork:o=>createTeacherPeerNetwork({...o,createConnection})}),
-      createStudentRuntime:options=>createStudentBoardRuntime({...options,createNetwork:o=>createStudentPeerNetwork({...o,createConnection})}),
+      createTeacherRuntime:options=>createTeacherBoardRuntime({...options,createNetwork:o=>createTeacherPeerNetwork({...o,createConnection,createPair})}),
+      createStudentRuntime:options=>createStudentBoardRuntime({...options,createNetwork:o=>createStudentPeerNetwork({...o,createConnection,createPair})}),
     });
     window.__session=session;window.__starting=session.start();window.__starting.catch(error=>window.__errors.push(error.message));
     for(const payload of window.__earlySignals??[]) session.handleRealtimeSignal(payload);
@@ -78,8 +80,9 @@ try {
   await live(s1,41);await wait('group live fanout',()=>s2.evaluate(()=>window.__live.some(e=>e.payload.x===41&&e.envelope.clientId==='student-a')));
   results.push('direct join, durable edits and group live relay');
 
-  await owner.evaluate(async()=>{window.__restartPeer=window.__connections.find(p=>p.getDataChannel()?.readyState==='open');window.__durable=window.__restartPeer.getDataChannel();await window.__restartPeer.restartIce();});
+  await owner.evaluate(()=>{window.__restartPeer=window.__connections.find(p=>p.getDataChannel()?.readyState==='open');window.__durable=window.__restartPeer.getDataChannel();window.__recoverPair=window.__pairs.find(p=>p.canProbe());window.__recoverPair.recover();});
   await wait('ICE restart answer',()=>owner.evaluate(async()=>(await window.__restartPeer.getDiagnostics()).iceRevision===1&&window.__restartPeer.getPeerConnection().signalingState==='stable'));
+  await wait('pair recovery watchdog settled',()=>owner.evaluate(async()=>!(await window.__recoverPair.getDiagnostics()).recovering));
   assert.equal(await owner.evaluate(()=>window.__restartPeer.getDataChannel()===window.__durable),true);
   await change(s1,'after-ice');await wait('edits after ICE restart',async()=>await revision(s2)===2);
   results.push('native ICE restart keeps durable channel and edits');

@@ -122,9 +122,10 @@ export function createTeacherPeerNetwork({
       },
       onState: (state) => {
         if (peers.get(peerId) !== entry || entry.liveChannel !== channel) return;
-        entry.liveState = String(state ?? 'unknown');
+        const channelState = String(state ?? 'unknown');
+        entry.liveState = entry.pair?.isLiveExpected?.() === false ? 'disabled' : channelState;
         try { onLiveState(peerId, entry.liveState); } catch (error) { onError(error); }
-        if (entry.liveState === 'closed' || entry.liveState === 'error') {
+        if (channelState === 'closed' || channelState === 'error') {
           const retired = entry.liveTransport; entry.liveTransport = null; entry.liveChannel = null;
           Promise.resolve().then(() => {
             retired?.close?.();
@@ -173,6 +174,7 @@ export function createTeacherPeerNetwork({
       disconnectGraceMs,
       primaryPathTimeoutMs,
       createConnection,
+      checkHealth: () => entry.transport?.probe?.() ?? false,
       onSelectedChannel: (channel, path) => {
         if (peers.get(id) !== entry) return;
         entry.selectedPath = path;
@@ -212,12 +214,19 @@ export function createTeacherPeerNetwork({
       const negotiationId = signalingNegotiationId(signal);
       if (negotiationId && retiredNegotiations.get(peerId)?.has(negotiationId)) return false;
       let entry = ensurePeer(peerId);
+      // Validate before retiring a network entry: pair-level validation happens
+      // too late once its healthy transport and hub registration were removed.
+      if (signal.attemptId != null && (typeof signal.attemptId !== 'string'
+        || !signal.attemptId || signal.attemptId.length > 128
+        || (entry.pair?.getAttemptId?.() && signal.attemptId !== entry.pair.getAttemptId()))) return false;
       const selectedPath = entry.pair?.getSelectedPath?.();
       const freshOffer = signal.type === 'offer' && signal.description && negotiationId
-        && (!signal.path || signal.path === STUDENT_INITIATED_PATH);
+        && (!signal.path || signal.path === STUDENT_INITIATED_PATH)
+        && (!signal.attemptId || signal.pathSequence === 1);
       const failedPrimary = signal.type === 'path-select-request'
         && signal.path === STUDENT_INITIATED_PATH && signal.abandoned === true
         && selectedPath && negotiationId
+        && (!signal.attemptId || signal.pathSequence === (selectedPath === STUDENT_INITIATED_PATH ? 1 : 0))
         && entry.pair?.getCandidateState?.(selectedPath)?.negotiationId === negotiationId;
       if (failedPrimary || (freshOffer && selectedPath
         && entry.pair?.getCandidateState?.(selectedPath)?.negotiationId !== negotiationId
@@ -246,7 +255,10 @@ export function createTeacherPeerNetwork({
         entry.recoveryCheck = Promise.resolve(entry.transport.probe?.()).then(healthy => {
           if (entry.closed) return false;
           if (healthy === false) entry.pair.recover?.();
-          else if (healthy === true && entry.liveState !== 'open') entry.pair.repairLiveChannel?.();
+          else if (healthy === true) {
+            entry.pair.confirmHealthy?.();
+            if (entry.liveState !== 'open') entry.pair.repairLiveChannel?.();
+          }
           return healthy === true;
         }).finally(() => { entry.recoveryCheck = null; });
         return entry.recoveryCheck;

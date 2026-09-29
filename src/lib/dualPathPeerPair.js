@@ -44,6 +44,7 @@ export function createDualPathPeerPair({
   onFatal = () => {},
   onError = () => {},
   onProgress = () => {},
+  checkHealth = () => false,
 } = {}) {
   const role = String(localRole ?? '');
   if (role !== 'owner' && role !== 'student') throw new Error('localRole must be owner or student');
@@ -61,6 +62,7 @@ export function createDualPathPeerPair({
   const retiredAttempts = new Set();
   let primaryStartedAt = 0;
   let remoteRecovery = false;
+  let remoteLiveEnabled = null;
   const recoveryRequests = new Set();
   let switchedFromId = '';
   let started = false;
@@ -148,16 +150,24 @@ export function createDualPathPeerPair({
     try { onFatal(error instanceof Error ? error : new Error(String(error))); } catch { /* observer */ }
   }
 
-  function sendControl(signal) {
-    Promise.resolve(signaling.send(remoteId, { ...signal,
-      ...(attemptId ? { attemptId } : {}), recoveryVersion: 1,
+  function tagControl(signal) {
+    return { ...signal,
+      ...(attemptId ? { attemptId } : {}), recoveryVersion: 1, liveVersion: enableLiveChannel ? 1 : 0,
       pathSequence: activePath === STUDENT_INITIATED_PATH ? 1 : 0,
-    })).catch(reportError);
+    };
+  }
+
+  function sendControl(signal) {
+    Promise.resolve(signaling.send(remoteId, tagControl(signal))).catch(reportError);
   }
 
   function replayControl(signal) {
-    sendControl(signal);
-    for (const delay of CONTROL_REPLAY_DELAYS_MS) later(() => sendControl(signal), delay);
+    // A replay belongs to the generation that scheduled it, even if the pair
+    // adopts a new owner attempt before its timer runs.
+    const tagged = tagControl(signal);
+    const send = () => Promise.resolve(signaling.send(remoteId, tagged)).catch(reportError);
+    send();
+    for (const delay of CONTROL_REPLAY_DELAYS_MS) later(send, delay);
   }
 
   function attachSelectedIfReady() {
@@ -226,6 +236,7 @@ export function createDualPathPeerPair({
       closed: false,
       disconnectTimer: null,
       recoveryTimer: null,
+      recoveryEpoch: 0,
       liveRepairTimer: null,
       progressStep: 3,
     };
@@ -248,7 +259,7 @@ export function createDualPathPeerPair({
       sendSignal: (signal) => {
         const negotiationId = signalingNegotiationId(signal);
         if (negotiationId) candidate.negotiationId = negotiationId;
-        return signaling.send(remoteId, { ...signal, path: resolved, recoveryVersion: 1, ...(attemptId ? { attemptId } : {}),
+        return signaling.send(remoteId, { ...signal, path: resolved, recoveryVersion: 1, liveVersion: enableLiveChannel ? 1 : 0, ...(attemptId ? { attemptId } : {}),
           pathSequence: resolved === STUDENT_INITIATED_PATH ? 1 : 0 });
       },
       onChannel: (channel) => handleDurableOpen(candidate, channel),
@@ -364,13 +375,26 @@ export function createDualPathPeerPair({
 
   function recoverCandidate(candidate, mode = 'ice') {
     if (closed || fatal || !candidate || candidate.closed || !selectedAttached) return false;
+    if (mode === 'live' && (!enableLiveChannel || remoteLiveEnabled !== true || !remoteRecovery)) return false;
     const timerKey = mode === 'live' ? 'liveRepairTimer' : 'recoveryTimer';
     if (candidate[timerKey]) return true;
     if (mode === 'live' && candidate.liveChannel?.readyState === 'open') return true;
     if (!remoteRecovery) { failPair(new Error('Peer requires full reconnection')); return false; }
-    candidate[timerKey] = setTimeout(() => {
-      candidate[timerKey] = null;
-      if (!closed && !candidate.closed) failPair(new Error(mode === 'live' ? 'Live channel recovery timed out' : 'ICE recovery timed out'));
+    const epoch = mode === 'ice' ? ++candidate.recoveryEpoch : null;
+    candidate[timerKey] = setTimeout(async () => {
+      // A suspended tab may resume after this timer expired while its data
+      // channel already works again. Confirm actual health before teardown.
+      let healthy = false;
+      if (mode === 'ice') {
+        try { healthy = await checkHealth(); } catch { /* failed probe */ }
+        if (candidate.recoveryEpoch !== epoch) return;
+      }
+      if (closed || candidate.closed) return;
+      if (healthy === true) confirmCandidateHealthy(candidate);
+      else {
+        candidate[timerKey] = null;
+        failPair(new Error(mode === 'live' ? 'Live channel recovery timed out' : 'ICE recovery timed out'));
+      }
     }, positiveTimeout(recoveryTimeoutMs, 8_000));
     candidate[timerKey]?.unref?.();
     if (mode === 'ice') { try { onState('recovering', candidate.path); } catch { /* observer */ } }
@@ -385,12 +409,22 @@ export function createDualPathPeerPair({
     return true;
   }
 
+  function confirmCandidateHealthy(candidate) {
+    if (closed || fatal || !candidate || candidate.closed) return false;
+    const wasRecovering = Boolean(candidate.recoveryTimer);
+    candidate.recoveryEpoch += 1;
+    clearTimeout(candidate.recoveryTimer); candidate.recoveryTimer = null;
+    clearTimeout(candidate.disconnectTimer); candidate.disconnectTimer = null;
+    if (wasRecovering) { try { onState('connected', candidate.path); } catch { /* observer */ } }
+    return true;
+  }
+
   function handleConnectionState(candidate, state) {
     if (closed || candidate.closed) return;
     const normalized = String(state ?? 'unknown');
     if (selectedPath === candidate.path && normalized === 'failed') { recoverCandidate(candidate); return; }
     if (normalized === 'connected') {
-      clearTimeout(candidate.recoveryTimer); candidate.recoveryTimer = null;
+      confirmCandidateHealthy(candidate);
     }
 
     if (selectedPath === candidate.path) {
@@ -500,21 +534,30 @@ export function createDualPathPeerPair({
         if (role !== 'student' || type !== 'offer' || signal.path !== OWNER_INITIATED_PATH || selectedAttached) return false;
         if (retiredAttempts.size >= 64) retiredAttempts.delete(retiredAttempts.values().next().value);
         retiredAttempts.add(attemptId);
+        clearControlTimers(); clearPrimaryTimer(); clearDeadline();
         removeCandidate(activePath); activePath = OWNER_INITIATED_PATH; fallbackStarted = false;
+        switchedFromId = ''; pendingSelectedPath = ''; remoteRecovery = false; remoteLiveEnabled = null;
+        recoveryRequests.clear(); primaryStartedAt = Date.now();
         attemptId = incomingAttempt;
+        if (started) { armPrimaryTimer(); armDeadline(); }
       }
       if (incomingAttempt && !attemptId) attemptId = incomingAttempt;
       if (type.startsWith('path-')) {
         const id = signalingNegotiationId(signal);
         const current = candidates.get(activePath)?.negotiationId;
-        if (!incomingAttempt && id && current && id !== current && id !== switchedFromId) return false;
+        if (id && current && id !== current && id !== switchedFromId) return false;
         if (incomingAttempt && type === 'path-switch' && signal.pathSequence !== 1) return false;
+        if (incomingAttempt && type === 'path-select'
+          && signal.pathSequence !== (signal.path === STUDENT_INITIATED_PATH ? 1 : 0)) return false;
+        if (incomingAttempt && type === 'path-select-request' && current
+          && signal.pathSequence !== (activePath === STUDENT_INITIATED_PATH && id !== switchedFromId ? 1 : 0)) return false;
         if (type === 'path-select' && id && candidates.get(safePath(signal.path))?.negotiationId
           && candidates.get(safePath(signal.path)).negotiationId !== id) return false;
-        if (type === 'path-switch' && !incomingAttempt && current && !id) return false;
+        if ((type === 'path-switch' || (incomingAttempt && type === 'path-select-request')) && current && !id) return false;
       }
 
       if (signal.recoveryVersion === 1) remoteRecovery = true;
+      if (signal.liveVersion === 0 || signal.liveVersion === 1) remoteLiveEnabled = signal.liveVersion === 1;
       if (type === 'connection-recover') {
         const candidate = candidates.get(selectedPath);
         if (!selectedAttached || !candidate?.initiator || signal.path !== selectedPath
@@ -618,6 +661,9 @@ export function createDualPathPeerPair({
     },
 
     canProbe() { return remoteRecovery && selectedAttached && !closed; },
+    getAttemptId() { return attemptId; },
+    isLiveExpected() { return Boolean(enableLiveChannel) && remoteLiveEnabled !== false; },
+    confirmHealthy() { return confirmCandidateHealthy(candidates.get(selectedPath)); },
     recover() { return recoverCandidate(candidates.get(selectedPath)); },
     repairLiveChannel() { return recoverCandidate(candidates.get(selectedPath), 'live'); },
     async getDiagnostics() {

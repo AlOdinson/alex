@@ -57,7 +57,7 @@ test('waits for owner path, then starts student fallback only after path-switch'
   await options.sendSignal({ type: 'offer' });
   assert.deepEqual(sentSignals.at(-1), {
     peerId: 'teacher-a',
-    signal: { type: 'offer', path: FALLBACK, recoveryVersion: 1, pathSequence: 1 },
+    signal: { type: 'offer', path: FALLBACK, recoveryVersion: 1, liveVersion: 1, pathSequence: 1 },
   });
 
   options.onChannel({ label: 'alex-board-durable-v1' });

@@ -191,9 +191,10 @@ export function createStudentPeerNetwork({
         },
         onState: (state) => {
           if (closed || liveChannel !== channel) return;
-          liveState = String(state ?? 'unknown');
+          const channelState = String(state ?? 'unknown');
+          liveState = pair.isLiveExpected?.() === false ? 'disabled' : channelState;
           try { onLiveState(liveState); } catch (error) { onError(error); }
-          if (liveState === 'closed' || liveState === 'error') {
+          if (channelState === 'closed' || channelState === 'error') {
             const retired = liveTransport; liveTransport = null; liveChannel = null;
             Promise.resolve().then(() => {
               retired?.close?.();
@@ -214,6 +215,7 @@ export function createStudentPeerNetwork({
       try { onState(state); } catch { /* observer */ }
     },
     onFatal: (error) => failConnection(error),
+    checkHealth: () => transport?.probe?.() ?? false,
     onError,
   });
 
@@ -306,7 +308,10 @@ export function createStudentPeerNetwork({
       recoveryCheck = Promise.resolve(transport.probe?.()).then(healthy => {
         if (closed) return false;
         if (healthy === false) pair.recover?.();
-        else if (healthy === true && liveEnabled && liveState !== 'open') pair.repairLiveChannel?.();
+        else if (healthy === true) {
+          pair.confirmHealthy?.();
+          if (liveEnabled && liveState !== 'open') pair.repairLiveChannel?.();
+        }
         return healthy === true;
       }).finally(() => { recoveryCheck = null; });
       return recoveryCheck;
