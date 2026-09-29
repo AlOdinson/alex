@@ -51,6 +51,7 @@ jobs:
       - name: Direct connection, live repair, ICE restart and owner tab handoff (no TURN)
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
+          WEBKIT_LOCAL_ICE: '1'
         run: bash scripts/run-connection-direct-ci.sh
       - if: always()
         uses: actions/upload-artifact@v4

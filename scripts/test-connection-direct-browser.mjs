@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium, webkit } from 'playwright-core';
 const engine = process.env.VERIFICATION_BROWSER ?? 'chromium';
+const localWebKitIce = engine === 'webkit' && process.env.WEBKIT_LOCAL_ICE === '1';
 const home = process.env.VERIFICATION_TEST_URL ?? 'http://127.0.0.1:5173/alex/';
 if (!['127.0.0.1','localhost'].includes(new URL(home).hostname)) throw new Error('Local test origin required');
 const browser = await (engine === 'webkit' ? webkit : chromium).launch({ headless:true, args:engine === 'webkit' ? [] : ['--no-sandbox','--disable-dev-shm-usage'] });
@@ -34,6 +35,15 @@ async function createPage(context,id,owner=false,createBoard=false) {
   });
   page.on('pageerror',error=>errors.push({id,message:error.message}));
   await page.goto(`${home}__connection-test`);
+  if (localWebKitIce) {
+    // Hosted macOS cannot hairpin its public STUN route. Permit host candidates
+    // for these same-machine peers using WebKit's inspector setting. Only the
+    // pinned test browser is affected; production RTC configuration is intact.
+    const implementation = page._connection.toImpl(page);
+    await implementation._delegate._session.send('Page.overrideSetting', {
+      setting: 'ICECandidateFilteringEnabled', value: false,
+    });
+  }
   await page.evaluate(async ({boardId,id,owner,createBoard})=>{
     const {createBrowserBoardSession}=await import('/alex/src/lib/browserBoardSession.js');
     const {createTeacherBoardRuntime}=await import('/alex/src/lib/teacherBoardRuntime.js');
@@ -106,10 +116,11 @@ try {
   assert.deepEqual(errors,[]);
   const diagnostics=await owner.evaluate(()=>window.__session.getConnectionDiagnostics());
   for(const peer of diagnostics)assert.notEqual(peer.route?.localType,'relay');
-  await writeFile(`${out}/${engine}.json`,JSON.stringify({engine,results,diagnostics,errors},null,2));
+  await writeFile(`${out}/${engine}.json`,JSON.stringify({engine,localWebKitIce,results,diagnostics,errors},null,2));
   console.log(JSON.stringify({engine,results,errors}));
 } catch(error) {
   const evidence={engine,results,error:error.stack,errors,signals,pages:{}};
   for(const [id,page] of pages){if(!page.isClosed())evidence.pages[id]=await page.evaluate(async()=>({states:window.__states,errors:window.__errors,connections:await window.__session?.getConnectionDiagnostics?.(),native:window.__connections?.map(p=>({local:p.getPeerConnection().localDescription?.type,remote:p.getPeerConnection().remoteDescription?.type,state:p.getPeerConnection().signalingState}))})).catch(()=>null);}
-  await writeFile(`${out}/${engine}-failure.json`,JSON.stringify(evidence,null,2));throw error;
+  await writeFile(`${out}/${engine}-failure.json`,JSON.stringify(evidence,null,2));
+  console.error(JSON.stringify({engine,localWebKitIce,results,pages:evidence.pages}));throw error;
 } finally {await browser.close();}
