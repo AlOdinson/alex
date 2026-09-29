@@ -40,7 +40,7 @@ async function createPage(context,id,owner=false,createBoard=false) {
     // for these same-machine peers using WebKit's inspector setting. Only the
     // pinned test browser is affected; production RTC configuration is intact.
     const implementation = page._connection.toImpl(page);
-    await implementation._delegate._session.send('Page.overrideSetting', {
+    await implementation.delegate._session.send('Page.overrideSetting', {
       setting: 'ICECandidateFilteringEnabled', value: false,
     });
   }
