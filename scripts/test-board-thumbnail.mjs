@@ -38,3 +38,13 @@ test('blocked preview storage remains optional',async()=>{
   assert.equal(await readBoardThumbnail('missing'),null);
   assert.equal(await saveBoardThumbnail('missing',image),false);
 });
+test('erased areas retain white pixels in the JPEG preview',async()=>{
+  const { createCanvas } = await import('canvas');
+  const output=createCanvas(100,100);
+  captureBoardThumbnail({width:100,height:100},()=>output,(ctx)=>{
+    ctx.fillStyle='#ff0000';ctx.fillRect(0,0,100,100);
+    ctx.globalCompositeOperation='destination-out';ctx.fillRect(20,20,30,30);
+    ctx.globalCompositeOperation='source-over';
+  });
+  assert.deepEqual([...output.getContext('2d').getImageData(30,30,1,1).data],[255,255,255,255]);
+});

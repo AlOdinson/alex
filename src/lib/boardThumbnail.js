@@ -13,6 +13,12 @@ export function captureBoardThumbnail(source, createCanvas = () => document.crea
       context.fillRect(0, 0, preview.width, preview.height);
       if (renderContent) renderContent(context, preview.width, preview.height);
       else context.drawImage(source, 0, 0, preview.width, preview.height);
+      // Eraser paths may cut through the initial background. Flatten alpha
+      // against white after rendering so JPEG never turns erased areas black.
+      context.globalCompositeOperation = 'destination-over';
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, preview.width, preview.height);
+      context.globalCompositeOperation = 'source-over';
       const data = preview.toDataURL('image/jpeg', quality);
       if (data.startsWith('data:image/jpeg;base64,') && data.length <= 1500000) return data;
     }
