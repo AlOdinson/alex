@@ -18,6 +18,7 @@ import {
   updateOwnedBoard,
 } from '../lib/boardLibrary.js';
 import { listAuthorityBoards } from '../lib/browserAuthorityStore.js';
+import { getParticipantName, saveParticipantName } from '../lib/participantName.js';
 import TeacherAccountPanel from './TeacherAccountPanel.jsx';
 import LanguageToggle from './LanguageToggle.jsx';
 import { useLanguage } from './LanguageProvider.jsx';
@@ -39,6 +40,7 @@ export default function Home() {
   const { language, t, ui, formatDate } = useLanguage();
   const [title, setTitle] = useState(() => t('home.newBoard'));
   const [studentName, setStudentName] = useState('');
+  const [participantName, setParticipantName] = useState(() => getParticipantName());
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [boards, setBoards] = useState([]);
@@ -320,6 +322,20 @@ export default function Home() {
             Сейчас включён локальный режим. Для работы через интернет подключи Supabase.
           </div>
         )}
+
+        <label className="field home-participant-name">
+          <span>Ваше имя</span>
+          <input
+            autoComplete="name"
+            value={participantName}
+            maxLength={40}
+            placeholder="Например, Michael"
+            onChange={(event) => {
+              setParticipantName(event.target.value);
+              saveParticipantName(event.target.value);
+            }}
+          />
+        </label>
 
         <div className="create-board-fields">
           <label className="field">
