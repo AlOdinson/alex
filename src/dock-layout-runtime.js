@@ -55,8 +55,11 @@ function syncDockMetrics() {
 
   button.hidden = false;
   const mode = getDockLayoutMode(document);
-  button.textContent = mode;
-  button.setAttribute('aria-label', `Положение панели ${mode}. Переключить`);
+  // Replacing an identical text node still emits childList. Our observer would
+  // schedule another frame forever and wake every other menu observer with it.
+  if (button.textContent !== mode) button.textContent = mode;
+  const label = `Положение панели ${mode}. Переключить`;
+  if (button.getAttribute('aria-label') !== label) button.setAttribute('aria-label', label);
   return true;
 }
 
