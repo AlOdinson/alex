@@ -45,7 +45,7 @@ export function installBoardThumbnail({ canvas, save, window, document }) {
         context.restore();
       } : undefined);
     lastSaved = Date.now();
-    if (image && image !== lastImage && image !== savingImage) {
+    if (image && image !== savingImage && (image !== lastImage || savingImage)) {
       savingImage = image;
       try {
         pendingSave = Promise.resolve(save(image)).then((saved) => {

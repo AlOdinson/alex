@@ -77,3 +77,18 @@ test('a failed thumbnail write is retried rather than marked saved',async()=>{
     win.dispatchEvent(new Event('pagehide'));assert.equal(writes,2);dispose();
   }finally{globalThis.document=previous;}
 });
+test('returning to saved frame A while B is writing queues A again',async()=>{
+  const win=new EventTarget(),doc=new EventTarget();let frame=image+'A';
+  doc.createElement=()=>({...preview(),toDataURL:()=>frame});
+  let render;win.setTimeout=()=>1;win.clearTimeout=()=>{};
+  const canvas={lowerCanvasEl:{width:800,height:600},on:(e,fn)=>{render=fn;},off(){}};
+  const writes=[],complete=[];const previous=globalThis.document;globalThis.document=doc;
+  try{
+    const dispose=installBoardThumbnail({canvas,save:value=>{writes.push(value);return new Promise(resolve=>complete.push(resolve));},window:win,document:doc});
+    win.dispatchEvent(new Event('pagehide'));complete.shift()(true);await new Promise(resolve=>setImmediate(resolve));
+    frame=image+'B';render();win.dispatchEvent(new Event('pagehide'));
+    frame=image+'A';render();win.dispatchEvent(new Event('pagehide'));
+    assert.deepEqual(writes,[image+'A',image+'B',image+'A']);
+    complete.forEach(resolve=>resolve(true));await new Promise(resolve=>setImmediate(resolve));dispose();
+  }finally{globalThis.document=previous;}
+});
