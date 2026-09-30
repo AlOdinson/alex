@@ -3,17 +3,22 @@ export function captureBoardThumbnail(source, createCanvas = () => document.crea
   if (!source?.width || !source?.height) return null;
   try {
     const preview = createCanvas();
-    preview.width = 360;
-    preview.height = 180;
     const context = preview.getContext('2d');
     if (!context) return null;
-    context.fillStyle = '#ffffff';
-    context.fillRect(0, 0, 360, 180);
-    const scale = Math.min(360 / source.width, 180 / source.height);
-    const width = source.width * scale, height = source.height * scale;
-    context.drawImage(source, (360 - width) / 2, (180 - height) / 2, width, height);
-    const data = preview.toDataURL('image/jpeg', 0.65);
-    return data.startsWith('data:image/jpeg;base64,') && data.length < 60000 ? data : null;
+    // At most 20k characters per card: 50 previews stay below ~2 MB of
+    // UTF-16 storage, leaving room for library metadata and other settings.
+    for (const [size, quality] of [[360, 0.65], [360, 0.4], [240, 0.4], [180, 0.3]]) {
+      preview.width = size;
+      preview.height = size / 2;
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, preview.width, preview.height);
+      const scale = Math.min(preview.width / source.width, preview.height / source.height);
+      const width = source.width * scale, height = source.height * scale;
+      context.drawImage(source, (preview.width - width) / 2, (preview.height - height) / 2, width, height);
+      const data = preview.toDataURL('image/jpeg', quality);
+      if (data.startsWith('data:image/jpeg;base64,') && data.length <= 20000) return data;
+    }
+    return null;
   } catch { return null; } // Optional previews must never interrupt saving or drawing.
 }
 
