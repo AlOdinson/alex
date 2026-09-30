@@ -11,6 +11,7 @@ function open() {
     request.onsuccess = () => {
       const db = request.result;
       db.onversionchange = () => { db.close(); database = null; };
+      db.onclose = () => { database = null; };
       resolve(db);
     };
   }).catch(error => { database = null; throw error; });
@@ -30,7 +31,10 @@ export async function saveBoardThumbnail(boardId, image) {
   try {
     const db = await open();
     return await new Promise((resolve, reject) => {
-      const tx = db.transaction('images', 'readwrite'), store = tx.objectStore('images');
+      let tx;
+      try { tx = db.transaction('images', 'readwrite', { durability: 'strict' }); }
+      catch { tx = db.transaction('images', 'readwrite'); }
+      const store = tx.objectStore('images');
       store.put({ boardId, image, updatedAt: Date.now() });
       // Optional preview cache stays bounded even after boards are deleted.
       let count = 0;
