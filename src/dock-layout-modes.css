@@ -9,12 +9,12 @@ html[data-dock-layout="1"] .board-tool-dock {
   flex-direction: row !important;
 }
 
-/* Mode 2 sits below the existing top utility row so the centered dock never overlaps it. */
+/* Mode 2 aligns with the top utility buttons when there is room on the same row. */
 html[data-dock-layout="2"] .board-tool-dock {
   position: fixed !important;
   left: 50% !important;
   right: auto !important;
-  top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
+  top: max(10px, env(safe-area-inset-top)) !important;
   bottom: auto !important;
   transform: translateX(-50%) !important;
   flex-direction: row !important;
@@ -156,27 +156,40 @@ html[data-dock-layout="3"] .toolbar-secondary-row .object-actions {
 
 .floating-drawing-controls[data-context-direction="right"] {
   transform: translate(0, -50%) !important;
+  flex-direction: column !important;
+  height: auto !important;
+  width: 21px !important;
 }
 
-/* In the left-vertical layout the opacity dot is the first control to the right of
-   the dock. Its legacy range opens left, which would cross the dock, so reverse only
-   that range in right-facing mode. While open, temporarily clear the two following
-   dots so the range has a clean horizontal lane. */
-.floating-drawing-controls[data-context-direction="right"] > .eyedropper-button + .compact-slider input[type="range"] {
-  left: 0 !important;
-  right: auto !important;
-}
-
+/* Each vertical dot has its own horizontal lane. Both scales expand away
+   from the dock; the color button remains available while a scale is open. */
+.floating-drawing-controls[data-context-direction="right"] > .eyedropper-button + .compact-slider input[type="range"],
 .floating-drawing-controls[data-context-direction="right"].opacity-open > .eyedropper-button + .compact-slider input[type="range"] {
   left: 0 !important;
   right: auto !important;
-  z-index: 6 !important;
 }
 
-.floating-drawing-controls[data-context-direction="right"].opacity-open > .color-control,
-.floating-drawing-controls[data-context-direction="right"].opacity-open > .compact-slider + .compact-slider {
-  opacity: 0 !important;
-  pointer-events: none !important;
+/* Values sit beside closed dots rather than above the preceding dot. On open
+   scales they move above their own lane, leaving the full range draggable. */
+.floating-drawing-controls[data-context-direction="right"] > .compact-slider > strong {
+  top: 50% !important;
+  left: calc(100% + 8px) !important;
+  transform: translateY(-50%) !important;
+  text-align: left !important;
+}
+
+.floating-drawing-controls[data-context-direction="right"].opacity-open > .eyedropper-button + .compact-slider > strong,
+.floating-drawing-controls[data-context-direction="right"].width-open > .compact-slider + .compact-slider > strong {
+  top: -18px !important;
+  left: 24px !important;
+  transform: none !important;
+}
+
+/* Narrow windows keep the top utility row clear. */
+@media (max-width: 1100px) {
+  html[data-dock-layout="2"] .board-tool-dock {
+    top: max(64px, calc(env(safe-area-inset-top) + 64px)) !important;
+  }
 }
 
 @media (max-width: 760px) {

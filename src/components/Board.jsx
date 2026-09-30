@@ -17,6 +17,8 @@ import {
   util,
 } from 'fabric';
 import Toolbar from './Toolbar.jsx';
+import { boundedCursorIntersection, createCursorVisibilityController } from '../lib/cursorVisibility.js';
+import { getParticipantName, saveParticipantName } from '../lib/participantName.js';
 import LanguageToggle from './LanguageToggle.jsx';
 import { LanguageProvider, useLanguage } from './LanguageProvider.jsx';
 import ShareDialog from './ShareDialog.jsx';
@@ -1399,7 +1401,7 @@ function getGeometryProbeCanvas() {
   return geometryProbeCanvas;
 }
 
-function renderedObjectIntersectsSceneRect(object, sceneRect, { pixelsPerSceneUnit = 1 } = {}) {
+function renderedObjectIntersectsSceneRect(object, sceneRect, { pixelsPerSceneUnit = 1, minimumScale = 0.5 } = {}) {
   if (!object || object.visible === false || Number(object.opacity ?? 1) <= 0.001) return false;
   const probe = getGeometryProbeCanvas();
   if (!probe) return false;
@@ -1413,7 +1415,7 @@ function renderedObjectIntersectsSceneRect(object, sceneRect, { pixelsPerSceneUn
 
   // Probe only the actual overlap between the object and marquee. Keeping the probe
   // cropped avoids allocating a bitmap the size of a long Pencil path or the board.
-  const scale = clamp(Number(pixelsPerSceneUnit) || 1, 0.5, 2.5);
+  const scale = clamp(Number(pixelsPerSceneUnit) || 1, minimumScale, 2.5);
   const tilePixels = 192;
   const tileSceneSize = tilePixels / scale;
   const context = probe.getContext('2d', { willReadFrequently: true });
@@ -1661,9 +1663,7 @@ export default function Board({ boardId }) {
   }
 
   const isOwner = access.permission === 'owner';
-  const storedName = isOwner
-    ? (localStorage.getItem('alex-board:owner-name') ?? '')
-    : (sessionStorage.getItem(`alex-board:name:${boardId}`) ?? '');
+  const storedName = getParticipantName(boardId);
   const resolvedName = guestName || storedName;
 
   if (!resolvedName) {
@@ -1673,9 +1673,7 @@ export default function Board({ boardId }) {
           title={isOwner ? 'Как показывать ваше имя на доске?' : access.title}
           titleIsUserContent={!isOwner}
           onSubmit={(name) => {
-            if (isOwner) localStorage.setItem('alex-board:owner-name', name);
-            else sessionStorage.setItem(`alex-board:name:${boardId}`, name);
-            setGuestName(name);
+            setGuestName(saveParticipantName(name));
           }}
         />
       </LanguageProvider>
@@ -1740,6 +1738,7 @@ function BoardWorkspace({
   const { ui } = useLanguage();
   const canvasElementRef = useRef(null);
   const canvasHostRef = useRef(null);
+  const cursorVisibilityRef = useRef(null);
   const fabricCanvasRef = useRef(null);
   const fabricInputModeSwitchRef = useRef(null);
   const realtimeRef = useRef(null);
@@ -8375,6 +8374,24 @@ function BoardWorkspace({
       },
     };
 
+    const cursorVisibility = createCursorVisibilityController({
+      root: host,
+      getCanvasRect: () => canvas.upperCanvasEl.getBoundingClientRect(),
+      getViewport: () => canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0],
+      intersects: (rect) => {
+        const candidates = queryTransformSpatialObjects(rect);
+        const zoom = canvas.getZoom();
+        return boundedCursorIntersection(candidates, (object) => (
+          // Probe at screen resolution even when the board is zoomed out.
+          isImageObject(object)
+          || renderedObjectIntersectsSceneRect(object, rect, { pixelsPerSceneUnit: zoom, minimumScale: 0.001 })
+        ));
+      },
+    });
+    cursorVisibilityRef.current = cursorVisibility;
+    const refreshCursorVisibility = () => cursorVisibility.refresh({ invalidate: true });
+    canvas.on('after:render', refreshCursorVisibility);
+
     let selectionTargetFindRestoreState = null;
     let transformTargetFindRestoreState = null;
 
@@ -13340,6 +13357,9 @@ function BoardWorkspace({
       cancelCreationDraft('unmount');
       clearCreationPreview();
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
+      canvas.off('after:render', refreshCursorVisibility);
+      cursorVisibility.dispose();
+      cursorVisibilityRef.current = null;
       cancelCreationDraftRef.current = null;
       window.clearTimeout(textChangeTimerRef.current);
       window.clearTimeout(objectEraserDelayTimer);
@@ -13614,6 +13634,10 @@ function BoardWorkspace({
     update({ boardId: data.alexDurableEditBoardId, state: data.alexDurableEditState });
     return () => window.removeEventListener('alex-board-runtime-state', listener);
   }, [boardId, permission]);
+
+  useEffect(() => {
+    cursorVisibilityRef.current?.refresh({ motion: true });
+  }, [remoteCursors, viewportVersion]);
 
   const projectScenePoint = (x, y) => {
     const canvas = fabricCanvasRef.current;

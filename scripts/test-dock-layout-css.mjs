@@ -3,7 +3,7 @@ import fs from 'node:fs';
 
 const main = fs.readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8');
 const css = fs.readFileSync(new URL('../src/dock-layout-modes.css', import.meta.url), 'utf8');
-const preResponsive = css.split('@media (max-width: 1180px)')[0];
+const preResponsive = css.split('@media (max-width: 1100px)')[0];
 
 assert.match(main, /import ['"]\.\/dock-layout-controller\.js['"]/);
 assert.match(main, /import ['"]\.\/dock-layout-runtime\.js['"]/);
@@ -11,7 +11,7 @@ assert.match(main, /import ['"]\.\/dock-layout-modes\.css['"]/);
 assert.match(css, /html\[data-dock-layout="1"\][\s\S]*?\.board-tool-dock/);
 assert.match(css, /html\[data-dock-layout="2"\][\s\S]*?\.board-tool-dock/);
 assert.match(css, /html\[data-dock-layout="3"\][\s\S]*?\.board-tool-dock/);
-assert.match(preResponsive, /data-dock-layout="2"[\s\S]*?\.board-tool-dock[\s\S]*?top:\s*max\(64px/);
+assert.match(preResponsive, /data-dock-layout="2"[\s\S]*?\.board-tool-dock[\s\S]*?top:\s*max\(10px/);
 assert.match(css, /data-dock-layout="3"[\s\S]*?flex-direction:\s*column/);
 // Match the exact rule: a later, unrelated top/column declaration must not satisfy it.
 const editMode3 = css.match(/html\[data-dock-layout="3"\] \.toolbar-secondary-row \.edit-actions\s*\{([^}]*)\}/)?.[1] ?? '';
@@ -33,10 +33,11 @@ assert.match(
   /data-context-direction="right"[^\{]*> \.eyedropper-button \+ \.compact-slider input\[type="range"\][\s\S]*?left:\s*0\s*!important;[\s\S]*?right:\s*auto\s*!important;/,
   'Mode 3 opacity scale must expand right instead of back across the vertical dock',
 );
-assert.match(
-  css,
-  /data-context-direction="right"\]\.opacity-open[\s\S]*?> \.color-control[\s\S]*?pointer-events:\s*none\s*!important;/,
-  'Mode 3 must temporarily clear the other dots while opacity scale occupies their space',
-);
+const rightControls = css.match(/\.floating-drawing-controls\[data-context-direction="right"\]\s*\{([^}]*)\}/)?.[1] ?? '';
+assert.match(rightControls, /flex-direction:\s*column\s*!important;/);
+assert.match(rightControls, /height:\s*auto\s*!important;/);
+assert.match(rightControls, /transform:\s*translate\(0, -50%\)/);
+assert.match(css, /@media \(max-width: 1100px\)[\s\S]*?data-dock-layout="2"[\s\S]*?top:\s*max\(64px/);
+assert.doesNotMatch(css, /data-context-direction="right"\]\.opacity-open[^}]*pointer-events:\s*none/);
 
 console.log('Dock layout CSS regression passed.');

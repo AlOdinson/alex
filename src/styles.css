@@ -2040,8 +2040,12 @@ button:disabled {
   display: block;
   font-size: 20px;
   line-height: 1;
-  transform: rotate(-42deg);
+  transform: rotate(-135deg);
   filter: drop-shadow(0 1px 1px rgba(255, 255, 255, 0.9));
+}
+
+.remote-cursor[data-overlap="true"] {
+  opacity: 0.5;
 }
 
 .remote-cursor-name,
