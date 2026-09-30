@@ -1650,7 +1650,9 @@ export default function Board({ boardId }) {
 
   const pendingRole = rememberedOwnerKey ? 'teacher' : 'student';
   if (loading) {
-    return <LanguageProvider role={pendingRole}><AccessMessage title="Открываю доску">Загружаю сохранённое состояние…</AccessMessage></LanguageProvider>;
+    return <LanguageProvider role={pendingRole}>{pendingRole === 'student'
+      ? <div className="guest-view-loading" role="status">Просмотр</div>
+      : <AccessMessage title="Открываю доску">Загружаю сохранённое состояние…</AccessMessage>}</LanguageProvider>;
   }
   if (error) {
     return <LanguageProvider role={pendingRole}><AccessMessage title="Ошибка доступа">{error}</AccessMessage></LanguageProvider>;
