@@ -12014,7 +12014,13 @@ function BoardWorkspace({
     function finishStylusTouchFallback(event, cancelled = false) {
       const state = stylusTouchFallbackRef.current;
       if (!state.active) return false;
-      const stylus = findChangedStylusTouch(event, state.touchId) ?? {
+      const changedStylus = findChangedStylusTouch(event, state.touchId);
+      // A palm/finger ending does not own the Pencil contact still in touches.
+      // Recover an omitted changed stylus only once its tracked contact is absent.
+      if (!changedStylus && touchArray(event?.touches).some((touch) => touchId(touch) === state.touchId)) {
+        return false;
+      }
+      const stylus = changedStylus ?? {
         identifier: state.touchId,
         clientX: state.lastClientX,
         clientY: state.lastClientY,

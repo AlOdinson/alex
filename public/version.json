@@ -1,9 +1,9 @@
 {
-  "version": "1.36.0",
-  "packageVersion": "1.36.0",
-  "base": "1.35.0",
-  "release": "Event-driven bounded verification for new boards only",
-  "date": "2026-09-25",
-  "name": "bounded-new-board-verification",
-  "label": "Alex Board 1.36.0"
+  "version": "1.39.3",
+  "packageVersion": "1.39.3",
+  "base": "1.39.2",
+  "release": "Reduce lesson freezes from video rendering, previews and Pencil contact endings",
+  "date": "2026-09-30",
+  "name": "scoped-lesson-freeze-fixes",
+  "label": "Alex Board 1.39.3"
 }

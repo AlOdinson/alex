@@ -1,5 +1,6 @@
 import { FabricImage } from 'fabric';
 import { normalizeScreenShareBoardLayout } from './screenShare.js';
+import { createBoardScreenShareCompositor } from './boardScreenShareCompositor.js';
 
 const SCREEN_SHARE_SOURCE_WIDTH = 1280;
 const SCREEN_SHARE_SOURCE_HEIGHT = 720;
@@ -201,6 +202,8 @@ export function createBoardScreenShareMedia({
     object,
     layout ?? { left: -320, top: -180, width: 640, height: 360 },
   );
+
+  const compositor = createBoardScreenShareCompositor({ object });
 
   let disposed = false;
   let frameCallbackId = null;
@@ -671,7 +674,7 @@ export function createBoardScreenShareMedia({
 
   const drawVideoFrame = () => {
     if (disposed || !video || !currentStream || !frameContext) return false;
-    if (!fitFrameCanvasToVideo()) return false;
+    if (!compositor.isVisible() || !fitFrameCanvasToVideo()) return false;
     const sourceWidth = frameCanvas.width;
     const sourceHeight = frameCanvas.height;
     try {
@@ -681,8 +684,7 @@ export function createBoardScreenShareMedia({
       return false;
     }
     object.dirty = true;
-    object.setCoords?.();
-    requestRender();
+    compositor.present();
     return true;
   };
 
@@ -794,6 +796,7 @@ export function createBoardScreenShareMedia({
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    compositor.dispose();
     object.off?.('scaling', enforceUniformScale);
     object.off?.('added', attachCloudOverlay);
     object.off?.('removed', detachCloudOverlay);
