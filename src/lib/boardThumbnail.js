@@ -1,22 +1,26 @@
-// Reuse the visible bitmap: never rerender the board just for a library card.
-export function captureBoardThumbnail(source, createCanvas = () => document.createElement('canvas')) {
+// Render content into a separate white canvas without touching the live board.
+export function captureBoardThumbnail(source, createCanvas = () => document.createElement('canvas'), renderContent) {
   if (!source?.width || !source?.height) return null;
   try {
     const preview = createCanvas();
     const context = preview.getContext('2d');
     if (!context) return null;
-    // At most 20k characters per card: 50 previews stay below ~2 MB of
-    // UTF-16 storage, leaving room for library metadata and other settings.
-    for (const [size, quality] of [[360, 0.65], [360, 0.4], [240, 0.4], [180, 0.3]]) {
-      preview.width = size;
-      preview.height = size / 2;
+    // Preserve fine writing; the image cache lives in IndexedDB, not localStorage.
+    for (const quality of [0.92, 0.82, 0.72]) {
+      preview.width = Math.min(1600, source.width);
+      preview.height = Math.max(1, Math.round(source.height * preview.width / source.width));
       context.fillStyle = '#ffffff';
       context.fillRect(0, 0, preview.width, preview.height);
-      const scale = Math.min(preview.width / source.width, preview.height / source.height);
-      const width = source.width * scale, height = source.height * scale;
-      context.drawImage(source, (preview.width - width) / 2, (preview.height - height) / 2, width, height);
+      if (renderContent) renderContent(context, preview.width, preview.height);
+      else context.drawImage(source, 0, 0, preview.width, preview.height);
+      // Eraser paths may cut through the initial background. Flatten alpha
+      // against white after rendering so JPEG never turns erased areas black.
+      context.globalCompositeOperation = 'destination-over';
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, preview.width, preview.height);
+      context.globalCompositeOperation = 'source-over';
       const data = preview.toDataURL('image/jpeg', quality);
-      if (data.startsWith('data:image/jpeg;base64,') && data.length <= 20000) return data;
+      if (data.startsWith('data:image/jpeg;base64,') && data.length <= 1500000) return data;
     }
     return null;
   } catch { return null; } // Optional previews must never interrupt saving or drawing.
@@ -29,7 +33,16 @@ export function installBoardThumbnail({ canvas, save, window, document }) {
     timer = null;
     if (!dirty) return;
     dirty = false;
-    const image = captureBoardThumbnail(canvas.lowerCanvasEl);
+    const image = captureBoardThumbnail(canvas.lowerCanvasEl, undefined,
+      typeof canvas.getObjects === 'function' ? (context, width, height) => {
+        context.save();
+        context.scale(width / canvas.getWidth(), height / canvas.getHeight());
+        context.transform(...(canvas.viewportTransform ?? [1, 0, 0, 1, 0, 0]));
+        for (const object of canvas.getObjects()) {
+          if (object.visible !== false && (!object.isOnScreen || object.isOnScreen())) object.render(context);
+        }
+        context.restore();
+      } : undefined);
     lastSaved = Date.now();
     if (image && image !== lastImage) {
       lastImage = image;
