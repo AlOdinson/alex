@@ -322,7 +322,9 @@ function syncSelectionFloatingProxy(proxy, source) {
   if (proxy.hidden === visible) proxy.hidden = !visible;
   if (!visible) return;
 
-  source.classList.add('dock-selection-source');
+  // The menu observes class/disabled/childList changes, including its own output.
+  // Do not emit mutations for unchanged values: that creates a frame feedback loop.
+  if (!source.classList.contains('dock-selection-source')) source.classList.add('dock-selection-source');
   const sourceInputs = selectionSourceInputs(source);
   const proxyColor = proxy.querySelector('input[data-selection-proxy-input="color"]');
   const proxyOpacity = proxy.querySelector('input[data-selection-proxy-input="opacity"]');
@@ -331,28 +333,32 @@ function syncSelectionFloatingProxy(proxy, source) {
   if (proxyColor instanceof HTMLInputElement) {
     const nextColor = sourceInputs.color?.value || '#111827';
     if (proxyColor.value !== nextColor) proxyColor.value = nextColor;
-    proxyColor.disabled = !(sourceInputs.color instanceof HTMLInputElement) || sourceInputs.color.disabled;
+    const disabled = !(sourceInputs.color instanceof HTMLInputElement) || sourceInputs.color.disabled;
+    if (proxyColor.disabled !== disabled) proxyColor.disabled = disabled;
   }
 
   if (proxyOpacity instanceof HTMLInputElement) {
     const nextOpacity = sourceInputs.opacity?.value ?? '1';
     if (proxyOpacity.value !== String(nextOpacity)) proxyOpacity.value = String(nextOpacity);
-    proxyOpacity.disabled = !(sourceInputs.opacity instanceof HTMLInputElement) || sourceInputs.opacity.disabled;
+    const disabled = !(sourceInputs.opacity instanceof HTMLInputElement) || sourceInputs.opacity.disabled;
+    if (proxyOpacity.disabled !== disabled) proxyOpacity.disabled = disabled;
     const label = proxyOpacity.closest('.compact-slider');
     const strong = label?.querySelector('strong');
     const percent = Math.round(Number(proxyOpacity.value || 1) * 100);
-    if (strong) strong.textContent = `${percent}%`;
+    if (strong && strong.textContent !== `${percent}%`) strong.textContent = `${percent}%`;
     proxy.style.setProperty('--opacity-stop', `${percent}%`);
   }
 
   if (proxyWidth instanceof HTMLInputElement) {
     const nextWidthStep = sourceInputs.width?.value ?? '1';
     if (proxyWidth.value !== String(nextWidthStep)) proxyWidth.value = String(nextWidthStep);
-    proxyWidth.disabled = !(sourceInputs.width instanceof HTMLInputElement) || sourceInputs.width.disabled;
+    const disabled = !(sourceInputs.width instanceof HTMLInputElement) || sourceInputs.width.disabled;
+    if (proxyWidth.disabled !== disabled) proxyWidth.disabled = disabled;
     const label = proxyWidth.closest('.compact-slider');
     const strong = label?.querySelector('strong');
     const widthIndex = Math.max(0, Math.min(STROKE_WIDTH_STEPS.length - 1, Math.round(Number(proxyWidth.value || 1)) - 1));
-    if (strong) strong.textContent = `${STROKE_WIDTH_STEPS[widthIndex]}px`;
+    const widthLabel = `${STROKE_WIDTH_STEPS[widthIndex]}px`;
+    if (strong && strong.textContent !== widthLabel) strong.textContent = widthLabel;
   }
 }
 
