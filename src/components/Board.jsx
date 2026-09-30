@@ -1,3 +1,4 @@
+import { installBoardThumbnail } from '../lib/boardThumbnail.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActiveSelection,
@@ -53,7 +54,7 @@ import {
 import { connectBoardRealtime } from '../lib/realtime.js';
 import { forceExitGameParticipants } from '../lib/gameRealtime.js';
 import { randomToken } from '../lib/ids.js';
-import { getOwnedBoard, rememberOwnedBoard } from '../lib/boardLibrary.js';
+import { getOwnedBoard, rememberOwnedBoard, updateOwnedBoard } from '../lib/boardLibrary.js';
 import { createShape } from '../lib/shapes.js';
 import { screenShareBoardLayoutForViewport, screenShareViewportForLayout } from '../lib/screenShare.js';
 import {
@@ -8874,7 +8875,13 @@ function BoardWorkspace({
 
       await applyAuthoritativeSnapshot(recoveredSnapshot, recoveryRevision);
     }
-    loadInitialData().catch((caught) => {
+    let disposeThumbnail = null;
+    loadInitialData().then(() => {
+      if (disposed || !isOwner) return;
+      disposeThumbnail = installBoardThumbnail({ canvas, window, document,
+        save: (thumbnail) => updateOwnedBoard(boardId, { thumbnail }),
+      });
+    }).catch((caught) => {
       console.error(caught);
       setFatalError('Не удалось восстановить сохранённое состояние доски.');
     });
@@ -13365,6 +13372,7 @@ function BoardWorkspace({
       clearCreationPreview();
       canvas.off('after:render', redrawCreationPreviewAfterCanvasRender);
       canvas.off('after:render', refreshCursorVisibility);
+      disposeThumbnail?.();
       cursorVisibility.dispose();
       cursorVisibilityRef.current = null;
       cancelCreationDraftRef.current = null;

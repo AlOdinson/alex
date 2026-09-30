@@ -222,6 +222,7 @@ export default function Home() {
         ownerKey: created.ownerKey,
         title: nextTitle,
         studentName: board.studentName ?? '',
+        thumbnail: board.thumbnail ?? null,
         createdAt: created.createdAt ?? new Date().toISOString(),
       });
       await refreshBoards();
@@ -467,6 +468,11 @@ export default function Home() {
                 >
                   Открыть
                 </a>
+                <div className="board-card-preview">
+                  {board.thumbnail
+                    ? <img src={board.thumbnail} alt="" loading="lazy" decoding="async" />
+                    : <div className="board-card-preview-empty" aria-hidden="true" />}
+                </div>
                 <button type="button" className="secondary-button compact-button" onClick={() => handleRename(board)} disabled={libraryBusy}>
                   Переименовать
                 </button>

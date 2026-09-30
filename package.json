@@ -1,7 +1,7 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.38.2",
+  "version": "1.39.0",
   "type": "module",
   "scripts": {
     "test:connection-progress": "node --test scripts/test-connection-progress.mjs",
@@ -18,7 +18,7 @@
     "test:selection-lease": "node --test scripts/test-selection-lease-transform.mjs",
     "test:selection-lease:browser": "node scripts/test-selection-lease-transform-browser.mjs",
     "test:connections": "node --test scripts/test-connection-upgrades.mjs scripts/test-browser-peer-connection.mjs scripts/test-dual-path-peer-pair.mjs scripts/test-peer-data-channel.mjs scripts/test-peer-live-channel.mjs scripts/test-live-event-protocol.mjs scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs scripts/test-student-peer-network.mjs scripts/test-teacher-peer-network.mjs",
-    "test:menu": "node --test scripts/test-menu-update-loop.mjs scripts/test-cursor-visibility.mjs scripts/test-participant-name.mjs scripts/test-touch-gesture-cursor.mjs"
+    "test:menu": "node --test scripts/test-menu-update-loop.mjs scripts/test-cursor-visibility.mjs scripts/test-participant-name.mjs scripts/test-touch-gesture-cursor.mjs scripts/test-board-thumbnail.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",
