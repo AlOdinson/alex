@@ -3581,3 +3581,15 @@ html.game-viewport-locked #root {
     display: none !important;
   }
 }
+
+.guest-view-loading {
+  position: fixed;
+  left: 12px;
+  bottom: 14px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.88);
+  color: #fff;
+  font: 600 13px/1.25 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  pointer-events: none;
+}
