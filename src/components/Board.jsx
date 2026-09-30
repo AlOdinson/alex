@@ -13069,6 +13069,11 @@ function BoardWorkspace({
         metrics.midpoint.y - gesture.scenePoint.y * nextZoom,
       ];
       canvas.setViewportTransform(nextViewport);
+      // Capture-phase touch gestures bypass Fabric mouse:move. Publish the
+      // midpoint through the same throttled presence channel, in scene space.
+      const cursorScenePoint = util.transformPoint(metrics.midpoint, util.invertTransform(nextViewport));
+      lastPointerSceneRef.current = cursorScenePoint;
+      sendCursorThrottled(cursorScenePoint);
       setZoom(nextZoom);
       updateBackgroundTransform();
       sendTeacherViewThrottled();
