@@ -38,7 +38,7 @@ function formatDate(value) {
 }
 
 function BoardPreview({ board }) {
-  const [image, setImage] = useState(board.thumbnail);
+  const [image, setImage] = useState(null);
   useEffect(() => {
     let active = true;
     readBoardThumbnail(board.boardId).then(value => { if (active && value) setImage(value); });
@@ -237,7 +237,6 @@ export default function Home() {
         ownerKey: created.ownerKey,
         title: nextTitle,
         studentName: board.studentName ?? '',
-        thumbnail: board.thumbnail ?? null,
         createdAt: created.createdAt ?? new Date().toISOString(),
       });
       await refreshBoards();

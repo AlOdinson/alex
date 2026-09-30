@@ -8880,7 +8880,7 @@ function BoardWorkspace({
     loadInitialData().then(() => {
       if (disposed || !isOwner) return;
       disposeThumbnail = installBoardThumbnail({ canvas, window, document,
-        save: (thumbnail) => { void saveBoardThumbnail(boardId, thumbnail); },
+        save: (thumbnail) => saveBoardThumbnail(boardId, thumbnail),
       });
     }).catch((caught) => {
       console.error(caught);
