@@ -1,3 +1,4 @@
+import { readBoardThumbnail, saveBoardThumbnail } from '../lib/boardThumbnailStore.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   createBoard,
@@ -34,6 +35,18 @@ function formatDate(value) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date);
+}
+
+function BoardPreview({ board }) {
+  const [image, setImage] = useState(board.thumbnail);
+  useEffect(() => {
+    let active = true;
+    readBoardThumbnail(board.boardId).then(value => { if (active && value) setImage(value); });
+    return () => { active = false; };
+  }, [board.boardId]);
+  return <div className="board-card-preview">{image
+    ? <img src={image} alt="" loading="lazy" decoding="async" />
+    : <div className="board-card-preview-empty" aria-hidden="true" />}</div>;
 }
 
 export default function Home() {
@@ -217,6 +230,8 @@ export default function Home() {
     setError('');
     try {
       const created = await duplicateBoard(board.boardId, board.ownerKey, nextTitle);
+      const preview = await readBoardThumbnail(board.boardId);
+      if (preview) await saveBoardThumbnail(created.boardId, preview);
       rememberOwnedBoard({
         boardId: created.boardId,
         ownerKey: created.ownerKey,
@@ -468,11 +483,7 @@ export default function Home() {
                 >
                   Открыть
                 </a>
-                <div className="board-card-preview">
-                  {board.thumbnail
-                    ? <img src={board.thumbnail} alt="" loading="lazy" decoding="async" />
-                    : <div className="board-card-preview-empty" aria-hidden="true" />}
-                </div>
+                <BoardPreview board={board} />
                 <button type="button" className="secondary-button compact-button" onClick={() => handleRename(board)} disabled={libraryBusy}>
                   Переименовать
                 </button>
