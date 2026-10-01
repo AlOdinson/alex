@@ -1,9 +1,9 @@
 {
-  "version": "1.40.6",
-  "packageVersion": "1.40.6",
-  "base": "1.40.5",
-  "release": "Keep PDF page controls independent of board zoom and below the document",
+  "version": "1.40.7",
+  "packageVersion": "1.40.7",
+  "base": "1.40.6",
+  "release": "Fit PDF slider to visible document width while preserving button size",
   "date": "2026-10-01",
-  "name": "pdf-controls-sizing",
-  "label": "Alex Board 1.40.6"
+  "name": "pdf-controls-screen-width",
+  "label": "Alex Board 1.40.7"
 }

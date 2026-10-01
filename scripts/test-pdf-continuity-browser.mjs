@@ -48,8 +48,15 @@ try{
  await page.evaluate(()=>{window.testCanvas.setZoom(0.6);window.testCanvas.requestRenderAll();});
  await page.waitForTimeout(150);
  const zoomedControls=await controlSize();
- assert.equal(zoomedControls.width,originalControls.width,'Board zoom must not resize PDF controls');
+ assert.ok(zoomedControls.width<originalControls.width,'Zooming out must fit the panel to the visible PDF width');
+ const visiblePdfWidth=await page.evaluate(()=>window.testCanvas.getActiveObject().getBoundingRect().width*window.testCanvas.getZoom());
+ assert.ok(Math.abs(zoomedControls.width-Math.min(400,visiblePdfWidth))<1,'Panel must follow the on-screen PDF width');
  assert.equal(zoomedControls.height,originalControls.height,'Board zoom must not resize PDF buttons');
+ await page.evaluate(()=>{const c=window.testCanvas,o=c.getActiveObject();c.discardActiveObject();c.setZoom(0.1);c.setActiveObject(o);c.requestRenderAll();});
+ await page.waitForTimeout(150);
+ const tiny=await page.evaluate(()=>{const c=window.testCanvas,p=document.querySelector('.pdf-page-controls');return {panel:p.getBoundingClientRect().width,pdf:c.getActiveObject().getBoundingRect().width*c.getZoom(),button:p.querySelector('button').getBoundingClientRect().width};});
+ assert.ok(Math.abs(tiny.panel-tiny.pdf)<1,'Selecting after zoom-out must not leave a wide panel');
+ assert.equal(tiny.button,32,'Buttons stay usable even for a tiny PDF');
  await page.evaluate(()=>{window.testCanvas.setZoom(2);window.testCanvas.requestRenderAll();});
  await page.waitForTimeout(150);
  const below=await page.evaluate(()=>{const c=window.testCanvas,b=c.getActiveObject().getBoundingRect(),v=c.viewportTransform;return {actual:parseFloat(document.querySelector('.pdf-page-controls').style.top),expected:v[1]*(b.left+b.width/2)+v[3]*(b.top+b.height)+v[5]+8};});
@@ -57,7 +64,8 @@ try{
  await page.evaluate(()=>{const c=window.testCanvas,o=c.getActiveObject();window.pdfOriginalScale={scaleX:o.scaleX,scaleY:o.scaleY};o.set({scaleX:o.scaleX/2,scaleY:o.scaleY/2});o.setCoords();c.requestRenderAll();});
  await page.waitForTimeout(150);
  const resizedControls=await controlSize();
- assert.ok(resizedControls.width<originalControls.width,'Resizing the document must resize its slider');
+ const resizedPdfWidth=await page.evaluate(()=>window.testCanvas.getActiveObject().getBoundingRect().width*window.testCanvas.getZoom());
+ assert.ok(Math.abs(resizedControls.width-Math.min(400,resizedPdfWidth))<1,'Resizing the document must resize its slider');
  assert.equal(resizedControls.height,originalControls.height,'Buttons remain a usable fixed height');
  await page.evaluate(()=>{const c=window.testCanvas,o=c.getActiveObject();o.set(window.pdfOriginalScale);o.setCoords();c.setZoom(1);c.requestRenderAll();});
  await page.waitForTimeout(150);
