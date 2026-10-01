@@ -1330,6 +1330,8 @@ function partitionImageRevival(entries, preparedOps) {
 }
 
 function serializedImagePayload(serialized) {
+  // PDF/GIF have their own runtime; generic loading cards discard ready pixels.
+  if (isBoardMedia(serialized)) return null;
   if (!serialized || typeof serialized !== 'object') return null;
   if (serialized.pendingImageSerialized?.src) return serialized.pendingImageSerialized;
   const type = String(serialized.type ?? '').toLowerCase();
@@ -3828,10 +3830,10 @@ function BoardWorkspace({
           baseRevision: transaction.baseRevision,
         });
         applyingRemoteRef.current = true;
-        canvas.remove(proxy);
         const restored = await enlivenImageAwareObjects(
           transaction.sourceRecords.map((record) => record.object),
         );
+        canvas.remove(proxy);
         restored.forEach((object, index) => {
           object.selectable = activeToolRef.current === 'select';
           object.evented = activeToolRef.current === 'select';
@@ -3944,8 +3946,8 @@ function BoardWorkspace({
         baseRevision: transaction.baseRevision,
       });
       applyingRemoteRef.current = true;
-      if (transaction.proxy) canvas.remove(transaction.proxy);
       const restored = await enlivenImageAwareObjects(transaction.sourceRecords.map((record) => record.object));
+      if (transaction.proxy) canvas.remove(transaction.proxy);
       restored.forEach((object, index) => {
         canvas.add(object);
         const zIndex = transaction.sourceRecords[index]?.zIndex;

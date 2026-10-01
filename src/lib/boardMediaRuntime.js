@@ -19,6 +19,11 @@ export function createBoardMediaRuntime({canvas,boardId,store=boardMediaAssets,r
   pdfFactory=createPdfMedia,gifFactory=createGifMedia}={}){
   const states=new Map();let disposed=false,hidden=false,timer=null,running=false;
   const present=new Set();
+  // Keep ready resources through a synchronous Canvas replacement/reparenting.
+  // True removals release at the microtask boundary, never retain an undo cache.
+  const detached=new Map();
+  const identity=object=>object.boardObjectId ? `${object.boardObjectId}:${object.mediaKind}:${object.mediaAssetId}` : null;
+  const release=state=>{state.controller?.abort();if(state.cacheKey)budget.pin(state.cacheKey,false);state.media?.dispose();};
   const failures=new WeakMap();
   const walk=(object,visit)=>{visit(object);for(const child of object?.getObjects?.() || [])walk(child,visit);};
   const contains=object=>!disposed && present.has(object);
@@ -46,14 +51,14 @@ export function createBoardMediaRuntime({canvas,boardId,store=boardMediaAssets,r
     if(!contains(object) || states.get(object)!==state)return;
     if(state.cacheKey)budget.pin(state.cacheKey,false);
     state.cacheKey=result.cacheKey; if(state.cacheKey)budget.pin(state.cacheKey,true);
-    attachMediaPixels(object,result.element);state.width=result.width;state.page=object.pageNumber || 1;
+    attachMediaPixels(object,result.element);state.element=result.element;state.width=result.width;state.page=object.pageNumber || 1;
     state.busy=false;state.error=null;state.hasPixels=true;failures.delete(object);status(object,state,'ready');
     onReady(object);canvas.fire?.('media:ready',{target:object});canvas.requestRenderAll();
   };
   const update=async(object)=>{
     const state=states.get(object);if(!state || !state.media || object.mediaKind!=='pdf')return;
     const page=object.pageNumber || 1,quality=wantedWidth(object);
-    if(state.page===page && state.quality===quality && !state.error)return;
+    if(state.page===page && state.quality>=quality && !state.error)return;
     if(state.busy && state.pendingPage===page && state.pendingQuality===quality)return;
     state.controller?.abort();const controller=new AbortController();state.controller=controller;
     state.busy=true;state.pendingPage=page;state.pendingQuality=quality;
@@ -67,6 +72,14 @@ export function createBoardMediaRuntime({canvas,boardId,store=boardMediaAssets,r
   const hydrate=async(object)=>{
     if(!isBoardMedia(object) || !contains(object))return;
     let state=states.get(object);
+    if(!state){
+      const key=identity(object),ready=key && detached.get(key);
+      if(ready){
+        detached.delete(key);state=ready;states.set(object,state);
+        attachMediaPixels(object,state.element);
+        onStatusChange();
+      }
+    }
     if(state){if(state.assetId!==object.mediaAssetId){remove(object);state=null;}else if(state.media){return update(object);}else return;}
     state={assetId:object.mediaAssetId,busy:true,controller:null,media:null,page:null,quality:null,nextAt:0};states.set(object,state);
     status(object,state,'loading');
@@ -78,7 +91,16 @@ export function createBoardMediaRuntime({canvas,boardId,store=boardMediaAssets,r
       else {install(object,state,media);schedule(10);}
     }catch(error){failed(object,state,error);}
   };
-  function remove(object){const state=states.get(object);if(!state)return;states.delete(object);state.controller?.abort();if(state.cacheKey)budget.pin(state.cacheKey,false);state.media?.dispose();if(!disposed)onStatusChange();}
+  function remove(object,{handoff=false}={}){
+    const state=states.get(object);if(!state)return;states.delete(object);state.controller?.abort();
+    const key=identity(object);
+    if(handoff && key && state.media && state.hasPixels && state.element?.width){
+      if(detached.has(key))release(detached.get(key));
+      state.busy=false;state.controller=null;detached.set(key,state);
+      queueMicrotask(()=>{if(detached.get(key)===state){detached.delete(key);release(state);}});
+    }else release(state);
+    if(!disposed)onStatusChange();
+  }
   const scan=()=>{
     if(disposed)return;
     for(const object of [...states.keys()]){
@@ -88,7 +110,7 @@ export function createBoardMediaRuntime({canvas,boardId,store=boardMediaAssets,r
       if(!state)hydrate(object);
       else if(state.media && object.mediaKind==='pdf'){
         if(!state.error && state.page!==(object.pageNumber || 1))update(object);
-        else if(visible(object) && !state.busy && !state.error && state.quality!==wantedWidth(object)){
+        else if(visible(object) && !state.busy && !state.error && state.quality<wantedWidth(object)){
           if(!state.qualityAt)state.qualityAt=Date.now();
           if(Date.now()-state.qualityAt>500){state.qualityAt=0;update(object);}
         }
@@ -113,7 +135,7 @@ export function createBoardMediaRuntime({canvas,boardId,store=boardMediaAssets,r
   }
   function schedule(delay=100){if(disposed || timer!==null)return;timer=setTimeout(tick,delay);}
   const added=({target})=>walk(target,object=>{present.add(object);hydrate(object);});
-  const removed=({target})=>walk(target,object=>{present.delete(object);remove(object);});
+  const removed=({target})=>walk(target,object=>{present.delete(object);remove(object,{handoff:true});});
   canvas.on('object:added',added);canvas.on('object:removed',removed);canvas.on('after:render',scan);
   for(const target of canvas.getObjects())added({target});
   scan();
@@ -129,13 +151,13 @@ export function createBoardMediaRuntime({canvas,boardId,store=boardMediaAssets,r
     },
     adopt(object,prepared){
       remove(object);const state={assetId:object.mediaAssetId,media:prepared.media,busy:false,page:object.pageNumber || 1,quality:null,nextAt:0,hasPixels:true,phase:'ready'};states.set(object,state);
-      attachMediaPixels(object,prepared.result.element);state.cacheKey=prepared.result.cacheKey;if(state.cacheKey)budget.pin(state.cacheKey,true);
+      attachMediaPixels(object,prepared.result.element);state.element=prepared.result.element;state.quality=object.mediaKind==='pdf'?prepared.result.width:null;state.cacheKey=prepared.result.cacheKey;if(state.cacheKey)budget.pin(state.cacheKey,true);
       schedule(10);
     },
     async preparePage(object,pageNumber){const state=states.get(object);if(!state?.media || object.mediaKind!=='pdf')throw new Error('PDF ещё загружается');return state.media.renderPage(pageNumber,{pixelWidth:wantedWidth(object)});},
     showPreparedPage(object,result){const state=states.get(object);if(state){state.quality=wantedWidth(object);install(object,state,result);}},
     suspend(value){hidden=Boolean(value);for(const state of states.values())state.media?.restart?.();if(!hidden)schedule(10);},
     getStats(){return {objects:states.size,memoryBytes:budget.usedBytes(),timerActive:timer!==null};},
-    dispose(){if(disposed)return;disposed=true;clearTimeout(timer);timer=null;canvas.off('object:added',added);canvas.off('object:removed',removed);canvas.off('after:render',scan);for(const object of [...states.keys()])remove(object);budget.dispose();},
+    dispose(){if(disposed)return;disposed=true;clearTimeout(timer);timer=null;canvas.off('object:added',added);canvas.off('object:removed',removed);canvas.off('after:render',scan);for(const object of [...states.keys()])remove(object);for(const state of detached.values())release(state);detached.clear();budget.dispose();},
   };
 }

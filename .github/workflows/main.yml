@@ -53,6 +53,10 @@ jobs:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
           WEBKIT_LOCAL_ICE: '1'
         run: bash scripts/run-connection-direct-ci.sh
+      - name: PDF pixels remain visible during edits, history and reconciliation
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: npm run test:pdf:continuity
       - if: always()
         uses: actions/upload-artifact@v4
         with:

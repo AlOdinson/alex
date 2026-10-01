@@ -1,9 +1,9 @@
 {
-  "version": "1.40.3",
-  "packageVersion": "1.40.3",
-  "base": "1.40.2",
-  "release": "Compact zoom, top-dock utility column and participant navigation",
+  "version": "1.40.4",
+  "packageVersion": "1.40.4",
+  "base": "1.40.3",
+  "release": "Keep PDF pixels stable during edits, history, resize and reconciliation",
   "date": "2026-10-01",
-  "name": "participant-navigation",
-  "label": "Alex Board 1.40.3"
+  "name": "pdf-continuity",
+  "label": "Alex Board 1.40.4"
 }

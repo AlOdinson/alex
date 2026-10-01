@@ -83,3 +83,45 @@ test('missing PDF shows progress then a persistent error, manual retry installs 
     assert.ok(phases.includes('receiving'));assert.ok(phases.includes('rendering'));
   }finally{runtime.dispose();}
 });
+
+test('same PDF object replacement retains ready pixels and decoder through the render transaction',async()=>{
+  const {createBoardMediaRuntime}=await import('../src/lib/boardMediaRuntime.js');
+  const makeObject=()=>({boardObjectId:'stable-pdf',mediaKind:'pdf',mediaAssetId:'a'.repeat(64),pageNumber:1,width:100,height:150,el:{width:1,height:1},setElement(el){this.el=el;},getElement(){return this.el;},set(v){Object.assign(this,v);},setCoords(){}});
+  const original=makeObject(),objects=[original],events=new Map();let created=0,destroyed=0;
+  const canvas={getObjects:()=>objects,on:(e,fn)=>events.set(e,fn),off(){},getZoom:()=>1,requestRenderAll(){}};
+  const runtime=createBoardMediaRuntime({canvas,boardId:'room',store:{get:async()=>({metadata:{kind:'pdf'},blob:new Blob()})},pdfFactory:async()=>{created++;const element={width:300,height:450};return {renderPage:async()=>({element,width:300,height:450}),dispose(){destroyed++;element.width=0;}};}});
+  try {
+    await new Promise(ok=>setTimeout(ok,0));assert.equal(original.el.width,300);
+    objects.length=0;events.get('object:removed')({target:original});
+    const replacement=makeObject();objects.push(replacement);events.get('object:added')({target:replacement});
+    assert.equal(replacement.el.width,300,'replacement must have pixels before next canvas frame');
+    assert.deepEqual(runtime.getLoadStates(),[],'no loading overlay for a ready replacement');
+    await new Promise(ok=>setTimeout(ok,0));assert.equal(created,1);assert.equal(destroyed,0);
+    objects.length=0;events.get('object:removed')({target:replacement});await new Promise(ok=>setTimeout(ok,0));assert.equal(destroyed,1,'real deletion releases the decoder');
+  }finally{runtime.dispose();}
+});
+
+test('shrinking a ready PDF reuses its pixels instead of starting a lower-resolution render',async()=>{
+  const {createBoardMediaRuntime}=await import('../src/lib/boardMediaRuntime.js');
+  let renders=0;
+  const object={mediaKind:'pdf',mediaAssetId:'b'.repeat(64),width:400,height:600,scaleX:1,getScaledWidth(){return this.width*this.scaleX;},setElement(el){this.el=el;},set(v){Object.assign(this,v);},setCoords(){}};
+  const canvas={getObjects:()=>[object],on(){},off(){},getZoom:()=>1,requestRenderAll(){}};
+  const runtime=createBoardMediaRuntime({canvas,boardId:'room',store:{get:async()=>({metadata:{kind:'pdf'},blob:new Blob()})},pdfFactory:async()=>({renderPage:async()=>{renders++;return {element:{width:800,height:1200},width:800,height:1200};},dispose(){}})});
+  try{await new Promise(ok=>setTimeout(ok,0));const pixels=object.el;object.scaleX=.25;await runtime.update(object);assert.equal(renders,1);assert.equal(object.el,pixels);assert.deepEqual(runtime.getLoadStates(),[]);}finally{runtime.dispose();}
+});
+
+test('grouped replacement during a PDF quality render retains pixels and rejects stale completion',async()=>{
+  const {createBoardMediaRuntime}=await import('../src/lib/boardMediaRuntime.js');
+  const makeObject=()=>({boardObjectId:'group-pdf',mediaKind:'pdf',mediaAssetId:'c'.repeat(64),pageNumber:1,width:300,height:400,scaleX:1,getScaledWidth(){return this.width*this.scaleX;},setElement(el){this.el=el;},set(v){Object.assign(this,v);},setCoords(){}});
+  const original=makeObject(),events=new Map();let group={getObjects:()=>[original]};const objects=[group];let finish,renderCount=0;
+  const canvas={getObjects:()=>objects,on:(e,fn)=>events.set(e,fn),off(){},getZoom:()=>1,requestRenderAll(){}};
+  const oldPixels={width:600,height:800};
+  const runtime=createBoardMediaRuntime({canvas,boardId:'room',store:{get:async()=>({metadata:{kind:'pdf'},blob:new Blob()})},pdfFactory:async()=>({renderPage:async()=>{renderCount++;if(renderCount===1)return {element:oldPixels,width:600,height:800};return new Promise(ok=>finish=ok);},dispose(){}})});
+  try {
+    await new Promise(ok=>setTimeout(ok,0));original.scaleX=2;const pending=runtime.update(original);
+    assert.equal(original.el,oldPixels);assert.deepEqual(runtime.getLoadStates(),[]);
+    events.get('object:removed')({target:group});const replacement=makeObject();group={getObjects:()=>[replacement]};objects[0]=group;events.get('object:added')({target:group});
+    assert.equal(replacement.el,oldPixels);finish({element:{width:1200,height:1600},width:1200,height:1600});await pending;
+    assert.equal(replacement.el,oldPixels);assert.deepEqual(runtime.getLoadStates(),[]);
+  }finally{runtime.dispose();}
+});
