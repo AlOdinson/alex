@@ -109,4 +109,29 @@ try{
  await page.waitForTimeout(1500);
  const result=await page.evaluate(()=>({events:window.pdfEvents,blankFrames:window.blankFrames,loadCards:document.querySelectorAll('.media-load-status').length}));console.log(JSON.stringify(result,null,2));
  assert.equal(result.blankFrames.length,0,'Ready PDF must never become a placeholder during edits, undo, resize or navigation');
+ // Real mouse clicks must pass through empty bounds to painted objects below.
+ await page.evaluate(async()=>{
+  const {Line,Rect,FabricImage}=await import('/alex/node_modules/fabric/dist/index.min.mjs');
+  const c=window.testCanvas;c.discardActiveObject();c.setViewportTransform([1,0,0,1,0,0]);window.toolbarProps().setTool('select');
+  const rear=new Rect({originX:'left',originY:'top',left:800,top:200,width:100,height:100,fill:'#2563eb',boardObjectId:'mouse-hit-rear'});
+  const line=new Line([800,100,1000,400],{stroke:'#111',strokeWidth:4,fill:null,boardObjectId:'mouse-hit-line'});
+  const outline=new Rect({originX:'left',originY:'top',left:780,top:120,width:230,height:300,fill:null,stroke:'#111',strokeWidth:3,boardObjectId:'mouse-hit-outline'});
+  const bitmap=document.createElement('canvas');bitmap.width=100;bitmap.height=100;const ctx=bitmap.getContext('2d');ctx.fillStyle='#16a34a';ctx.fillRect(0,0,12,12);
+  const image=new FabricImage(bitmap,{originX:'left',originY:'top',left:800,top:200,boardObjectId:'mouse-hit-image'});
+  c.add(rear,image,line,outline);c.requestRenderAll();
+  c.on('mouse:down',e=>{window.mouseHit=e.target?.boardObjectId||null;});
+ });
+ await page.waitForTimeout(150);
+ await page.mouse.click(850,250);
+ assert.equal(await page.evaluate(()=>window.mouseHit),'mouse-hit-rear','Mouse must select painted rear object through empty upper bounds');
+ await page.mouse.click(980,200);
+ assert.equal(await page.evaluate(()=>window.mouseHit),null,'Empty space inside object bounds is not a hit');
+ await page.mouse.click(950,325);
+ assert.equal(await page.evaluate(()=>window.mouseHit),'mouse-hit-line','Mouse must hit the line through the unfilled front rectangle');
+ await page.waitForTimeout(500);
+ await page.mouse.click(782,220);
+ assert.equal(await page.evaluate(()=>window.mouseHit),'mouse-hit-outline','Painted outline remains selectable');
+ await page.mouse.click(805,205);
+ assert.equal(await page.evaluate(()=>window.mouseHit),'mouse-hit-image','Opaque image pixels remain selectable while transparent pixels pass through');
+ assert.equal(await page.evaluate(()=>window.testCanvas.perPixelTargetFind),false,'Pixel probing must be restored after each click');
 }finally{await browser.close();server.kill();await rm(profile,{recursive:true,force:true});}

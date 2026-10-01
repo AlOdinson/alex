@@ -1,9 +1,9 @@
 {
-  "version": "1.40.8",
-  "packageVersion": "1.40.8",
-  "base": "1.40.7",
-  "release": "Scale the entire PDF page panel with the document during viewport zoom",
+  "version": "1.40.9",
+  "packageVersion": "1.40.9",
+  "base": "1.40.8",
+  "release": "Select painted pixels with mouse clicks through transparent object bounds",
   "date": "2026-10-01",
-  "name": "pdf-controls-proportional-zoom",
-  "label": "Alex Board 1.40.8"
+  "name": "precise-cursor-selection",
+  "label": "Alex Board 1.40.9"
 }

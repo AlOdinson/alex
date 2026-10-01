@@ -12326,7 +12326,7 @@ function BoardWorkspace({
     }
 
     function armExactSelectionTargetFind({ pen = false, event = null } = {}) {
-      // Pencil selection is exact only for this pointerdown. Fabric renders just the
+      // Mouse, touch and Pencil selection are exact only for this pointerdown. Fabric renders just the
       // tiny probe around the contact, so transparent space inside a line/path/group
       // bounding box is not a hit. mouse:down:before restores the normal fast mode
       // after Fabric has cached the target; no move event performs a pixel probe.
@@ -12337,7 +12337,7 @@ function BoardWorkspace({
         paddedObjects: [],
       };
       const state = selectionTargetFindRestoreState;
-      canvas.perPixelTargetFind = Boolean(pen);
+      canvas.perPixelTargetFind = true;
       if (pen) {
         // Keep the allowance in screen pixels and deliberately match the normal select
         // tool. The former 9 px padding made empty bounding-box space feel selectable.

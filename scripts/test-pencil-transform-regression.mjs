@@ -53,7 +53,7 @@ assert.ok(
     < selectionMoveCaptureSource.indexOf('const moveNow = performance.now();'),
   'The cheap Pencil marquee must bypass the 16 ms Fabric transform limiter',
 );
-assert.match(boardSource, /canvas\.perPixelTargetFind = Boolean\(pen\)/);
+assert.match(boardSource, /canvas\.perPixelTargetFind = true/);
 assert.match(boardSource, /const tolerance = 2/);
 assert.match(boardSource, /canvas\.on\('mouse:down:before', restoreSelectionTargetFindBeforeFabricLogic\)/);
 assert.match(boardSource, /const suppressTargetFindDuringTransform/);
