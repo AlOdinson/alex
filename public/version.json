@@ -1,9 +1,9 @@
 {
-  "version": "1.40.4",
-  "packageVersion": "1.40.4",
-  "base": "1.40.3",
-  "release": "Keep PDF pixels stable during edits, history, resize and reconciliation",
+  "version": "1.40.5",
+  "packageVersion": "1.40.5",
+  "base": "1.40.4",
+  "release": "Remove delete button from auxiliary toolbar in all layouts",
   "date": "2026-10-01",
-  "name": "pdf-continuity",
-  "label": "Alex Board 1.40.4"
+  "name": "toolbar-actions",
+  "label": "Alex Board 1.40.5"
 }

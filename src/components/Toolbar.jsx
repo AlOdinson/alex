@@ -308,7 +308,6 @@ export default function Toolbar({
   canRedo,
   onCopy,
   onPaste,
-  onDelete,
   onClear,
   onAddShape,
   onAddImages,
@@ -702,7 +701,6 @@ export default function Toolbar({
         <div className="tool-group compact edit-actions" aria-label="Редактирование">
           <IconButton title="Копировать" disabled={!canEdit || selectedCount === 0} onClick={onCopy}>⧉</IconButton>
           <IconButton title="Вставить" disabled={!canEdit} onClick={onPaste}>▣</IconButton>
-          <IconButton title="Удалить выбранное" disabled={!canEdit || selectedCount === 0} onClick={onDelete}>×</IconButton>
           {isOwner && (
             <IconButton title="Очистить доску" disabled={!canEdit} onClick={onClear} className="danger-icon">⌫</IconButton>
           )}
