@@ -67,6 +67,13 @@ export function prepareAuthoritativeHistory(snapshot, appliedOps, appliedBackgro
   if (appliedBackground != null && snapshot.background !== appliedBackground) {
     inverse.push({ type: 'background', background: snapshot.background, ifBackground: appliedBackground });
   }
+  // Propagate the logical edit guard through every subsequent undo/redo.
+  for (const op of inverse) {
+    const ids = operationObjectIds([op]);
+    const guarded = appliedOps.find((source) => source.atomicGroup
+      && [...operationObjectIds([source])].some((id) => ids.has(id)));
+    if (guarded) op.atomicGroup = guarded.atomicGroup;
+  }
   // Restoring a selection must use the same stable layer order on every Canvas.
   inverse.sort((a, b) => Number(a.zIndex ?? -1) - Number(b.zIndex ?? -1));
   return { appliedOps: normalizedOps, historyInverseOps: inverse };

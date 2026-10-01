@@ -14,6 +14,7 @@ const TOOLS = [
   { id: 'pencil', label: 'Карандаш' },
   { id: 'line', label: 'Прямая' },
   { id: 'eraser', label: 'Ластик' },
+  { id: 'notebook', label: 'Блокнот' },
   { id: 'text', label: 'Текст' },
 ];
 
@@ -60,6 +61,13 @@ function DockToolIcon({ id }) {
           <path d="m7.2 17.8 8.9-9a2 2 0 0 1 2.9 0l3.2 3.2a2 2 0 0 1 0 2.9l-8.8 8.8H9.6l-2.4-2.5a2.4 2.4 0 0 1 0-3.4Z" fill="#f9a8d4" stroke="#172554" strokeWidth="1.65" strokeLinejoin="round" />
           <path d="m12.3 12.7 5.8 5.8-5.2 5.2H9.5l-2.4-2.5a2.4 2.4 0 0 1 0-3.4Z" fill="#c4b5fd" />
           <path d="m12.3 12.7 5.8 5.8" stroke="#172554" strokeWidth="1.55" />
+        </svg>
+      );
+    case 'notebook':
+      return (
+        <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
+          <path d="M7 4.5h15v19H7a2 2 0 0 1-2-2v-15a2 2 0 0 1 2-2Z" fill="#fef3c7" stroke="#172554" strokeWidth="1.65" strokeLinejoin="round" />
+          <path d="M9 4.5v19M12.5 10h6M12.5 14h6M12.5 18h4" fill="none" stroke="#b45309" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
       );
     case 'text':
@@ -311,6 +319,7 @@ export default function Toolbar({
   onClear,
   onAddShape,
   onAddImages,
+  onAddNotebook,
   selectedCount,
   onMoveForward,
   onMoveBackward,
@@ -805,9 +814,11 @@ export default function Toolbar({
             active={tool === item.id}
             disabled={!canEdit}
             className="dock-tool-button"
+            stylusActionPhase={item.id === 'notebook' ? 'end' : 'start'}
             onClick={() => {
               setShapesOpen(false);
-              setTool(item.id);
+              if (item.id === 'notebook' && onAddNotebook) onAddNotebook();
+              else setTool(item.id);
             }}
           >
             <span className="dock-tool-content">

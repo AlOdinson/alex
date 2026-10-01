@@ -3611,3 +3611,21 @@ html.game-viewport-locked #root {
 .pdf-page-controls button { flex-shrink:0; width:32px; height:32px; border:0; border-radius:8px; background:#eef2f7; font-size:24px; cursor:pointer; }
 .pdf-page-controls button:disabled { opacity:.4; cursor:default; }
 .pdf-page-controls span { min-width:52px; text-align:center; font-size:13px; }
+
+/* Notebook controls follow the frame's viewport transform supplied by Board. */
+.notebook-page-controls { position:absolute; z-index:12; display:flex; flex-direction:column; align-items:center; gap:5px; width:156px; padding:5px; border:1px solid #dbe3ee; border-radius:10px; background:rgba(255,255,255,.97); box-shadow:0 2px 10px #0002; color:#111827; transform-origin:top center; touch-action:manipulation; }
+.notebook-page-buttons { display:grid; grid-template-columns:32px minmax(32px,1fr) 32px; align-items:center; gap:6px; width:100%; }
+.notebook-page-buttons button, .notebook-page-arrow-space { width:32px; height:32px; }
+.notebook-page-buttons button { border:0; border-radius:7px; background:#eef2f7; color:#172554; font-size:24px; line-height:1; cursor:pointer; }
+.notebook-page-number { text-align:center; font-size:13px; font-variant-numeric:tabular-nums; }
+.notebook-page-controls .notebook-edit-text { width:100%; padding:6px 4px; border:0; border-radius:6px; background:#eef2f7; color:#334155; font-size:11px; cursor:pointer; }
+.notebook-page-controls button:disabled { opacity:.4; cursor:default; }
+.notebook-page-controls button:focus-visible, .notebook-text-editor button:focus-visible, .notebook-text-editor textarea:focus-visible { outline:2px solid #4f46e5; outline-offset:2px; }
+.notebook-text-editor-backdrop { position:fixed; inset:0; z-index:10000; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(15,23,42,.42); }
+.notebook-text-editor { display:flex; flex-direction:column; gap:16px; width:min(540px,100%); max-height:calc(100dvh - 40px); overflow:auto; padding:22px; border-radius:16px; background:#fff; box-shadow:0 16px 60px #0003; color:#172554; }
+.notebook-text-editor h2 { margin:0; font-size:19px; }
+.notebook-text-editor textarea { box-sizing:border-box; width:100%; min-height:160px; resize:vertical; padding:12px; border:1px solid #cbd5e1; border-radius:9px; color:#0f172a; background:#fff; font:16px/1.5 Arial,sans-serif; }
+.notebook-text-editor-actions { display:flex; justify-content:flex-end; gap:8px; }
+.notebook-text-editor-actions button { border:0; border-radius:8px; padding:10px 16px; color:#334155; background:#eef2f7; cursor:pointer; }
+.notebook-text-editor-actions button[type="submit"] { color:#fff; background:#4f46e5; }
+.notebook-text-editor-actions button:disabled { opacity:.5; cursor:default; }

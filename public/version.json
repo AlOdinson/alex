@@ -1,9 +1,9 @@
 {
-  "version": "1.41.0",
-  "packageVersion": "1.41.0",
-  "base": "1.40.9",
-  "release": "Share student lesson files and remove originals after their final local lesson",
+  "version": "1.42.0",
+  "packageVersion": "1.42.0",
+  "base": "1.41.0",
+  "release": "Paginated notebooks with clipped drawings, text and static images",
   "date": "2026-10-02",
-  "name": "student-shared-files",
-  "label": "Alex Board 1.41.0"
+  "name": "board-notebook",
+  "label": "Alex Board 1.42.0"
 }

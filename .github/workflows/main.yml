@@ -26,6 +26,7 @@ jobs:
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
       - run: npm run test:student:storage
+      - run: npm run test:notebook
       - run: npm run test:connections
       - run: npm run test:browser-authority
       - run: npm run test:sync:ci
@@ -58,6 +59,10 @@ jobs:
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
         run: npm run test:pdf:continuity
+      - name: Notebook pages, clipped content, text, erasing and history
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: npm run test:notebook:browser
       - name: Shared student files and final lesson cleanup
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}

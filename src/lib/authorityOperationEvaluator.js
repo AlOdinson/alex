@@ -215,13 +215,34 @@ export function evaluateAuthorityAction({
   ops = [],
   background = null,
 } = {}) {
+  // A split is one logical edit. Preflight each guarded group against the same
+  // snapshot before applying any of its members, including individual patch fields.
+  const groups = new Map();
+  for (const op of Array.isArray(ops) ? ops : []) {
+    if (op?.atomicGroup) {
+      const key = String(op.atomicGroup);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(op);
+    }
+  }
+  const rejectedGroups = new Set();
+  const groupConflicts = [];
+  for (const [key, members] of groups) {
+    const check = evaluateAuthorityAction({ snapshot, tombstones,
+      ops: members.map(({ atomicGroup, ...op }) => op) });
+    if (check.skippedConflicts.length) {
+      rejectedGroups.add(key);
+      groupConflicts.push(...check.skippedConflicts);
+    }
+  }
   const currentById = objectIndex(snapshot);
   const appliedOps = [];
-  const skippedConflicts = [];
+  const skippedConflicts = [...groupConflicts];
   let appliedBackground = ['grid', 'dots', 'blank'].includes(background) ? background : null;
 
   for (const operation of Array.isArray(ops) ? ops : []) {
     if (!operation || typeof operation !== 'object') continue;
+    if (rejectedGroups.has(String(operation.atomicGroup ?? ''))) continue;
     if (operation.type === 'background') {
       if (['grid', 'dots', 'blank'].includes(operation.background)) {
         if (operation.ifBackground === snapshot?.background) appliedBackground = operation.background;

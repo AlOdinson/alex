@@ -42,7 +42,7 @@ async function boardHarness(objects, options = {}) {
     randomToken: (() => { let i = 0; return () => `request-${++i}`; })(),
     historyCommandQueueRef: ref(null), historyGenerationRef: ref(0), historyHandlersRef: ref(null),
     localDeletionMutationIdsRef: ref(new Map()), localSelectionTransactionRef: ref(null),
-    deferredTransformFlushRef: ref(null), realtimeRef: ref(null),
+    deferredTransformFlushRef: ref(null), realtimeRef: ref(null), notebookQueueRef: ref(Promise.resolve()),
     authoritativeApplyQueueRef: ref(Promise.resolve()),
     applyRemoteOpsRef: ref(async () => true), syncFromServer: async () => {},
     commitLocalSelectionTransaction: async () => {},

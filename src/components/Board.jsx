@@ -1,3 +1,5 @@
+import NotebookPageControls, { NotebookTextEditor } from './NotebookPageControls.jsx';
+import { NOTEBOOK_FIELDS, createBoardNotebook, isBoardNotebook, setNotebookPage, captureNotebookObject, notebookObjectIntersection } from '../lib/boardNotebook.js';
 import PdfPageControls from './PdfPageControls.jsx';
 import MediaLoadStatus from './MediaLoadStatus.jsx';
 import { lockLabelAnchor } from '../lib/lockLabelAnchor.js';
@@ -162,6 +164,7 @@ const COMPACT_KEYBOARD_SYMBOLS = ['.', ',', '-', '+', '=', '(', ')', '?', '!', '
 
 FabricObject.customProperties = [
   ...MEDIA_OBJECT_FIELDS,
+  ...NOTEBOOK_FIELDS,
   'boardObjectId',
   'updatedAt',
   'updatedBy',
@@ -1025,6 +1028,7 @@ function serializeObject(object) {
   }
   const serialized = object.toObject([
     ...MEDIA_OBJECT_FIELDS,
+    ...NOTEBOOK_FIELDS,
     'boardObjectId',
     'updatedAt',
     'updatedBy',
@@ -1756,6 +1760,14 @@ function BoardWorkspace({
   const cursorVisibilityRef = useRef(null);
   const fabricCanvasRef = useRef(null);
   const mediaRuntimeRef = useRef(null);
+  const [notebookControls, setNotebookControls] = useState(null);
+  const [notebookBusy, setNotebookBusy] = useState(false);
+  const [notebookTextEditor, setNotebookTextEditor] = useState(null);
+  const notebookTextEditRef = useRef(null);
+  const notebookHandlersRef = useRef({});
+  const notebookQueueRef = useRef(Promise.resolve());
+  const notebookMutationActiveRef = useRef(false);
+  const notebookControlSignatureRef = useRef('');
   const [pdfControls, setPdfControls] = useState(null);
   const [pdfPageBusy, setPdfPageBusy] = useState(false);
   const [mediaLoadOverlays, setMediaLoadOverlays] = useState([]);
@@ -2875,6 +2887,21 @@ function BoardWorkspace({
       value = { id: object.boardObjectId, pageNumber: object.pageNumber || 1, pageCount: object.pageCount || 1,
         position: { width, maxWidth: 'none', left: point.x, top: point.y + 8 * scale,
           transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'top center' } };
+    }
+    let notebookValue = null;
+    if (isBoardNotebook(object)) {
+      const box = object.getBoundingRect();
+      const point = new Point(box.left + box.width / 2, box.top + box.height).transform(canvas.viewportTransform);
+      const scale = canvas.getZoom() * Math.min(1, box.width / 240);
+      notebookValue = { id: object.boardObjectId, pageNumber: object.notebookPageNumber,
+        hasText: object.getPageObjects().some(isTextObject),
+        position: { width: Math.min(360, box.width), left: point.x, top: point.y + 6 * scale,
+          transform: `translateX(-50%) scale(${scale})` } };
+    }
+    const notebookSignature = JSON.stringify(notebookValue);
+    if (notebookSignature !== notebookControlSignatureRef.current) {
+      notebookControlSignatureRef.current = notebookSignature;
+      setNotebookControls(notebookValue);
     }
     const signature = JSON.stringify(value);
     if (signature !== pdfControlSignatureRef.current) {
@@ -4343,6 +4370,10 @@ function BoardWorkspace({
         applyingRemoteRef.current = false;
         object.setCoords();
         canvas.requestRenderAll();
+        if (!metadata && await notebookHandlersRef.current.capture?.(object)) {
+          completed.push(...canvas.getObjects().filter(isBoardNotebook).slice(-1));
+          continue;
+        }
         const records = getObjectRecords([object]);
         recordAction({ type: 'add', records });
         realtimeRef.current?.sendPreview?.(records);
@@ -5937,6 +5968,7 @@ function BoardWorkspace({
     if (active?.isEditing) active.exitEditing();
     if (localSelectionTransactionRef.current) await commitLocalSelectionTransaction();
     canvas?.discardActiveObject?.();
+    await notebookQueueRef.current.catch(() => undefined);
     await deferredTransformFlushRef.current?.({ force: true });
     await realtimeRef.current?.flushPending?.();
     await authoritativeApplyQueueRef.current;
@@ -8249,6 +8281,230 @@ function BoardWorkspace({
     }
   }, [acquireLocalSelectionLease, mutateSelection, updatePdfControls]);
 
+  // Serialize notebook mutations locally as well as at the shared authority. A page
+  // flip cannot overtake a stroke that is still preparing its clipped fragments.
+  const queueNotebookMutation = useCallback((work) => {
+    const next = notebookQueueRef.current.catch(() => undefined).then(async () => {
+      notebookMutationActiveRef.current = true;
+      try { return await work(); }
+      finally {
+        notebookMutationActiveRef.current = false;
+        const active = fabricCanvasRef.current?.getActiveObject();
+        if (active) acquireLocalSelectionLease(active);
+      }
+    });
+    notebookQueueRef.current = next;
+    next.catch(error => { setSaveStatus(error.message); setSyncTone('error'); });
+    return next;
+  }, [acquireLocalSelectionLease]);
+
+  const assertNotebookLease = useCallback((notebook) => {
+    if (!canEditRef.current || !fabricCanvasRef.current?.getObjects().includes(notebook)
+      || !ownsSelectionLease(notebook)) throw new Error('Блокнот изменился или блокировка истекла — повторите действие');
+  }, [ownsSelectionLease]);
+
+  const commitNotebookOps = useCallback(async (ops, options = {}) => {
+    const results = await sendDurableOps(ops, { atomic: true, ...options });
+    const rejected = results?.some(result => result?.accepted === false
+      || result?.rejectedObjectIds?.length || result?.skippedConflicts?.length);
+    if (rejected) {
+      await syncFromServer(true);
+      throw new Error('Блокнот уже изменён другим участником; состояние обновлено');
+    }
+    return results;
+  }, [sendDurableOps, syncFromServer]);
+
+  const notebookForObject = useCallback((object) => {
+    if (!object || isBoardNotebook(object) || isTextObject(object) && object.isEditing
+      || isBoardMedia(object) || object.pendingImage) return null;
+    return [...(fabricCanvasRef.current?.getObjects() ?? [])].reverse().find(candidate =>
+      isBoardNotebook(candidate) && notebookObjectIntersection(candidate, object).intersects) ?? null;
+  }, []);
+
+  const captureIntoNotebook = useCallback((object, { before = [], published = false, newText = false } = {}) => {
+    const candidate = notebookForObject(object);
+    if (!candidate) return Promise.resolve(false);
+    const pageNumber = candidate.notebookPageNumber;
+    return queueNotebookMutation(async () => {
+      const canvas = fabricCanvasRef.current;
+      const notebook = canvas?.getObjects().find(item => item.boardObjectId === candidate.boardObjectId);
+      if (!notebook || !canvas.getObjects().includes(object)) return false;
+      if (notebook.notebookPageNumber !== pageNumber) throw new Error('Страница блокнота изменилась — повторите действие');
+      const leaseTarget = published ? [notebook, object] : notebook;
+      try {
+        if (!await acquireLocalSelectionLease(leaseTarget)) return false;
+        const prepared = await captureNotebookObject(notebook, object);
+        if (!prepared || !ownsSelectionLease(leaseTarget) || !canvas.getObjects().includes(notebook)) return false;
+        const parentBefore = getObjectRecords([notebook]);
+        const sourceBefore = before.length ? before : getObjectRecords([object]);
+        const historySource = newText && prepared.split ? getObjectRecords([object]) : sourceBefore;
+        const restoreSource = published && (!newText || prepared.split);
+        const sourceId = object.boardObjectId;
+        const actionId = randomToken(24);
+        const mutationId = randomToken(24);
+        notebookMutationActiveRef.current = true;
+        applyingRemoteRef.current = true;
+        if (canvas.getActiveObject() === object) canvas.discardActiveObject();
+        removeRegisteredObjectsById(sourceId);
+        notebook.addPageObject(prepared.inside);
+        markObject(notebook, clientIdRef.current);
+        const outside = prepared.outside;
+        if (outside) {
+          outside.boardObjectId = sourceId;
+          outside.set({ selectable: activeToolRef.current === 'select', evented: activeToolRef.current === 'select' });
+          markObject(outside, clientIdRef.current);
+          canvas.add(outside);
+          canvas.moveObjectTo(outside, Math.max(0, sourceBefore[0]?.zIndex ?? canvas.getObjects().length - 1));
+        }
+        applyingRemoteRef.current = false;
+        const parentAfter = getObjectRecords([notebook]);
+        const outsideRecords = outside ? getObjectRecords([outside]) : [];
+        const ops = [
+          ...createConditionalRecordPatchOps(parentBefore, parentAfter),
+          ...(outside ? (published ? createConditionalRecordPatchOps(sourceBefore, outsideRecords)
+            : outsideRecords.map(record => ({ type: 'upsert', ...record })))
+            : [{ ...(published ? createConditionalDeleteOps(sourceBefore)[0] : { type: 'delete', id: sourceId }), mutationId }]),
+        ].map(op => ({ ...op, atomicGroup: actionId }));
+        const inverse = [
+          ...createConditionalRecordPatchOps(parentAfter, parentBefore),
+          ...(restoreSource ? (outside ? createConditionalRecordPatchOps(outsideRecords, historySource)
+            : historySource.map(record => ({type: 'upsert', ...record, restore: true, reorder: true,
+              ifDeletedBy: clientIdRef.current, ifDeletedMutationId: mutationId})))
+            : createConditionalDeleteOps(outsideRecords)),
+        ].map(op => ({ ...op, atomicGroup: actionId }));
+        if (newText) {
+          const latest = undoStackRef.current.at(-1);
+          if (latest?.type === 'add' && latest.records?.length === 1
+            && latest.records[0].object.boardObjectId === sourceId) {
+            if (prepared.split) latest.records = historySource;
+            else undoStackRef.current.pop();
+          }
+        }
+        recordAction({ type: 'compound', nextHistoryOps: inverse });
+        canvas.requestRenderAll();
+        await commitNotebookOps(ops, { actionId });
+        schedulePersistence();
+        return true;
+      } finally {
+        applyingRemoteRef.current = false;
+        notebookMutationActiveRef.current = false;
+        if (ownsSelectionLease(leaseTarget)) releaseLocalSelectionLease(leaseTarget);
+        updateSelectionState();
+        canvas.requestRenderAll();
+      }
+    });
+  }, [notebookForObject, queueNotebookMutation, acquireLocalSelectionLease, ownsSelectionLease,
+    getObjectRecords, recordAction, commitNotebookOps, schedulePersistence,
+    releaseLocalSelectionLease, updateSelectionState, removeRegisteredObjectsById]);
+
+  const addNotebook = useCallback(() => {
+    if (!canEditRef.current) return;
+    const point = getViewportSceneCenter();
+    const notebook = createBoardNotebook({ left: point.x - 260, top: point.y - 240 });
+    setTool('select');
+    addObjectsToBoard([notebook]);
+  }, [getViewportSceneCenter, setTool, addObjectsToBoard]);
+
+  const changeNotebookPage = useCallback((pageNumber) => queueNotebookMutation(async () => {
+    const canvas = fabricCanvasRef.current;
+    const notebook = canvas?.getActiveObject();
+    if (!canEditRef.current || !isBoardNotebook(notebook) || notebook.notebookPageNumber === pageNumber) return;
+    setNotebookBusy(true);
+    try {
+      if (!await acquireLocalSelectionLease(notebook)) return;
+      const before = getObjectRecords([notebook]);
+      if (!await setNotebookPage(notebook, pageNumber)) return;
+      assertNotebookLease(notebook);
+      markObject(notebook, clientIdRef.current);
+      await commitNotebookOps(createConditionalRecordPatchOps(before, getObjectRecords([notebook])));
+      updatePdfControls();
+      canvas.requestRenderAll();
+    } catch (error) { await syncFromServer(true); throw error; }
+    finally { setNotebookBusy(false); }
+  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, commitNotebookOps, updatePdfControls, assertNotebookLease, syncFromServer]);
+
+  const editNotebookText = useCallback(async (notebook, point) => {
+    const children = notebook?.getPageObjects?.() ?? [];
+    const child = [...children].reverse().find(object => isTextObject(object)
+      && (!point || object.containsPoint(point)));
+    if (!child || !await acquireLocalSelectionLease(notebook)) return;
+    notebookTextEditRef.current = { notebook, child, pageNumber: notebook.notebookPageNumber };
+    setNotebookTextEditor({ value: child.text });
+  }, [acquireLocalSelectionLease]);
+
+  const saveNotebookText = useCallback((text) => queueNotebookMutation(async () => {
+    const editing = notebookTextEditRef.current;
+    if (!editing) return;
+    const { notebook, child, pageNumber } = editing;
+    const canvas = fabricCanvasRef.current;
+    if (!canvas?.getObjects().includes(notebook) || notebook.notebookPageNumber !== pageNumber
+      || !notebook.getPageObjects().includes(child)) throw new Error('Страница изменилась; откройте текст заново');
+    setNotebookBusy(true);
+    try {
+      if (!await acquireLocalSelectionLease(notebook)) return;
+      const before = getObjectRecords([notebook]);
+      // Prepare the edit off-canvas. Growing across an edge follows exactly the
+      // same rasterization rule as placing partially overlapping text.
+      const draft = await child.clone();
+      util.applyTransformToObject(draft, child.calcTransformMatrix());
+      draft.set('text', text);
+      draft.setCoords();
+      const prepared = await captureNotebookObject(notebook, draft);
+      if (!prepared) throw new Error('Текст оказался за пределами страницы');
+      assertNotebookLease(notebook);
+      if (notebook.notebookPageNumber !== pageNumber || !notebook.getPageObjects().includes(child)) throw new Error('Страница изменилась — откройте текст заново');
+      const index = notebook.getPageObjects().indexOf(child);
+      notebook.remove(child);
+      notebook.addPageObject(prepared.inside);
+      notebook.moveObjectTo(prepared.inside, index);
+      notebook.syncPage();
+      markObject(notebook, clientIdRef.current);
+      const after = getObjectRecords([notebook]);
+      const outside = prepared.outside;
+      if (outside) {
+        outside.boardObjectId = randomToken(14);
+        markObject(outside, clientIdRef.current);
+        canvas.add(outside);
+        const records = getObjectRecords([outside]);
+        const actionId = randomToken(24);
+        const guard = ops => ops.map(op => ({ ...op, atomicGroup: actionId }));
+        recordAction({ type: 'compound', nextHistoryOps: guard([
+          ...createConditionalRecordPatchOps(after, before), ...createConditionalDeleteOps(records),
+        ]) });
+        await commitNotebookOps(guard([...createConditionalRecordPatchOps(before, after),
+          ...records.map(record => ({type: 'upsert', ...record}))]), {atomic: true, actionId});
+      } else {
+        recordAction({ type: 'modify', before, after });
+        await commitNotebookOps(createConditionalRecordPatchOps(before, after));
+      }
+      notebookTextEditRef.current = null;
+      setNotebookTextEditor(null);
+      canvas.requestRenderAll();
+    } catch (error) { await syncFromServer(true); throw error; }
+    finally { setNotebookBusy(false); }
+  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, recordAction, commitNotebookOps, assertNotebookLease, syncFromServer]);
+  const eraseNotebookChildren = useCallback((entries) => queueNotebookMutation(async () => {
+    const canvas = fabricCanvasRef.current;
+    const notebooks = entries.map(entry => canvas?.getObjects().find(object => object.boardObjectId === entry.id)).filter(isBoardNotebook);
+    if (!notebooks.length || !await acquireLocalSelectionLease(notebooks)) return;
+    const before = getObjectRecords(notebooks);
+    for (const notebook of notebooks) {
+      const entry = entries.find(item => item.id === notebook.boardObjectId);
+      if (entry.page !== notebook.notebookPageNumber) continue;
+      const children = notebook.getPageObjects().filter(child => entry.childIds.has(child.boardObjectId));
+      notebook.remove(...children);
+      notebook.syncPage();
+      markObject(notebook, clientIdRef.current);
+    }
+    const after = getObjectRecords(notebooks);
+    recordAction({ type: 'modify', before, after });
+    canvas.requestRenderAll();
+    try { await commitNotebookOps(createConditionalRecordPatchOps(before, after)); }
+    finally { if (ownsSelectionLease(notebooks)) releaseLocalSelectionLease(notebooks); }
+  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, recordAction, commitNotebookOps, releaseLocalSelectionLease, ownsSelectionLease]);
+  notebookHandlersRef.current = { capture: captureIntoNotebook, candidate: notebookForObject,
+    editText: editNotebookText, erase: eraseNotebookChildren };
+
   useEffect(() => {
     const canvasElement = canvasElementRef.current;
     const host = canvasHostRef.current;
@@ -9509,9 +9765,13 @@ function BoardWorkspace({
       return getObjectRecords([object])[0] ?? { object: serialized, zIndex: -1 };
     }
 
-    function commitAddedObject(object) {
+    async function commitAddedObject(object) {
       if (!object || applyingRemoteRef.current || applyingHistoryRef.current) return;
       markObject(object, clientId);
+      if (!isTextObject(object)) {
+        try { if (await notebookHandlersRef.current.capture?.(object)) return; }
+        catch { if (!canvas.getObjects().includes(object)) return; }
+      }
       const records = [recordForJustAddedObject(object)];
       pencilDiagnosticsRef.current?.record('BOARD commitAddedObject', {
         objectId: object.boardObjectId ?? null,
@@ -10177,6 +10437,7 @@ function BoardWorkspace({
         });
     }
 
+    const notebookEraserEntries = new Map();
     function eraseAtClientPoint(clientX, clientY) {
       const pointer = objectEraserPointerRef.current;
       if (pointer?.active && pointer.lastX != null
@@ -10194,6 +10455,17 @@ function BoardWorkspace({
         objectEraserCandidatesNear(scenePoint),
       );
       if (!target) return;
+      if (isBoardNotebook(target)) {
+        const child = [...target.getPageObjects()].reverse().find(object => !object.isEraserPath
+          && object.containsPoint(scenePoint) && !canvas.isTargetTransparent(object, viewportPoint.x, viewportPoint.y));
+        if (child) {
+          const entry = notebookEraserEntries.get(target.boardObjectId)
+            ?? { id: target.boardObjectId, page: target.notebookPageNumber, childIds: new Set() };
+          entry.childIds.add(child.boardObjectId);
+          notebookEraserEntries.set(target.boardObjectId, entry);
+        }
+        return;
+      }
       const spatialEntry = transformSpatialIndex.entries.get(target);
       const targetBounds = finiteRect(spatialEntry?.bounds ?? target.getBoundingRect());
       const record = {
@@ -10234,6 +10506,10 @@ function BoardWorkspace({
       // a correctness boundary: repaint once from Fabric's canonical object list so
       // the lower canvas cannot retain a stale/misaligned raster after a local delete.
       canvas.requestRenderAll();
+      if (notebookEraserEntries.size) {
+        notebookHandlersRef.current.erase?.([...notebookEraserEntries.values()]);
+        notebookEraserEntries.clear();
+      }
       const records = [...objectEraserRecordsRef.current.values()];
       objectEraserRecordsRef.current = new Map();
       updateSelectionState();
@@ -10572,7 +10848,10 @@ function BoardWorkspace({
       // The commit is only an O(selected objects) matrix patch and contains no Fabric
       // mutation. Queue it synchronously for groups too, so a delayed animation frame
       // cannot hold locks or drop the first of two rapid Pencil moves.
-      commitObjects();
+      if (selectedObjects.length === 1 && notebookHandlersRef.current.candidate?.(selectedObjects[0])) {
+        notebookHandlersRef.current.capture(selectedObjects[0], { before: beforeRecords, published: true })
+          .then(captured => { if (!captured) commitObjects(); });
+      } else commitObjects();
       if (completedPointerType === 'pen') {
         finalizePencilTransformPatches(selectedObjects, startingViewportRects);
       }
@@ -10605,14 +10884,14 @@ function BoardWorkspace({
       // event so a large ActiveSelection cannot block the contact itself.
       queueSelectionUiRefresh();
       const active = canvas.getActiveObject();
-      if (active) acquireLocalSelectionLease(active);
+      if (active && !notebookMutationActiveRef.current) acquireLocalSelectionLease(active);
     };
     const finishTransactionalSelection = (selectionEvent = {}) => {
       queueSelectionUiRefresh();
       const releasedTarget = selectionEvent?.deselected?.[0]
         ?? [...selectionUiTouchedRef.current][0]
         ?? null;
-      releaseLocalSelectionLease(releasedTarget);
+      if (!notebookMutationActiveRef.current) releaseLocalSelectionLease(releasedTarget);
       const nativeEvent = selectionEvent?.e;
       if (nativeEvent?.pointerType !== 'pen' || activeToolRef.current !== 'select') return;
       const controlsWereOnTop = Boolean(canvas.contextTopDirty);
@@ -10678,7 +10957,7 @@ function BoardWorkspace({
       }, 120);
     });
 
-    canvas.on('text:editing:exited', ({ target }) => {
+    canvas.on('text:editing:exited', async ({ target }) => {
       if (!target || applyingRemoteRef.current || applyingHistoryRef.current) return;
       if (String(mobileTextEditorRef.current?.objectId ?? '') === String(target.boardObjectId ?? '')) {
         mobileTextEditorRef.current = null;
@@ -10716,6 +10995,8 @@ function BoardWorkspace({
         } else if (records.length) {
           recordAction({ type: 'delete', records });
         }
+      } else if (await notebookHandlersRef.current.capture?.(target, { before, published: true, newText: newTextDraft })) {
+        // The compound edit owns both the page fragment and the outside text.
       } else {
         markObject(target, clientId);
         const after = getObjectRecords([target]);
@@ -11135,6 +11416,11 @@ function BoardWorkspace({
       return true;
     }
 
+    canvas.on('mouse:dblclick', (event) => {
+      if (activeToolRef.current === 'select' && isBoardNotebook(event.target)) {
+        notebookHandlersRef.current.editText?.(event.target, event.scenePoint ?? canvas.getScenePoint(event.e));
+      }
+    });
     canvas.on('mouse:down', (event) => {
       const nativeEvent = event.e;
       const pointerId = nativeEvent?.pointerId;
@@ -13916,6 +14202,7 @@ function BoardWorkspace({
         onClear={clearBoard}
         onAddShape={chooseShapeTool}
         onAddImages={addImageFiles}
+        onAddNotebook={addNotebook}
         selectedCount={selectedCount}
         onMoveForward={moveSelectionForward}
         onMoveBackward={moveSelectionBackward}
@@ -13962,6 +14249,11 @@ function BoardWorkspace({
         data-readonly-view={!isOwner && !canEdit ? 'true' : 'false'}
       >
         <canvas ref={canvasElementRef} />
+        {notebookControls && <NotebookPageControls {...notebookControls} canEdit={canEdit} busy={notebookBusy}
+          onPageChange={changeNotebookPage} onEditText={notebookControls.hasText
+            ? () => editNotebookText(fabricCanvasRef.current?.getActiveObject()) : undefined} />}
+        {notebookTextEditor && <NotebookTextEditor {...notebookTextEditor} busy={notebookBusy}
+          onSave={saveNotebookText} onCancel={() => { notebookTextEditRef.current = null; setNotebookTextEditor(null); }} />}
         {pdfControls && <PdfPageControls key={pdfControls.id} {...pdfControls} canEdit={canEdit} busy={pdfPageBusy} onPageChange={changePdfPage} />}
         <MediaLoadStatus entries={mediaLoadOverlays} onRetry={object=>mediaRuntimeRef.current?.retry(object)} />
         <div

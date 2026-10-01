@@ -7,9 +7,12 @@ const palette = fs.readFileSync(new URL('../src/components/ShapePalette.jsx', im
 const i18n = fs.readFileSync(new URL('../src/i18n.js', import.meta.url), 'utf8');
 
 assert.match(toolbar, /function DockToolIcon\(\{ id \}\)/, 'Toolbar must define custom SVG dock icons');
-for (const id of ['select', 'pencil', 'line', 'eraser', 'text', 'shape', 'image']) {
+for (const id of ['select', 'pencil', 'line', 'eraser', 'notebook', 'text', 'shape', 'image']) {
   assert.match(toolbar, new RegExp(`case ['\"]${id}['\"]:`), `DockToolIcon must include ${id}`);
 }
+
+assert.match(toolbar, /id: 'eraser'[\s\S]*?id: 'notebook'[\s\S]*?id: 'text'/, 'Notebook must sit between eraser and text');
+assert.match(toolbar, /item.id === 'notebook' && onAddNotebook/, 'Notebook must use its creation callback');
 
 const primaryStart = toolbar.indexOf('<div className="toolbar-primary-row">');
 const primaryEnd = toolbar.indexOf('<div className="toolbar-secondary-row">');
