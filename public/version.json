@@ -1,9 +1,9 @@
 {
-  "version": "1.40.9",
-  "packageVersion": "1.40.9",
-  "base": "1.40.8",
-  "release": "Select painted pixels with mouse clicks through transparent object bounds",
-  "date": "2026-10-01",
-  "name": "precise-cursor-selection",
-  "label": "Alex Board 1.40.9"
+  "version": "1.41.0",
+  "packageVersion": "1.41.0",
+  "base": "1.40.9",
+  "release": "Share student lesson files and remove originals after their final local lesson",
+  "date": "2026-10-02",
+  "name": "student-shared-files",
+  "label": "Alex Board 1.41.0"
 }

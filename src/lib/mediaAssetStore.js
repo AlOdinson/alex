@@ -1,3 +1,4 @@
+import { withLocalFileLifecycle } from './localFileLifecycle.js';
 export const MEDIA_LIMITS = { pdf: 100 * 1024 * 1024, gif: 25 * 1024 * 1024 };
 export const MEDIA_VERSION = 1;
 export function mediaKindFromBytes(bytes) {
@@ -80,6 +81,21 @@ export function createMediaAssetStore({ indexedDB = globalThis.indexedDB,
   const checkBoard = async (deleted, boardId) => {
     if (await requestResult(deleted.get(String(boardId)))) throw deletedError();
   };
+  const removeBoard = async (boardId, permanent) => {
+    const key = String(boardId);
+    await transaction('readwrite', async (assets, links, deleted) => {
+      if (permanent) await requestResult(deleted.put(true, key));
+      const memberships = await requestResult(links.index('boardId').getAll(key));
+      for (const { assetId } of memberships) {
+        await requestResult(links.delete(roomKey(key, assetId)));
+        if (!(await requestResult(links.index('assetId').count(assetId)))) await requestResult(assets.delete(assetId));
+      }
+    });
+    for (const link of [...rooms.keys()]) if (link.startsWith(`${key}:`)) rooms.delete(link);
+    for (const assetId of [...fallback.keys()]) {
+      if (![...rooms.keys()].some(link => link.endsWith(`:${assetId}`))) fallback.delete(assetId);
+    }
+  };
   return {
     async importFile(boardId, file, { expectedAssetId, expectedKind } = {}) {
       if (disposed) throw new Error('Media store closed');
@@ -98,11 +114,11 @@ export function createMediaAssetStore({ indexedDB = globalThis.indexedDB,
       const record = { metadata, persisted: true, blob: file.slice(0, file.size, metadata.mime) };
       let persisted = true;
       try {
-        await transaction('readwrite', async (assets, links, deleted) => {
+        await withLocalFileLifecycle(() => transaction('readwrite', async (assets, links, deleted) => {
           await checkBoard(deleted, boardId);
           if (!(await requestResult(assets.getKey(assetId)))) await requestResult(assets.put(record, assetId));
           await requestResult(links.put({ boardId: String(boardId), assetId }, roomKey(boardId, assetId)));
-        });
+        }));
         fallback.delete(assetId); rooms.delete(roomKey(boardId, assetId));
       } catch (error) {
         if (error.name === 'DeletedBoardError') throw error;
@@ -125,35 +141,49 @@ export function createMediaAssetStore({ indexedDB = globalThis.indexedDB,
         return rooms.has(roomKey(boardId, assetId)) ? fallback.get(assetId) || null : null;
       }
     },
+    // Claim only a durable original. The lookup, tombstone check and membership
+    // write share a transaction with deletion, so a successful claim owns bytes.
+    async reuse(boardId, assetId) {
+      if (disposed) throw new Error('Media store closed');
+      try {
+        const record = await withLocalFileLifecycle(() => transaction('readwrite', async (assets, links, deleted) => {
+          await checkBoard(deleted, boardId);
+          const existing = await requestResult(assets.get(assetId));
+          if (!existing || existing.persisted === false) return null;
+          await requestResult(links.put({ boardId: String(boardId), assetId }, roomKey(boardId, assetId)));
+          return { ...existing, persisted: true };
+        }));
+        if (record) rooms.delete(roomKey(boardId, assetId));
+        return record;
+      } catch (error) {
+        if (error.name === 'DeletedBoardError') throw error;
+        onPersistenceError(error);
+        return null;
+      }
+    },
     async register(boardId, assetId) {
       if (disposed) throw new Error('Media store closed');
       try {
-        await transaction('readwrite', async (assets, links, deleted) => {
+        await withLocalFileLifecycle(() => transaction('readwrite', async (assets, links, deleted) => {
           await checkBoard(deleted, boardId);
           if (!(await requestResult(assets.getKey(assetId)))) throw new Error('Медиафайл отсутствует на этом устройстве');
           await requestResult(links.put({ boardId: String(boardId), assetId }, roomKey(boardId, assetId)));
-        });
+        }));
         rooms.delete(roomKey(boardId, assetId));
       } catch (error) {
         if (error.name === 'DeletedBoardError') throw error;
         onPersistenceError(error); throw new Error('Не удалось сохранить медиафайл в новой доске', { cause: error });
       }
     },
-    async deleteBoard(boardId) {
-      const key = String(boardId);
-      await transaction('readwrite', async (assets, links, deleted) => {
-        await requestResult(deleted.put(true, key));
-        const memberships = await requestResult(links.index('boardId').getAll(key));
-        for (const { assetId } of memberships) {
-          await requestResult(links.delete(roomKey(key, assetId)));
-          if (!(await requestResult(links.index('assetId').count(assetId)))) await requestResult(assets.delete(assetId));
-        }
+    async listBoardIds() {
+      if (disposed) throw new Error('Media store closed');
+      return transaction('readonly', async (_assets, links) => {
+        const memberships = await requestResult(links.getAll());
+        return [...new Set(memberships.map(link => String(link.boardId)))];
       });
-      for (const link of [...rooms.keys()]) if (link.startsWith(`${key}:`)) rooms.delete(link);
-      for (const assetId of [...fallback.keys()]) {
-        if (![...rooms.keys()].some(link => link.endsWith(`:${assetId}`))) fallback.delete(assetId);
-      }
     },
+    deleteBoard(boardId) { return removeBoard(boardId, true); },
+    releaseBoard(boardId) { return removeBoard(boardId, false); },
     dispose() { disposed = true; fallback.clear(); rooms.clear(); },
   };
 }

@@ -91,6 +91,23 @@ export async function getCachedSnapshot(boardId) {
   }
 }
 
+export async function listCachedSnapshotBoardIds() {
+  const db = await openDatabase();
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = db.transaction(SNAPSHOT_STORE).objectStore(SNAPSHOT_STORE).getAllKeys();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } finally { db.close(); }
+}
+
+export async function deleteCachedSnapshot(boardId) {
+  try {
+    await withStore(SNAPSHOT_STORE, 'readwrite', store => store.delete(boardId));
+  } catch { /* The obsolete cache must not block the durable student archive. */ }
+}
+
 export async function setCachedSnapshot(boardId, value) {
   try {
     await withStore(SNAPSHOT_STORE, 'readwrite', (store) => store.put(value, boardId));

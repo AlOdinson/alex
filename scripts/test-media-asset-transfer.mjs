@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
+import { IDBFactory } from 'fake-indexeddb';
 import { createMediaAssetStore } from '../src/lib/mediaAssetStore.js';
 import { createMediaAssetTransfer } from '../src/lib/mediaAssetTransfer.js';
 import { createPeerMessage, peerFrameByteLength, MAX_PEER_FRAME_BYTES } from '../src/lib/peerProtocol.js';
@@ -83,5 +84,59 @@ test('download progress survives shared requests and reaches verification before
   assert.equal(progress[0].phase,'receiving');assert.equal(progress[0].percent,0);
   assert.ok(progress.some(value=>value.percent>0&&value.percent<100));
   assert.equal(progress.at(-1).phase,'verifying');assert.equal(progress.at(-1).loaded,meta.size);
+  left.close();right.close();
+});
+test('new lesson receives verified bytes before claiming an existing global original',async()=>{
+  const a=createMediaAssetStore({indexedDB:new IDBFactory(),crypto:webcrypto});
+  const b=createMediaAssetStore({indexedDB:new IDBFactory(),crypto:webcrypto});
+  const blob=Object.assign(new Blob(['GIF89ashared']),{name:'animation.gif'});
+  const meta=await a.importFile('new',blob);await b.importFile('old',blob);
+  let left,right;const frames=[];
+  left=createMediaAssetTransfer({boardId:'new',store:a,send:async(type,payload)=>{
+    frames.push(type);
+    if(type==='asset-chunk'||type==='asset-end')assert.equal(await b.get('new',meta.assetId),null);
+    return right.handleMessage({type,payload});
+  }});
+  right=createMediaAssetTransfer({boardId:'new',store:b,send:(type,payload)=>left.handleMessage({type,payload})});
+  const received=await right.request(meta.assetId);
+  assert.deepEqual(frames,['asset-start','asset-chunk','asset-end']);
+  assert.equal(await received.blob.text(),'GIF89ashared');
+  assert.ok(await b.get('new',meta.assetId));left.close();right.close();
+});
+test('unsolicited asset-start cannot claim a foreign original or enable disclosure',async()=>{
+  const disk=createMediaAssetStore({indexedDB:new IDBFactory(),crypto:webcrypto}),replies=[];
+  const meta=await disk.importFile('private',Object.assign(new Blob(['GIF89aprivate']),{name:'private.gif'}));
+  const receiver=createMediaAssetTransfer({boardId:'public',store:disk,send:async(type,payload)=>replies.push({type,payload})});
+  const p={boardId:'public',transferId:'probe',assetId:meta.assetId};
+  await receiver.handleMessage({type:'asset-start',payload:{...p,metadata:meta,totalChunks:1}});
+  assert.equal(replies.at(-1).payload.status,'ready');
+  assert.equal(await disk.get('public',meta.assetId),null);
+  await receiver.handleMessage({type:'asset-request',payload:{...p,transferId:'read'}});
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(replies.at(-1).payload.status,'error');
+  assert.ok(replies.every(reply=>reply.type==='asset-result'));
+  assert.equal(await disk.get('public',meta.assetId),null);receiver.close();
+});
+test('global originals are not disclosed or claimed by unauthorized inbound messages',async()=>{
+  const disk=createMediaAssetStore({indexedDB:new IDBFactory(),crypto:webcrypto}),replies=[];
+  const meta=await disk.importFile('private',Object.assign(new Blob(['GIF89aprivate']),{name:'private.gif'}));
+  const receiver=createMediaAssetTransfer({boardId:'public',store:disk,canUpload:async()=>false,send:async(type,payload)=>replies.push({type,payload})});
+  const p={boardId:'public',transferId:'probe',assetId:meta.assetId};
+  await receiver.handleMessage({type:'asset-request',payload:p});
+  // The upload is intentionally detached from the message dispatcher.
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(replies.length,1);assert.equal(replies[0].payload.status,'error');
+  await receiver.handleMessage({type:'asset-start',payload:{...p,metadata:meta,totalChunks:1}});
+  assert.match(replies.at(-1).payload.error,/прав/);
+  assert.equal(await disk.get('public',meta.assetId),null);receiver.close();
+});
+test('unavailable storage still requests transfer and rejects an unpersisted receipt',async()=>{
+  const sender=store(),receiverStore=store();let left,right;const frames=[];
+  const blob=Object.assign(new Blob(['GIF89afallback']),{name:'fallback.gif'});
+  const meta=await sender.importFile('new',blob);await receiverStore.importFile('old',blob);
+  left=createMediaAssetTransfer({boardId:'new',store:sender,send:(type,payload)=>right.handleMessage({type,payload})});
+  right=createMediaAssetTransfer({boardId:'new',store:receiverStore,send:async(type,payload)=>{frames.push(type);return left.handleMessage({type,payload});}});
+  await assert.rejects(right.request(meta.assetId),/сохран/);
+  assert.ok(frames.includes('asset-request'));assert.equal((await receiverStore.get('new',meta.assetId)).persisted,false);
   left.close();right.close();
 });

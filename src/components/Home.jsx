@@ -1,3 +1,4 @@
+import StudentLessonLibrary from './StudentLessonLibrary.jsx';
 import { readBoardThumbnail, saveBoardThumbnail } from '../lib/boardThumbnailStore.js';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -502,6 +503,7 @@ export default function Home() {
           ))}
         </div>
       </section>
+      <StudentLessonLibrary />
     </main>
   );
 }

@@ -1,7 +1,7 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.40.9",
+  "version": "1.41.0",
   "type": "module",
   "scripts": {
     "test:connection-progress": "node --test scripts/test-connection-progress.mjs",
@@ -21,7 +21,9 @@
     "test:menu": "node --test scripts/test-menu-update-loop.mjs scripts/test-cursor-visibility.mjs scripts/test-participant-name.mjs scripts/test-touch-gesture-cursor.mjs scripts/test-board-thumbnail.mjs",
     "test:media": "node --test scripts/test-media-board-deletion.mjs scripts/test-lock-label-anchor.mjs scripts/test-media-asset-store.mjs scripts/test-media-asset-transfer.mjs scripts/test-pdf-media.mjs scripts/test-gif-media.mjs scripts/test-board-media.mjs scripts/test-teacher-peer-hub.mjs scripts/test-teacher-board-runtime.mjs scripts/test-student-peer-session.mjs",
     "test:media:browser": "node scripts/test-board-media-browser.mjs",
-    "test:pdf:continuity": "node scripts/test-pdf-continuity-browser.mjs"
+    "test:pdf:continuity": "node scripts/test-pdf-continuity-browser.mjs",
+    "test:student:storage": "node --test scripts/test-student-image-dedup.mjs scripts/test-student-lesson-library.mjs scripts/test-student-offline-cache.mjs scripts/test-student-offline-view.mjs scripts/test-student-offline-baseline.mjs scripts/test-media-asset-store.mjs scripts/test-media-asset-transfer.mjs",
+    "test:student:storage:browser": "node scripts/test-student-storage-browser.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",

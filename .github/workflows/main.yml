@@ -25,6 +25,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
+      - run: npm run test:student:storage
       - run: npm run test:connections
       - run: npm run test:browser-authority
       - run: npm run test:sync:ci
@@ -57,6 +58,10 @@ jobs:
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
         run: npm run test:pdf:continuity
+      - name: Shared student files and final lesson cleanup
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: npm run test:student:storage:browser
       - if: always()
         uses: actions/upload-artifact@v4
         with:

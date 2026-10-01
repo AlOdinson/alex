@@ -87,3 +87,81 @@ test('failed durable cross-room registration rejects without granting target acc
  assert.equal(await store.get('target',asset.assetId),null);
  assert.ok(await store.get('source',asset.assetId));store.dispose();
 });
+test('ten boards reuse each durable PDF/GIF once and last membership cleans up', async () => {
+  const indexedDB=new IDBFactory();
+  const source=createMediaAssetStore({indexedDB,crypto:webcrypto});
+  for (const bytes of ['%PDF-1.7\nshared lesson','GIF89ashared lesson']) {
+    const meta=await source.importFile('lesson-0',file(bytes));
+    for(let i=1;i<10;i++) {
+      const store=createMediaAssetStore({indexedDB,crypto:webcrypto});
+      assert.equal(await store.get(`lesson-${i}`,meta.assetId),null);
+      const record=await store.reuse(`lesson-${i}`,meta.assetId);
+      assert.equal(record.persisted,true); assert.equal(await record.blob.text(),bytes);
+    }
+    assert.equal(await assetCount(indexedDB),1);
+    for(let i=0;i<9;i++) await source.releaseBoard(`lesson-${i}`);
+    assert.ok(await source.get('lesson-9',meta.assetId));
+    await source.releaseBoard('lesson-9'); assert.equal(await assetCount(indexedDB),0);
+  }
+});
+test('reuse refuses tombstones and unavailable memory-only originals',async()=>{
+  const indexedDB=new IDBFactory(),store=createMediaAssetStore({indexedDB,crypto:webcrypto});
+  const meta=await store.importFile('source',file('%PDF-1.7\nreuse'));
+  await store.deleteBoard('deleted');
+  await assert.rejects(store.reuse('deleted',meta.assetId),{name:'DeletedBoardError'});
+  assert.equal(await store.get('deleted',meta.assetId),null);
+  assert.equal(await store.reuse('missing','a'.repeat(64)),null);
+  const errors=[],offline=createMediaAssetStore({indexedDB:null,crypto:webcrypto,onPersistenceError:e=>errors.push(e)});
+  const local=await offline.importFile('source',file('GIF89alocal'));
+  assert.equal(await offline.reuse('target',local.assetId),null);
+  assert.equal(await offline.get('target',local.assetId),null);assert.ok(errors.length>=2);
+});
+test('release allows a revisited lesson but cannot clear a permanent tombstone',async()=>{
+  const indexedDB=new IDBFactory(),store=createMediaAssetStore({indexedDB,crypto:webcrypto});
+  const bytes=file('%PDF-1.7\nrevisit');const meta=await store.importFile('lesson',bytes);
+  await store.releaseBoard('lesson');assert.equal(await store.get('lesson',meta.assetId),null);
+  assert.equal(await assetCount(indexedDB),0);
+  await store.importFile('lesson',bytes);assert.ok(await store.get('lesson',meta.assetId));
+  await store.deleteBoard('lesson');await store.releaseBoard('lesson');
+  await assert.rejects(store.importFile('lesson',bytes),{name:'DeletedBoardError'});
+});
+test('release and reuse serialize and never remove another lesson original',async()=>{
+  const indexedDB=new IDBFactory();
+  const first=createMediaAssetStore({indexedDB,crypto:webcrypto}),second=createMediaAssetStore({indexedDB,crypto:webcrypto});
+  const meta=await first.importFile('source',file('GIF89aconcurrent'));
+  await first.reuse('anchor',meta.assetId);
+  await Promise.all([first.releaseBoard('source'),second.reuse('new',meta.assetId)]);
+  await first.releaseBoard('anchor');assert.ok(await second.get('new',meta.assetId));
+  await second.releaseBoard('new');assert.equal(await assetCount(indexedDB),0);
+});
+test('failed release reports failure and retains the memory-only membership',async()=>{
+  const store=createMediaAssetStore({indexedDB:null,crypto:webcrypto});
+  const meta=await store.importFile('source',file('GIF89afallback'));
+  await assert.rejects(store.releaseBoard('source'),/недоступ/);
+  assert.ok(await store.get('source',meta.assetId));
+});
+test('durable board inventory follows membership cleanup and preserves unique board IDs',async()=>{
+  const store=createMediaAssetStore({indexedDB:new IDBFactory(),crypto:webcrypto});
+  const a=await store.importFile('one',file('GIF89afirst'));
+  await store.importFile('one',file('%PDF-1.7\nsecond'));
+  await store.reuse('two',a.assetId);
+  assert.deepEqual((await store.listBoardIds()).sort(),['one','two']);
+  await store.releaseBoard('one');assert.deepEqual(await store.listBoardIds(),['two']);
+  await store.deleteBoard('two');assert.deepEqual(await store.listBoardIds(),[]);
+  const unavailable=createMediaAssetStore({indexedDB:null,crypto:webcrypto});
+  await assert.rejects(unavailable.listBoardIds(),/недоступ/);
+});
+test('media import waits for an active cross-database cleanup lifecycle lock',async()=>{
+  const { withLocalFileLifecycle }=await import('../src/lib/localFileLifecycle.js');
+  const store=createMediaAssetStore({indexedDB:new IDBFactory(),crypto:webcrypto});
+  let unlock,entered;
+  const started=new Promise(resolve=>{entered=resolve;});
+  const cleanup=withLocalFileLifecycle(async()=>{entered();await new Promise(resolve=>{unlock=resolve;});});
+  await started;
+  let completed=false;
+  const importing=store.importFile('new',file('GIF89aafter cleanup')).then(value=>{completed=true;return value;});
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(completed,false);assert.deepEqual(await store.listBoardIds(),[]);
+  unlock();await cleanup;await importing;
+  assert.deepEqual(await store.listBoardIds(),['new']);
+});

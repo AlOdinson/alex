@@ -1,3 +1,5 @@
+import { withLocalFileLifecycle } from './localFileLifecycle.js';
+import { deleteCachedSnapshot } from './idb.js';
 import { sha256 } from './ids.js';
 import { applyAuthorityOpsInPlace } from './authoritySnapshot.js';
 
@@ -13,15 +15,22 @@ function openDatabase() {
   if (database) return database;
   database = new Promise((resolve, reject) => {
     if (!globalThis.indexedDB) { reject(new Error('Offline storage unavailable')); return; }
-    const request = indexedDB.open(DB_NAME, 1);
+    const request = indexedDB.open(DB_NAME, 2);
     let settled = false;
     const fail = (error) => { if (settled) return; settled = true; clearTimeout(timer); reject(error); };
     const timer = setTimeout(() => fail(new Error('Offline storage did not respond')), 4000);
     request.onupgradeneeded = () => {
       const db = request.result;
-      db.createObjectStore('snapshots');
-      const commits = db.createObjectStore('commits', { keyPath: ['scope', 'revision'] });
-      commits.createIndex('scope', 'scope');
+      if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots');
+      if (!db.objectStoreNames.contains('commits')) {
+        const commits = db.createObjectStore('commits', { keyPath: ['scope', 'revision'] });
+        commits.createIndex('scope', 'scope');
+      }
+      db.createObjectStore('images');
+      db.createObjectStore('pendingMediaCleanup');
+      const links = db.createObjectStore('imageLinks', { keyPath: ['scope', 'hash'] });
+      links.createIndex('scope', 'scope');
+      links.createIndex('hash', 'hash');
     };
     request.onblocked = () => fail(new Error('Offline storage is blocked'));
     request.onerror = () => fail(request.error);
@@ -45,34 +54,195 @@ function transactionDone(tx) {
   });
 }
 
+const STORES = ['snapshots', 'commits', 'images', 'imageLinks', 'pendingMediaCleanup'];
+const IMAGE_REF = 'alex-student-image:sha256:';
+const requestValue = (request) => new Promise((resolve, reject) => {
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error);
+});
+
+function visitSources(value, visit) {
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'src' && typeof child === 'string') visit(value, child);
+    else if (child && typeof child === 'object') visitSources(child, visit);
+  }
+}
+
+async function normalizeImages(record) {
+  const value = clone(record), images = new Map(), sources = new Map();
+  visitSources(value, (object, src) => {
+    if (/^data:image\//i.test(src)) {
+      if (!sources.has(src)) sources.set(src, []);
+      sources.get(src).push(object);
+    }
+  });
+  // Hash before opening a write transaction: crypto promises can outlive IDB.
+  await Promise.all([...sources].map(async ([src, objects]) => {
+    const hash = await sha256(src);
+    images.set(hash, src);
+    for (const object of objects) object.src = IMAGE_REF + hash;
+  }));
+  return { value, images };
+}
+
+async function writeTransaction(db, work) {
+  const tx = db.transaction(STORES, 'readwrite'), done = transactionDone(tx);
+  try { work(tx); } catch (error) {
+    tx.abort();
+    await done.catch(() => {});
+    throw error;
+  }
+  return done;
+}
+
+function storeImages(tx, scope, images) {
+  for (const [hash, src] of images) {
+    tx.objectStore('images').put(src, hash);
+    tx.objectStore('imageLinks').put({ scope, hash });
+  }
+}
+
+// Visit every legacy record, including unopened lessons. A concurrent tab may
+// have changed/deleted a record during hashing; only replace the exact version
+// we read. Retrying the sweep on the next open is harmless after interruption.
+let migratedDatabase = null;
+async function readyDatabase() {
+  const db = await openDatabase();
+  if (migratedDatabase?.db === db) { await migratedDatabase.promise; return db; }
+  const promise = (async () => {
+    const read = db.transaction(['snapshots', 'commits'], 'readonly');
+    const done = transactionDone(read);
+    const inventories = await Promise.all(['snapshots', 'commits'].map(async (name) => ({
+      name, keys: await requestValue(read.objectStore(name).getAllKeys()),
+    })));
+    await done;
+    // Inventory keys only: never materialize every lesson's inline image data
+    // together on memory-constrained tablets.
+    for (const { name, keys } of inventories) for (const key of keys) {
+      const readOne = db.transaction(name, 'readonly'), readDone = transactionDone(readOne);
+      const original = await requestValue(readOne.objectStore(name).get(key));
+      await readDone;
+      if (!original) continue;
+      const normalized = await normalizeImages(original);
+      if (!normalized.images.size) continue;
+      const tx = db.transaction(STORES, 'readwrite'), complete = transactionDone(tx);
+      const store = tx.objectStore(name), current = store.get(key);
+      current.onsuccess = () => {
+        try {
+          if (JSON.stringify(current.result) !== JSON.stringify(original)) return;
+          storeImages(tx, name === 'snapshots' ? key : original.scope, normalized.images);
+          if (name === 'snapshots') store.put(normalized.value, key);
+          else store.put(normalized.value);
+        } catch { tx.abort(); }
+      };
+      await complete;
+    }
+  })();
+  migratedDatabase = { db, promise };
+  try { await promise; } catch (error) { migratedDatabase = null; throw error; }
+  return db;
+}
+
 export const studentOfflineStorage = {
   async replace(scope, record) {
-    const db = await openDatabase();
-    const tx = db.transaction(['snapshots', 'commits'], 'readwrite');
-    const done = transactionDone(tx);
-    tx.objectStore('snapshots').put(record, scope);
-    const cursor = tx.objectStore('commits').index('scope').openCursor(IDBKeyRange.only(scope));
-    cursor.onsuccess = () => { if (cursor.result) { cursor.result.delete(); cursor.result.continue(); } };
-    return done;
+    const normalized = await normalizeImages(record);
+    const db = await readyDatabase();
+    return withLocalFileLifecycle(() => writeTransaction(db, (tx) => {
+      storeImages(tx, scope, normalized.images);
+      tx.objectStore('snapshots').put(normalized.value, scope);
+      const cursor = tx.objectStore('commits').index('scope').openCursor(IDBKeyRange.only(scope));
+      cursor.onsuccess = () => { if (cursor.result) { cursor.result.delete(); cursor.result.continue(); } };
+    }));
   },
   async append(scope, commit) {
-    const db = await openDatabase();
-    const tx = db.transaction('commits', 'readwrite');
-    const done = transactionDone(tx);
-    tx.objectStore('commits').put({ ...commit, scope });
-    return done;
+    const normalized = await normalizeImages({ ...commit, scope });
+    const db = await readyDatabase();
+    return withLocalFileLifecycle(() => writeTransaction(db, (tx) => {
+      const baseline = tx.objectStore('snapshots').get(scope);
+      baseline.onsuccess = () => {
+        if (!baseline.result) return; // A late commit must not resurrect a deleted archive.
+        try {
+          storeImages(tx, scope, normalized.images);
+          tx.objectStore('commits').put(normalized.value);
+        } catch { tx.abort(); }
+      };
+    }));
   },
   async read(scope) {
-    const db = await openDatabase();
-    const tx = db.transaction(['snapshots', 'commits'], 'readonly');
+    const db = await readyDatabase();
+    const tx = db.transaction(STORES, 'readonly');
     const done = transactionDone(tx);
     let baseline = null, commits = [];
+    const hydrate = (value) => {
+      visitSources(value, (object, src) => {
+        if (!src.startsWith(IMAGE_REF)) return;
+        const image = tx.objectStore('images').get(src.slice(IMAGE_REF.length));
+        image.onsuccess = () => {
+          if (typeof image.result !== 'string') { tx.abort(); return; }
+          object.src = image.result;
+        };
+      });
+    };
     const first = tx.objectStore('snapshots').get(scope);
-    first.onsuccess = () => { baseline = first.result ?? null; };
+    first.onsuccess = () => { baseline = first.result ?? null; hydrate(baseline); };
     const tail = tx.objectStore('commits').index('scope').getAll(IDBKeyRange.only(scope));
-    tail.onsuccess = () => { commits = tail.result ?? []; };
+    tail.onsuccess = () => { commits = tail.result ?? []; hydrate(commits); };
     await done;
     return baseline ? { ...baseline, commits } : null;
+  },
+  async list() {
+    const db = await readyDatabase();
+    const tx = db.transaction('snapshots', 'readonly'), done = transactionDone(tx);
+    const entries = [], cursor = tx.objectStore('snapshots').openCursor();
+    cursor.onsuccess = () => {
+      const row = cursor.result;
+      if (!row) return;
+      const value = row.value;
+      entries.push({ scope: row.key, boardId: value.boardId ?? null,
+        title: value.title ?? value.snapshot?.title ?? null,
+        revision: value.revision, savedAt: value.savedAt });
+      row.continue();
+    };
+    await done;
+    return entries;
+  },
+  async pendingMediaCleanup() {
+    const db = await readyDatabase();
+    const tx = db.transaction('pendingMediaCleanup', 'readonly'), done = transactionDone(tx);
+    const rows = await requestValue(tx.objectStore('pendingMediaCleanup').getAll());
+    await done;
+    return rows;
+  },
+  async finishMediaCleanup(boardId) {
+    const db = await readyDatabase();
+    return writeTransaction(db, (tx) => tx.objectStore('pendingMediaCleanup').delete(boardId ?? '__legacy__'));
+  },
+  async remove(scope) {
+    const db = await readyDatabase();
+    const tx = db.transaction(STORES, 'readwrite'), done = transactionDone(tx);
+    const baseline = tx.objectStore('snapshots').get(scope);
+    baseline.onsuccess = () => {
+      try {
+        if (baseline.result?.boardId) tx.objectStore('pendingMediaCleanup').put({ boardId: baseline.result.boardId }, baseline.result.boardId);
+        else if (baseline.result) tx.objectStore('pendingMediaCleanup').put({ boardId: null, legacy: true }, '__legacy__');
+      } catch { tx.abort(); }
+    };
+    tx.objectStore('snapshots').delete(scope);
+    const commits = tx.objectStore('commits').index('scope').openCursor(IDBKeyRange.only(scope));
+    commits.onsuccess = () => { if (commits.result) { commits.result.delete(); commits.result.continue(); } };
+    const links = tx.objectStore('imageLinks');
+    const cursor = links.index('scope').openCursor(IDBKeyRange.only(scope));
+    cursor.onsuccess = () => {
+      const row = cursor.result;
+      if (!row) return;
+      const hash = row.value.hash;
+      row.delete();
+      const count = links.index('hash').count(IDBKeyRange.only(hash));
+      count.onsuccess = () => { if (count.result === 0) tx.objectStore('images').delete(hash); };
+      row.continue();
+    };
+    return done;
   },
 };
 
@@ -126,8 +296,8 @@ export function createStudentOfflineRecorder({ boardId, roomKey, storage = stude
     snapshot(snapshot, revision) {
       if (closed || !validSnapshot(snapshot) || !validRevision(revision)) return;
       try {
-        const record = { snapshot: clone(snapshot), revision, savedAt: now() };
-        enqueue((key) => storage.replace(key, record));
+        const record = { boardId, snapshot: clone(snapshot), revision, savedAt: now() };
+        enqueue(async (key) => { await storage.replace(key, record); await deleteCachedSnapshot(boardId); });
       } catch (error) { reportError(error); }
     },
     commit(commit) {

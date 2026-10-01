@@ -4924,7 +4924,7 @@ function BoardWorkspace({
           updateSelectionState();
           updateSelectionStyleState();
           canvas.requestRenderAll();
-          await setCachedSnapshot(boardId, {
+          if (isOwner) await setCachedSnapshot(boardId, {
             snapshot: effectiveSnapshot,
             revision: revisionRef.current,
             savedAt: Date.now(),
@@ -4944,6 +4944,7 @@ function BoardWorkspace({
     applyObjectInteractivity,
     rebuildObjectRegistry,
     boardId,
+    isOwner,
     retryPendingServerImages,
     schedulePersistence,
     updateBackgroundTransform,
@@ -8946,7 +8947,7 @@ function BoardWorkspace({
         }
       }).catch(() => undefined);
 
-      const cached = initialAccess.offlineSnapshot ? null : await getCachedSnapshot(boardId);
+      const cached = !isOwner || initialAccess.offlineSnapshot ? null : await getCachedSnapshot(boardId);
       let baseSnapshot = initialAccess.snapshot ?? {
         version: 2,
         background: 'grid',
@@ -8983,7 +8984,7 @@ function BoardWorkspace({
 
       if (authoritativeBase && baseSnapshot?.canvas) {
         const sanitizedBaseSnapshot = applyOpsToSnapshot(baseSnapshot, []);
-        await setCachedSnapshot(boardId, {
+        if (isOwner) await setCachedSnapshot(boardId, {
           snapshot: sanitizedBaseSnapshot,
           revision: baseRevision,
           savedAt: Date.now(),
@@ -8992,7 +8993,7 @@ function BoardWorkspace({
       }
       if (!isSupabaseConfigured && !localState.confirmedRevisionGap
         && localState.confirmedActions.length && localState.confirmedSnapshot?.canvas) {
-        await setCachedSnapshot(boardId, {
+        if (isOwner) await setCachedSnapshot(boardId, {
           snapshot: localState.confirmedSnapshot,
           revision: localState.confirmedRevision,
           savedAt: Date.now(),
