@@ -1,9 +1,9 @@
 {
-  "version": "1.40.7",
-  "packageVersion": "1.40.7",
-  "base": "1.40.6",
-  "release": "Fit PDF slider to visible document width while preserving button size",
+  "version": "1.40.8",
+  "packageVersion": "1.40.8",
+  "base": "1.40.7",
+  "release": "Scale the entire PDF page panel with the document during viewport zoom",
   "date": "2026-10-01",
-  "name": "pdf-controls-screen-width",
-  "label": "Alex Board 1.40.7"
+  "name": "pdf-controls-proportional-zoom",
+  "label": "Alex Board 1.40.8"
 }

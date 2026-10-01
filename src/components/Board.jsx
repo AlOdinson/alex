@@ -2868,10 +2868,13 @@ function BoardWorkspace({
     if (isBoardMedia(object) && object.mediaKind === 'pdf') {
       const box = object.getBoundingRect();
       const point = util.transformPoint(new Point(box.left + box.width / 2, box.top + box.height), canvas.viewportTransform);
-      // Match the visible document width; keep button/slider heights in CSS pixels.
-      const width = Math.min(400, Math.max(16, canvas.getWidth() - 16), Math.max(1, box.width * canvas.getZoom()));
+      // Anchor and scale the entire panel in document space, including its buttons.
+      const zoom = canvas.getZoom();
+      const width = Math.max(148, Math.min(400, box.width));
+      const scale = zoom * Math.min(1, box.width / 148);
       value = { id: object.boardObjectId, pageNumber: object.pageNumber || 1, pageCount: object.pageCount || 1,
-        position: { width, left: Math.max(width / 2 + 8, Math.min(canvas.getWidth() - width / 2 - 8, point.x)), top: point.y + 8 } };
+        position: { width, maxWidth: 'none', left: point.x, top: point.y + 8 * scale,
+          transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'top center' } };
     }
     const signature = JSON.stringify(value);
     if (signature !== pdfControlSignatureRef.current) {
