@@ -1,12 +1,15 @@
 import {chromium,webkit} from 'playwright-core';
 import {spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
-import {mkdir} from 'node:fs/promises';
+import {mkdir,mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 const server=spawn(process.execPath,['node_modules/vite/bin/vite.js','--host','127.0.0.1'],{stdio:'ignore'});
 const engine=process.env.VERIFICATION_BROWSER==='webkit'?webkit:chromium;
-const browser=await engine.launch({headless:true,...(engine===chromium&&process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),...(engine===chromium?{args:['--no-sandbox']}:{})});
+const profile=await mkdtemp(join(tmpdir(),'alex-pdf-continuity-'));
+const browser=await engine.launchPersistentContext(profile,{headless:true,viewport:{width:1100,height:850},...(engine===chromium&&process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),...(engine===chromium?{args:['--no-sandbox']}:{})});
 try{
- const page=await browser.newPage({viewport:{width:1100,height:850}});page.on('pageerror',e=>console.error('APP',e.message));page.on('console',m=>{if(m.type()==='error')console.error('BROWSER',m.text());});
+ const page=await browser.newPage();page.on('pageerror',e=>console.error('APP',e.message));page.on('console',m=>{if(m.type()==='error')console.error('BROWSER',m.text());});
  for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:5173/alex/')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));}
  await page.goto('http://127.0.0.1:5173/alex/scripts/board-media-fixture.html');
  const board=await page.evaluate(async()=>{const {createBoard}=await import('/alex/src/lib/boardRepository.js');return createBoard('PDF continuity');});
@@ -14,6 +17,13 @@ try{
  await page.waitForTimeout(1500);
  if(await page.getByRole('textbox',{name:'Ваше имя'}).count()){await page.getByRole('textbox',{name:'Ваше имя'}).fill('PDF tester');await page.getByRole('button',{name:'Войти на доску',exact:true}).click();}
  await page.waitForFunction(()=>document.documentElement.dataset.alexDurableEditState==='ready'&&document.documentElement.dataset.alexDurableEditBlocked!=='true');
+ await page.evaluate(()=>{
+  const put=IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put=function(...args){
+   try{const request=put.apply(this,args);request.addEventListener('error',()=>console.error('IDB PUT',this.name,request.error?.name,request.error?.message));return request;}
+   catch(error){console.error('IDB PUT',this.name,error.name,error.message);throw error;}
+  };
+ });
  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles(process.env.MEDIA_TEST_PDF_PATH||'scripts/fixtures/media/pages.pdf');
  try{await page.locator('.pdf-page-controls').waitFor();}catch(error){
   console.error('PDF INSERT DIAGNOSTICS',await page.evaluate(()=>({status:document.querySelector('.toolbar-status')?.textContent,body:document.body.innerText,durable:{...document.documentElement.dataset}})));
@@ -41,6 +51,7 @@ try{
  // Delete/undo/redo a neighbouring PDF without disturbing the tracked document.
  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles('scripts/fixtures/media/pages.pdf');
  await page.waitForFunction(()=>window.testCanvas.getObjects().filter(o=>o.mediaKind==='pdf'&&o.getElement()?.width>1).length===2);
+ await page.waitForFunction(()=>{const o=window.testCanvas.getActiveObject();return o?.mediaKind==='pdf'&&o.boardObjectId!==window.pdfId;});
  await page.evaluate(()=>window.toolbarProps().onDelete());await page.waitForTimeout(500);
  await page.evaluate(()=>window.toolbarProps().onUndo());await page.waitForTimeout(500);
  await page.evaluate(()=>window.toolbarProps().onRedo());await page.waitForTimeout(500);
@@ -66,4 +77,4 @@ try{
  await page.waitForTimeout(1500);
  const result=await page.evaluate(()=>({events:window.pdfEvents,blankFrames:window.blankFrames,loadCards:document.querySelectorAll('.media-load-status').length}));console.log(JSON.stringify(result,null,2));
  assert.equal(result.blankFrames.length,0,'Ready PDF must never become a placeholder during edits, undo, resize or navigation');
-}finally{await browser.close();server.kill();}
+}finally{await browser.close();server.kill();await rm(profile,{recursive:true,force:true});}
