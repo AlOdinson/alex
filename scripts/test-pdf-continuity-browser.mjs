@@ -1,19 +1,24 @@
 import {chromium,webkit} from 'playwright-core';
 import {spawn} from 'node:child_process';
 import assert from 'node:assert/strict';
+import {mkdir} from 'node:fs/promises';
 const server=spawn(process.execPath,['node_modules/vite/bin/vite.js','--host','127.0.0.1'],{stdio:'ignore'});
 const engine=process.env.VERIFICATION_BROWSER==='webkit'?webkit:chromium;
 const browser=await engine.launch({headless:true,...(engine===chromium&&process.env.CHROMIUM_EXECUTABLE?{executablePath:process.env.CHROMIUM_EXECUTABLE}:{}),...(engine===chromium?{args:['--no-sandbox']}:{})});
 try{
- const page=await browser.newPage({viewport:{width:1100,height:850}});page.on('pageerror',e=>console.error('APP',e.message));
+ const page=await browser.newPage({viewport:{width:1100,height:850}});page.on('pageerror',e=>console.error('APP',e.message));page.on('console',m=>{if(m.type()==='error')console.error('BROWSER',m.text());});
  for(let i=0;i<100;i++){try{if((await fetch('http://127.0.0.1:5173/alex/')).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));}
  await page.goto('http://127.0.0.1:5173/alex/scripts/board-media-fixture.html');
  const board=await page.evaluate(async()=>{const {createBoard}=await import('/alex/src/lib/boardRepository.js');return createBoard('PDF continuity');});
  await page.goto(`http://127.0.0.1:5173/alex/board/${board.boardId}?key=${board.ownerKey}`);
  await page.waitForTimeout(1500);
  if(await page.getByRole('textbox',{name:'Ваше имя'}).count()){await page.getByRole('textbox',{name:'Ваше имя'}).fill('PDF tester');await page.getByRole('button',{name:'Войти на доску',exact:true}).click();}
+ await page.waitForFunction(()=>document.documentElement.dataset.alexDurableEditState==='ready'&&document.documentElement.dataset.alexDurableEditBlocked!=='true');
  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles(process.env.MEDIA_TEST_PDF_PATH||'scripts/fixtures/media/pages.pdf');
- await page.locator('.pdf-page-controls').waitFor();
+ try{await page.locator('.pdf-page-controls').waitFor();}catch(error){
+  console.error('PDF INSERT DIAGNOSTICS',await page.evaluate(()=>({status:document.querySelector('.toolbar-status')?.textContent,body:document.body.innerText,durable:{...document.documentElement.dataset}})));
+  await mkdir('connection-direct-results',{recursive:true});await page.screenshot({path:`connection-direct-results/pdf-insert-${process.env.VERIFICATION_BROWSER||'chromium'}.png`});throw error;
+ }
  await page.evaluate(()=>{
   let f=document.querySelector('.toolbar-shell');f=f[Object.keys(f).find(k=>k.startsWith('__reactFiber'))];
   while(f&&f.type?.name!=='BoardWorkspace')f=f.return;
