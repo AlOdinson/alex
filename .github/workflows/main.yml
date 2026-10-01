@@ -46,7 +46,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
-      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
       - name: Direct connection, live repair, ICE restart and owner tab handoff (no TURN)
         env:
