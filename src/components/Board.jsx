@@ -2868,8 +2868,10 @@ function BoardWorkspace({
     if (isBoardMedia(object) && object.mediaKind === 'pdf') {
       const box = object.getBoundingRect();
       const point = util.transformPoint(new Point(box.left + box.width / 2, box.top + box.height), canvas.viewportTransform);
+      // World-space document width controls the slider; viewport zoom only moves its anchor.
+      const width = Math.min(400, Math.max(16, canvas.getWidth() - 16), Math.max(160, object.getScaledWidth() * 0.6));
       value = { id: object.boardObjectId, pageNumber: object.pageNumber || 1, pageCount: object.pageCount || 1,
-        position: { left: Math.max(125, Math.min(canvas.getWidth() - 125, point.x)), top: Math.max(4, Math.min(canvas.getHeight() - 82, point.y + 8)) } };
+        position: { width, left: Math.max(width / 2 + 8, Math.min(canvas.getWidth() - width / 2 - 8, point.x)), top: point.y + 8 } };
     }
     const signature = JSON.stringify(value);
     if (signature !== pdfControlSignatureRef.current) {

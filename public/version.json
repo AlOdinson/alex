@@ -1,9 +1,9 @@
 {
-  "version": "1.40.5",
-  "packageVersion": "1.40.5",
-  "base": "1.40.4",
-  "release": "Remove delete button from auxiliary toolbar in all layouts",
+  "version": "1.40.6",
+  "packageVersion": "1.40.6",
+  "base": "1.40.5",
+  "release": "Keep PDF page controls independent of board zoom and below the document",
   "date": "2026-10-01",
-  "name": "toolbar-actions",
-  "label": "Alex Board 1.40.5"
+  "name": "pdf-controls-sizing",
+  "label": "Alex Board 1.40.6"
 }

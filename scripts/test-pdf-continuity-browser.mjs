@@ -42,6 +42,25 @@ try{
   for(const event of ['object:removed','object:added','media:ready'])c.on(event,({target:o})=>{if(o?.boardObjectId===window.pdfId)window.pdfEvents.push({event,pending:o.pendingImage,kind:o.mediaKind,w:o.getElement?.()?.width,stack:event==='object:removed'?new Error().stack:undefined});});
   c.on('after:render',()=>{const o=c.getObjects().find(o=>o.boardObjectId===window.pdfId);if(!o||!o.getElement||o.getElement()?.width<=1)window.blankFrames.push({missing:!o,pending:o?.pendingImage,kind:o?.mediaKind,w:o?.getElement?.()?.width});});
  });
+ // PDF controls use screen pixels, resize with the document, and stay below it.
+ const controlSize=()=>page.locator('.pdf-page-controls').boundingBox();
+ const originalControls=await controlSize();
+ await page.evaluate(()=>{window.testCanvas.setZoom(0.6);window.testCanvas.requestRenderAll();});
+ await page.waitForTimeout(150);
+ const zoomedControls=await controlSize();
+ assert.equal(zoomedControls.width,originalControls.width,'Board zoom must not resize PDF controls');
+ assert.equal(zoomedControls.height,originalControls.height,'Board zoom must not resize PDF buttons');
+ await page.evaluate(()=>{window.testCanvas.setZoom(2);window.testCanvas.requestRenderAll();});
+ await page.waitForTimeout(150);
+ const below=await page.evaluate(()=>{const c=window.testCanvas,b=c.getActiveObject().getBoundingRect(),v=c.viewportTransform;return {actual:parseFloat(document.querySelector('.pdf-page-controls').style.top),expected:v[1]*(b.left+b.width/2)+v[3]*(b.top+b.height)+v[5]+8};});
+ assert.ok(Math.abs(below.actual-below.expected)<0.01,'Panel must stay below PDF even beyond the viewport edge');
+ await page.evaluate(()=>{const c=window.testCanvas,o=c.getActiveObject();window.pdfOriginalScale={scaleX:o.scaleX,scaleY:o.scaleY};o.set({scaleX:o.scaleX/2,scaleY:o.scaleY/2});o.setCoords();c.requestRenderAll();});
+ await page.waitForTimeout(150);
+ const resizedControls=await controlSize();
+ assert.ok(resizedControls.width<originalControls.width,'Resizing the document must resize its slider');
+ assert.equal(resizedControls.height,originalControls.height,'Buttons remain a usable fixed height');
+ await page.evaluate(()=>{const c=window.testCanvas,o=c.getActiveObject();o.set(window.pdfOriginalScale);o.setCoords();c.setZoom(1);c.requestRenderAll();});
+ await page.waitForTimeout(150);
  // Draw and undo a neighbouring line through the real toolbar handlers.
  await page.evaluate(()=>{
   let f=document.querySelector('.toolbar-shell');f=f[Object.keys(f).find(k=>k.startsWith('__reactFiber'))];while(f&&f.type?.name!=='Toolbar')f=f.return;window.toolbarProps=()=>{let n=document.querySelector('.toolbar-shell');let q=n[Object.keys(n).find(k=>k.startsWith('__reactFiber'))];while(q&&q.type?.name!=='Toolbar')q=q.return;return q.memoizedProps;};f.memoizedProps.setTool('pencil');
