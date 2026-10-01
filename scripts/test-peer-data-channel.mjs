@@ -30,6 +30,18 @@ class FakeChannel {
   send(value) { this.sent.push(value); }
 }
 
+test('media chunks fit a single bounded frame and yield to interactive actions',async()=>{
+  const channel=new FakeChannel();const transport=createPeerDataChannelTransport({channel});
+  const encoded=createPeerMessage('asset-chunk',{boardId:'room',assetId:'a'.repeat(64),transferId:'media',index:0,base64Chunk:Buffer.alloc(8192).toString('base64')});
+  const pending=transport.sendMediaEncoded(encoded);
+  await transport.send('head',{revision:7});await pending;
+  assert.equal(channel.sent.length,2);
+  assert.equal(JSON.parse(channel.sent[0]).type,'head');
+  assert.equal(channel.sent[1],encoded);
+  await assert.rejects(transport.sendMediaEncoded('x'.repeat(16385)),/frame|limit/i);
+  transport.close();
+});
+
 test('sends and receives ordinary protocol messages', async () => {
   const channel = new FakeChannel();
   const received = [];

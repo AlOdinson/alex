@@ -72,3 +72,16 @@ test('receiver never confirms a media file that could not be persisted',async()=
   await assert.rejects(left.ensureRemote(meta.assetId),/сохран/);
   left.close();right.close();
 });
+
+test('download progress survives shared requests and reaches verification before resolving',async()=>{
+  const a=persistentFake(),b=persistentFake(),progress=[];let left,right;
+  const meta=await a.importFile('room',Object.assign(new Blob(['%PDF-1.7\n'+'x'.repeat(40_000)]),{name:'book.pdf'}));
+  left=createMediaAssetTransfer({boardId:'room',store:a,send:(type,payload)=>right.handleMessage({type,payload})});
+  right=createMediaAssetTransfer({boardId:'room',store:b,send:(type,payload)=>left.handleMessage({type,payload})});
+  const [first,second]=await Promise.all([right.request(meta.assetId,{onProgress:value=>progress.push(value)}),right.request(meta.assetId,{onProgress:()=>{throw new Error('observer failure');}})]);
+  assert.equal(first.metadata.assetId,second.metadata.assetId);
+  assert.equal(progress[0].phase,'receiving');assert.equal(progress[0].percent,0);
+  assert.ok(progress.some(value=>value.percent>0&&value.percent<100));
+  assert.equal(progress.at(-1).phase,'verifying');assert.equal(progress.at(-1).loaded,meta.size);
+  left.close();right.close();
+});

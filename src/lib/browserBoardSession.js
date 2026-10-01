@@ -622,9 +622,9 @@ export function createBrowserBoardSession({
       if (!runtime?.ensureMediaAsset) throw new Error('Подключение медиафайлов ещё не готово');
       return runtime.ensureMediaAsset(assetId);
     },
-    async requestMediaAsset(assetId) {
+    async requestMediaAsset(assetId, options) {
       if (!runtime?.requestMediaAsset) throw new Error('Подключение медиафайлов ещё не готово');
-      return runtime.requestMediaAsset(assetId);
+      return runtime.requestMediaAsset(assetId, options);
     },
     async sendOps(ops, options = {}) {
       if (!durableBridge) throw new Error('Browser durable runtime is unavailable');

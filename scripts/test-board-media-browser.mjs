@@ -12,6 +12,11 @@ try {
   await page.waitForFunction(()=>typeof window.runMediaChecks==='function');
   console.log(JSON.stringify(await page.evaluate(()=>window.runMediaChecks()),null,2));
   console.log(JSON.stringify(await page.evaluate(()=>window.runMediaLifecycleChecks()),null,2));
+  if(process.env.MEDIA_TEST_PDF_PATH) {
+    await page.evaluate(()=>{const input=document.body.appendChild(document.createElement('input'));input.type='file';input.id='uploaded-book';});
+    await page.locator('#uploaded-book').setInputFiles(process.env.MEDIA_TEST_PDF_PATH);
+    console.log(JSON.stringify(await page.evaluate(()=>window.runUploadedPdfChecks(document.querySelector('#uploaded-book').files[0])),null,2));
+  }
   const board = await page.evaluate(async () => {
     const { createBoard } = await import('/alex/src/lib/boardRepository.js');
     return createBoard('Media integration');
@@ -28,6 +33,8 @@ try {
   await page.locator('.pdf-page-controls').waitFor({state:'attached',timeout:20000});
   await page.locator('.pdf-page-controls button').last().click();
   await page.waitForFunction(()=>document.querySelector('.pdf-page-controls span')?.textContent==='2 / 2');
+  await page.evaluate(async id=>{const {getBoardRuntime}=await import('/alex/src/lib/browserBoardRuntimeRegistry.js');window.mediaSnapshot=()=>getBoardRuntime(id)?.getSnapshot?.();},board.boardId);
+  await page.waitForFunction(()=>window.mediaSnapshot()?.canvas?.objects?.some(o=>o.mediaKind==='pdf'&&o.pageNumber===2));
   await page.reload();
   await page.locator('input[type=file][accept*="application/pdf"]').waitFor({state:'attached',timeout:20000});
   await page.evaluate(async id=>{const {getBoardRuntime}=await import('/alex/src/lib/browserBoardRuntimeRegistry.js');window.mediaSnapshot=()=>getBoardRuntime(id)?.getSnapshot?.();},board.boardId);
@@ -79,4 +86,41 @@ try {
     const result=buttons.length===2&&buttons.every(button=>button.disabled)&&calls===0;root.unmount();host.remove();return result;
   });
   assert.ok(disabled);console.log('Read-only PDF controls cannot change pages');
+  await page.evaluate(async()=>{
+    const ReactModule=await import('/alex/node_modules/.vite/deps/react.js');const React=ReactModule.default || ReactModule;
+    const client=await import('/alex/node_modules/.vite/deps/react-dom_client.js');const createRoot=client.createRoot || client.default.createRoot;
+    const {default:Controls}=await import('/alex/src/components/PdfPageControls.jsx');
+    const {LanguageProvider}=await import('/alex/src/components/LanguageProvider.jsx');
+    const host=document.body.appendChild(document.createElement('div'));host.id='slider-test';host.style='position:fixed;inset:0;z-index:99999;background:white';
+    window.pdfSliderCalls=[];
+    window.sliderTestRoot=createRoot(host);
+    const render=number=>window.sliderTestRoot.render(React.createElement(LanguageProvider,{role:'student'},React.createElement(Controls,{pageNumber:number,pageCount:612,canEdit:true,busy:false,position:{left:180,top:100},onPageChange:value=>{window.pdfSliderCalls.push(value);render(value);}})));
+    render(1);
+  });
+  const slider=page.locator('#slider-test input[type=range]');await slider.waitFor();
+  const box=await slider.boundingBox();await page.mouse.move(box.x+8,box.y+box.height/2);await page.mouse.down();
+  await page.mouse.move(box.x+box.width*.75,box.y+box.height/2,{steps:8});
+  assert.equal(await page.evaluate(()=>window.pdfSliderCalls.length),0);
+  const draft=Number(await slider.inputValue());assert.ok(draft>400);
+  await page.mouse.up();await page.waitForFunction(value=>window.pdfSliderCalls.length===1&&window.pdfSliderCalls[0]===value,draft);
+  await slider.focus();await page.keyboard.press('End');await page.waitForFunction(()=>window.pdfSliderCalls.at(-1)===612);
+  assert.equal(await page.locator('#slider-test input[type=number]').count(),0);
+  await page.evaluate(()=>{window.sliderTestRoot.unmount();document.querySelector('#slider-test').remove();});
+  console.log('612-page slider: previews while dragging, one commit on release, keyboard navigation, no number input');
+  if(process.env.MEDIA_TEST_PDF_PATH) {
+    const bookBoard=await page.evaluate(async()=>{const {createBoard}=await import('/alex/src/lib/boardRepository.js');return createBoard('Local attachment navigation test');});
+    await page.setViewportSize({width:390,height:844});
+    await page.goto(`${base}/board/${bookBoard.boardId}?key=${bookBoard.ownerKey}`);
+    const picker=page.locator('input[type=file][accept*="application/pdf"]');await picker.waitFor({state:'attached'});
+    await picker.setInputFiles(process.env.MEDIA_TEST_PDF_PATH);
+    await page.locator('.pdf-page-controls input[type=range]').waitFor({timeout:60000});
+    await page.evaluate(async id=>{const {getBoardRuntime}=await import('/alex/src/lib/browserBoardRuntimeRegistry.js');window.bookSnapshot=()=>getBoardRuntime(id)?.getSnapshot?.();},bookBoard.boardId);
+    const bookSlider=page.locator('.pdf-page-controls input[type=range]');const pages=Number(await bookSlider.getAttribute('max'));assert.ok(pages>100);
+    const rangeBox=await bookSlider.boundingBox();await page.mouse.move(rangeBox.x+8,rangeBox.y+rangeBox.height/2);await page.mouse.down();await page.mouse.move(rangeBox.x+rangeBox.width*.5,rangeBox.y+rangeBox.height/2,{steps:5});
+    const target=Number(await bookSlider.inputValue());assert.equal(await page.evaluate(()=>window.bookSnapshot().canvas.objects.find(o=>o.mediaKind==='pdf').pageNumber),1);
+    await page.mouse.up();await page.waitForFunction(target=>window.bookSnapshot()?.canvas?.objects?.some(o=>o.mediaKind==='pdf'&&o.pageNumber===target),target,{timeout:30000});
+    await page.screenshot({path:'/tmp/book-navigation.png'});
+    console.log(JSON.stringify({uploadedBookPages:pages,phoneViewport:true,sliderPage:target}));
+  }
+
 } finally {await browser.close();server?.kill();}

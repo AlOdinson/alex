@@ -68,7 +68,7 @@ export function createStudentBoardRuntime({
     },
 
     ensureMediaAsset(assetId) { return network.ensureMediaAsset(assetId); },
-    requestMediaAsset(assetId) { return network.requestMediaAsset(assetId); },
+    requestMediaAsset(assetId, options) { return network.requestMediaAsset(assetId, options); },
     proposeAction(action) {
       return network.proposeAction(action);
     },

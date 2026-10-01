@@ -696,7 +696,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
         peers: await session.getConnectionDiagnostics?.() ?? [] };
     },
     ensureMediaAsset: assetId => session.ensureMediaAsset(assetId),
-    requestMediaAsset: assetId => session.requestMediaAsset(assetId),
+    requestMediaAsset: (assetId, options) => session.requestMediaAsset(assetId, options),
     resumeVerification: () => session.resumeVerification?.(),
     getVerificationStats: () => session.getVerificationStats?.() ?? { enabled: false },
     getTransportDiagnostics() {

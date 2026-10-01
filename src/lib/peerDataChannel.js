@@ -263,6 +263,16 @@ export function createPeerDataChannelTransport({
       return enqueueEncodedFrames(frames);
     },
 
+    // Media already supplies bounded chunks. Yield once to interactive actions,
+    // then send that frame intact rather than nesting another text transfer.
+    async sendMediaEncoded(encoded) {
+      if (typeof encoded !== 'string') throw new TypeError('Encoded media message required');
+      if (peerFrameByteLength(encoded) > MAX_PEER_FRAME_BYTES) throw new Error('Peer media frame exceeds byte limit');
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (closed) throw new Error('Peer data channel transport is closed');
+      return enqueueEncodedFrames([encoded]);
+    },
+
     // Verification has no place in the action queue as a whole transfer. Prepare
     // its JSON cooperatively before calling this method, then yield between small
     // frames so a new durable action/ack can be sent ahead of the next frame.

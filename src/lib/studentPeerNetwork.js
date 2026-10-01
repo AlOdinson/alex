@@ -273,9 +273,9 @@ export function createStudentPeerNetwork({
       if (!session) return Promise.reject(new Error('Teacher peer data channel is not ready'));
       return session.ensureMediaAsset(assetId);
     },
-    requestMediaAsset(assetId) {
+    requestMediaAsset(assetId, options) {
       if (!session) return Promise.reject(new Error('Teacher peer data channel is not ready'));
-      return session.requestMediaAsset(assetId);
+      return session.requestMediaAsset(assetId, options);
     },
     async proposeAction(action) {
       if (!session) throw new Error('Teacher peer data channel is not ready');

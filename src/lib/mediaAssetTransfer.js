@@ -29,6 +29,13 @@ export function createMediaAssetTransfer({boardId,store,send,canUpload=async()=>
     return send(type,{...payload,boardId});
   };
   const drop=(transferId)=>{const state=incoming.get(transferId);clearTimeout(state?.timer);incoming.delete(transferId);};
+  const report=(assetId,phase,loaded,total)=>{
+    const request=requests.get(assetId);if(!request)return;
+    const percent=total?Math.floor(100*loaded/total):0;
+    if(request.last?.phase===phase&&request.last.percent===percent)return;
+    request.last={phase,loaded,total,percent};
+    for(const listener of request.listeners){try{listener(request.last);}catch{/* optional UI observer */}}
+  };
   const upload=async(assetId,transferId=id())=>{
     const record=await store.get(boardId,assetId);
     if(closed)throw new Error('Media transfer closed');
@@ -43,7 +50,9 @@ export function createMediaAssetTransfer({boardId,store,send,canUpload=async()=>
           await emit('asset-chunk',{transferId,assetId,index,base64Chunk:toBase64(bytes)});
           if(!waiters.has(`${transferId}:complete`))throw new Error('Передача медиафайла прервана');
           progress(`${transferId}:complete`);
-          await new Promise(resolve=>setTimeout(resolve,0));
+          // Production transport yields per frame; keep fallback transports
+          // cooperative without imposing a second timer on every chunk.
+          if(index%16===15)await new Promise(resolve=>setTimeout(resolve,0));
         }
         await emit('asset-end',{transferId,assetId});
       }
@@ -57,17 +66,22 @@ export function createMediaAssetTransfer({boardId,store,send,canUpload=async()=>
       if(!uploads.has(assetId))uploads.set(assetId,upload(assetId).finally(()=>uploads.delete(assetId)));
       return uploads.get(assetId);
     },
-    async request(assetId){
+    async request(assetId,{onProgress}={}){
       if(closed)throw new Error('Media transfer closed');
       const existing=await store.get(boardId,assetId);
       if(closed)throw new Error('Media transfer closed');
       if(existing)return existing;
       if(!requests.has(assetId)) {
         const transferId=id();const result=wait(`${transferId}:request`);
-        requests.set(assetId,result.finally(()=>requests.delete(assetId)));
+        requests.set(assetId,{promise:result.finally(()=>requests.delete(assetId)),listeners:new Set(),last:null});
         emit('asset-request',{assetId,transferId}).catch(error=>finish(`${transferId}:request`,null,error));
       }
-      return requests.get(assetId);
+      const request=requests.get(assetId);
+      if(typeof onProgress==='function'){
+        request.listeners.add(onProgress);
+        if(request.last){try{onProgress(request.last);}catch{/* optional UI observer */}}
+      }
+      try{return await request.promise;}finally{request.listeners.delete(onProgress);}
     },
     async handleMessage(message){
       if(closed || !isMediaMessage(message))return false;
@@ -97,7 +111,9 @@ export function createMediaAssetTransfer({boardId,store,send,canUpload=async()=>
             || [...incoming.values()].reduce((sum,state)=>sum+state.metadata.size,0)+p.metadata.size>128*1024*1024)throw new Error('Слишком много одновременных файлов');
           const state={metadata:p.metadata,parts:[],size:0,totalChunks:p.totalChunks,timer:null};
           state.timer=setTimeout(()=>{drop(transferId);result('error','Передача файла прервана').catch(onError);},timeoutMs);
-          incoming.set(transferId,state);progress(`${transferId}:request`);await result('ready');return true;
+          incoming.set(transferId,state);progress(`${transferId}:request`);
+          report(p.assetId,'receiving',0,state.metadata.size);
+          await result('ready');return true;
         }
         const state=incoming.get(transferId);
         if(!state || state.metadata.assetId!==p.assetId)throw new Error('Передача файла не начата');
@@ -109,12 +125,14 @@ export function createMediaAssetTransfer({boardId,store,send,canUpload=async()=>
           clearTimeout(state.timer);
           state.timer=setTimeout(()=>{drop(transferId);result('error','Передача файла прервана').catch(onError);},timeoutMs);
           progress(`${transferId}:request`);
+          report(p.assetId,'receiving',state.size,state.metadata.size);
           return true;
         }
         if(message.type==='asset-end'){
           if(state.parts.length!==state.totalChunks || state.size!==state.metadata.size)throw new Error('Медиафайл получен не полностью');
           const blob=Object.assign(new Blob(state.parts,{type:state.metadata.mime}),{name:state.metadata.name});
           state.parts=[];
+          report(p.assetId,'verifying',state.size,state.metadata.size);
           // Hash exactly once, before the store can create a room membership.
           const metadata=await store.importFile(boardId,blob,{expectedAssetId:p.assetId,expectedKind:state.metadata.kind});
           if(metadata.persisted===false)throw new Error('Не удалось сохранить медиафайл на устройстве');

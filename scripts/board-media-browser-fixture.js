@@ -1,3 +1,5 @@
+import { runUploadedPdfChecks } from './uploaded-pdf-browser-checks.js';
+window.runUploadedPdfChecks = runUploadedPdfChecks;
 import { runMediaLifecycleChecks } from './media-lifecycle-browser-checks.js';
 window.runMediaLifecycleChecks = runMediaLifecycleChecks;
 import { Canvas, FabricImage, FabricObject, Rect, util } from 'fabric';

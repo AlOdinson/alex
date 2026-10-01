@@ -109,7 +109,7 @@ export async function createTeacherBoardRuntime({
     boardId: safeBoardId,
 
     ensureMediaAsset(assetId) { return hub.ensureMediaAsset(assetId); },
-    requestMediaAsset(assetId) { return hub.requestMediaAsset(assetId); },
+    requestMediaAsset(assetId, options) { return hub.requestMediaAsset(assetId, options); },
     getRevision() {
       return authority.getRevision();
     },

@@ -34,8 +34,8 @@ export function createStudentPeerSession({
 
   let mediaVersion = 0;
   const media = boardId ? createMediaAssetTransfer({ boardId, store: mediaStore,
-    send: (type, payload) => transport.sendLowPriorityEncoded
-      ? transport.sendLowPriorityEncoded(JSON.stringify({ v: 1, type, payload }))
+    send: (type, payload) => (transport.sendMediaEncoded || transport.sendLowPriorityEncoded)
+      ? (transport.sendMediaEncoded || transport.sendLowPriorityEncoded).call(transport, JSON.stringify({ v: 1, type, payload }))
       : transport.send(type, payload), onError,
   }) : null;
   let applyQueue = Promise.resolve();
@@ -360,10 +360,10 @@ export function createStudentPeerSession({
       if (mediaVersion !== 1) throw new Error('Учителю нужно обновить страницу для PDF/GIF');
       return media.ensureRemote(assetId);
     },
-    async requestMediaAsset(assetId) {
+    async requestMediaAsset(assetId, options) {
       const local = await mediaStore.get(boardId, assetId); if (local) return local;
       if (mediaVersion !== 1) throw new Error('Учителю нужно обновить страницу для PDF/GIF');
-      return media.request(assetId);
+      return media.request(assetId, options);
     },
     whenIdle() {
       return applyQueue;

@@ -66,3 +66,20 @@ test('pasted grouped media must reach authority before insertion and deduplicate
   const paste=source.slice(source.indexOf('  const pasteSelection ='),source.indexOf('  const pasteSelection =')+9000);
   assert.ok(paste.indexOf('await ensureSerializedMediaAssets')>=0&&paste.indexOf('await ensureSerializedMediaAssets')<paste.indexOf('const revived ='));
 });
+
+test('missing PDF shows progress then a persistent error, manual retry installs pixels and clears the card',async()=>{
+  const {createBoardMediaRuntime}=await import('../src/lib/boardMediaRuntime.js');
+  const object={mediaKind:'pdf',mediaAssetId:'e'.repeat(64),width:100,height:100,setElement(){},set(){},setCoords(){}};
+  const canvas={getObjects:()=>[object],on(){},off(){},getZoom:()=>1,requestRenderAll(){}};
+  const phases=[];let failing=true;
+  const runtime=createBoardMediaRuntime({canvas,boardId:'room',store:{get:async()=>null},
+    requestAsset:async(_id,{onProgress})=>{onProgress({phase:'receiving',loaded:50,total:100});if(failing)throw new Error('transfer disconnected');return {metadata:{kind:'pdf'},blob:new Blob()};},
+    onStatusChange:()=>queueMicrotask(()=>phases.push(...runtime.getLoadStates().map(value=>value.phase))),
+    pdfFactory:async()=>({renderPage:async()=>({element:{width:100,height:100},width:100,height:100}),dispose(){}})});
+  try {
+    await new Promise(resolve=>setTimeout(resolve,0));
+    assert.equal(runtime.getLoadStates()[0].phase,'error');assert.match(runtime.getLoadStates()[0].error,/disconnected/);
+    failing=false;await runtime.retry(object);assert.deepEqual(runtime.getLoadStates(),[]);
+    assert.ok(phases.includes('receiving'));assert.ok(phases.includes('rendering'));
+  }finally{runtime.dispose();}
+});

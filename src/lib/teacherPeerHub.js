@@ -276,8 +276,8 @@ export function createTeacherPeerHub({
       mediaVersions.set(id, 0);
       if (boardId) mediaPeers.set(id, createMediaAssetTransfer({
         boardId, store: mediaStore,
-        send: (type, payload) => transport.sendLowPriorityEncoded
-          ? transport.sendLowPriorityEncoded(JSON.stringify({ v: 1, type, payload }))
+        send: (type, payload) => (transport.sendMediaEncoded || transport.sendLowPriorityEncoded)
+          ? (transport.sendMediaEncoded || transport.sendLowPriorityEncoded).call(transport, JSON.stringify({ v: 1, type, payload }))
           : transport.send(type, payload),
         canUpload: () => peerMayEdit(id),
       }));
@@ -295,11 +295,11 @@ export function createTeacherPeerHub({
       }
       await Promise.all([...mediaPeers.values()].map(peer => peer.ensureRemote(assetId)));
     },
-    async requestMediaAsset(assetId) {
+    async requestMediaAsset(assetId, options) {
       const local = await mediaStore.get(boardId, assetId); if (local) return local;
       for (const [peerId, peer] of mediaPeers) {
         if (mediaVersions.get(peerId) !== 1) continue;
-        try { return await peer.request(assetId); } catch { /* try another current participant */ }
+        try { return await peer.request(assetId, options); } catch { /* try another current participant */ }
       }
       throw new Error('Медиафайл недоступен: откройте доску на устройстве с исходным файлом');
     },

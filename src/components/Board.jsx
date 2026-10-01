@@ -1,4 +1,5 @@
 import PdfPageControls from './PdfPageControls.jsx';
+import MediaLoadStatus from './MediaLoadStatus.jsx';
 import { lockLabelAnchor } from '../lib/lockLabelAnchor.js';
 import { createBoardMediaRuntime, isBoardMedia, MEDIA_OBJECT_FIELDS } from '../lib/boardMediaRuntime.js';
 import { boardMediaAssets } from '../lib/mediaAssetStore.js';
@@ -1755,6 +1756,8 @@ function BoardWorkspace({
   const mediaRuntimeRef = useRef(null);
   const [pdfControls, setPdfControls] = useState(null);
   const [pdfPageBusy, setPdfPageBusy] = useState(false);
+  const [mediaLoadOverlays, setMediaLoadOverlays] = useState([]);
+  const mediaLoadSignatureRef = useRef('');
   const pdfBusyRef = useRef(false);
   const pdfControlSignatureRef = useRef('');
   const fabricInputModeSwitchRef = useRef(null);
@@ -2862,12 +2865,31 @@ function BoardWorkspace({
       const box = object.getBoundingRect();
       const point = util.transformPoint(new Point(box.left + box.width / 2, box.top + box.height), canvas.viewportTransform);
       value = { id: object.boardObjectId, pageNumber: object.pageNumber || 1, pageCount: object.pageCount || 1,
-        position: { left: Math.max(85, Math.min(canvas.getWidth() - 85, point.x)), top: Math.max(4, Math.min(canvas.getHeight() - 46, point.y + 8)) } };
+        position: { left: Math.max(125, Math.min(canvas.getWidth() - 125, point.x)), top: Math.max(4, Math.min(canvas.getHeight() - 82, point.y + 8)) } };
     }
     const signature = JSON.stringify(value);
     if (signature !== pdfControlSignatureRef.current) {
       pdfControlSignatureRef.current = signature;
       setPdfControls(value);
+    }
+  }, []);
+
+  const updateMediaLoadOverlays = useCallback(() => {
+    const canvas = fabricCanvasRef.current;
+    const entries = canvas ? (mediaRuntimeRef.current?.getLoadStates() ?? []).filter(entry =>
+      !entry.object.isOnScreen || entry.object.isOnScreen()).map((entry, index) => {
+      const box = entry.object.getBoundingRect();
+      const point = util.transformPoint(new Point(box.left + box.width / 2, box.top + box.height / 2), canvas.viewportTransform);
+      return { ...entry, id: entry.object.boardObjectId || `${entry.object.mediaAssetId}:${index}`,
+        name: entry.object.mediaName,
+        position: {
+          left: Math.max(Math.min(125, canvas.getWidth() / 2), Math.min(canvas.getWidth() - 125, point.x)),
+          top: Math.max(Math.min(85, canvas.getHeight() / 2), Math.min(canvas.getHeight() - 85, point.y)),
+        } };
+    }) : [];
+    const signature = JSON.stringify(entries.map(({object,...entry})=>entry));
+    if(signature !== mediaLoadSignatureRef.current) {
+      mediaLoadSignatureRef.current = signature;setMediaLoadOverlays(entries);
     }
   }, []);
 
@@ -8239,11 +8261,13 @@ function BoardWorkspace({
     canvas.getRetinaScaling = () => renderPixelRatio;
     fabricCanvasRef.current = canvas;
     const mediaRuntime = createBoardMediaRuntime({ canvas, boardId,
-      requestAsset: assetId => realtimeRef.current?.requestMediaAsset?.(assetId),
+      requestAsset: (assetId, options) => realtimeRef.current?.requestMediaAsset?.(assetId, options),
       onReady: updatePdfControls,
+      onStatusChange: updateMediaLoadOverlays,
       onError: error => { setSaveStatus(error.message); setSyncTone('error'); } });
     mediaRuntimeRef.current = mediaRuntime;
     canvas.on('after:render', updatePdfControls);
+    canvas.on('after:render', updateMediaLoadOverlays);
     const mediaVisibility = () => mediaRuntime.suspend(document.hidden);
     document.addEventListener('visibilitychange', mediaVisibility);
     mediaVisibility();
@@ -13664,6 +13688,7 @@ function BoardWorkspace({
       fabricInputModeSwitchRef.current = null;
       document.removeEventListener('visibilitychange', mediaVisibility);
       canvas.off('after:render', updatePdfControls);
+      canvas.off('after:render', updateMediaLoadOverlays);
       mediaRuntime.dispose();
       mediaRuntimeRef.current = null;
       canvas.dispose();
@@ -13902,7 +13927,8 @@ function BoardWorkspace({
         data-readonly-view={!isOwner && !canEdit ? 'true' : 'false'}
       >
         <canvas ref={canvasElementRef} />
-        {pdfControls && <PdfPageControls {...pdfControls} canEdit={canEdit} busy={pdfPageBusy} onPageChange={changePdfPage} />}
+        {pdfControls && <PdfPageControls key={pdfControls.id} {...pdfControls} canEdit={canEdit} busy={pdfPageBusy} onPageChange={changePdfPage} />}
+        <MediaLoadStatus entries={mediaLoadOverlays} onRetry={object=>mediaRuntimeRef.current?.retry(object)} />
         <div
           ref={selectionMarqueeElementRef}
           className="selection-marquee-overlay"

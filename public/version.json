@@ -1,9 +1,9 @@
 {
-  "version": "1.40.1",
-  "packageVersion": "1.40.1",
-  "base": "1.40.0",
-  "release": "Larger PDF and GIF files with shared storage and board deletion cleanup",
+  "version": "1.40.2",
+  "packageVersion": "1.40.2",
+  "base": "1.40.1",
+  "release": "Bounded PDF transfers, visible loading and retry, and fast page slider",
   "date": "2026-10-01",
-  "name": "media-limits-cleanup",
-  "label": "Alex Board 1.40.1"
+  "name": "pdf-delivery-navigation",
+  "label": "Alex Board 1.40.2"
 }
