@@ -29,7 +29,10 @@ assert.match(dock, /<DockToolIcon id="image" \/>/, 'Picture must use the custom 
 assert.match(dock, />Картинка<\/span>/, 'Picture must have a visible short label');
 
 assert.match(dock, /className="image-file-input"/, 'Existing image file input must remain');
-assert.match(dock, /accept="image\/\*,\.heic,\.heif"/, 'Existing image formats must remain unchanged');
+const acceptedFormats = new Set(dock.match(/accept="([^"]+)"/)?.[1].split(',').map(format => format.trim()));
+for (const format of ['image/*', '.heic', '.heif', 'application/pdf', '.pdf']) {
+  assert.ok(acceptedFormats.has(format), `Media picker must accept ${format}`);
+}
 assert.match(dock, /\bmultiple\b/, 'Existing multi-image upload must remain unchanged');
 assert.match(dock, /if \(files\.length\) onAddImages\(files\);/, 'Existing onAddImages behavior must remain unchanged');
 
