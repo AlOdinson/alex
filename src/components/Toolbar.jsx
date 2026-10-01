@@ -320,9 +320,8 @@ export default function Toolbar({
   onFlipHorizontal,
   onFlipVertical,
   zoom,
-  onZoomIn,
-  onZoomOut,
   onResetZoom,
+  onNavigateParticipant,
   onBringStudents,
   autopilot = false,
   onToggleAutopilot,
@@ -401,11 +400,9 @@ export default function Toolbar({
         <div className="toolbar-spacer" />
 
         <div className="tool-group compact zoom-group">
-          <IconButton title="Уменьшить" onClick={onZoomOut}>−</IconButton>
           <button type="button" className="zoom-value" onClick={onResetZoom} title="Вернуть 100%">
             {Math.round(zoom * 100)}%
           </button>
-          <IconButton title="Увеличить" onClick={onZoomIn}>+</IconButton>
         </div>
 
         <div className="tool-group compact navigation-actions" aria-label="Навигация участников">
@@ -494,14 +491,15 @@ export default function Toolbar({
               <div className="presence-menu-title">Сейчас на доске</div>
               <div className="presence-menu-list" role="list">
                 {users.length ? users.map((user, index) => (
-                  <div
+                  <button
+                    type="button"
                     className="presence-menu-user"
-                    role="listitem"
+                    onClick={() => { onNavigateParticipant?.(user.clientId); setPresenceOpen(false); }}
                     key={user.clientId ?? `${user.name ?? 'participant'}:${index}`}
                   >
                     <span className="presence-menu-dot" aria-hidden="true" />
                     <span className="presence-menu-name" data-i18n-skip>{user.name || 'Участник'}</span>
-                  </div>
+                  </button>
                 )) : (
                   <div className="presence-menu-user" role="listitem">
                     <span className="presence-menu-dot" aria-hidden="true" />

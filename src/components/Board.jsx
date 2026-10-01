@@ -1980,6 +1980,8 @@ function BoardWorkspace({
   });
   const rejectedPointerIdsRef = useRef(new Set());
   const suppressedTouchIdsRef = useRef(new Set());
+  const participantViewsRef = useRef(new Map());
+  const pendingParticipantJumpRef = useRef(null);
   const viewSendRef = useRef({ lastSentAt: 0, timer: null, pending: false });
   const boardScreenShareRef = useRef(null);
   const screenShareRef = useRef(null);
@@ -4114,7 +4116,7 @@ function BoardWorkspace({
   }, [getViewportSceneCenter, updateBackgroundTransform]);
 
   const sendTeacherViewNow = useCallback((kind = 'view') => {
-    if (!isOwner) return;
+    if (kind === 'jump' && !isOwner) return;
     const canvas = fabricCanvasRef.current;
     const realtime = realtimeRef.current;
     if (!canvas || !realtime) return;
@@ -4123,7 +4125,7 @@ function BoardWorkspace({
       centerX: Number(center.x.toFixed(3)),
       centerY: Number(center.y.toFixed(3)),
       zoom: Number(canvas.getZoom().toFixed(4)),
-      teacher: true,
+      teacher: isOwner,
       force: kind === 'jump',
       jumpId: kind === 'jump' ? randomToken(8) : undefined,
     };
@@ -4132,13 +4134,12 @@ function BoardWorkspace({
   }, [getViewportSceneCenter, isOwner]);
 
   const sendTeacherViewThrottled = useCallback(() => {
-    if (!isOwner) return;
     const state = viewSendRef.current;
     state.pending = true;
     const elapsed = Date.now() - state.lastSentAt;
     const send = () => {
       state.timer = null;
-      if (!state.pending || !isOwner) return;
+      if (!state.pending) return;
       state.pending = false;
       state.lastSentAt = Date.now();
       sendTeacherViewNow('view');
@@ -4147,7 +4148,31 @@ function BoardWorkspace({
     else if (!state.timer) state.timer = window.setTimeout(send, VIEW_BROADCAST_INTERVAL - elapsed);
   }, [isOwner, sendTeacherViewNow]);
 
+  const navigateToParticipant = useCallback((clientId) => {
+    if (!clientId || clientId === clientIdRef.current) return;
+    autopilotRef.current = false;
+    setAutopilot(false);
+    stopAutopilotAnimation();
+    const view = participantViewsRef.current.get(clientId);
+    if (view) {
+      pendingParticipantJumpRef.current = null;
+      centerViewportAt(view.centerX, view.centerY, fabricCanvasRef.current?.getZoom());
+      sendTeacherViewThrottled();
+    } else {
+      pendingParticipantJumpRef.current = { clientId, expires: Date.now() + 5000 };
+      realtimeRef.current?.requestView?.();
+    }
+  }, [centerViewportAt, sendTeacherViewThrottled, stopAutopilotAnimation]);
+
   const handleRemoteView = useCallback((message) => {
+    if (!Number.isFinite(message?.centerX) || !Number.isFinite(message?.centerY)) return;
+    if (message.clientId) participantViewsRef.current.set(message.clientId, message);
+    const pending = pendingParticipantJumpRef.current;
+    if (pending?.clientId === message.clientId && pending.expires >= Date.now()) {
+      pendingParticipantJumpRef.current = null;
+      centerViewportAt(message.centerX, message.centerY, fabricCanvasRef.current?.getZoom());
+      sendTeacherViewThrottled();
+    }
     if (isOwner || (message?.permission !== 'owner' && message?.teacher !== true)) return;
     if (!Number.isFinite(Number(message?.centerX)) || !Number.isFinite(Number(message?.centerY))) return;
     lastTeacherViewRef.current = message;
@@ -4158,7 +4183,7 @@ function BoardWorkspace({
         autopilotZoomForCurrentDevice(message.zoom),
       );
     }
-  }, [animateViewportTo, isOwner]);
+  }, [animateViewportTo, isOwner, centerViewportAt, sendTeacherViewThrottled]);
 
   const handleRemoteViewJump = useCallback((message) => {
     if (isOwner) return;
@@ -4170,7 +4195,7 @@ function BoardWorkspace({
   }, [centerViewportAt, isOwner, stopAutopilotAnimation]);
 
   const handleRemoteViewRequest = useCallback(() => {
-    if (isOwner) sendTeacherViewNow('response');
+    sendTeacherViewNow('response');
   }, [isOwner, sendTeacherViewNow]);
 
   const toggleAutopilot = useCallback(() => {
@@ -13699,8 +13724,11 @@ function BoardWorkspace({
   }, []);
 
   useEffect(() => {
-    if (!isOwner) return undefined;
     const localClientId = String(clientIdRef.current ?? '');
+    const activeIds = new Set(users.map(user => user.clientId));
+    for (const id of participantViewsRef.current.keys()) {
+      if (!activeIds.has(id)) participantViewsRef.current.delete(id);
+    }
     const hasRemoteParticipant = users.some(
       (user) => String(user?.clientId ?? '') !== localClientId,
     );
@@ -13708,7 +13736,7 @@ function BoardWorkspace({
     sendTeacherViewNow('view');
     // A low-frequency heartbeat repairs missed viewport packets after a mobile reconnect.
     // Actual panning and zooming are still sent immediately through the throttled path.
-    const timer = window.setInterval(() => sendTeacherViewNow('view'), 2500);
+    const timer = window.setInterval(() => sendTeacherViewNow('response'), 2500);
     return () => window.clearInterval(timer);
   }, [isOwner, sendTeacherViewNow, users]);
 
@@ -13888,9 +13916,8 @@ function BoardWorkspace({
         onFlipHorizontal={() => flipSelection('horizontal')}
         onFlipVertical={() => flipSelection('vertical')}
         zoom={zoom}
-        onZoomIn={() => changeZoom(1.2)}
-        onZoomOut={() => changeZoom(1 / 1.2)}
         onResetZoom={resetZoom}
+        onNavigateParticipant={navigateToParticipant}
         onBringStudents={bringStudentsToTeacher}
         autopilot={autopilot}
         onToggleAutopilot={toggleAutopilot}

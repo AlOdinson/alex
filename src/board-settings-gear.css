@@ -279,3 +279,37 @@
     right: max(8px, env(safe-area-inset-right)) !important;
   }
 }
+
+/* Compact zoom readout and the top-dock utility column. */
+.toolbar-primary-row .zoom-group {
+  padding: 0 !important;
+  gap: 0 !important;
+}
+.toolbar-primary-row .zoom-value {
+  min-width: 44px;
+  height: 30px;
+  padding: 0 6px;
+  font-size: 12px;
+}
+html[data-dock-layout="2"] .toolbar-primary-row .zoom-group {
+  position: fixed !important;
+  top: calc(max(10px, env(safe-area-inset-top)) + 50px) !important;
+  right: max(10px, env(safe-area-inset-right)) !important;
+}
+html[data-dock-layout="2"] .toolbar-primary-row .presence-anchor {
+  position: fixed !important;
+  top: calc(max(10px, env(safe-area-inset-top)) + 90px) !important;
+  right: max(10px, env(safe-area-inset-right)) !important;
+}
+button.presence-menu-user {
+  width: 100%;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.presence-menu-user:hover,
+button.presence-menu-user:focus-visible {
+  background: #dbeafe;
+  outline: 2px solid #93c5fd;
+}

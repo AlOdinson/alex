@@ -1,7 +1,7 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.40.2",
+  "version": "1.40.3",
   "type": "module",
   "scripts": {
     "test:connection-progress": "node --test scripts/test-connection-progress.mjs",

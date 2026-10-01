@@ -219,3 +219,10 @@ html[data-dock-layout][data-dock-history-detached="true"] .dock-history-accessor
   left: var(--dock-history-safe-left) !important;
   top: var(--dock-history-safe-top) !important;
 }
+
+/* On phones the full-width dock must clear the vertical utility column. */
+@media (max-width: 760px) {
+  html[data-dock-layout="2"] .board-tool-dock {
+    top: calc(max(10px, env(safe-area-inset-top)) + 136px) !important;
+  }
+}

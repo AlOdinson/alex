@@ -1,9 +1,9 @@
 {
-  "version": "1.40.2",
-  "packageVersion": "1.40.2",
-  "base": "1.40.1",
-  "release": "Bounded PDF transfers, visible loading and retry, and fast page slider",
+  "version": "1.40.3",
+  "packageVersion": "1.40.3",
+  "base": "1.40.2",
+  "release": "Compact zoom, top-dock utility column and participant navigation",
   "date": "2026-10-01",
-  "name": "pdf-delivery-navigation",
-  "label": "Alex Board 1.40.2"
+  "name": "participant-navigation",
+  "label": "Alex Board 1.40.3"
 }
