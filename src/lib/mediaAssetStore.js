@@ -1,4 +1,4 @@
-export const MEDIA_LIMITS = { pdf: 25 * 1024 * 1024, gif: 10 * 1024 * 1024 };
+export const MEDIA_LIMITS = { pdf: 100 * 1024 * 1024, gif: 25 * 1024 * 1024 };
 export const MEDIA_VERSION = 1;
 export function mediaKindFromBytes(bytes) {
   const header = String.fromCharCode(...bytes.slice(0, 8));
@@ -14,85 +14,147 @@ export function validateMediaMetadata(metadata) {
   }
   return metadata;
 }
+const requestResult = request => new Promise((resolve, reject) => {
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error);
+});
+const deletedError = () => Object.assign(new Error('Доска удалена'), { name: 'DeletedBoardError' });
 
 export function createMediaAssetStore({ indexedDB = globalThis.indexedDB,
   crypto = globalThis.crypto, onPersistenceError = () => {} } = {}) {
-  const fallback = new Map();
-  const rooms = new Map();
+  const fallback = new Map(), rooms = new Map();
   let disposed = false;
   const roomKey = (boardId, assetId) => `${String(boardId)}:${assetId}`;
   const open = () => new Promise((resolve, reject) => {
     if (!indexedDB) { reject(new Error('Постоянное сохранение файла недоступно')); return; }
-    const req = indexedDB.open('alex-board-media', 1);
+    const req = indexedDB.open('alex-board-media', 2);
+    let settled = false;
+    const fail = error => { if(settled)return;settled=true;clearTimeout(timer);reject(error); };
+    const timer = setTimeout(() => fail(new Error('Хранилище медиафайлов не отвечает')), 15_000);
     req.onupgradeneeded = () => {
+      if(settled){req.transaction.abort();return;}
       const db = req.result;
       if (!db.objectStoreNames.contains('assets')) db.createObjectStore('assets');
-      if (!db.objectStoreNames.contains('rooms')) db.createObjectStore('rooms');
+      const links = db.objectStoreNames.contains('rooms')
+        ? req.transaction.objectStore('rooms') : db.createObjectStore('rooms');
+      if (!links.indexNames.contains('boardId')) links.createIndex('boardId', 'boardId');
+      if (!links.indexNames.contains('assetId')) links.createIndex('assetId', 'assetId');
+      if (!db.objectStoreNames.contains('deletedBoards')) db.createObjectStore('deletedBoards');
+      // Preserve all v1 memberships, including student/offline rooms.
+      const cursor = links.openCursor();
+      cursor.onsuccess = () => {
+        const entry = cursor.result;
+        if (!entry) return;
+        if (entry.value === true) {
+          const key = String(entry.key), split = key.lastIndexOf(':');
+          entry.update({ boardId: key.slice(0, split), assetId: key.slice(split + 1) });
+        }
+        entry.continue();
+      };
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-    req.onblocked = () => reject(new Error('Сохранение файла заблокировано другой вкладкой'));
+    req.onsuccess = () => {
+      if(settled){req.result.close();return;}
+      settled=true;clearTimeout(timer);req.result.onversionchange = () => req.result.close(); resolve(req.result);
+    };
+    req.onerror = () => fail(req.error);
+    req.onblocked = () => fail(new Error('Сохранение файла заблокировано другой вкладкой'));
   });
-  const operation = async (store, mode, key, value) => {
+  const transaction = async (mode, work) => {
     const db = await open();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(store, mode);
-      const req = mode === 'readonly' ? tx.objectStore(store).get(key) : tx.objectStore(store).put(value, key);
-      tx.oncomplete = () => { db.close(); resolve(req.result); };
-      tx.onerror = tx.onabort = () => { db.close(); reject(tx.error || req.error); };
-    });
-  };
-  const digest = async (blob) => {
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const hash = await crypto.subtle.digest('SHA-256', bytes);
-    return { bytes, assetId: [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2,'0')).join('') };
-  };
-  const getAny = async (assetId) => {
+    let tx, timer;
     try {
-      const durable = await operation('assets','readonly',assetId);
-      if (durable) return durable;
-    } catch { /* try temporary bytes */ }
-    return fallback.get(assetId) || null;
+      tx = db.transaction(['assets', 'rooms', 'deletedBoards'], mode);
+      const completion = new Promise((resolve, reject) => {
+        tx.oncomplete = resolve;
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('Не удалось сохранить медиафайл'));
+        timer=setTimeout(()=>{reject(new Error('Хранилище медиафайлов не отвечает'));try{tx.abort();}catch{}},30_000);
+      });
+      completion.catch(() => {});
+      const [result] = await Promise.all([
+        work(tx.objectStore('assets'), tx.objectStore('rooms'), tx.objectStore('deletedBoards')), completion,
+      ]);
+      return result;
+    } catch (error) { try { tx?.abort(); } catch { /* ended */ } throw error; }
+    finally { clearTimeout(timer); db.close(); }
+  };
+  const checkBoard = async (deleted, boardId) => {
+    if (await requestResult(deleted.get(String(boardId)))) throw deletedError();
   };
   return {
-    async importFile(boardId, file) {
+    async importFile(boardId, file, { expectedAssetId, expectedKind } = {}) {
       if (disposed) throw new Error('Media store closed');
       if (!file || !Number.isSafeInteger(file.size) || file.size > MEDIA_LIMITS.pdf) {
-        throw new Error('Максимальный размер PDF — 25 МБ, GIF — 10 МБ');
+        throw new Error('Максимальный размер PDF — 100 МБ, GIF — 25 МБ');
       }
-      const { bytes, assetId } = await digest(file);
-      const kind = mediaKindFromBytes(bytes);
-      if (file.size > MEDIA_LIMITS[kind]) throw new Error(`Максимальный размер ${kind.toUpperCase()} — ${kind==='pdf'?25:10} МБ`);
-      const metadata = validateMediaMetadata({ assetId, kind, name: String(file.name || kind).slice(0,200),
-        mime: kind==='pdf'?'application/pdf':'image/gif', size:file.size });
-      const record = { metadata, persisted: true, blob: new Blob([bytes],{type:metadata.mime}) };
+      const kind = mediaKindFromBytes(new Uint8Array(await file.slice(0, 8).arrayBuffer()));
+      if (expectedKind && kind !== expectedKind) throw new Error('Формат файла не совпадает');
+      if (file.size > MEDIA_LIMITS[kind]) throw new Error(`Максимальный размер ${kind.toUpperCase()} — ${kind === 'pdf' ? 100 : 25} МБ`);
+      const hash = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+      const assetId = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+      if (expectedAssetId && assetId !== expectedAssetId) throw new Error('Проверка целостности файла не пройдена');
+      const metadata = validateMediaMetadata({ assetId, kind, name: String(file.name || kind).slice(0, 200),
+        mime: kind === 'pdf' ? 'application/pdf' : 'image/gif', size: file.size });
+      // Keep the Blob itself; do not allocate a second full byte array for storage.
+      const record = { metadata, persisted: true, blob: file.slice(0, file.size, metadata.mime) };
       let persisted = true;
       try {
-        await operation('assets','readwrite',assetId,record);
-        await operation('rooms','readwrite',roomKey(boardId,assetId),true);
-        fallback.delete(assetId);
-      } catch (error) { persisted=false; record.persisted=false; fallback.set(assetId,record); onPersistenceError(error); }
-      const key=roomKey(boardId,assetId);
-      if(persisted || rooms.get(key)!==true)rooms.set(key,persisted);
+        await transaction('readwrite', async (assets, links, deleted) => {
+          await checkBoard(deleted, boardId);
+          if (!(await requestResult(assets.getKey(assetId)))) await requestResult(assets.put(record, assetId));
+          await requestResult(links.put({ boardId: String(boardId), assetId }, roomKey(boardId, assetId)));
+        });
+        fallback.delete(assetId); rooms.delete(roomKey(boardId, assetId));
+      } catch (error) {
+        if (error.name === 'DeletedBoardError') throw error;
+        persisted = false; fallback.set(assetId, { ...record, persisted: false });
+        rooms.set(roomKey(boardId, assetId), true); onPersistenceError(error);
+      }
       return { ...metadata, persisted };
     },
     async get(boardId, assetId) {
       if (disposed) return null;
-      let allowed=rooms.has(roomKey(boardId,assetId));
-      if (!allowed) {
-        try { allowed=Boolean(await operation('rooms','readonly',roomKey(boardId,assetId))); } catch { /* fallback */ }
+      try {
+        return await transaction('readonly', async (assets, links, deleted) => {
+          if (await requestResult(deleted.get(String(boardId)))) return null;
+          if (await requestResult(links.get(roomKey(boardId, assetId)))) {
+            return await requestResult(assets.get(assetId)) || null;
+          }
+          return rooms.has(roomKey(boardId, assetId)) ? fallback.get(assetId) || null : null;
+        });
+      } catch {
+        return rooms.has(roomKey(boardId, assetId)) ? fallback.get(assetId) || null : null;
       }
-      if(!allowed)return null;
-      const record=await getAny(assetId);
-      return record ? {...record,persisted:record.persisted!==false && rooms.get(roomKey(boardId,assetId))!==false} : null;
     },
     async register(boardId, assetId) {
-      if (!(await getAny(assetId))) throw new Error('Медиафайл отсутствует на этом устройстве');
-      try { await operation('rooms','readwrite',roomKey(boardId,assetId),true); }
-      catch (error) { onPersistenceError(error); throw new Error('Не удалось сохранить медиафайл в новой доске', {cause:error}); }
-      rooms.set(roomKey(boardId,assetId),true);
+      if (disposed) throw new Error('Media store closed');
+      try {
+        await transaction('readwrite', async (assets, links, deleted) => {
+          await checkBoard(deleted, boardId);
+          if (!(await requestResult(assets.getKey(assetId)))) throw new Error('Медиафайл отсутствует на этом устройстве');
+          await requestResult(links.put({ boardId: String(boardId), assetId }, roomKey(boardId, assetId)));
+        });
+        rooms.delete(roomKey(boardId, assetId));
+      } catch (error) {
+        if (error.name === 'DeletedBoardError') throw error;
+        onPersistenceError(error); throw new Error('Не удалось сохранить медиафайл в новой доске', { cause: error });
+      }
     },
-    dispose() { disposed=true; fallback.clear(); rooms.clear(); },
+    async deleteBoard(boardId) {
+      const key = String(boardId);
+      await transaction('readwrite', async (assets, links, deleted) => {
+        await requestResult(deleted.put(true, key));
+        const memberships = await requestResult(links.index('boardId').getAll(key));
+        for (const { assetId } of memberships) {
+          await requestResult(links.delete(roomKey(key, assetId)));
+          if (!(await requestResult(links.index('assetId').count(assetId)))) await requestResult(assets.delete(assetId));
+        }
+      });
+      for (const link of [...rooms.keys()]) if (link.startsWith(`${key}:`)) rooms.delete(link);
+      for (const assetId of [...fallback.keys()]) {
+        if (![...rooms.keys()].some(link => link.endsWith(`:${assetId}`))) fallback.delete(assetId);
+      }
+    },
+    dispose() { disposed = true; fallback.clear(); rooms.clear(); },
   };
 }
 export const boardMediaAssets = createMediaAssetStore();

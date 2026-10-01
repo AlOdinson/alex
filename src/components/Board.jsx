@@ -1,4 +1,5 @@
 import PdfPageControls from './PdfPageControls.jsx';
+import { lockLabelAnchor } from '../lib/lockLabelAnchor.js';
 import { createBoardMediaRuntime, isBoardMedia, MEDIA_OBJECT_FIELDS } from '../lib/boardMediaRuntime.js';
 import { boardMediaAssets } from '../lib/mediaAssetStore.js';
 import { pdfPageGeometry } from '../lib/pdfPageGeometry.js';
@@ -13805,15 +13806,11 @@ function BoardWorkspace({
         : canvas.getObjects().filter((object) => ids.has(String(object.boardObjectId ?? '')));
       if (!objects.length) return null;
 
-      const bounds = objects.map((object) => object.getBoundingRect());
-      const left = Math.min(...bounds.map((rect) => Number(rect.left ?? 0)));
-      const top = Math.min(...bounds.map((rect) => Number(rect.top ?? 0)));
-      const right = Math.max(...bounds.map((rect) => Number(rect.left ?? 0) + Number(rect.width ?? 0)));
-      const bottom = Math.max(...bounds.map((rect) => Number(rect.top ?? 0) + Number(rect.height ?? 0)));
+      const anchor = lockLabelAnchor(objects);
       return {
         ...lock,
         overlayKey: String(lock.clientId),
-        position: projectScenePoint((left + right) / 2, (top + bottom) / 2),
+        position: projectScenePoint(anchor.x, anchor.y),
       };
     })
     .filter((lock) => lock?.position);

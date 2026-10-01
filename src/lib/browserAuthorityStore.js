@@ -8,6 +8,7 @@ const BOARD_ID_INDEX = 'boardId';
 const OPEN_TIMEOUT_MS = 15_000;
 const CREATE_TIMEOUT_MS = 15_000;
 const LIBRARY_TIMEOUT_MS = 30_000;
+let mediaCleanupRecovery = null;
 
 function storageTimeout(message) {
   const error = new Error(message);
@@ -213,12 +214,19 @@ export async function getAuthorityBoard(boardId) {
 }
 
 export async function listAuthorityBoards() {
-  return withTransaction([BOARD_STORE], 'readonly', async (transaction) => {
+  const result = await withTransaction([BOARD_STORE], 'readonly', async (transaction) => {
     const boards = await requestResult(transaction.objectStore(BOARD_STORE).getAll());
     return (Array.isArray(boards) ? boards : [])
       .map(cloneValue)
       .sort((left, right) => Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0));
   }, LIBRARY_TIMEOUT_MS);
+  // Recover only after a successful library read. A failed/stalled library must
+  // retain its existing timeout and must not initiate any cleanup writes.
+  if (!mediaCleanupRecovery) {
+    mediaCleanupRecovery = recoverAuthorityMediaCleanup().catch(() => {})
+      .finally(() => { mediaCleanupRecovery = null; });
+  }
+  return result;
 }
 
 export async function updateAuthorityBoardMetadata(boardId, patch = {}) {
@@ -251,7 +259,7 @@ export async function updateAuthorityBoardMetadata(boardId, patch = {}) {
 export async function deleteAuthorityBoard(boardId) {
   const key = String(boardId ?? '').trim();
   if (!key) return false;
-  return withTransaction([BOARD_STORE, COMMIT_STORE, ASSET_STORE], 'readwrite', async (transaction) => {
+  const removed = await withTransaction([BOARD_STORE, COMMIT_STORE, ASSET_STORE], 'readwrite', async (transaction) => {
     const boards = transaction.objectStore(BOARD_STORE);
     const existing = await requestResult(boards.get(key));
     if (!existing) return false;
@@ -260,8 +268,32 @@ export async function deleteAuthorityBoard(boardId) {
       deleteRecordsByBoardId(transaction.objectStore(COMMIT_STORE), key),
       deleteRecordsByBoardId(transaction.objectStore(ASSET_STORE), key),
     ]);
+    await requestResult(transaction.objectStore(ASSET_STORE).put({
+      assetKey: `media-cleanup:${key}`, mediaCleanupBoardId: key,
+    }));
     return true;
   });
+  // Preserve the journal on failure so the next library visit can finish it.
+  await recoverAuthorityMediaCleanup(key).catch(() => {});
+  return removed;
+}
+
+export async function recoverAuthorityMediaCleanup(boardId) {
+  const pending = await withTransaction([ASSET_STORE], 'readonly', async transaction => {
+    const assets = transaction.objectStore(ASSET_STORE);
+    if (boardId) {
+      const entry = await requestResult(assets.get(`media-cleanup:${boardId}`));
+      return entry ? [entry] : [];
+    }
+    return requestResult(assets.getAll(IDBKeyRange.bound('media-cleanup:', 'media-cleanup:\uffff')));
+  }, LIBRARY_TIMEOUT_MS);
+  if (!pending.length) return;
+  const { boardMediaAssets } = await import('./mediaAssetStore.js');
+  for (const entry of pending) {
+    await boardMediaAssets.deleteBoard(entry.mediaCleanupBoardId);
+    await withTransaction([ASSET_STORE], 'readwrite', transaction =>
+      requestResult(transaction.objectStore(ASSET_STORE).delete(entry.assetKey)), LIBRARY_TIMEOUT_MS);
+  }
 }
 
 export async function getAuthorityActionOutcome(boardId, actionId) {

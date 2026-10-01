@@ -1,9 +1,9 @@
 {
-  "version": "1.40.0",
-  "packageVersion": "1.40.0",
-  "base": "1.39.3",
-  "release": "Shared PDFs and animated GIFs on the board",
+  "version": "1.40.1",
+  "packageVersion": "1.40.1",
+  "base": "1.40.0",
+  "release": "Larger PDF and GIF files with shared storage and board deletion cleanup",
   "date": "2026-10-01",
-  "name": "pdf-gif-media",
-  "label": "Alex Board 1.40.0"
+  "name": "media-limits-cleanup",
+  "label": "Alex Board 1.40.1"
 }

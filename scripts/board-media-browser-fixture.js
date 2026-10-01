@@ -1,3 +1,5 @@
+import { runMediaLifecycleChecks } from './media-lifecycle-browser-checks.js';
+window.runMediaLifecycleChecks = runMediaLifecycleChecks;
 import { Canvas, FabricImage, FabricObject, Rect, util } from 'fabric';
 import { createBoardMediaRuntime, MEDIA_OBJECT_FIELDS } from '../src/lib/boardMediaRuntime.js';
 import { createMediaAssetStore } from '../src/lib/mediaAssetStore.js';

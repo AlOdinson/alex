@@ -33,15 +33,19 @@ export function createGifCompositor({element,width,height,background=null,create
   };
 }
 export async function createGifMedia({blob,budget,decoder=createWorkerDecoder(),createCanvas=()=>document.createElement('canvas')}={}) {
-  let meta;
-  try {meta=await decoder.init(blob);}catch(error){decoder.close();throw error;}
+  const key=`gif-${Math.random()}`;
+  let disposed=false,compositor,element,meta;
+  const dispose=()=>{if(disposed)return;disposed=true;decoder.close();compositor?.dispose();if(element){element.width=0;element.height=0;}budget.remove(key);};
+  try {
+    budget.reserve(key,blob.size*2,()=>dispose(),{pinned:true});
+    meta=await decoder.init(blob);
+    budget.resize(key,meta.width*meta.height*32+blob.size*2);
+  }catch(error){dispose();throw error;}
   const {width,height,frameCount,loops,background}=meta;
-  const key=`gif-${Math.random()}`;const element=createCanvas(width,height);element.width=width;element.height=height;
-  let disposed=false,compositor;
-  const dispose=()=>{if(disposed)return;disposed=true;decoder.close();compositor?.dispose();element.width=0;element.height=0;budget.remove(key);};
-  try {budget.reserve(key,width*height*32+blob.size*2,()=>dispose(),{pinned:true});}
-  catch(error){decoder.close();element.width=0;throw error;}
-  compositor=createGifCompositor({element,width,height,background,createCanvas});
+  try {
+    element=createCanvas(width,height);element.width=width;element.height=height;
+    compositor=createGifCompositor({element,width,height,background,createCanvas});
+  }catch(error){dispose();throw error;}
   let index=0,cycle=1,deadline=null,delay=100;
   try{const first=await decoder.frame(0);compositor.draw(first);delay=first.delay;}catch(error){dispose();throw error;}
   return {

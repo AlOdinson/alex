@@ -22,6 +22,24 @@ test('upload, hash verification, dedup and request by room',async()=>{
   assert.equal((await right.request(meta.assetId)).metadata.assetId,meta.assetId);
   left.close();right.close();
 });
+test('active reception outlives the inactivity timeout, stalled reception is released',async()=>{
+  const a=store(),b=persistentFake(),replies=[];
+  const bytes='%PDF-1.7\n'+'x'.repeat(20_000);
+  const meta=await a.importFile('room',Object.assign(new Blob([bytes]),{name:'large.pdf'}));
+  const receiver=createMediaAssetTransfer({boardId:'room',store:b,timeoutMs:80,send:async(type,payload)=>replies.push({type,payload})});
+  const p={boardId:'room',transferId:'slow',assetId:meta.assetId};
+  await receiver.handleMessage({type:'asset-start',payload:{...p,metadata:meta,totalChunks:Math.ceil(bytes.length/8192)}});
+  for(let offset=0;offset<bytes.length;offset+=8192){
+    await new Promise(r=>setTimeout(r,55));
+    await receiver.handleMessage({type:'asset-chunk',payload:{...p,index:offset/8192,base64Chunk:btoa(bytes.slice(offset,offset+8192))}});
+  }
+  await receiver.handleMessage({type:'asset-end',payload:p});
+  assert.equal(replies.at(-1).payload.status,'complete');
+  const stalled={...p,assetId:'b'.repeat(64),transferId:'stalled'};
+  await receiver.handleMessage({type:'asset-start',payload:{...stalled,metadata:{...meta,assetId:stalled.assetId},totalChunks:3}});
+  await new Promise(r=>setTimeout(r,100));
+  assert.match(replies.at(-1).payload.error,/прервана/); receiver.close();
+});
 test('corrupt hash and cross-room request never register/disclose bytes',async()=>{
   const a=store(),b=store(),replies=[];
   const meta=await a.importFile('room',Object.assign(new Blob(['GIF89a123']),{name:'a.gif'}));

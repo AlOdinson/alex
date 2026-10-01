@@ -13,6 +13,14 @@ test('partial transparent frames and disposal restore previous/background',()=>{
   c.draw(frame([0,255,0,255],0,2));c.draw(frame([0,0,255,255],1));
   assert.deepEqual([...element.getContext('2d').getImageData(0,0,1,1).data],[0,0,0,0]);c.dispose();
 });
+test('25 MiB full-HD GIF fits the bounded media budget and releases its reservation',async()=>{
+  let closed=false;
+  const decoder={init:async()=>({width:1920,height:1080,frameCount:1,loops:1}),frame:async()=>frame([255,0,0,255]),close(){closed=true;}};
+  const budget=createMediaMemoryBudget();
+  const gif=await createGifMedia({blob:new Blob([new Uint8Array(25*1024*1024)]),budget,decoder,createCanvas});
+  assert.ok(budget.usedBytes()<=128*1024*1024);
+  gif.dispose(); assert.equal(budget.usedBytes(),0);assert.equal(closed,true);
+});
 test('runtime hydration is idempotent, hidden GIF does not draw and deletion cleans up',async()=>{
   const events=new Map();let renders=0,created=0,destroyed=0,advanced=0;
   const object={mediaKind:'gif',mediaAssetId:'a'.repeat(64),width:1,height:1,isOnScreen:()=>true,setElement(el){this.el=el;},set(v){Object.assign(this,v);},setCoords(){}};

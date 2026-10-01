@@ -11,6 +11,7 @@ try {
   await page.goto(`${base}/scripts/board-media-fixture.html`);
   await page.waitForFunction(()=>typeof window.runMediaChecks==='function');
   console.log(JSON.stringify(await page.evaluate(()=>window.runMediaChecks()),null,2));
+  console.log(JSON.stringify(await page.evaluate(()=>window.runMediaLifecycleChecks()),null,2));
   const board = await page.evaluate(async () => {
     const { createBoard } = await import('/alex/src/lib/boardRepository.js');
     return createBoard('Media integration');
