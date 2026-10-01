@@ -1,12 +1,12 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.39.3",
+  "version": "1.40.0",
   "type": "module",
   "scripts": {
     "test:connection-progress": "node --test scripts/test-connection-progress.mjs",
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node scripts/copy-pdf-support.mjs && vite",
+    "build": "node scripts/copy-pdf-support.mjs && vite build",
     "preview": "vite preview",
     "test:authority": "node --test scripts/test-teacher-authority.mjs",
     "test:browser-authority": "node --test scripts/test-connection-progress.mjs scripts/test-webrtc-role-recovery.mjs scripts/test-dual-path-peer-pair.mjs && node scripts/test-ably-sdk-loading.mjs && node scripts/test-history-keyboard-shortcuts.mjs && node scripts/test-browser-authority-store.mjs && node scripts/test-browser-authority-realtime-bridge.mjs && node scripts/test-ably-browser-token-function.mjs && node scripts/test-browser-local-image-storage.mjs && node scripts/test-pencil-freeze-diagnostics-runtime.mjs && node scripts/test-ipad-stylus-touch-compatibility.mjs && node --test scripts/test-selection-lease-transform.mjs scripts/test-connectivity-recovery.mjs scripts/test-image-history-selection-race.mjs scripts/test-large-snapshot-timeouts.mjs scripts/test-image-loading-regressions.mjs scripts/test-history-concurrent-redo.mjs scripts/test-history-text-input.mjs scripts/test-history-dock-layout.mjs scripts/test-history-regressions.mjs scripts/test-history-deadlines.mjs scripts/test-history-inverses.mjs scripts/test-filled-board-join.mjs scripts/test-fresh-owner-bootstrap.mjs scripts/test-teacher-authority.mjs scripts/test-peer-protocol.mjs scripts/test-teacher-tab-authority.mjs scripts/test-browser-peer-connection.mjs scripts/test-peer-data-channel.mjs scripts/test-teacher-peer-hub.mjs scripts/test-teacher-peer-broadcast-resilience.mjs scripts/test-teacher-peer-durable-ack.mjs scripts/test-teacher-object-locks.mjs scripts/test-teacher-peer-locks.mjs scripts/test-teacher-lock-enforcement.mjs scripts/test-student-peer-session.mjs scripts/test-student-peer-locks.mjs scripts/test-student-peer-lock-runtime.mjs scripts/test-authority-snapshot.mjs scripts/test-authority-operation-evaluator.mjs scripts/test-browser-board-authority.mjs scripts/test-teacher-peer-network.mjs scripts/test-student-peer-network.mjs scripts/test-local-board-library.mjs scripts/test-teacher-board-runtime.mjs scripts/test-teacher-board-lock-runtime.mjs scripts/test-student-board-runtime.mjs scripts/test-browser-authority-cycle.mjs scripts/test-browser-replica-store.mjs scripts/test-browser-board-repository-compat.mjs scripts/test-browser-board-runtime-registry.mjs scripts/test-browser-board-lock-compat.mjs scripts/test-browser-authority-durable-bridge.mjs scripts/test-browser-board-session.mjs scripts/test-browser-board-session-self-commit.mjs scripts/test-browser-authority-runtime-readiness.mjs scripts/test-browser-authority-runtime-gate.mjs scripts/test-browser-board-disconnected-reconnect.mjs scripts/test-browser-authority-realtime-core.mjs scripts/test-browser-authority-realtime-events.mjs scripts/test-browser-authority-page-lifecycle.mjs scripts/test-board-repository-browser-switch.mjs scripts/test-realtime-browser-switch.mjs scripts/test-browser-authority-convergence-regressions.mjs scripts/test-browser-authority-snapshot-handoff.mjs scripts/test-authoritative-snapshot-gate.mjs scripts/test-canonical-board-clear.mjs scripts/test-browser-authority-bootstrap-order.mjs",
@@ -18,13 +18,17 @@
     "test:selection-lease": "node --test scripts/test-selection-lease-transform.mjs",
     "test:selection-lease:browser": "node scripts/test-selection-lease-transform-browser.mjs",
     "test:connections": "node --test scripts/test-connection-upgrades.mjs scripts/test-browser-peer-connection.mjs scripts/test-dual-path-peer-pair.mjs scripts/test-peer-data-channel.mjs scripts/test-peer-live-channel.mjs scripts/test-live-event-protocol.mjs scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs scripts/test-student-peer-network.mjs scripts/test-teacher-peer-network.mjs",
-    "test:menu": "node --test scripts/test-menu-update-loop.mjs scripts/test-cursor-visibility.mjs scripts/test-participant-name.mjs scripts/test-touch-gesture-cursor.mjs scripts/test-board-thumbnail.mjs"
+    "test:menu": "node --test scripts/test-menu-update-loop.mjs scripts/test-cursor-visibility.mjs scripts/test-participant-name.mjs scripts/test-touch-gesture-cursor.mjs scripts/test-board-thumbnail.mjs",
+    "test:media": "node --test scripts/test-media-asset-store.mjs scripts/test-media-asset-transfer.mjs scripts/test-pdf-media.mjs scripts/test-gif-media.mjs scripts/test-board-media.mjs scripts/test-teacher-peer-hub.mjs scripts/test-teacher-board-runtime.mjs scripts/test-student-peer-session.mjs",
+    "test:media:browser": "node scripts/test-board-media-browser.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",
     "ably": "2.29.0",
     "fabric": "7.4.0",
+    "gifuct-js": "2.1.2",
     "heic-to": "1.5.2",
+    "pdfjs-dist": "6.3.289",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

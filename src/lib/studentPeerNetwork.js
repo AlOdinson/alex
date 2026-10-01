@@ -151,6 +151,7 @@ export function createStudentPeerNetwork({
         onError: failConnection,
       });
       nextSession = createSession({
+        boardId,
         onProgress: (event) => {
           initialStep = event.step;
           reportConnectionProgress(onProgress, event.step, event.detail, event);
@@ -268,6 +269,14 @@ export function createStudentPeerNetwork({
       return pair.handleSignal(message.signal);
     },
 
+    ensureMediaAsset(assetId) {
+      if (!session) return Promise.reject(new Error('Teacher peer data channel is not ready'));
+      return session.ensureMediaAsset(assetId);
+    },
+    requestMediaAsset(assetId) {
+      if (!session) return Promise.reject(new Error('Teacher peer data channel is not ready'));
+      return session.requestMediaAsset(assetId);
+    },
     async proposeAction(action) {
       if (!session) throw new Error('Teacher peer data channel is not ready');
       await channelStart;

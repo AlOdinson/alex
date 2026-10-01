@@ -6,3 +6,5 @@ dist/
 .DS_Store
 
 connection-direct-results/
+
+/public/pdfjs/

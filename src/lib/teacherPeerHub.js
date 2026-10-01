@@ -1,3 +1,6 @@
+import { collectMediaAssetIds, mediaUpdateSnapshot } from './mediaReferences.js';
+import { boardMediaAssets } from './mediaAssetStore.js';
+import { createMediaAssetTransfer, isMediaMessage } from './mediaAssetTransfer.js';
 import { buildVerificationReply } from './boundedVerificationProtocol.js';
 import { verificationJson } from './boundedVerificationDigest.js';
 import { operationObjectIds } from './operationProtocol.js';
@@ -54,6 +57,8 @@ function authoritativeAckFields(commit) {
 }
 
 export function createTeacherPeerHub({
+  boardId = '',
+  mediaStore = boardMediaAssets,
   authority,
   getSnapshot,
   getCommitsAfter,
@@ -71,6 +76,9 @@ export function createTeacherPeerHub({
   if (typeof canPeerEdit !== 'function') throw new Error('canPeerEdit must be a function');
 
   const peers = new Map();
+  const mediaPeers = new Map();
+  const mediaVersions = new Map();
+  const mediaFields = () => boardId ? { mediaVersion: 1 } : {};
   const verificationView = authority.getVerificationView?.() ?? null;
   const verificationEpoch = verificationView ? defaultTransferId() : '';
   const verificationPending = new Set();
@@ -96,10 +104,34 @@ export function createTeacherPeerHub({
     // already been installed under the same stable peer id.
     if (expectedTransport && transport !== expectedTransport) return false;
     peers.delete(id);
+    mediaPeers.get(id)?.close(); mediaPeers.delete(id); mediaVersions.delete(id);
     if (id && typeof lockAuthority?.release === 'function') {
       Promise.resolve(lockAuthority.release({ clientId: id })).catch(() => undefined);
     }
     return true;
+  };
+
+  const peerSupportsMedia = peer => mediaVersions.get([...peers].find(([,transport])=>transport===peer)?.[0]) === 1;
+  const needsMediaNotice = (peer, snapshot) => Boolean(boardId) && !peerSupportsMedia(peer) && collectMediaAssetIds(snapshot).length > 0;
+  const assertMediaAction = async (ops, peerId = null) => {
+    if (!boardId) return;
+    const assetIds = collectMediaAssetIds(ops);
+    if ([...mediaVersions.values()].some(version=>version!==1)) {
+      const loaded = await getSnapshot();
+      const ids = new Set(operationObjectIds(ops));
+      const affected = [];
+      const visit = object => { if(ids.has(object?.boardObjectId)) affected.push(object); for(const child of object?.objects || []) visit(child); };
+      for(const object of loaded?.snapshot?.canvas?.objects || []) visit(object);
+      if(assetIds.length || collectMediaAssetIds(affected).length
+        || (peerId && mediaVersions.get(peerId)!==1 && collectMediaAssetIds(loaded?.snapshot).length)) {
+        throw new Error('Участнику нужно обновить страницу для PDF/GIF');
+      }
+    }
+    for(const assetId of assetIds) {
+      const record = await mediaStore.get(boardId,assetId);
+      if(!record) throw new Error('Медиафайл ещё не получен');
+      if(record.persisted===false) throw new Error('Не удалось сохранить медиафайл на устройстве');
+    }
   };
 
   const broadcastCommit = async (commit) => {
@@ -110,15 +142,24 @@ export function createTeacherPeerHub({
         if (!removePeer(peerId, transport)) return;
         try { transport.close?.({ closeChannel: true }); } catch { /* retired */ }
       };
-      try { Promise.resolve(transport.send('commit', commit)).catch(retire); }
+      try {
+        if(boardId && !peerSupportsMedia(transport)) {
+          Promise.resolve(getSnapshot()).then(loaded => needsMediaNotice(transport,loaded?.snapshot)
+            ? sendSnapshot(transport,loaded) : transport.send('commit',commit)).catch(retire);
+          continue;
+        }
+        Promise.resolve(transport.send('commit', commit)).catch(retire);
+      }
       catch { retire(); }
     }
   };
 
-  const sendSnapshot = async (peer) => {
-    const loaded = await getSnapshot();
+  const sendSnapshot = async (peer, prepared = null) => {
+    const loaded = prepared || await getSnapshot();
+    const incompatible = needsMediaNotice(peer,loaded?.snapshot);
+    if(incompatible) await peer.send('board-control',{event:'mode',payload:{mode:'view'}});
     const revision = safeRevision(loaded?.revision ?? authority.getRevision());
-    const payload = JSON.stringify({ snapshot: loaded?.snapshot ?? null, revision, ...verificationFields() });
+    const payload = JSON.stringify({ snapshot: incompatible ? mediaUpdateSnapshot(loaded?.snapshot) : loaded?.snapshot ?? null, revision, ...(incompatible ? {} : verificationFields()), ...mediaFields() });
     await peer.sendTextTransfer('snapshot', payload, {
       transferId: createTransferId(),
       writeTimeoutMs: snapshotTimeout,
@@ -126,10 +167,11 @@ export function createTeacherPeerHub({
   };
 
   const sendSync = async (peer, fromRevision) => {
+    if(boardId && !peerSupportsMedia(peer)){const loaded=await getSnapshot();if(needsMediaNotice(peer,loaded?.snapshot)){await sendSnapshot(peer,loaded);return;}}
     const currentRevision = safeRevision(authority.getRevision());
     const knownRevision = safeRevision(fromRevision);
     if (knownRevision >= currentRevision) {
-      await peer.send('head', { revision: currentRevision, ...verificationFields() });
+      await peer.send('head', { revision: currentRevision, ...verificationFields(), ...mediaFields() });
       return;
     }
 
@@ -142,7 +184,7 @@ export function createTeacherPeerHub({
         // eslint-disable-next-line no-await-in-loop
         await peer.send('commit', commit);
       }
-      await peer.send('head', { revision: currentRevision, ...verificationFields() });
+      await peer.send('head', { revision: currentRevision, ...verificationFields(), ...mediaFields() });
       return;
     }
 
@@ -150,7 +192,7 @@ export function createTeacherPeerHub({
   };
 
   const verifyPeer = async (peerId, peer, request) => {
-    if (!verificationView) return peer.send('head', { revision: safeRevision(authority.getRevision()) });
+    if (!verificationView) return peer.send('head', { revision: safeRevision(authority.getRevision()), ...mediaFields() });
     if (verificationPending.has(peer)) return; // Never accumulate duplicate per-peer jobs.
     verificationPending.add(peer);
     const live = () => peers.get(peerId) === peer;
@@ -160,7 +202,7 @@ export function createTeacherPeerHub({
         const stamp = verificationView.capture();
         try {
           return await verificationJson({ v: 1, type: 'head', payload: {
-            revision: reply.revision, ...verificationFields(), verification: reply,
+            revision: reply.revision, ...verificationFields(), ...mediaFields(), verification: reply,
           } }, { signal, isCurrent: () => live() && verificationView.isCurrent(stamp)
             && (reply.status !== 'ok' || reply.revision === verificationView.revision()) });
         } catch (error) {
@@ -168,7 +210,7 @@ export function createTeacherPeerHub({
           reply = { version: 1, requestId: request?.requestId ?? '', epoch: verificationEpoch,
             revision: verificationView.revision(), status: 'stale' };
           return JSON.stringify({ v: 1, type: 'head', payload: { revision: reply.revision,
-            ...verificationFields(), verification: reply } });
+            ...verificationFields(), ...mediaFields(), verification: reply } });
         }
       };
       const encoded = typeof authority.runVerification === 'function'
@@ -177,7 +219,7 @@ export function createTeacherPeerHub({
       if (typeof peer.sendLowPriorityEncoded === 'function') await peer.sendLowPriorityEncoded(encoded);
       else await peer.send('head', JSON.parse(encoded).payload);
     } catch {
-      if (live()) await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields(),
+      if (live()) await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields(), ...mediaFields(),
         verification: { version: 1, requestId: request?.requestId ?? '', epoch: verificationEpoch, status: 'error' } });
     } finally { verificationPending.delete(peer); }
   };
@@ -229,7 +271,16 @@ export function createTeacherPeerHub({
       const id = String(peerId ?? '').trim();
       if (!id) throw new Error('peerId is required');
       if (!transport?.send || !transport?.sendTextTransfer) throw new Error('peer transport is required');
+      mediaPeers.get(id)?.close();
       peers.set(id, transport);
+      mediaVersions.set(id, 0);
+      if (boardId) mediaPeers.set(id, createMediaAssetTransfer({
+        boardId, store: mediaStore,
+        send: (type, payload) => transport.sendLowPriorityEncoded
+          ? transport.sendLowPriorityEncoded(JSON.stringify({ v: 1, type, payload }))
+          : transport.send(type, payload),
+        canUpload: () => peerMayEdit(id),
+      }));
       return () => removePeer(id, transport);
     },
 
@@ -237,10 +288,27 @@ export function createTeacherPeerHub({
 
     getVerificationMode() { return verificationView ? { version: 1, epoch: verificationEpoch } : { version: 0, epoch: '' }; },
 
+    async ensureMediaAsset(assetId) {
+      if (!(await mediaStore.get(boardId, assetId))) throw new Error('Медиафайл отсутствует');
+      for (const peerId of peers.keys()) {
+        if (mediaVersions.get(peerId) !== 1) throw new Error('Участнику нужно обновить страницу для PDF/GIF');
+      }
+      await Promise.all([...mediaPeers.values()].map(peer => peer.ensureRemote(assetId)));
+    },
+    async requestMediaAsset(assetId) {
+      const local = await mediaStore.get(boardId, assetId); if (local) return local;
+      for (const [peerId, peer] of mediaPeers) {
+        if (mediaVersions.get(peerId) !== 1) continue;
+        try { return await peer.request(assetId); } catch { /* try another current participant */ }
+      }
+      throw new Error('Медиафайл недоступен: откройте доску на устройстве с исходным файлом');
+    },
+    closeMedia() { for (const peer of mediaPeers.values()) peer.close(); mediaPeers.clear(); },
     getPeerCount() {
       return peers.size;
     },
 
+    assertMediaAction,
     broadcastCommit,
     sendBoardControl,
     broadcastBoardControl,
@@ -251,9 +319,29 @@ export function createTeacherPeerHub({
       const type = String(message?.type ?? '');
       const payload = message?.payload && typeof message.payload === 'object' ? message.payload : {};
 
+      if (isMediaMessage(message)) {
+        if (mediaVersions.get(safePeerId) !== 1) return;
+        await mediaPeers.get(safePeerId)?.handleMessage(message); return;
+      }
       if (type === 'head-request') {
+        const wasMedia = mediaVersions.get(safePeerId) === 1;
+        if (Object.prototype.hasOwnProperty.call(payload, 'mediaVersion')) mediaVersions.set(safePeerId, Number(payload.mediaVersion || 0));
+        if(boardId && !payload.verification && !wasMedia){
+          const loaded=await getSnapshot();
+          if(collectMediaAssetIds(loaded?.snapshot).length) {
+            await sendSnapshot(peer,loaded);
+            if(needsMediaNotice(peer,loaded?.snapshot)){await peer.send('head',{revision:safeRevision(authority.getRevision()),...mediaFields()});return;}
+          }
+        }
+        if(payload.verification && boardId && !peerSupportsMedia(peer)){
+          const loaded=await getSnapshot();
+          if(needsMediaNotice(peer,loaded?.snapshot)){
+            await sendSnapshot(peer,loaded);
+            await peer.send('head',{revision:safeRevision(authority.getRevision()),...mediaFields(),verification:{version:1,requestId:payload.verification.requestId,epoch:payload.verification.epoch,status:'error'}});return;
+          }
+        }
         if (payload.verification) return verifyPeer(safePeerId, peer, payload.verification);
-        await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields() });
+        await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields(), ...mediaFields() });
         return;
       }
 
@@ -362,6 +450,7 @@ export function createTeacherPeerHub({
       }
 
       try {
+        await assertMediaAction(proposal.ops || [], safePeerId);
         const commit = await authority.commitAction(proposal);
         if (commit?.duplicate) {
           await peer.send('commit', commit);

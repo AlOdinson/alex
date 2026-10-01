@@ -1,3 +1,4 @@
+import { copySerializedBoardImages } from './imageStorage.js';
 import { readStudentOfflineSnapshot } from './studentOfflineCache.js';
 import { applyAuthorityActions, applyAuthorityOps } from './authoritySnapshot.js';
 import {
@@ -302,7 +303,7 @@ export function createBrowserBoardRepository({
       const source = await requireOwner(boardId, ownerKey);
       const authority = await openAuthority({ boardId: source.boardId });
       const created = await createBoard(title ?? `${source.title ?? 'Доска'} — копия`, source.studentName ?? '');
-      await saveSnapshot(created.boardId, authority.getSnapshot(), 0);
+      await saveSnapshot(created.boardId, await copySerializedBoardImages(authority.getSnapshot(), created.boardId), 0);
       return {
         boardId: created.boardId,
         ownerKey: created.ownerKey,

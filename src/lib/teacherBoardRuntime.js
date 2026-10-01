@@ -36,6 +36,7 @@ export async function createTeacherBoardRuntime({
   const authority = await openAuthority({ boardId: safeBoardId });
   const lockAuthority = createLockAuthority();
   const hub = createHub({
+    boardId: safeBoardId,
     authority,
     getSnapshot: async () => ({
       snapshot: authority.getSnapshot(),
@@ -107,6 +108,8 @@ export async function createTeacherBoardRuntime({
   return {
     boardId: safeBoardId,
 
+    ensureMediaAsset(assetId) { return hub.ensureMediaAsset(assetId); },
+    requestMediaAsset(assetId) { return hub.requestMediaAsset(assetId); },
     getRevision() {
       return authority.getRevision();
     },
@@ -151,6 +154,7 @@ export async function createTeacherBoardRuntime({
         }
       }
 
+      await hub.assertMediaAction?.(proposal.ops || []);
       const commit = await authority.commitAction(proposal);
       if (!commit?.duplicate) await hub.broadcastCommit(commit);
       return commit;
@@ -202,6 +206,7 @@ export async function createTeacherBoardRuntime({
     },
 
     close() {
+      hub.closeMedia?.();
       network?.close?.();
       authority.closeVerification?.();
       try { lockAuthority?.release?.({ clientId: safeClientId }); } catch { /* best effort */ }

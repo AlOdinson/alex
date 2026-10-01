@@ -618,6 +618,14 @@ export function createBrowserBoardSession({
       // matching teacher/student runtime exists.
       return queueRealtimeSignal(payload);
     },
+    async ensureMediaAsset(assetId) {
+      if (!runtime?.ensureMediaAsset) throw new Error('Подключение медиафайлов ещё не готово');
+      return runtime.ensureMediaAsset(assetId);
+    },
+    async requestMediaAsset(assetId) {
+      if (!runtime?.requestMediaAsset) throw new Error('Подключение медиафайлов ещё не готово');
+      return runtime.requestMediaAsset(assetId);
+    },
     async sendOps(ops, options = {}) {
       if (!durableBridge) throw new Error('Browser durable runtime is unavailable');
       const activeRuntime = runtime;

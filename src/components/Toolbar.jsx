@@ -851,8 +851,8 @@ export default function Toolbar({
 
         <label
           className={`tool-button dock-tool-button image-upload-button ${!canEdit ? 'disabled' : ''}`.trim()}
-          title="Добавить картинку"
-          aria-label="Добавить картинку"
+          title="Добавить картинку, PDF или GIF"
+          aria-label="Добавить картинку, PDF или GIF"
         >
           <span className="dock-tool-content" aria-hidden="true">
             <DockToolIcon id="image" />
@@ -861,7 +861,7 @@ export default function Toolbar({
           <input
             className="image-file-input"
             type="file"
-            accept="image/*,.heic,.heif"
+            accept="image/*,application/pdf,.pdf,.heic,.heif"
             multiple
             disabled={!canEdit}
             onChange={(event) => {

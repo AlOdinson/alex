@@ -95,7 +95,7 @@ test('ordinary vector drawing is not subject to an image timeout',async()=>{
 test('clipboard image files use the same durable insertion path before text or internal clipboard',()=>{
  const source=readFileSync(new URL('../src/components/Board.jsx',import.meta.url),'utf8');
  const body=source.split('    function handlePaste(event) {')[1].split('\n    function ')[0];
- assert.match(body,/droppedFilesFromDataTransfer\(event.clipboardData\).filter\(isAcceptedImageFile\)/);
+ assert.match(body,/droppedFilesFromDataTransfer\(event.clipboardData\).filter\(isAcceptedBoardFile\)/);
  assert.ok(body.indexOf('addImageFiles(imageFiles')<body.indexOf('if (internalClipboardArmedRef'));
 });
 

@@ -1,3 +1,7 @@
+import PdfPageControls from './PdfPageControls.jsx';
+import { createBoardMediaRuntime, isBoardMedia, MEDIA_OBJECT_FIELDS } from '../lib/boardMediaRuntime.js';
+import { boardMediaAssets } from '../lib/mediaAssetStore.js';
+import { pdfPageGeometry } from '../lib/pdfPageGeometry.js';
 import { saveBoardThumbnail } from '../lib/boardThumbnailStore.js';
 import { installBoardThumbnail } from '../lib/boardThumbnail.js';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -76,9 +80,10 @@ import {
 } from '../lib/operationProtocol.js';
 import {
   copySerializedBoardImages,
+  ensureSerializedMediaAssets,
   enlivenBoardObjects,
   publishBoardImage,
-  isAcceptedImageFile,
+  isAcceptedBoardFile,
   loadImageElement,
   preloadSerializedImages,
   storeBoardImage,
@@ -154,6 +159,7 @@ const COMPACT_KEYBOARD_ROWS = {
 const COMPACT_KEYBOARD_SYMBOLS = ['.', ',', '-', '+', '=', '(', ')', '?', '!', ':'];
 
 FabricObject.customProperties = [
+  ...MEDIA_OBJECT_FIELDS,
   'boardObjectId',
   'updatedAt',
   'updatedBy',
@@ -1016,6 +1022,7 @@ function serializeObject(object) {
     return structuredClone(object.pendingImageSerialized);
   }
   const serialized = object.toObject([
+    ...MEDIA_OBJECT_FIELDS,
     'boardObjectId',
     'updatedAt',
     'updatedBy',
@@ -1744,6 +1751,11 @@ function BoardWorkspace({
   const canvasHostRef = useRef(null);
   const cursorVisibilityRef = useRef(null);
   const fabricCanvasRef = useRef(null);
+  const mediaRuntimeRef = useRef(null);
+  const [pdfControls, setPdfControls] = useState(null);
+  const [pdfPageBusy, setPdfPageBusy] = useState(false);
+  const pdfBusyRef = useRef(false);
+  const pdfControlSignatureRef = useRef('');
   const fabricInputModeSwitchRef = useRef(null);
   const realtimeRef = useRef(null);
   const screenShareSignalHandlerRef = useRef(null);
@@ -2841,10 +2853,28 @@ function BoardWorkspace({
     setCanRedo(availability?.canRedo ?? redoStackRef.current.length > 0);
   }, []);
 
+  const updatePdfControls = useCallback(() => {
+    const canvas = fabricCanvasRef.current;
+    const object = canvas?.getActiveObject();
+    let value = null;
+    if (isBoardMedia(object) && object.mediaKind === 'pdf') {
+      const box = object.getBoundingRect();
+      const point = util.transformPoint(new Point(box.left + box.width / 2, box.top + box.height), canvas.viewportTransform);
+      value = { id: object.boardObjectId, pageNumber: object.pageNumber || 1, pageCount: object.pageCount || 1,
+        position: { left: Math.max(85, Math.min(canvas.getWidth() - 85, point.x)), top: Math.max(4, Math.min(canvas.getHeight() - 46, point.y + 8)) } };
+    }
+    const signature = JSON.stringify(value);
+    if (signature !== pdfControlSignatureRef.current) {
+      pdfControlSignatureRef.current = signature;
+      setPdfControls(value);
+    }
+  }, []);
+
   const updateSelectionState = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     setSelectedCount(selectionUiObjects(canvas).length);
-  }, []);
+    updatePdfControls();
+  }, [updatePdfControls]);
 
   const updateSelectionStyleState = useCallback(() => {
     const canvas = fabricCanvasRef.current;
@@ -4177,9 +4207,9 @@ function BoardWorkspace({
   const addImageFiles = useCallback(async (files, scenePoint = null) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !canEditRef.current) return;
-    const imageFiles = [...files].filter(isAcceptedImageFile);
+    const imageFiles = [...files].filter(isAcceptedBoardFile);
     if (!imageFiles.length) {
-      setSaveStatus('Поддерживаются JPG, PNG, WebP, GIF, HEIC и HEIF');
+      setSaveStatus('Поддерживаются PDF, JPG, PNG, WebP, GIF, HEIC и HEIF');
       setSyncTone('error');
       return;
     }
@@ -4205,11 +4235,27 @@ function BoardWorkspace({
 
       setSaveStatus(`Загружаю изображение ${index + 1} из ${imageFiles.length}…`);
       setSyncTone('saving');
+      let prepared = null;
+      let adopted = false;
       try {
-        // eslint-disable-next-line no-await-in-loop
-        const stored = await storeBoardImage(boardId, file);
-        // eslint-disable-next-line no-await-in-loop
-        const element = await loadImageElement(stored.url, { retries: 1 });
+        const header = new Uint8Array(await file.slice(0, 6).arrayBuffer());
+        const signature = String.fromCharCode(...header);
+        const mediaFile = signature.startsWith('%PDF-') || signature === 'GIF87a' || signature === 'GIF89a';
+        let metadata = null;
+        let stored, element;
+        if (mediaFile) {
+          metadata = await boardMediaAssets.importFile(boardId, file);
+          if (!metadata.persisted) throw new Error('Не удалось сохранить медиафайл на устройстве. Проверьте свободное место');
+          prepared = await mediaRuntimeRef.current.prepareAsset(metadata);
+          if (!realtimeRef.current?.ensureMediaAsset) throw new Error('Соединение для передачи медиафайла ещё не готово');
+          await realtimeRef.current.ensureMediaAsset(metadata.assetId);
+          stored = { storagePath: null, url: '' };
+          element = prepared.result.element;
+        } else {
+          stored = await storeBoardImage(boardId, file);
+          element = await loadImageElement(stored.url, { retries: 1 });
+        }
+        if (fabricCanvasRef.current !== canvas || !canEditRef.current) throw new Error('Добавление файла отменено');
         const object = new FabricImage(element, {
           left: point.x,
           top: point.y,
@@ -4220,6 +4266,12 @@ function BoardWorkspace({
           boardObjectId: placeholder.boardObjectId,
           crossOrigin: /^https?:/i.test(stored.url) ? 'anonymous' : undefined,
         });
+        if (metadata) {
+          object.set({ mediaKind: metadata.kind, mediaAssetId: metadata.assetId, mediaName: metadata.name,
+            pageNumber: 1, pageCount: prepared.pageCount });
+          mediaRuntimeRef.current.adopt(object, prepared);
+          adopted = true;
+        }
         const zoomValue = Math.max(canvas.getZoom(), MIN_ZOOM);
         const maximumWidth = Math.min(560, (canvas.getWidth() / zoomValue) * 0.72);
         const maximumHeight = Math.min(440, (canvas.getHeight() / zoomValue) * 0.72);
@@ -4259,6 +4311,7 @@ function BoardWorkspace({
           await realtimeRef.current?.requestSync?.(committedResult.revision);
         }
       } catch (caught) {
+        if (prepared && !adopted) prepared.media.dispose();
         console.error(caught);
         applyingRemoteRef.current = true;
         if (canvas.getObjects().includes(placeholder)) canvas.remove(placeholder);
@@ -6562,6 +6615,11 @@ function BoardWorkspace({
           objects: clipboardRef.current,
         });
       }
+      await ensureSerializedMediaAssets(clipboardRef.current, assetId => {
+        if (!realtimeRef.current?.ensureMediaAsset) throw new Error('Соединение для передачи медиафайла ещё не готово');
+        return realtimeRef.current.ensureMediaAsset(assetId);
+      });
+      if (fabricCanvasRef.current !== canvas || !canEditRef.current) return false;
       await preloadSerializedImages(clipboardRef.current);
       const revived = await enlivenImageAwareObjects(clipboardRef.current);
       const pasteTransactionId = `paste:${clientId}:${Date.now()}:${randomToken(6)}`;
@@ -8106,6 +8164,35 @@ function BoardWorkspace({
     }
   }, [createWholeBoardExport, initialAccess.title]);
 
+  const changePdfPage = useCallback(async (pageNumber) => {
+    const canvas = fabricCanvasRef.current;
+    const object = canvas?.getActiveObject();
+    if (pdfBusyRef.current || !canEditRef.current || !isBoardMedia(object) || object.mediaKind !== 'pdf'
+      || pageNumber < 1 || pageNumber > object.pageCount || pageNumber === object.pageNumber) return;
+    pdfBusyRef.current = true;
+    setPdfPageBusy(true);
+    try {
+      if (!await acquireLocalSelectionLease(object)) return;
+      const result = await mediaRuntimeRef.current.preparePage(object, pageNumber);
+      if (fabricCanvasRef.current !== canvas || canvas.getActiveObject() !== object || !canEditRef.current) return;
+      if (!await acquireLocalSelectionLease(object)) return;
+      mutateSelection(objects => {
+        if (!objects.includes(object)) return;
+        const center = object.getCenterPoint();
+        object.set({ pageNumber, ...pdfPageGeometry(object, result) });
+        object.setPositionByOrigin(center, 'center', 'center');
+        mediaRuntimeRef.current.showPreparedPage(object, result);
+      });
+    } catch (error) {
+      setSaveStatus(error.message);
+      setSyncTone('error');
+    } finally {
+      pdfBusyRef.current = false;
+      setPdfPageBusy(false);
+      updatePdfControls();
+    }
+  }, [acquireLocalSelectionLease, mutateSelection, updatePdfControls]);
+
   useEffect(() => {
     const canvasElement = canvasElementRef.current;
     const host = canvasHostRef.current;
@@ -8150,6 +8237,15 @@ function BoardWorkspace({
     const renderPixelRatio = clamp(Number(window.devicePixelRatio ?? 1), 1, MAX_CANVAS_PIXEL_RATIO);
     canvas.getRetinaScaling = () => renderPixelRatio;
     fabricCanvasRef.current = canvas;
+    const mediaRuntime = createBoardMediaRuntime({ canvas, boardId,
+      requestAsset: assetId => realtimeRef.current?.requestMediaAsset?.(assetId),
+      onReady: updatePdfControls,
+      onError: error => { setSaveStatus(error.message); setSyncTone('error'); } });
+    mediaRuntimeRef.current = mediaRuntime;
+    canvas.on('after:render', updatePdfControls);
+    const mediaVisibility = () => mediaRuntime.suspend(document.hidden);
+    document.addEventListener('visibilitychange', mediaVisibility);
+    mediaVisibility();
     canvas.freeDrawingBrush = new PencilBrush(canvas);
     pencilDiagnosticsRef.current = createPencilDiagnostics({
       version: '1.32.18-collaboration-safety',
@@ -12836,9 +12932,9 @@ function BoardWorkspace({
       event.stopPropagation();
       event.stopImmediatePropagation?.();
 
-      const files = droppedFiles.filter(isAcceptedImageFile);
+      const files = droppedFiles.filter(isAcceptedBoardFile);
       if (!files.length) {
-        setSaveStatus('Поддерживаются JPG, PNG, WebP, GIF, HEIC и HEIF');
+        setSaveStatus('Поддерживаются PDF, JPG, PNG, WebP, GIF, HEIC и HEIF');
         setSyncTone('error');
         return;
       }
@@ -13232,7 +13328,7 @@ function BoardWorkspace({
         return;
       }
 
-      const imageFiles = droppedFilesFromDataTransfer(event.clipboardData).filter(isAcceptedImageFile);
+      const imageFiles = droppedFilesFromDataTransfer(event.clipboardData).filter(isAcceptedBoardFile);
       if (imageFiles.length && !isCanvasTextEditing) {
         event.preventDefault();
         internalClipboardArmedRef.current = false;
@@ -13565,6 +13661,10 @@ function BoardWorkspace({
       pencilDiagnosticsRef.current?.destroy();
       pencilDiagnosticsRef.current = null;
       fabricInputModeSwitchRef.current = null;
+      document.removeEventListener('visibilitychange', mediaVisibility);
+      canvas.off('after:render', updatePdfControls);
+      mediaRuntime.dispose();
+      mediaRuntimeRef.current = null;
       canvas.dispose();
       fabricCanvasRef.current = null;
     };
@@ -13805,6 +13905,7 @@ function BoardWorkspace({
         data-readonly-view={!isOwner && !canEdit ? 'true' : 'false'}
       >
         <canvas ref={canvasElementRef} />
+        {pdfControls && <PdfPageControls {...pdfControls} canEdit={canEdit} busy={pdfPageBusy} onPageChange={changePdfPage} />}
         <div
           ref={selectionMarqueeElementRef}
           className="selection-marquee-overlay"

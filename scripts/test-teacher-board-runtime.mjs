@@ -196,3 +196,11 @@ test('teacher runtime broadcasts reliable board-control through the durable peer
   assert.equal(await runtime.sendBoardControl('mode', { mode: 'edit' }), 1);
   assert.deepEqual(controls, [{ event: 'mode', payload: { mode: 'edit' } }]);
 });
+test('teacher publication checks media compatibility before persisting its action',async()=>{
+ let persisted=0;
+ const runtime=await createTeacherBoardRuntime({boardId:'board',clientId:'teacher',sendScreenShareSignal:async()=>{},
+  openAuthority:async()=>({getRevision:()=>0,getSnapshot:()=>({}),getCommitsAfter:async()=>[],commitAction:async()=>{persisted++;return {revision:1};}}),
+  createHub:()=>({assertMediaAction:async()=>{throw new Error('Участнику нужно обновить страницу для PDF/GIF');},broadcastCommit:async()=>{}}),
+  createSignaling:()=>({send:async()=>{},handle(){}}),createNetwork:()=>({close(){}})});
+ try{await assert.rejects(runtime.commitTeacherAction({ops:[{type:'patch',id:'pdf',patch:{pageNumber:2}}]}),/обновить/);assert.equal(persisted,0);}finally{runtime.close();}
+});

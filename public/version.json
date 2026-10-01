@@ -1,9 +1,9 @@
 {
-  "version": "1.39.3",
-  "packageVersion": "1.39.3",
-  "base": "1.39.2",
-  "release": "Reduce lesson freezes from video rendering, previews and Pencil contact endings",
-  "date": "2026-09-30",
-  "name": "scoped-lesson-freeze-fixes",
-  "label": "Alex Board 1.39.3"
+  "version": "1.40.0",
+  "packageVersion": "1.40.0",
+  "base": "1.39.3",
+  "release": "Shared PDFs and animated GIFs on the board",
+  "date": "2026-10-01",
+  "name": "pdf-gif-media",
+  "label": "Alex Board 1.40.0"
 }

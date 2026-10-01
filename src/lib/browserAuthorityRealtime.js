@@ -695,6 +695,8 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
       return { progress: { ...progress }, events: connectionEvents.map(event => ({ ...event })),
         peers: await session.getConnectionDiagnostics?.() ?? [] };
     },
+    ensureMediaAsset: assetId => session.ensureMediaAsset(assetId),
+    requestMediaAsset: assetId => session.requestMediaAsset(assetId),
     resumeVerification: () => session.resumeVerification?.(),
     getVerificationStats: () => session.getVerificationStats?.() ?? { enabled: false },
     getTransportDiagnostics() {

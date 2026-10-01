@@ -62,7 +62,7 @@ async function encodeThumbnail(preview, window) {
   } catch { /* Tainted images and failed encodes remain optional. */ }
   return null;
 }
-const EXTRA_CONTENT_PROPERTIES = ['path', 'points', 'x1', 'y1', 'x2', 'y2', 'rx', 'ry', 'radius', 'fillRule', 'inverted', 'absolutePositioned', 'cropX', 'cropY'];
+const EXTRA_CONTENT_PROPERTIES = ['path', 'points', 'x1', 'y1', 'x2', 'y2', 'rx', 'ry', 'radius', 'fillRule', 'inverted', 'absolutePositioned', 'cropX', 'cropY', 'mediaAssetId', 'pageNumber'];
 
 export function installBoardThumbnail({ canvas, save, window, document }) {
   let timer = null, idle = null, dirty = true, disposed = false, lastSaved = 0, lastImage = '';
@@ -198,7 +198,7 @@ export function installBoardThumbnail({ canvas, save, window, document }) {
   const added = event => { observe(event.target); changed(event); };
   const removed = event => { unobserve(event.target); changed(event); };
   const canvasEvents = { 'after:render': afterRender, 'object:added': added, 'object:removed': removed,
-    'object:modified': changed, 'path:created': changed, 'text:changed': changed };
+    'media:ready': changed, 'object:modified': changed, 'path:created': changed, 'text:changed': changed };
   const pointerDown = event => { pointers.add(event.pointerId); clearScheduled(); };
   const pointerUp = event => { pointers.delete(event.pointerId); schedule(); };
   const touch = event => { touches = event.touches?.length ?? 0; if (touches) clearScheduled(); else schedule(); };

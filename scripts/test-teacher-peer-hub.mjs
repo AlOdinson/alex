@@ -407,3 +407,39 @@ test('teacher hub filters student board-control by direction and actual edit per
     'owner-only controls must never be accepted from a student peer',
   );
 });
+
+test('verification-only head requests preserve negotiated media upload capability',async()=>{
+ const assetId='e'.repeat(64);const record={metadata:{assetId,kind:'gif',name:'a.gif',size:9,mime:'image/gif'},blob:new Blob(['GIF89a123'])};let hub;
+ const peer=makeTransport();peer.sendLowPriorityEncoded=async encoded=>{const m=JSON.parse(encoded);if(m.type==='asset-start')await hub.handleMessage('student',{type:'asset-result',payload:{boardId:'room',assetId,transferId:m.payload.transferId,status:'complete'}});};
+ hub=createTeacherPeerHub({boardId:'room',mediaStore:{get:async()=>record},authority:{getRevision:()=>0,commitAction:async()=>null},getSnapshot:async()=>({snapshot:{canvas:{objects:[]}},revision:0}),getCommitsAfter:async()=>[]});
+ hub.addPeer('student',peer);
+ try {await hub.handleMessage('student',{type:'head-request',payload:{mediaVersion:1}});await hub.handleMessage('student',{type:'head-request',payload:{verification:{}}});await assert.doesNotReject(hub.ensureMediaAsset(assetId));}finally{hub.closeMedia();}
+});
+test('legacy snapshot and journal display an update notice instead of existing grouped media',async()=>{
+ const peer=makeTransport();const snapshot={version:2,canvas:{objects:[{type:'Group',boardObjectId:'group',objects:[{type:'Image',mediaAssetId:'a'.repeat(64),mediaKind:'pdf'}]}]}};
+ const hub=createTeacherPeerHub({boardId:'room',authority:{getRevision:()=>1,commitAction:async()=>null},getSnapshot:async()=>({snapshot,revision:1}),getCommitsAfter:async()=>[{revision:1,ops:[{type:'upsert',id:'group',object:snapshot.canvas.objects[0]}]}]});hub.addPeer('old',peer);
+ try {await hub.handleMessage('old',{type:'head-request',payload:{}});await hub.handleMessage('old',{type:'snapshot-request',payload:{}});
+  const delivered=JSON.parse(peer.transfers.at(-1).text).snapshot;assert.match(delivered.canvas.objects[0].text,/обновите|Refresh/);assert.ok(!JSON.stringify(delivered).includes('mediaAssetId'));
+  peer.sent.length=0;await hub.handleMessage('old',{type:'sync-request',payload:{revision:0}});assert.ok(!peer.sent.some(m=>m.type==='commit'));
+  await hub.broadcastCommit({revision:2,ops:[{type:'patch',id:'group',patch:{objects:snapshot.canvas.objects[0].objects}}]});assert.ok(!peer.sent.some(m=>m.type==='commit'));
+ }finally{hub.closeMedia();}
+});
+test('nested media and page patches cannot publish to a legacy participant',async()=>{
+ const id='a'.repeat(64);const obj={type:'Image',boardObjectId:'pdf',mediaAssetId:id,mediaKind:'pdf'};
+ const hub=createTeacherPeerHub({boardId:'room',authority:{getRevision:()=>1,commitAction:async()=>null},getSnapshot:async()=>({snapshot:{canvas:{objects:[obj]}},revision:1}),getCommitsAfter:async()=>[]});hub.addPeer('old',makeTransport());
+ try {await assert.rejects(hub.assertMediaAction([{type:'upsert',id:'group',object:{objects:[obj]}}]),/обновить/);await assert.rejects(hub.assertMediaAction([{type:'patch',id:'pdf',patch:{pageNumber:2}}]),/обновить/);}finally{hub.closeMedia();}
+});
+test('a slow legacy update notice never blocks commit delivery to current peers',async()=>{
+ let blocked=false,release;const waiting=new Promise(ok=>release=ok);const current=makeTransport(),old=makeTransport();
+ const hub=createTeacherPeerHub({boardId:'room',authority:{getRevision:()=>1,commitAction:async()=>null},getSnapshot:async()=>blocked?waiting:{snapshot:{canvas:{objects:[]}},revision:1},getCommitsAfter:async()=>[]});hub.addPeer('old',old);hub.addPeer('current',current);
+ await hub.handleMessage('current',{type:'head-request',payload:{mediaVersion:1}});current.sent.length=0;blocked=true;
+ const sending=hub.broadcastCommit({revision:2,ops:[]});
+ try{await Promise.resolve();await Promise.resolve();assert.ok(current.sent.some(m=>m.type==='commit'));}finally{release({snapshot:{canvas:{objects:[]}},revision:2});await sending;hub.closeMedia();}
+});
+test('legacy update notices cannot be replaced with media by canvas verification',async()=>{
+ let verified=0;const peer=makeTransport();
+ const hub=createTeacherPeerHub({boardId:'room',authority:{getRevision:()=>1,commitAction:async()=>null,getVerificationView:()=>({capture(){verified++;throw Error('notice is not a canonical canvas');}})},getSnapshot:async()=>({snapshot:{canvas:{objects:[{boardObjectId:'pdf',mediaKind:'pdf',mediaAssetId:'a'.repeat(64)}]}},revision:1}),getCommitsAfter:async()=>[]});hub.addPeer('old',peer);
+ try{await hub.handleMessage('old',{type:'head-request',payload:{}});assert.equal(JSON.parse(peer.transfers.at(-1).text).verificationVersion,undefined);
+  await hub.handleMessage('old',{type:'head-request',payload:{verification:{requestId:'check',epoch:'old'}}});assert.equal(verified,0);assert.equal(peer.sent.at(-1).payload.verification.status,'error');
+ }finally{hub.closeMedia();}
+});

@@ -1,3 +1,5 @@
+import { boardMediaAssets } from './mediaAssetStore.js';
+import { createMediaAssetTransfer, isMediaMessage } from './mediaAssetTransfer.js';
 import { normalizeBoardControl } from './boardControlProtocol.js';
 import { reportConnectionProgress } from './connectionProgress.js';
 
@@ -12,6 +14,8 @@ function defaultRequestId() {
 }
 
 export function createStudentPeerSession({
+  boardId = '',
+  mediaStore = boardMediaAssets,
   transport,
   getRevision,
   applyCommit,
@@ -28,6 +32,12 @@ export function createStudentPeerSession({
   if (typeof applyCommit !== 'function') throw new Error('applyCommit is required');
   if (typeof installSnapshot !== 'function') throw new Error('installSnapshot is required');
 
+  let mediaVersion = 0;
+  const media = boardId ? createMediaAssetTransfer({ boardId, store: mediaStore,
+    send: (type, payload) => transport.sendLowPriorityEncoded
+      ? transport.sendLowPriorityEncoded(JSON.stringify({ v: 1, type, payload }))
+      : transport.send(type, payload), onError,
+  }) : null;
   let applyQueue = Promise.resolve();
   let closed = false;
   let initialSyncStarted = false;
@@ -74,7 +84,7 @@ export function createStudentPeerSession({
   // Retry this idempotent probe until the teacher has definitely installed its message listener.
   const sendInitialHeadProbe = () => {
     if (closed || initialSyncSettled || initialHandshakeConfirmed) return;
-    Promise.resolve(transport.send('head-request', {})).catch(failInitialSync);
+    Promise.resolve(transport.send('head-request', boardId ? { mediaVersion: 1 } : {})).catch(failInitialSync);
     clearInitialProbe();
     const delays = [150, 400, 900, 1_500, 2_500];
     const delay = delays[Math.min(initialProbeCount, delays.length - 1)];
@@ -158,7 +168,9 @@ export function createStudentPeerSession({
         ? message.payload
         : {};
 
+      if (isMediaMessage(message)) return media?.handleMessage(message) ?? Promise.resolve();
       if (type === 'head') {
+        if(Object.prototype.hasOwnProperty.call(payload,'mediaVersion')) mediaVersion = Number(payload.mediaVersion || 0);
         confirmInitialHandshake();
         learnVerificationMode(payload);
         const reply = payload.verification;
@@ -243,6 +255,7 @@ export function createStudentPeerSession({
       confirmInitialHandshake();
       return enqueue(async () => {
         const parsed = JSON.parse(String(transfer?.text ?? ''));
+        mediaVersion = Number(parsed?.mediaVersion || mediaVersion);
         const revision = safeRevision(parsed?.revision);
         if (!parsed || typeof parsed !== 'object' || !parsed.snapshot) {
           throw new Error('Invalid authoritative snapshot transfer');
@@ -278,7 +291,7 @@ export function createStudentPeerSession({
         const waiter = verificationWaiter; verificationWaiter = null; waiter.reject(error);
       };
       try {
-        const payload = { verification: { ...request, version: 1, requestId, epoch } };
+        const payload = { ...(boardId ? { mediaVersion: 1 } : {}), verification: { ...request, version: 1, requestId, epoch } };
         const sending = typeof transport.sendLowPriorityEncoded === 'function'
           ? transport.sendLowPriorityEncoded(JSON.stringify({ v: 1, type: 'head-request', payload }))
           : transport.send('head-request', payload);
@@ -343,6 +356,15 @@ export function createStudentPeerSession({
       return task;
     },
 
+    async ensureMediaAsset(assetId) {
+      if (mediaVersion !== 1) throw new Error('Учителю нужно обновить страницу для PDF/GIF');
+      return media.ensureRemote(assetId);
+    },
+    async requestMediaAsset(assetId) {
+      const local = await mediaStore.get(boardId, assetId); if (local) return local;
+      if (mediaVersion !== 1) throw new Error('Учителю нужно обновить страницу для PDF/GIF');
+      return media.request(assetId);
+    },
     whenIdle() {
       return applyQueue;
     },
@@ -350,6 +372,7 @@ export function createStudentPeerSession({
     close(error = new Error('Student peer session is closed')) {
       if (closed) return;
       closed = true;
+      media?.close();
       clearInitialProbe();
       const reason = error instanceof Error
         ? error

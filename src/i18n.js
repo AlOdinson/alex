@@ -470,6 +470,27 @@ const RAW_EN = new Map(Object.entries({
 
 /* Extended UI coverage */
 const EXTRA_RAW_EN = {
+  'Не удалось сохранить медиафайл в новой доске': 'Could not save the media file in the new board',
+  'Участнику нужно обновить страницу для PDF/GIF': 'A participant needs to refresh the page for PDF/GIF support',
+  'Учителю нужно обновить страницу для PDF/GIF': 'The teacher needs to refresh the page for PDF/GIF support',
+  'Страницы PDF': 'PDF pages',
+  'Предыдущая страница': 'Previous page',
+  'Следующая страница': 'Next page',
+  'Добавить картинку, PDF или GIF': 'Add image, PDF or GIF',
+  'Поддерживаются PDF, JPG, PNG, WebP, GIF, HEIC и HEIF': 'Supported: PDF, JPG, PNG, WebP, GIF, HEIC and HEIF',
+  'PDF защищён паролем. Используйте файл без пароля': 'Password protected PDF. Use a file without a password',
+  'Не удалось сохранить медиафайл на устройстве. Проверьте свободное место': 'Could not save the media file on this device. Check free space',
+  'Медиафайл недоступен на этом устройстве': 'Media file is unavailable on this device',
+  'Недостаточно памяти для медиафайла': 'Not enough memory for the media file',
+  'Максимальный размер PDF — 25 МБ, GIF — 10 МБ': 'Maximum size: PDF 25 MB, GIF 10 MB',
+  'Максимальный размер PDF — 25 МБ': 'Maximum PDF size: 25 MB',
+  'Максимальный размер GIF — 10 МБ': 'Maximum GIF size: 10 MB',
+  'Неподдерживаемый формат PDF/GIF': 'Unsupported PDF/GIF format',
+  'Некорректный формат или размер медиафайла': 'Invalid media file format or size',
+  'Слишком большой или повреждённый GIF': 'GIF is too large or damaged',
+  'PDF ещё загружается': 'PDF is still loading',
+  'Соединение для передачи медиафайла ещё не готово': 'Media transfer connection is not ready',
+
   'Редактирует': 'Editing:',
   'Загрузка изображения…': 'Loading image…',
   'Изображение догружается…': 'Image is still loading…',

@@ -4,6 +4,7 @@ const encoder = new TextEncoder();
 export const peerFrameByteLength = (frame) => encoder.encode(frame).byteLength;
 
 const MESSAGE_TYPES = new Set([
+  'asset-request', 'asset-start', 'asset-chunk', 'asset-end', 'asset-result',
   'hello',
   'ping',
   'pong',

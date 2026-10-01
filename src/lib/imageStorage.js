@@ -1,3 +1,5 @@
+import { collectMediaAssetIds } from './mediaReferences.js';
+import { boardMediaAssets } from './mediaAssetStore.js';
 const MAX_SIDE = 1800;
 const TARGET_MAX_BYTES = Math.floor(4.5 * 1024 * 1024);
 const ACCEPTED_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'heic', 'heif']);
@@ -28,6 +30,10 @@ export function isAcceptedImageFile(file) {
   if (!file) return false;
   if (String(file.type ?? '').toLowerCase().startsWith('image/')) return true;
   return ACCEPTED_EXTENSIONS.has(fileExtension(file.name));
+}
+
+export function isAcceptedBoardFile(file) {
+  return isAcceptedImageFile(file) || file?.type === 'application/pdf' || fileExtension(file?.name) === 'pdf';
 }
 
 function canvasToBlob(canvas, type, quality) {
@@ -183,6 +189,10 @@ export async function prepareImageForBoard(file) {
     throw new Error('Поддерживаются JPG, PNG, WebP, GIF, HEIC и HEIF');
   }
 
+  if (file.type === 'image/gif' || fileExtension(file.name) === 'gif') {
+    return { blob: file, contentType: 'image/gif', extension: 'gif' };
+  }
+
   let sourceBlob = file;
   let convertedFromHeic = false;
   if (isHeicFile(file)) {
@@ -286,9 +296,10 @@ export async function preloadSerializedImages(value) {
  * Browser-authority images are self-contained data URLs. A cross-board duplicate
  * therefore needs only a defensive clone; no network fetch or second upload exists.
  */
-export async function copySerializedBoardImages(value, targetBoardId) {
-  void targetBoardId;
-  return cloneValue(value);
+export async function copySerializedBoardImages(value, targetBoardId, store = boardMediaAssets) {
+  const copied = cloneValue(value);
+  await Promise.all(collectMediaAssetIds(copied).map(id => store.register(targetBoardId, id)));
+  return copied;
 }
 
 /** Retry an uncertain transport outcome, never a rejected authoritative result.
@@ -316,4 +327,10 @@ export async function publishBoardImage(publish, {
     }
     return results;
   }
+}
+
+export async function ensureSerializedMediaAssets(value, ensureAsset) {
+  const ids = collectMediaAssetIds(value);
+  if (ids.length && typeof ensureAsset !== 'function') throw new Error('Соединение для передачи медиафайла ещё не готово');
+  for (const id of ids) await ensureAsset(id);
 }
