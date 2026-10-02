@@ -9,6 +9,7 @@ import { createNotebookOutbox } from '../lib/browserAuthorityStore.js';
 import { isNotebookRuntimeEnabled } from '../lib/notebookProtocol.js';
 import { applyNotebookOperation } from '../lib/notebookOperations.js';
 import { operationObjectIds } from '../lib/operationProtocol.js';
+import { createNotebookNavigationTracker } from '../lib/notebookNavigation.js';
 import NotebookPageControls, { NotebookTextEditor } from './NotebookPageControls.jsx';
 import { NOTEBOOK_FIELDS, createBoardNotebook, isBoardNotebook, setNotebookPage, captureNotebookObject, notebookObjectIntersection } from '../lib/boardNotebook.js';
 import PdfPageControls from './PdfPageControls.jsx';
@@ -1793,10 +1794,11 @@ function BoardWorkspace({
   const cursorVisibilityRef = useRef(null);
   const fabricCanvasRef = useRef(null);
   const mediaRuntimeRef = useRef(null);
-  const [notebookControls, setNotebookControls] = useState(null);
+  const [notebookControls, setNotebookControls] = useState([]);
   const [notebookBusy, setNotebookBusy] = useState(false);
   const [notebookTextEditor, setNotebookTextEditor] = useState(null);
   const notebookTextEditRef = useRef(null);
+  const notebookPageTextExitRef = useRef(new WeakSet());
   const notebookHandlersRef = useRef({});
   const notebookControllerRef = useRef(null);
   const notebookControllerInitRef = useRef(null);
@@ -1806,6 +1808,7 @@ function BoardWorkspace({
   const notebookQueueRef = useRef(Promise.resolve());
   const notebookMutationActiveRef = useRef(false);
   const notebookControlSignatureRef = useRef('');
+  const notebookNavigationRef = useRef(null);
   const [pdfControls, setPdfControls] = useState(null);
   const [pdfPageBusy, setPdfPageBusy] = useState(false);
   const [mediaLoadOverlays, setMediaLoadOverlays] = useState([]);
@@ -2941,20 +2944,11 @@ function BoardWorkspace({
         position: { width, maxWidth: 'none', left: point.x, top: point.y + 8 * scale,
           transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'top center' } };
     }
-    let notebookValue = null;
-    if (isBoardNotebook(object)) {
-      const box = object.getBoundingRect();
-      const point = new Point(box.left + box.width / 2, box.top + box.height).transform(canvas.viewportTransform);
-      const scale = canvas.getZoom() * Math.min(1, box.width / 240);
-      notebookValue = { id: object.boardObjectId, pageNumber: object.notebookPageNumber,
-        hasText: object.getPageObjects().some(isTextObject),
-        position: { width: Math.min(360, box.width), left: point.x, top: point.y + 6 * scale,
-          transform: `translateX(-50%) scale(${scale})` } };
-    }
-    const notebookSignature = JSON.stringify(notebookValue);
+    const notebookValues = notebookNavigationRef.current?.read() ?? [];
+    const notebookSignature = JSON.stringify(notebookValues);
     if (notebookSignature !== notebookControlSignatureRef.current) {
       notebookControlSignatureRef.current = notebookSignature;
-      setNotebookControls(notebookValue);
+      setNotebookControls(notebookValues);
     }
     const signature = JSON.stringify(value);
     if (signature !== pdfControlSignatureRef.current) {
@@ -7321,8 +7315,11 @@ function BoardWorkspace({
     }
   }, [boardId, boardKey, setSelectionLeaseInteraction]);
 
-  const acquireLocalSelectionLease = useCallback((target) => {
-    if (!target || !canEditRef.current || applyingRemoteRef.current || applyingHistoryRef.current) {
+  const acquireLocalSelectionLease = useCallback((target, { forPendingOperation = false } = {}) => {
+    // Projection/history blocks NEW UI gestures, not the authority permission
+    // check for an already queued durable edit. Both still require a real grant.
+    if (!target || !canEditRef.current
+      || (!forPendingOperation && (applyingRemoteRef.current || applyingHistoryRef.current))) {
       return Promise.resolve(false);
     }
     // ShareScreen is a realtime-only media object, not a durable board object.
@@ -8728,24 +8725,36 @@ function BoardWorkspace({
     addObjectsToBoard([notebook]);
   }, [getViewportSceneCenter, setTool, addObjectsToBoard]);
 
-  const changeNotebookPage = useCallback((pageNumber) => queueNotebookMutation(async () => {
-    const canvas = fabricCanvasRef.current;
-    const notebook = canvas?.getActiveObject();
-    if (!canEditRef.current || !isBoardNotebook(notebook) || notebook.notebookPageNumber === pageNumber) return;
-    if (notebookRuntimeEnabled) return incrementalNotebookActions.changePage(notebook, pageNumber);
-    setNotebookBusy(true);
-    try {
-      if (!await acquireLocalSelectionLease(notebook)) return;
-      const before = getObjectRecords([notebook]);
-      if (!await setNotebookPage(notebook, pageNumber)) return;
-      assertNotebookLease(notebook);
-      markObject(notebook, clientIdRef.current);
-      await commitNotebookOps(createConditionalRecordPatchOps(before, getObjectRecords([notebook])));
-      updatePdfControls();
-      canvas.requestRenderAll();
-    } catch (error) { await syncFromServer(true); throw error; }
-    finally { setNotebookBusy(false); }
-  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, commitNotebookOps, updatePdfControls, assertNotebookLease, syncFromServer, incrementalNotebookActions]);
+  const changeNotebookPage = useCallback((requestedPage, notebookId = null, relative = false) => {
+    // Finish an active draft before queueing the page turn. Its existing exit
+    // handler captures it on the original page, but does not change tools here.
+    const editing = fabricCanvasRef.current?.getActiveObject();
+    if (canEditRef.current && editing?.isEditing) {
+      notebookPageTextExitRef.current.add(editing);
+      editing.exitEditing();
+    }
+    return queueNotebookMutation(async () => {
+      const canvas = fabricCanvasRef.current;
+      // Persistent controls identify their own frame, not the active tool/selection.
+      const notebook = notebookId == null ? canvas?.getActiveObject()
+        : registeredObjectsById(notebookId).find(isBoardNotebook);
+      const pageNumber = relative ? Math.max(1, Number(notebook?.notebookPageNumber ?? 1) + requestedPage) : requestedPage;
+      if (!canEditRef.current || !isBoardNotebook(notebook) || notebook.notebookPageNumber === pageNumber) return;
+      if (notebookRuntimeEnabled) return incrementalNotebookActions.changePage(notebook, pageNumber);
+      setNotebookBusy(true);
+      try {
+        if (!await acquireLocalSelectionLease(notebook)) return;
+        const before = getObjectRecords([notebook]);
+        if (!await setNotebookPage(notebook, pageNumber)) return;
+        assertNotebookLease(notebook);
+        markObject(notebook, clientIdRef.current);
+        await commitNotebookOps(createConditionalRecordPatchOps(before, getObjectRecords([notebook])));
+        updatePdfControls();
+        canvas.requestRenderAll();
+      } catch (error) { await syncFromServer(true); throw error; }
+      finally { setNotebookBusy(false); }
+    });
+  }, [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, commitNotebookOps, updatePdfControls, assertNotebookLease, syncFromServer, incrementalNotebookActions, registeredObjectsById]);
 
   const editNotebookText = useCallback(async (notebook, point) => {
     const children = notebook?.getPageObjects?.() ?? [];
@@ -8840,13 +8849,33 @@ function BoardWorkspace({
     editText: editNotebookText, erase: eraseNotebookChildren, ensure: ensureNotebookController,
     refreshControls() { updatePdfControls(); updateSelectionState(); },
     async leaseForOperations(ops) {
-      const confirmed = new Set((notebookControllerRef.current?.getConfirmedState().snapshot.canvas.objects ?? [])
+      const controller = notebookControllerRef.current, canvas = fabricCanvasRef.current;
+      const current = () => canEditRef.current && canvas === fabricCanvasRef.current
+        && controller === notebookControllerRef.current;
+      if (!current()) return false;
+      const confirmed = new Set((controller?.getConfirmedState().snapshot.canvas.objects ?? [])
         .map(object => String(object.boardObjectId)));
       const ids = [...operationObjectIds(ops)].filter(id => confirmed.has(id));
       if (!ids.length) return true;
-      const lease = selectionLeaseRef.current;
-      if (lease.state === 'granted' && lease.expiresAt > Date.now() && ids.every(id => lease.ids.includes(id))) return true;
-      return acquireLocalSelectionLease(ids.map(id => registeredObjectsById(id)[0] ?? { boardObjectId: id }));
+      const covers = lease => ids.every(id => lease.ids.includes(id));
+      // A selection change may supersede a request while its reply is in flight.
+      // Reuse the newer covering grant/promise; only a LOCAL generation change
+      // permits another attempt. Real denial/network failure is not retried.
+      for (let attempt = 0; attempt < 4 && current(); attempt++) {
+        const lease = selectionLeaseRef.current;
+        if (lease.state === 'granted' && lease.expiresAt > Date.now() && covers(lease)) return true;
+        const pending = lease.state === 'pending' && covers(lease)
+          ? lease.promise
+          : acquireLocalSelectionLease(ids.map(id => registeredObjectsById(id)[0] ?? { boardObjectId: id }),
+            { forPendingOperation: true });
+        const generation = selectionLeaseRef.current.generation;
+        await pending;
+        if (!current()) return false;
+        const next = selectionLeaseRef.current;
+        if (next.state === 'granted' && next.expiresAt > Date.now() && covers(next)) return true;
+        if (next.generation === generation) return false;
+      }
+      return false;
     },
   };
 
@@ -8894,6 +8923,8 @@ function BoardWorkspace({
     const renderPixelRatio = clamp(Number(window.devicePixelRatio ?? 1), 1, MAX_CANVAS_PIXEL_RATIO);
     canvas.getRetinaScaling = () => renderPixelRatio;
     fabricCanvasRef.current = canvas;
+    const notebookNavigation = createNotebookNavigationTracker(canvas);
+    notebookNavigationRef.current = notebookNavigation;
     const mediaRuntime = createBoardMediaRuntime({ canvas, boardId,
       requestAsset: (assetId, options) => realtimeRef.current?.requestMediaAsset?.(assetId, options),
       onReady: updatePdfControls,
@@ -11372,6 +11403,7 @@ function BoardWorkspace({
 
     canvas.on('text:editing:exited', async ({ target }) => {
       if (!target || applyingRemoteRef.current || applyingHistoryRef.current) return;
+      const preserveTool = notebookPageTextExitRef.current.delete(target);
       if (String(mobileTextEditorRef.current?.objectId ?? '') === String(target.boardObjectId ?? '')) {
         mobileTextEditorRef.current = null;
         setMobileTextEditor(null);
@@ -11426,9 +11458,11 @@ function BoardWorkspace({
       }
 
       sendLocalLock(target, false);
-      selectedShapeRef.current = null;
-      activeToolRef.current = 'select';
-      setToolState('select');
+      if (!preserveTool) {
+        selectedShapeRef.current = null;
+        activeToolRef.current = 'select';
+        setToolState('select');
+      }
       configureBrushAndMode();
       canvas.discardActiveObject();
       updateSelectionState();
@@ -14123,6 +14157,9 @@ function BoardWorkspace({
     let gameLibrarySequenceStartedAt = 0;
 
     function handleKeyDown(event) {
+      // Native button activation belongs to the notebook chrome, not Space-pan
+      // or selection shortcuts. This listener runs before React bubble handlers.
+      if (event.target?.closest?.('.notebook-nav-island')) return;
       const isShortcut = event.metaKey || event.ctrlKey;
       const target = event.target;
       const isTextInput = target instanceof HTMLInputElement
@@ -14433,6 +14470,8 @@ function BoardWorkspace({
       pencilDiagnosticsRef.current = null;
       fabricInputModeSwitchRef.current = null;
       document.removeEventListener('visibilitychange', mediaVisibility);
+      notebookNavigation.dispose();
+      if (notebookNavigationRef.current === notebookNavigation) notebookNavigationRef.current = null;
       canvas.off('after:render', updatePdfControls);
       canvas.off('after:render', updateMediaLoadOverlays);
       mediaRuntime.dispose();
@@ -14676,9 +14715,8 @@ function BoardWorkspace({
         data-readonly-view={!isOwner && !canEdit ? 'true' : 'false'}
       >
         <canvas ref={canvasElementRef} />
-        {notebookControls && <NotebookPageControls {...notebookControls} canEdit={canEdit} busy={notebookBusy}
-          onPageChange={changeNotebookPage} onEditText={notebookControls.hasText
-            ? () => editNotebookText(fabricCanvasRef.current?.getActiveObject()) : undefined} />}
+        <NotebookPageControls notebooks={notebookControls} canEdit={canEdit} busy={notebookBusy}
+          onPageChange={changeNotebookPage} />
         {notebookTextEditor && <NotebookTextEditor {...notebookTextEditor} busy={notebookBusy}
           onSave={saveNotebookText} onCancel={() => { notebookTextEditRef.current = null; setNotebookTextEditor(null); }} />}
         {pdfControls && <PdfPageControls key={pdfControls.id} {...pdfControls} canEdit={canEdit} busy={pdfPageBusy} onPageChange={changePdfPage} />}

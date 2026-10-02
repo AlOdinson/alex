@@ -27,7 +27,8 @@ try{
   window.toolbar=()=>{let f=document.querySelector('.toolbar-shell');f=f[Object.keys(f).find(k=>k.startsWith('__reactFiber'))];while(f&&!f.memoizedProps?.onAddNotebook)f=f.return;return f.memoizedProps;};
   window.notebook=()=>window.testCanvas.getObjects().find(o=>o.type==='boardnotebook');
  });
- assert.equal(await page.locator('.notebook-page-controls button').count(),1);
+ assert.equal(await page.locator('.notebook-page-controls button').count(),2);
+ assert.equal(await page.locator('.notebook-page-controls button[aria-label="Предыдущая страница"]').isDisabled(),true);
  await page.evaluate(async()=>{
   const {Path}=await import('/alex/node_modules/.vite/deps/fabric.js');
   const n=window.notebook(),p=n.getBoundingRect();
@@ -63,7 +64,14 @@ try{
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().some(o=>o.text==='Whole text'));
  await page.waitForTimeout(400);
  await page.evaluate(()=>{window.testCanvas.setActiveObject(window.notebook());window.testCanvas.requestRenderAll();});
- await page.locator('.notebook-edit-text').click();
+ // Notebook selection now exposes only resize handles. The existing direct
+ // double-click on page text still opens the same editor (no separate panel).
+ const textPoint=await page.evaluate(()=>{
+  const c=window.testCanvas,n=window.notebook(),text=n.getPageObjects().find(o=>o.text==='Whole text');
+  const p=text.getCenterPoint().transform(c.viewportTransform),r=c.upperCanvasEl.getBoundingClientRect();
+  return {x:r.left+p.x,y:r.top+p.y};
+ });
+ await page.mouse.dblclick(textPoint.x,textPoint.y);
  await page.getByRole('dialog').getByRole('textbox').fill('Edited whole text');
  await page.getByRole('dialog').getByRole('button',{name:'Сохранить',exact:true}).click();
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().some(o=>o.text==='Edited whole text'));
@@ -99,12 +107,20 @@ try{
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===3);
  await page.evaluate(()=>window.toolbar().setTool('select'));
  // Initial static image insertion is independent; only its later drag captures it.
+ await page.evaluate(()=>{window.preUploadIds=new Set(window.testCanvas.getObjects().map(o=>o.boardObjectId));});
  const imageBytes=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=80;c.height=80;c.getContext('2d').fillRect(0,0,80,80);return c.toDataURL().split(',')[1];});
  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles({name:'square.png',mimeType:'image/png',buffer:Buffer.from(imageBytes,'base64')});
- await page.waitForFunction(()=>window.testCanvas.getObjects().some(o=>o.objectKind==='image'&&!o.pendingImage));
+ // Upload completes after the decoded image first appears: its publication is
+ // followed by the application's own automatic selection. Do not force-select
+ // and start a drag before that later selection can retire the held transform.
+ await page.waitForFunction(()=>{
+  const c=window.testCanvas,image=c.getObjects().find(o=>!window.preUploadIds.has(o.boardObjectId)&&o.objectKind==='image'&&!o.pendingImage);
+  if(!image||c.getActiveObject()!==image)return false;
+  window.uploadedImageId=image.boardObjectId;return true;
+ });
  assert.equal(await page.evaluate(()=>window.notebook().getPageObjects().length),3);
  const imagePoint=await page.evaluate(()=>{
-  const c=window.testCanvas,image=c.getObjects().find(o=>o.objectKind==='image'&&!o.pendingImage);c.setActiveObject(image);image.setCoords();
+  const c=window.testCanvas,image=c.getObjects().find(o=>o.boardObjectId===window.uploadedImageId);image.setCoords();
   const point=image.getCenterPoint(),v=c.viewportTransform,r=c.upperCanvasEl.getBoundingClientRect();
   return {x:r.left+point.x*v[0]+v[4],y:r.top+point.y*v[3]+v[5]};
  });

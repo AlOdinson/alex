@@ -1,9 +1,9 @@
 {
-  "version": "1.43.1",
-  "packageVersion": "1.43.1",
-  "base": "1.43.0",
-  "release": "Stable notebook position and deliberate selection drop capture",
-  "date": "2026-10-02",
-  "name": "notebook-position-drop",
-  "label": "Alex Board 1.43.1"
+  "version": "1.43.2",
+  "packageVersion": "1.43.2",
+  "base": "1.43.1",
+  "release": "Persistent protected notebook navigation for every tool",
+  "date": "2026-10-03",
+  "name": "notebook-persistent-navigation",
+  "label": "Alex Board 1.43.2"
 }
