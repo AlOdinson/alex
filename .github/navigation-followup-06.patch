@@ -1,0 +1,24 @@
+diff --git a/scripts/test-notebook-drop-browser.mjs b/scripts/test-notebook-drop-browser.mjs
+index b138b08..0b06220 100644
+--- a/scripts/test-notebook-drop-browser.mjs
++++ b/scripts/test-notebook-drop-browser.mjs
+@@ -118,10 +118,18 @@ try {
+   results.push({name:'native multi-selection drop, one undo and redo',passed:true});
+   assert.deepEqual(errors,[]);
+ } catch(error) {
++  await page.evaluate(async () => {
++    window.historyFailureDetail = await Promise.race([
++      window.historyController?.flush().then(() => ({flush:'complete'}), error => ({flush:'error',message:error.message,code:error.code,stack:error.stack})),
++      new Promise(resolve => setTimeout(() => resolve({flush:'pending'}), 20)),
++    ]);
++    let f=document.querySelector('.toolbar-shell');f=f[Object.keys(f).find(k=>k.startsWith('__reactFiber'))];while(f&&f.type?.name!=='BoardWorkspace')f=f.return;
++    window.historyPrimitiveState=[];for(let h=f.memoizedState;h;h=h.next)if(typeof h.memoizedState==='string')window.historyPrimitiveState.push(h.memoizedState);
++  }).catch(() => {});
+   await mkdir('notebook-drop-results',{recursive:true});
+   await page.screenshot({path:`notebook-drop-results/${engine}-failure.png`}).catch(()=>{});
+   await writeFile(`notebook-drop-results/${engine}-failure.json`,JSON.stringify({message:error.message,stack:error.stack,errors,results,diagnostics,
+-    state:await page.evaluate(()=>({text:document.body.innerText,historyTrace:window.historyTrace,queue:window.historyController?.exportPending(),confirmed:window.historyController?.getConfirmedState(),checkpoint:window.historyRealtime?.getNotebookCheckpoint(),lease:window.historyLeaseRef?.current,book:window.book?.()?.toObject(['boardObjectId']),transform:Boolean(window.c?._currentTransform),objects:window.c?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,left:o.left,top:o.top,group:o.group?.type,rect:o.getBoundingRect()}))})).catch(()=>null)},null,2));
++    state:await page.evaluate(()=>({text:document.body.innerText,historyFailure:window.historyFailureDetail,uiState:window.historyPrimitiveState,historyTrace:window.historyTrace,queue:window.historyController?.exportPending(),confirmed:window.historyController?.getConfirmedState(),checkpoint:window.historyRealtime?.getNotebookCheckpoint(),lease:window.historyLeaseRef?.current,book:window.book?.()?.toObject(['boardObjectId']),transform:Boolean(window.c?._currentTransform),objects:window.c?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,left:o.left,top:o.top,group:o.group?.type,rect:o.getBoundingRect()}))})).catch(()=>null)},null,2));
+   throw error;
+ } finally {
+   await mkdir('notebook-drop-results',{recursive:true});
