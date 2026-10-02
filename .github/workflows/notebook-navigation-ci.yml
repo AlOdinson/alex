@@ -73,7 +73,12 @@ jobs:
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
       - name: Notebook controls with every tool, protected pixels, text, history and deliberate drops
-        run: npm run test:notebook:browser
+        run: |
+          status=0
+          node scripts/test-notebook-browser.mjs || status=1
+          node scripts/test-notebook-drop-browser.mjs || status=1
+          node scripts/test-notebook-navigation-browser.mjs || status=1
+          exit "$status"
       - name: Incremental notebook performance
         run: npm run test:notebook:performance -- --stage-b
       - name: Notebook with received generated video at 720p60 and 1080p60
