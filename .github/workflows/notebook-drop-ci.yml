@@ -1,0 +1,36 @@
+name: Notebook position and drop regressions
+
+on:
+  push:
+    branches: ['fix/notebook-position-drop-20261002']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notebook-drop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Capture exact tracked source for isolated local reproduction
+        run: git archive --format=tar.gz HEAD > "$RUNNER_TEMP/notebook-drop-source.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notebook-drop-source
+          path: ${{ runner.temp }}/notebook-drop-source.tar.gz
+          retention-days: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test:notebook
+      - run: npm run test:browser-authority
+      - run: npm run build
