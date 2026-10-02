@@ -8,7 +8,7 @@ import { createBoardScreenShareMedia } from '../src/lib/boardScreenShare.js';
 // decoder and canvas renderer run unchanged, in separate native browser pages.
 export function install(role) {
   const d = window.receiverTest = { role, peers: [], fault: '', notifications: 0,
-    copies: 0, uniqueFrames: 0, lastStamp: null, presentationTimes: [], errors: [] };
+    copies: 0, uniqueFrames: 0, lastStamp: null, presentationTimes: [], progressSamples: [], errors: [] };
   const NativePeer = window.RTCPeerConnection;
   window.RTCPeerConnection = class extends NativePeer {
     constructor() { super({ iceServers: [] }); d.peers.push(this); }
@@ -43,6 +43,13 @@ export function install(role) {
 
   function instrument(media) {
     const video = media.video;
+    const noteProgress = (source, metadata = null) => {
+      const quality = video.getVideoPlaybackQuality?.();
+      d.progressSamples.push({source, time: performance.now(), mediaTime: video.currentTime,
+        total: quality?.totalVideoFrames, dropped: quality?.droppedVideoFrames,
+        decoded: video.webkitDecodedFrameCount, metadata});
+      if (d.progressSamples.length > 100) d.progressSamples.shift();
+    };
     const request = video.requestVideoFrameCallback?.bind(video), cancel = video.cancelVideoFrameCallback?.bind(video);
     let nextId = 0, lastDelivery = -Infinity;
     const pending = new Map();
@@ -52,7 +59,7 @@ export function install(role) {
         entry.native = null;
         const deliver = () => {
           if (!pending.delete(id)) return;
-          lastDelivery = performance.now(); d.notifications++; fn(...args);
+          lastDelivery = performance.now(); d.notifications++; noteProgress('callback', args[1]); fn(...args);
         };
         const delay = d.fault.includes('slow') ? Math.max(0, 500 - (performance.now() - lastDelivery)) : 0;
         if (delay) entry.timer = setTimeout(deliver, delay); else deliver();
@@ -73,7 +80,7 @@ export function install(role) {
     context.drawImage = (...args) => {
       const result = draw(...args);
       if (args[0] !== video) return result;
-      d.copies++;
+      d.copies++; noteProgress('copy');
       const frame = media.frameCanvas;
       read.drawImage(frame, 0, 0, frame.width * 768 / 1920, frame.height * 120 / 1080, 0, 0, 12, 1);
       const pixels = read.getImageData(0, 0, 12, 1).data;
@@ -121,7 +128,7 @@ export function install(role) {
       presentationTimes: d.presentationTimes.slice(), objects: canvas.getObjects().length, fault: d.fault,
       phase: d.share.phase, ultra: d.share.ultraEnabled, resolution720: d.share.resolution720Enabled,
       videoReady: d.media?.video.readyState, width: d.media?.video.videoWidth, height: d.media?.video.videoHeight,
-      stats, pump: d.media?.getFrameStats?.(), errors: d.errors };
+      progressSamples: d.progressSamples.slice(), stats, pump: d.media?.getFrameStats?.(), errors: d.errors };
   };
   d.close = async () => { d.share?.stop(); clearInterval(d.captureTimer); d.media?.dispose(); d.root.unmount(); await canvas.dispose(); };
 }
