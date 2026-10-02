@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { isAuthoritativeBoardOperation } from '../src/lib/operationProtocol.js';
+import { isNotebookOperation, notebookChildKey } from '../src/lib/notebookOperations.js';
 
 const KEY = 'alex-board:owner-library:v2';
 let sequence = 0;
@@ -139,21 +141,34 @@ test('a failed durable create re-enables the control and never navigates or reme
 });
 
 const storeSource = await readFile(new URL('../src/lib/browserAuthorityStore.js', import.meta.url), 'utf8');
+// Keep the timer/IndexedDB harness isolated, but bind the real protocol helpers.
+// The store is now an ES module; evaluating its imports as a classic VM script
+// fails before any deadline assertion can exercise the storage code.
+const storeScript = storeSource
+  .replace(/^import \{[^}]+\} from ['"]\.\/(?:operationProtocol|notebookOperations)\.js['"];\r?\n/gm, '')
+  .replace(/^export /gm, '');
 async function drain() { for (let i = 0; i < 12; i += 1) await Promise.resolve(); }
 function storeFixture({ stalledOpen = false, throwTransaction = false } = {}) {
   const timers = new Map();
   let timerId = 0;
   const request = {};
-  const addRequest = {};
-  const state = { closed: 0, aborted: 0, transactions: 0 };
+  const addRequest = {}, snapshotRequest = {}, tombstoneRequest = {};
+  const requests = { boards: addRequest, snapshots: snapshotRequest, notebookTombstones: tombstoneRequest };
+  const state = { closed: 0, aborted: 0, transactions: 0, writes: [], storeNames: [] };
   const tx = {
-    objectStore() { return { add() { return addRequest; }, getAll() { return addRequest; } }; },
+    objectStore(name) {
+      assert.ok(Object.hasOwn(requests, name), `Unexpected fixture store: ${name}`);
+      const write = (value) => { state.writes.push({ store: name, value }); return requests[name]; };
+      return { add: write, put: write, getAll() { return requests[name]; } };
+    },
     abort() { state.aborted += 1; },
   };
   const db = {
     close() { state.closed += 1; },
-    transaction() {
+    transaction(storeNames, mode) {
       state.transactions += 1;
+      state.storeNames = Array.from(storeNames);
+      state.mode = mode;
       if (throwTransaction) throw new Error('transaction constructor failed');
       return tx;
     },
@@ -164,9 +179,11 @@ function storeFixture({ stalledOpen = false, throwTransaction = false } = {}) {
     setTimeout(fn, ms) { timers.set(++timerId, { fn, ms }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
     structuredClone, Error, DOMException,
+    isAuthoritativeBoardOperation, isNotebookOperation, notebookChildKey,
   };
-  const api = vm.runInNewContext(`${storeSource.replaceAll('export ', '')}\n;({createAuthorityBoard,listAuthorityBoards})`, context);
-  return { api, request, addRequest, tx, db, timers, state,
+  const api = vm.runInNewContext(`${storeScript}\n;({createAuthorityBoard,listAuthorityBoards})`, context,
+    { filename: 'browserAuthorityStore.fixture.js' });
+  return { api, request, addRequest, snapshotRequest, tombstoneRequest, tx, db, timers, state,
     expire() { for (const [id, timer] of [...timers]) { timers.delete(id); timer.fn(); } },
   };
 }
@@ -222,7 +239,16 @@ test('successful add alone is not success: wait for transaction commit and bound
 test('normal create resolves after commit, clears timers, closes the database', async () => {
   const f = storeFixture();
   const outcome = observe(f.api.createAuthorityBoard(entry('x')));
-  await drain(); f.addRequest.onsuccess(); f.tx.oncomplete(); await drain();
+  await drain(); f.addRequest.onsuccess(); await drain();
+  assert.equal(outcome.status, 'pending', 'metadata alone must not finish a board create');
+  assert.deepEqual(f.state.storeNames, ['boards', 'snapshots', 'notebookTombstones']);
+  assert.equal(f.state.mode, 'readwrite');
+  assert.deepEqual(f.state.writes.map(write => write.store), ['boards', 'snapshots']);
+  assert.equal(Object.hasOwn(f.state.writes[0].value, 'snapshot'), false);
+  assert.equal(f.state.writes[1].value.boardId, 'x');
+  f.snapshotRequest.onsuccess(); await drain();
+  assert.equal(outcome.status, 'pending', 'all requests still require transaction commit');
+  f.tx.oncomplete(); await drain();
   assert.equal(outcome.status, 'fulfilled');
   assert.equal(outcome.value.boardId, 'x');
   assert.equal(f.timers.size, 0);
@@ -288,4 +314,56 @@ test('request errors retain their original cause and abort rather than waiting f
   assert.equal(outcome.error, error);
   assert.equal(f.state.closed, 1);
   assert.ok(f.state.aborted >= 1);
+});
+
+
+test('a stalled snapshot write after metadata still aborts the whole create on its deadline', async () => {
+  const f = storeFixture();
+  const outcome = observe(f.api.createAuthorityBoard(entry('x')));
+  await drain(); f.addRequest.onsuccess(); await drain();
+  assert.equal(typeof f.snapshotRequest.onsuccess, 'function', 'snapshot write was not requested');
+  assert.equal(outcome.status, 'pending');
+  f.expire(); await drain();
+  assert.equal(outcome.status, 'rejected');
+  assert.equal(outcome.error.name, 'TimeoutError');
+  assert.equal(f.state.transactions, 1);
+  assert.ok(f.state.aborted >= 1);
+  assert.equal(f.state.closed, 1);
+  assert.equal(f.timers.size, 0);
+});
+
+test('a failed snapshot write preserves its cause and aborts the same metadata transaction', async () => {
+  const f = storeFixture();
+  const outcome = observe(f.api.createAuthorityBoard(entry('x')));
+  await drain(); f.addRequest.onsuccess(); await drain();
+  const error = new DOMException('Snapshot disk full', 'QuotaExceededError');
+  f.snapshotRequest.error = error;
+  f.snapshotRequest.onerror(); await drain();
+  assert.equal(outcome.status, 'rejected');
+  assert.equal(outcome.error, error);
+  assert.equal(f.state.transactions, 1);
+  assert.ok(f.state.aborted >= 1);
+  assert.equal(f.state.closed, 1);
+  assert.equal(f.timers.size, 0);
+});
+
+test('restored child tombstones share the board create transaction and finish before success', async () => {
+  const f = storeFixture();
+  const tombstones = { child: { clientId: 'teacher', mutationId: 'delete-1' } };
+  const outcome = observe(f.api.createAuthorityBoard({ ...entry('x'), notebookTombstones: tombstones }));
+  await drain(); f.addRequest.onsuccess(); await drain();
+  f.snapshotRequest.onsuccess(); await drain();
+  assert.equal(outcome.status, 'pending');
+  assert.deepEqual(f.state.writes.map(write => write.store), ['boards', 'snapshots', 'notebookTombstones']);
+  assert.equal(f.state.writes[2].value.childKey, 'child');
+  assert.equal(f.state.writes[2].value.value.mutationId, 'delete-1');
+  f.tombstoneRequest.onsuccess(); await drain();
+  assert.equal(outcome.status, 'pending');
+  f.tx.oncomplete(); await drain();
+  assert.equal(outcome.status, 'fulfilled');
+  assert.deepEqual(outcome.value.notebookTombstones, tombstones);
+  assert.equal(f.state.transactions, 1);
+  assert.equal(f.state.aborted, 0);
+  assert.equal(f.state.closed, 1);
+  assert.equal(f.timers.size, 0);
 });
