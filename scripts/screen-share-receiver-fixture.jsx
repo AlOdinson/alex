@@ -16,9 +16,13 @@ export function install(role) {
   navigator.mediaDevices.getDisplayMedia = async () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     const source = document.createElement('canvas'); source.width = 1920; source.height = 1080;
+    // Keep the generated capture source paintable in WebKit. Its detached
+    // canvas capture can deliver a constant image despite advancing RTP frames.
+    source.style.cssText = 'position:fixed;right:0;bottom:0;width:320px;height:180px;pointer-events:none';
+    document.body.append(source);
     const ctx = source.getContext('2d'); let n = 0;
     const paint = () => {
-      n = (n + 1) & 4095;
+      n = (n + 1) & 4095; d.capturePaints = n;
       ctx.fillStyle = '#315797'; ctx.fillRect(0, 0, 1920, 1080);
       ctx.fillStyle = '#cfea47'; ctx.fillRect((n * 13) % 1800, 160, 80, 850);
       // 12 wide monochrome blocks survive encoder scaling. Read back only a
@@ -83,7 +87,7 @@ export function install(role) {
       d.copies++; noteProgress('copy');
       const frame = media.frameCanvas;
       read.drawImage(frame, 0, 0, frame.width * 768 / 1920, frame.height * 120 / 1080, 0, 0, 12, 1);
-      const pixels = read.getImageData(0, 0, 12, 1).data;
+      const pixels = read.getImageData(0, 0, 12, 1).data; d.barcodePixels = [...pixels];
       let stamp = 0; for (let i = 0; i < 12; i++) if (pixels[i * 4] > 128) stamp |= 1 << i;
       if (stamp !== d.lastStamp) {
         d.uniqueFrames++; d.lastStamp = stamp; d.presentationTimes.push(performance.now());
@@ -128,7 +132,7 @@ export function install(role) {
       presentationTimes: d.presentationTimes.slice(), objects: canvas.getObjects().length, fault: d.fault,
       phase: d.share.phase, ultra: d.share.ultraEnabled, resolution720: d.share.resolution720Enabled,
       videoReady: d.media?.video.readyState, width: d.media?.video.videoWidth, height: d.media?.video.videoHeight,
-      progressSamples: d.progressSamples.slice(), stats, pump: d.media?.getFrameStats?.(), errors: d.errors };
+      capturePaints: d.capturePaints, barcodePixels: d.barcodePixels, progressSamples: d.progressSamples.slice(), stats, pump: d.media?.getFrameStats?.(), errors: d.errors };
   };
   d.close = async () => { d.share?.stop(); clearInterval(d.captureTimer); d.media?.dispose(); d.root.unmount(); await canvas.dispose(); };
 }

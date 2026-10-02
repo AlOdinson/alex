@@ -47,6 +47,7 @@ try {
     const before = await pages.viewer.evaluate(() => window.receiverTest.sample());
     await sleep(3000);
     const after = await pages.viewer.evaluate(() => window.receiverTest.sample());
+    const sender = await pages.host.evaluate(() => window.receiverTest.sample());
     const seconds = (after.time - before.time) / 1000;
     const inbound = value => value.stats.find(s => s.type === 'inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) ?? {};
     const a = inbound(after), b = inbound(before);
@@ -56,8 +57,8 @@ try {
       copiesFps:(after.copies-before.copies)/seconds, uniqueFps:(after.uniqueFrames-before.uniqueFrames)/seconds,
       notificationsFps:(after.notifications-before.notifications)/seconds, maxGapMs:Math.max(...gaps),
       packetLossDelta:(a.packetsLost??0)-(b.packetsLost??0), decodedDroppedDelta:(a.framesDropped??0)-(b.framesDropped??0),
-      width:after.width,height:after.height,objects:after.objects,pump:after.pump,before,after};
-    reports.push(result); console.log(label, name, JSON.stringify({...result,before:undefined,after:undefined}));
+      width:after.width,height:after.height,objects:after.objects,pump:after.pump,before,after,sender};
+    reports.push(result); console.log(label, name, JSON.stringify({...result,before:undefined,after:undefined,sender:undefined}));
     await writeFile(`${output}/${label}.json`, JSON.stringify({senderEngine,receiverEngine,baseline,reports,errors},null,2));
     assert.equal(after.objects,1,'receiving board must contain only the video');
     assert.ok(result.decodedFps >= (name.startsWith('standard') ? 6 : 10),'test connection must actually deliver video');

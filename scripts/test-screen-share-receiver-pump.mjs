@@ -65,3 +65,13 @@ test('a transient staging failure retries without new callbacks or a lost frame'
   const copies = h.copies; h.decode(); h.step(); h.step();
   assert.equal(h.copies, copies + 1, 'same available frame must be retried on the next display tick');
 });
+
+// A decoder counter and a displayed-frame counter are distinct browser signals.
+test('decoder progress is not vetoed when the native displayed count stays constant', async t => {
+  const h = frameFixture(); t.after(h.close); let received=10;
+  h.video.getVideoPlaybackQuality = () => ({totalVideoFrames:received, droppedVideoFrames:received-2});
+  Object.defineProperty(h.video, 'webkitDecodedFrameCount', {get:()=>received});
+  h.step(); const copies=h.copies;
+  for (let i=0;i<60;i++) {received++; h.decode(); if(i%30===0)h.signal(); h.step();}
+  assert.ok(h.copies-copies>=55, 'displayed minus dropped is not a decoder freshness marker');
+});

@@ -6,15 +6,15 @@ const CALLBACK_GRACE_MS = 100;
 const DISPLAY_INTERVAL_MS = 1000 / 60;
 
 function playbackProgress(video) {
-  // Some engines report all-zero playback-quality counters for MediaStreams.
-  // Use a real counter only after it has produced a non-zero displayed count.
-  try {
-    const quality = video.getVideoPlaybackQuality?.();
-    const displayed = Number(quality?.totalVideoFrames) - Number(quality?.droppedVideoFrames ?? 0);
-    if (Number.isFinite(displayed) && displayed > 0) return { kind: 'frames', value: displayed };
-  } catch { /* Older/partial implementations can throw. */ }
+  // A detached MediaStream video can count frames as DOM-display drops while
+  // the decoded pixels are available to drawImage. Never subtract that counter:
+  // total-dropped can stay at 1 while decoding and rVFC both continue normally.
   const decoded = Number(video.webkitDecodedFrameCount);
   if (Number.isFinite(decoded) && decoded > 0) return { kind: 'decoded', value: decoded };
+  try {
+    const total = Number(video.getVideoPlaybackQuality?.().totalVideoFrames);
+    if (Number.isFinite(total) && total > 0) return { kind: 'frames', value: total };
+  } catch { /* Older/partial implementations can throw. */ }
   const time = Number(video.currentTime);
   return Number.isFinite(time) ? { kind: 'time', value: time } : null;
 }
