@@ -1,11 +1,10 @@
 import { FabricImage } from 'fabric';
 import { normalizeScreenShareBoardLayout } from './screenShare.js';
 import { createBoardScreenShareCompositor } from './boardScreenShareCompositor.js';
+import { createScreenShareFramePump } from './screenShareFramePump.js';
 
 const SCREEN_SHARE_SOURCE_WIDTH = 1280;
 const SCREEN_SHARE_SOURCE_HEIGHT = 720;
-const STANDARD_FALLBACK_FRAME_INTERVAL_MS = 66;
-const ULTRA_FALLBACK_FRAME_INTERVAL_MS = 1000 / 60;
 const CLOUD_SCREEN_SHARE_STATE_EVENT = 'alex-screen-share-cloud-state';
 const CLOUD_SCREEN_SHARE_STATE_REQUEST_EVENT = 'alex-screen-share-cloud-state-request';
 const CLOUD_SCREEN_SHARE_TOGGLE_EVENT = 'alex-screen-share-cloud-toggle';
@@ -206,8 +205,6 @@ export function createBoardScreenShareMedia({
   const compositor = createBoardScreenShareCompositor({ object });
 
   let disposed = false;
-  let frameCallbackId = null;
-  let frameTimer = null;
   let currentStream = null;
   let lastUniformScale = sourceDimension(object.scaleX, 1);
   let cloudState = {
@@ -230,7 +227,6 @@ export function createBoardScreenShareMedia({
   };
   let hd720Control = null;
   let hd720Input = null;
-  let restartFrameLoop = () => undefined;
 
   const rememberUniformScale = () => {
     lastUniformScale = sourceDimension(object.scaleX, lastUniformScale || 1);
@@ -505,10 +501,8 @@ export function createBoardScreenShareMedia({
   const handleUltraState = (event) => {
     const nextState = normalizedUltraControlState(event?.detail, safeSessionId);
     if (!nextState) return;
-    const qualityChanged = nextState.enabled !== ultraState.enabled;
     ultraState = nextState;
     syncUltraControl();
-    if (qualityChanged && currentStream) restartFrameLoop();
   };
 
   const requestUltraState = () => {
@@ -688,40 +682,16 @@ export function createBoardScreenShareMedia({
     return true;
   };
 
-  const cancelFrameLoop = () => {
-    if (video && frameCallbackId != null && typeof video.cancelVideoFrameCallback === 'function') {
-      try { video.cancelVideoFrameCallback(frameCallbackId); } catch { /* Already cancelled. */ }
-    }
-    frameCallbackId = null;
-    if (frameTimer != null) {
-      clearInterval(frameTimer);
-      frameTimer = null;
-    }
-  };
-
-  const startFrameLoop = () => {
-    cancelFrameLoop();
-    if (!video || !currentStream || disposed) return;
-    if (typeof video.requestVideoFrameCallback === 'function') {
-      const onFrame = () => {
-        if (disposed || !currentStream) return;
-        drawVideoFrame();
-        frameCallbackId = video.requestVideoFrameCallback(onFrame);
-      };
-      frameCallbackId = video.requestVideoFrameCallback(onFrame);
-      return;
-    }
-    frameTimer = setInterval(
-      drawVideoFrame,
-      ultraState.enabled ? ULTRA_FALLBACK_FRAME_INTERVAL_MS : STANDARD_FALLBACK_FRAME_INTERVAL_MS,
-    );
-  };
-  restartFrameLoop = startFrameLoop;
+  const framePump = createScreenShareFramePump({
+    video,
+    drawFrame: drawVideoFrame,
+    isVisible: () => !disposed && Boolean(currentStream) && compositor.isVisible(),
+  });
+  const cancelFrameLoop = () => framePump.stop();
 
   const showVideo = () => {
     if (disposed || !video || !currentStream) return;
-    drawVideoFrame();
-    startFrameLoop();
+    framePump.start();
   };
 
   const showPlaceholder = () => {
@@ -835,6 +805,7 @@ export function createBoardScreenShareMedia({
     setLayout,
     getLayout,
     setInteractive,
+    getFrameStats: framePump.getStats,
     dispose,
   };
 }

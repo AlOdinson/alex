@@ -1,9 +1,9 @@
 {
-  "version": "1.43.2",
-  "packageVersion": "1.43.2",
-  "base": "1.43.1",
-  "release": "Persistent protected notebook navigation for every tool",
+  "version": "1.43.3",
+  "packageVersion": "1.43.3",
+  "base": "1.43.2",
+  "release": "Recover received screen-share frames and remove empty-scene layer copies",
   "date": "2026-10-03",
-  "name": "notebook-persistent-navigation",
-  "label": "Alex Board 1.43.2"
+  "name": "screen-share-receiver-frame-pump",
+  "label": "Alex Board 1.43.3"
 }
