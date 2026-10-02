@@ -1,0 +1,19 @@
+--- a/scripts/test-notebook-drop-browser.mjs
++++ b/scripts/test-notebook-drop-browser.mjs
+@@ -11,2 +11,3 @@
+ page.on('pageerror',error=>errors.push(error.message));
++const diagnostics=[];page.on('console',message=>{if(['error','warning'].includes(message.type()))diagnostics.push(message.text());});
+ const next=()=>page.locator('.notebook-page-controls button[aria-label="Следующая страница"]').click();
+@@ -28,3 +29,5 @@
+   await page.waitForFunction(()=>window.c._currentTransform?.target?.lockMovementX===false);
++  console.log('NATIVE DRAG START',await page.evaluate(()=>({active:window.c.getActiveObject()?.type, target:window.c._currentTransform?.target?.type, action:window.c._currentTransform?.action, handler:String(window.c._currentTransform?.actionHandler), selected:window.c.getActiveObjects().map(o=>({id:o.boardObjectId,rect:o.getBoundingRect()}))})));
+   await page.mouse.move(point.x+dx,point.y+dy,{steps:12});await page.mouse.up();
++  console.log('NATIVE DRAG END',await page.evaluate(()=>({active:window.c.getActiveObject()?.type, objects:window.c.getObjects().map(o=>({id:o.boardObjectId,rect:o.getBoundingRect()}))})));
+ }
+@@ -89,4 +92,4 @@
+   await page.screenshot({path:`notebook-drop-results/${engine}-failure.png`}).catch(()=>{});
+-  await writeFile(`notebook-drop-results/${engine}-failure.json`,JSON.stringify({message:error.message,stack:error.stack,errors,results,
+-    state:await page.evaluate(()=>({text:document.body.innerText,book:window.book?.()?.toObject(['boardObjectId']),transform:Boolean(window.c?._currentTransform)})).catch(()=>null)},null,2));
++  await writeFile(`notebook-drop-results/${engine}-failure.json`,JSON.stringify({message:error.message,stack:error.stack,errors,results,diagnostics,
++    state:await page.evaluate(()=>({text:document.body.innerText,book:window.book?.()?.toObject(['boardObjectId']),transform:Boolean(window.c?._currentTransform),objects:window.c?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,left:o.left,top:o.top,group:o.group?.type,rect:o.getBoundingRect()}))})).catch(()=>null)},null,2));
+   throw error;
