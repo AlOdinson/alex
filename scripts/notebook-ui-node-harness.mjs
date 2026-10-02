@@ -6,8 +6,8 @@ import { parseSync } from 'rolldown/experimental';
 import { indexedDB, IDBKeyRange } from 'fake-indexeddb';
 import { getEnv } from 'fabric/node';
 import { setEnv, Canvas, ActiveSelection, util } from 'fabric';
-import { isBoardMedia } from '../src/lib/boardMediaRuntime.js';
-import { BoardNotebook, isBoardNotebook, notebookObjectIntersection } from '../src/lib/boardNotebook.js';
+import { isBoardMedia, MEDIA_OBJECT_FIELDS } from '../src/lib/boardMediaRuntime.js';
+import { BoardNotebook, NOTEBOOK_FIELDS, isBoardNotebook, notebookObjectIntersection } from '../src/lib/boardNotebook.js';
 import { createNotebookBoardActions } from '../src/lib/notebookBoardActions.js';
 import { createNotebookBoardController } from '../src/lib/notebookBoardController.js';
 import { createNotebookCommitBridge } from '../src/lib/notebookCommitBridge.js';
@@ -65,9 +65,9 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
   authoritativeObjectStatesRef:ref(new Map()),authoritativeSelectionTransactionsRef:ref(new Map()),authoritativeBackgroundStateRef:ref({revision:0,background:'blank'}),
   remoteSelectionTransactionsRef:ref(new Map()),remoteDrawSessionsRef:ref(new Map()),remoteTransformSessionsRef:ref(new Map()),remotePreviewTokensRef:ref(new Map()),remotePreviewPendingRef:ref({records:new Map()}),remoteDeletedObjectIdsRef:ref(new Map()),
   pendingLocalObjectMutationCountsRef:ref(new Map()),pendingServerWritesRef:ref(0),pendingLocalBackgroundMutationCountRef:ref(0),rebasingPendingActionsRef:ref(false),
-  syncRequestedRef:ref(false),syncForceRef:ref(false),pencilDiagnosticsRef:ref(null),deferredTransformFlushRef:ref(null),penTransformSpatialApiRef:ref(null),serializedObjectCacheRef:ref(new WeakMap()),objectRegistryRef:ref(new Map()),
+  syncRequestedRef:ref(false),syncForceRef:ref(false),pencilDiagnosticsRef:ref(null),deferredTransformFlushRef:ref(null),deferredTransformEntries:new Map(),deferredTransformTimer:null,deferredTransformFlushPromise:null,penTransformSpatialApiRef:ref(null),serializedObjectCacheRef:ref(new WeakMap()),objectRegistryRef:ref(new Map()),
   viewingArchiveRef:ref(false),transientStatusTimerRef:ref(null),backgroundRef:ref('blank'),
-  stageNotebookVisualOperations,prepareNotebookProjection,isBoardNotebook,notebookObjectIntersection,isBoardMedia,
+  ActiveSelection,util,NOTEBOOK_FIELDS,MEDIA_OBJECT_FIELDS,stageNotebookVisualOperations,prepareNotebookProjection,isBoardNotebook,notebookObjectIntersection,isBoardMedia,
   snapshotNotebookGesturePages,bindNotebookGestureTarget,consumeNotebookGesturePage,operationObjectIds,affectedOperationIds:operationObjectIds,applySerializedObjectPatch,applyNotebookOperation,createNotebookBoardController,createNotebookOutbox,randomToken,
   serializeObject:serialized,serializedCharSize:value=>JSON.stringify(value).length,splitDurableOperations:ops=>[ops],
   clamp:(value,min,max)=>Math.min(max,Math.max(min,value)),
@@ -86,20 +86,24 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
   loadCanvasJsonProgressively:(canvas,json)=>canvas.loadFromJSON(json),setCachedSnapshot:async(_id,record)=>savedCaches.push(record),pruneConfirmedActionsThrough:async()=>{},
   applyOpsToSnapshot:snapshot=>structuredClone(snapshot),
   syncFromServer:async()=>{errors.push(Error('unexpected full synchronization'));},
-  getObjectRecords:objects=>objects.map(object=>({object:serialized(object),zIndex:canvas.getObjects().indexOf(object)})),
+  getObjectRecords:objects=>objects.map(object=>({object:scope.serializeObject(object),zIndex:canvas.getObjects().indexOf(object)})),
  };
+ for(const name of ['isActiveSelectionObject','captureSerializedObjectTransform','patchSerializedObjectTransform','serializeObject'])scope[name]=globalFunction(name,scope);
  scope.isTextObject=globalFunction('isTextObject',scope);
  scope.isImageObject=globalFunction('isImageObject',scope);
  scope.applySharpRenderingPolicy=globalFunction('applySharpRenderingPolicy',scope);
+ scope.createLightweightTransformOp=globalFunction('createLightweightTransformOp',scope);
  scope.isNotebookControlledAction=globalFunction('isNotebookControlledAction',scope);
  scope.transformOperationEntries=globalFunction('transformOperationEntries',scope);
- for(const name of ['recordAction','rememberAuthoritativeOps','sendDurableOps','replayPendingActionsLocally','ensureNotebookController','applyRemoteOps','applyAuthoritativeSnapshot','queueNotebookMutation','notebookForObject'])scope[name]=callback(name,scope);
+ for(const name of ['recordAction','rememberAuthoritativeOps','sendDurableOps','sendLightweightTransforms','sendRecordUpserts','addImageFiles','replayPendingActionsLocally','ensureNotebookController','applyRemoteOps','applyAuthoritativeSnapshot','queueNotebookMutation','notebookForObject'])scope[name]=callback(name,scope);
  scope.notebookCommitBridgeRef.current=createNotebookCommitBridge({getController:()=>scope.notebookControllerRef.current,getRevision:()=>scope.revisionRef.current,setRevision:value=>scope.revisionRef.current=value,remember:scope.rememberAuthoritativeOps});
  scope.incrementalNotebookActions=createNotebookBoardActions({getCanvas:()=>canvas,getController:()=>scope.ensureNotebookController(),clientId,getRecords:scope.getObjectRecords,recordAction:scope.recordAction,
   acquireLease:scope.acquireLocalSelectionLease,ownsLease:scope.ownsSelectionLease,releaseLease:scope.releaseLocalSelectionLease,
   mutate:work=>{const previous=scope.applyingRemoteRef.current;scope.applyingRemoteRef.current=true;try{return work();}finally{scope.applyingRemoteRef.current=previous;}},
   onError:error=>errors.push(error)});
- for(const name of ['captureIntoNotebook','changeNotebookPage','saveNotebookText','eraseNotebookChildren','commitConditionalHistoryOps'])scope[name]=callback(name,scope);
+ for(const name of ['captureIntoNotebook','captureNotebookSelection','changeNotebookPage','saveNotebookText','eraseNotebookChildren','commitConditionalHistoryOps'])scope[name]=callback(name,scope);
+ for(const name of ['cacheLightweightTransformEntry','scheduleDeferredTransformFlush','flushDeferredTransformPersistence','queueDeferredTransformPersistence'])scope[name]=globalFunction(name,scope);
+ scope.deferredTransformFlushRef.current=scope.flushDeferredTransformPersistence;
  scope.commitAddedObject=globalFunction('commitAddedObject',scope);
  scope.recordForJustAddedObject=globalFunction('recordForJustAddedObject',scope);
  scope.markObject=callback('markObject',scope);

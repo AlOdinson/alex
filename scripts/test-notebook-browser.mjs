@@ -98,8 +98,19 @@ try{
  await page.evaluate(()=>window.toolbar().onUndo());
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===3);
  await page.evaluate(()=>window.toolbar().setTool('select'));
- // Static images are captured; PDF/GIF remain separate board objects.
- await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles({name:'square.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7l8AAAAASUVORK5CYII=','base64')});
+ // Initial static image insertion is independent; only its later drag captures it.
+ const imageBytes=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=80;c.height=80;c.getContext('2d').fillRect(0,0,80,80);return c.toDataURL().split(',')[1];});
+ await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles({name:'square.png',mimeType:'image/png',buffer:Buffer.from(imageBytes,'base64')});
+ await page.waitForFunction(()=>window.testCanvas.getObjects().some(o=>o.objectKind==='image'&&!o.pendingImage));
+ assert.equal(await page.evaluate(()=>window.notebook().getPageObjects().length),3);
+ const imagePoint=await page.evaluate(()=>{
+  const c=window.testCanvas,image=c.getObjects().find(o=>o.objectKind==='image'&&!o.pendingImage);c.setActiveObject(image);image.setCoords();
+  const point=image.getCenterPoint(),v=c.viewportTransform,r=c.upperCanvasEl.getBoundingClientRect();
+  return {x:r.left+point.x*v[0]+v[4],y:r.top+point.y*v[3]+v[5]};
+ });
+ await page.mouse.move(imagePoint.x,imagePoint.y);await page.mouse.down();
+ await page.waitForFunction(()=>window.testCanvas._currentTransform?.target?.lockMovementX===false);
+ await page.mouse.move(imagePoint.x+20,imagePoint.y-15,{steps:8});await page.mouse.up();
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===4);
  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles('scripts/fixtures/media/animated.gif');
  await page.waitForFunction(()=>window.testCanvas.getObjects().some(o=>o.mediaKind==='gif'));
