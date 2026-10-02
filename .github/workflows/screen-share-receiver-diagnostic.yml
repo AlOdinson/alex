@@ -1,0 +1,42 @@
+name: Screen-share receiver FPS diagnosis
+on:
+  push:
+    branches: ['diagnostic/screen-share-receiver-20261003']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: receiver-fps-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, engine: chromium}
+          - {os: macos-latest, engine: webkit}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    env:
+      VERIFICATION_BROWSER: ${{ matrix.engine }}
+      WEBKIT_LOCAL_ICE: '1'
+      VITE_NOTEBOOK_OPERATIONS_V1: 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - name: Measure actual screen-share hook modes and receiver pipeline
+        run: node scripts/run-receiver-diagnostic.mjs
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: receiver-fps-${{ matrix.engine }}
+          path: receiver-diagnostic-results/
+          retention-days: 7
