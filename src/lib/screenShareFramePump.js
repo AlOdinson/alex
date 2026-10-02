@@ -2,7 +2,7 @@
 // work. A single display-clock pump coalesces them and samples playback progress
 // independently, so a stalled requestVideoFrameCallback cannot pin a receiver to
 // 2 FPS. It has no dependency on the presenter's local Ultra checkbox.
-const CALLBACK_GRACE_MS = 100;
+const CALLBACK_GRACE_MS = 60;
 const DISPLAY_INTERVAL_MS = 1000 / 60;
 
 function playbackProgress(video) {
@@ -28,17 +28,22 @@ export function createScreenShareFramePump({ video, drawFrame, isVisible = () =>
   const cancel = typeof clock.cancelAnimationFrame === 'function'
     ? clock.cancelAnimationFrame.bind(clock) : clock.clearTimeout.bind(clock);
   let running = false, generation = 0, animationId = null, videoId = null;
-  let signal = 0, paintedSignal = 0, lastNotificationAt = -Infinity;
+  let signal = 0, paintedSignal = 0, lastNotificationAt = -Infinity, notifiedFrame = null;
   let lastProgress = null, lastWidth = 0, lastHeight = 0, wasVisible = false;
   const stats = { notifications: 0, presentations: 0, progressRecoveries: 0, errors: 0 };
 
   const armVideo = token => {
     if (!running || token !== generation || typeof video.requestVideoFrameCallback !== 'function') return;
     try {
-      videoId = video.requestVideoFrameCallback(() => {
+      videoId = video.requestVideoFrameCallback((_time, metadata) => {
         if (!running || token !== generation) return;
         videoId = null;
-        signal++; stats.notifications++; lastNotificationAt = now();
+        stats.notifications++;
+        const frame = Number(metadata?.presentedFrames);
+        if (!Number.isFinite(frame) || frame !== notifiedFrame) {
+          signal++; lastNotificationAt = now();
+          notifiedFrame = Number.isFinite(frame) ? frame : null;
+        }
         // Re-arm before ANY rendering. A burst never creates a render queue.
         armVideo(token);
       });
@@ -56,11 +61,14 @@ export function createScreenShareFramePump({ video, drawFrame, isVisible = () =>
       const progress = playbackProgress(video);
       const newProgress = progress && (progress.kind !== lastProgress?.kind || progress.value !== lastProgress?.value);
       const notified = signal !== paintedSignal;
-      const frameCounter = progress && progress.kind !== 'time';
+      // Presentation notifications and decoder counters are independent clocks.
+      // A fresh callback can make the final pixels available after decoding has
+      // stopped; a stale optional counter must never veto that notification.
+      // Prefer notifications while healthy, using progress only after a short
+      // gap. This also avoids staging the same frame twice in the normal case.
+      const recoveryReady = videoId == null || now() - lastNotificationAt >= CALLBACK_GRACE_MS;
       const needsFrame = resumed || video.videoWidth !== lastWidth || video.videoHeight !== lastHeight
-        || (frameCounter ? newProgress : notified || (
-          newProgress && (videoId == null || now() - lastNotificationAt >= CALLBACK_GRACE_MS)
-        ));
+        || notified || (newProgress && recoveryReady);
       if (!needsFrame) return;
       // Returning false (not ready/temporarily unavailable) must leave progress
       // unconsumed so the same newest frame is retried, even with no new signal.
@@ -91,7 +99,7 @@ export function createScreenShareFramePump({ video, drawFrame, isVisible = () =>
     start() {
       if (running) return; // loadedmetadata + playing must not double the loops.
       running = true; const token = ++generation;
-      signal = paintedSignal = 0; lastNotificationAt = -Infinity;
+      signal = paintedSignal = 0; lastNotificationAt = -Infinity; notifiedFrame = null;
       lastProgress = null; lastWidth = lastHeight = 0; wasVisible = false;
       armVideo(token); animationId = request(() => tick(token));
     },

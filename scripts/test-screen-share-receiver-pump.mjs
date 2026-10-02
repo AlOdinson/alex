@@ -16,11 +16,11 @@ test('video notification re-arms before rendering and coalesces a burst to the l
   h.step(); assert.equal(h.copies, before + 1);
   assert.deepEqual([...h.media.frameCanvas.getContext('2d').getImageData(0, 0, 1, 1).data], [51,238,68,255]);
 });
-test('unchanged decoder progress is not recopied, including a delayed callback for the same frame', async t => {
+test('unchanged progress and repeated notification identities do not repaint', async t => {
   const h = frameFixture(); t.after(h.close);
-  h.decode(); h.step(); const copies = h.copies;
+  h.decode(); h.signal(); h.step(); const copies = h.copies;
   for (let i = 0; i < 30; i++) { h.video.currentTime += .016; h.step(); }
-  h.signal(); h.step(); assert.equal(h.copies, copies, 'known unchanged frame must not be copied on a clock tick');
+  h.signal(); h.step(); assert.equal(h.copies, copies, 'a previously presented frame must not be recopied');
 });
 test('receiver without video callback API follows input frames, not sender-only local Ultra state', async t => {
   const h = frameFixture({ callback: false }); t.after(h.close); const before = h.copies;
@@ -74,4 +74,22 @@ test('decoder progress is not vetoed when the native displayed count stays const
   h.step(); const copies=h.copies;
   for (let i=0;i<60;i++) {received++; h.decode(); if(i%30===0)h.signal(); h.step();}
   assert.ok(h.copies-copies>=55, 'displayed minus dropped is not a decoder freshness marker');
+});
+
+test('a fresh presented-frame notification cannot be vetoed by an unchanged decoder counter', async t => {
+  const h = frameFixture(); t.after(h.close);
+  h.decode('#ff0000'); h.step(); const copies=h.copies;
+  // Decoder completion and availability of its pixels are different moments.
+  h.video.getContext('2d').fillStyle='#33ee44';
+  h.video.getContext('2d').fillRect(0,0,h.video.width,h.video.height);
+  h.signal({presentedFrames:99,mediaTime:h.video.currentTime}); h.step();
+  assert.equal(h.copies,copies+1,'must paint the final newly presented pixels even if decoding has stopped');
+  assert.deepEqual([...h.media.frameCanvas.getContext('2d').getImageData(0,0,1,1).data],[51,238,68,255]);
+});
+test('healthy frame notifications retain output if optional counters freeze', async t => {
+  const h=frameFixture(); t.after(h.close);
+  h.video.getVideoPlaybackQuality=()=>({totalVideoFrames:2,droppedVideoFrames:0});
+  h.step(); const copies=h.copies;
+  for(let i=0;i<12;i++){h.decode();h.signal({presentedFrames:100+i});h.step();}
+  assert.equal(h.copies-copies,12);
 });
