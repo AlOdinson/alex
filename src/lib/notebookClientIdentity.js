@@ -18,7 +18,9 @@ export async function acquireNotebookClientIdentity({ boardId, storage = globalT
     let resolveReady, rejectReady;
     const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
     const request = Promise.resolve().then(() => locks.request(`alex:notebook-actor:${candidate}`, {
-      mode: 'exclusive', ifAvailable: true, ...(signal ? { signal } : {}),
+      // Web Locks forbids signal + ifAvailable. This request never queues;
+      // cancellation is handled before acquisition and by the lifetime below.
+      mode: 'exclusive', ifAvailable: true,
     }, async lock => {
       if (!lock) { resolveReady(null); return; }
       let finish, released = false;
