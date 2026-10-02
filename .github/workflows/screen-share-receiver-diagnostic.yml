@@ -32,20 +32,11 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
-      - name: Resolve diagnostic browser import through Vite
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('scripts/run-receiver-fullboard-diagnostic.mjs')
-          s=p.read_text()
-          assert s.count("import('fabric')")==1
-          p.write_text(s.replace("import('fabric')", "import('/alex/node_modules/.vite/deps/fabric.js')"))
-          PY
-      - name: Measure full Board, actual mode buttons, filled notebook and selection
-        run: node scripts/run-receiver-fullboard-diagnostic.mjs
+      - name: Empty receiving board, native reference, decode versus canvas and labelled probes
+        run: node scripts/run-empty-receiver-audit.mjs
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: receiver-fps-${{ matrix.engine }}
+          name: empty-receiver-fps-${{ matrix.engine }}
           path: receiver-diagnostic-results/
           retention-days: 7
