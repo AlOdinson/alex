@@ -1,0 +1,208 @@
+diff --git a/scripts/test-notebook-drop-browser.mjs b/scripts/test-notebook-drop-browser.mjs
+index 0b06220..e2c59bd 100644
+--- a/scripts/test-notebook-drop-browser.mjs
++++ b/scripts/test-notebook-drop-browser.mjs
+@@ -81,36 +81,6 @@ try {
+   await drag(point,160,0);
+   await page.waitForFunction(()=>window.book().getPageObjects().length===3);
+   assert.equal(await page.evaluate(()=>window.c.getObjects().filter(o=>String(o.boardObjectId).startsWith('drop-source')).length),0);
+-  await page.evaluate(() => {
+-    window.historyTrace = [];
+-    const trace = (kind, data) => window.historyTrace.push({kind, time:performance.now(), ...JSON.parse(JSON.stringify(data))});
+-    let f=document.querySelector('.toolbar-shell');f=f[Object.keys(f).find(k=>k.startsWith('__reactFiber'))];while(f&&f.type?.name!=='BoardWorkspace')f=f.return;
+-    for(let h=f.memoizedState;h;h=h.next){
+-      const ref=h.memoizedState, value=ref?.current;
+-      if(value?.enqueue&&value?.getConfirmedState){
+-        window.historyController=value;
+-        for(const name of ['enqueue','whenPainted']){const original=value[name];value[name]=(...args)=>{
+-          trace(name+' start',{args});const result=original(...args);
+-          Promise.resolve(result?.settled??result).then(result=>trace(name+' end',{result}),error=>trace(name+' error',{message:error.message}));return result;
+-        };}
+-      }
+-      if(value?.sendOps&&value?.getNotebookCheckpoint){
+-        window.historyRealtime=value;const original=value.sendOps;value.sendOps=(...args)=>{
+-          trace('sendOps start',{args});return original(...args).then(result=>{trace('sendOps end',{result});return result;});
+-        };
+-      }
+-      if(value?.ids&&'expiresAt' in value&&'generation' in value)window.historyLeaseRef=ref;
+-      if(typeof value?.apply==='function'&&typeof value?.prepare==='function'){
+-        const wrap = handlers => ({...handlers, apply:async(action,direction)=>{
+-          trace('apply start',{direction,action});
+-          try {const result=await handlers.apply(action,direction);trace('apply end',{direction,action,result});return result;}
+-          catch(error){trace('apply error',{direction,message:error.message});throw error;}
+-        }});
+-        let current=wrap(value);Object.defineProperty(ref,'current',{configurable:true,get:()=>current,set:value=>{current=wrap(value);}});
+-      }
+-    }
+-    for(const kind of ['pointerdown','pointerup','click'])window.addEventListener(kind,e=>trace(kind,{target:e.target?.closest?.('button')?.title??e.target?.className}),true);
+-  });
+   await page.getByRole('button',{name:/Отменить —/}).click();
+   await page.waitForFunction(()=>window.book().getPageObjects().length===1&&window.c.getObjects().filter(o=>String(o.boardObjectId).startsWith('drop-source')).length===2);
+   await page.getByRole('button',{name:/Вернуть —/}).click();
+@@ -118,18 +88,10 @@ try {
+   results.push({name:'native multi-selection drop, one undo and redo',passed:true});
+   assert.deepEqual(errors,[]);
+ } catch(error) {
+-  await page.evaluate(async () => {
+-    window.historyFailureDetail = await Promise.race([
+-      window.historyController?.flush().then(() => ({flush:'complete'}), error => ({flush:'error',message:error.message,code:error.code,stack:error.stack})),
+-      new Promise(resolve => setTimeout(() => resolve({flush:'pending'}), 20)),
+-    ]);
+-    let f=document.querySelector('.toolbar-shell');f=f[Object.keys(f).find(k=>k.startsWith('__reactFiber'))];while(f&&f.type?.name!=='BoardWorkspace')f=f.return;
+-    window.historyPrimitiveState=[];for(let h=f.memoizedState;h;h=h.next)if(typeof h.memoizedState==='string')window.historyPrimitiveState.push(h.memoizedState);
+-  }).catch(() => {});
+   await mkdir('notebook-drop-results',{recursive:true});
+   await page.screenshot({path:`notebook-drop-results/${engine}-failure.png`}).catch(()=>{});
+   await writeFile(`notebook-drop-results/${engine}-failure.json`,JSON.stringify({message:error.message,stack:error.stack,errors,results,diagnostics,
+-    state:await page.evaluate(()=>({text:document.body.innerText,historyFailure:window.historyFailureDetail,uiState:window.historyPrimitiveState,historyTrace:window.historyTrace,queue:window.historyController?.exportPending(),confirmed:window.historyController?.getConfirmedState(),checkpoint:window.historyRealtime?.getNotebookCheckpoint(),lease:window.historyLeaseRef?.current,book:window.book?.()?.toObject(['boardObjectId']),transform:Boolean(window.c?._currentTransform),objects:window.c?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,left:o.left,top:o.top,group:o.group?.type,rect:o.getBoundingRect()}))})).catch(()=>null)},null,2));
++    state:await page.evaluate(()=>({text:document.body.innerText,book:window.book?.()?.toObject(['boardObjectId']),transform:Boolean(window.c?._currentTransform),objects:window.c?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,left:o.left,top:o.top,group:o.group?.type,rect:o.getBoundingRect()}))})).catch(()=>null)},null,2));
+   throw error;
+ } finally {
+   await mkdir('notebook-drop-results',{recursive:true});
+diff --git a/scripts/test-notebook-lease.mjs b/scripts/test-notebook-lease.mjs
+index fa1527b..b9369cb 100644
+--- a/scripts/test-notebook-lease.mjs
++++ b/scripts/test-notebook-lease.mjs
+@@ -25,3 +25,86 @@ test('rejected notebook publication reconciles instead of reporting saved', asyn
+  await assert.rejects(callback('commitNotebookOps',scope)([{type:'patch',id:'book',patch:{}}]),/другим участником/);
+  assert.equal(repairs,1);
+ });
++
++// Use the actual UI lease callback and actual teacher lock authority. Notebook
++// publication must not confuse display work or superseded selection with denial.
++async function pendingLeaseFixture() {
++  const { default: vm } = await import('node:vm');
++  const { createTeacherObjectLockAuthority } = await import('../src/lib/teacherObjectLocks.js');
++  const { operationObjectIds } = await import('../src/lib/operationProtocol.js');
++  const authority = createTeacherObjectLockAuthority();
++  const book = { boardObjectId: 'book' };
++  const other = { boardObjectId: 'other' };
++  const canvas = { getActiveObject: () => null, requestRenderAll() {} };
++  const controller = { getConfirmedState: () => ({ snapshot: { canvas: { objects: [book, other] } } }) };
++  const replies = [], requests = [], ref = current => ({ current }), noop = () => {};
++  const scope = { useCallback: fn => fn, operationObjectIds, boardId: 'board', boardKey: 'key',
++    clientIdRef: ref('teacher'), canEditRef: ref(true), applyingRemoteRef: ref(false), applyingHistoryRef: ref(false),
++    fabricCanvasRef: ref(canvas), notebookControllerRef: ref(controller), selectionLeaseRef: ref({ generation: 0, ids: [], state: 'none', expiresAt: 0 }),
++    selectionLeaseInteractionStateRef: ref(new Map()), localLockIdsRef: ref([]), remoteLocksRef: ref(new Map()),
++    transientStatusTimerRef: ref(null), realtimeRef: ref({ sendLock: noop }), window: { clearTimeout: noop, setTimeout: noop },
++    flattenTarget: value => Array.isArray(value) ? value : value ? [value] : [], isBoardScreenShareObject: () => false,
++    registeredObjectsById: id => [book, other].filter(o => o.boardObjectId === id),
++    randomToken: () => `pending-lease-${requests.length}`, console: { warn: noop },
++    applyObjectInteractivityToObjects: noop, updateSelectionState: noop, updateSelectionStyleState: noop, setRemoteLocks: noop, setSaveStatus: noop, setSyncTone: noop,
++    acquireBoardObjectLocks: (_board, _key, clientId, lockToken, objectIds) => {
++      requests.push(objectIds); const result = authority.acquire({ clientId, lockToken, objectIds });
++      return new Promise((resolve, reject) => replies.push({ resolve: () => resolve(result), reject }));
++    },
++    releaseBoardObjectLocks: async (_board, _key, clientId, lockToken) => authority.release({ clientId, lockToken }),
++  };
++  const start = source.indexOf('  const selectionObjectIds = useCallback(');
++  const end = source.indexOf('  const getLiveTransformObjects = useCallback(', start);
++  const methodStart = source.indexOf('    async leaseForOperations(ops) {');
++  const methodEnd = source.indexOf('\n    },\n  };', methodStart) + '\n    }'.length;
++  assert.ok(start >= 0 && end > start && methodStart > end && methodEnd > methodStart);
++  vm.runInNewContext(`${source.slice(start, end)}\nglobalThis.api = { acquireLocalSelectionLease, releaseLocalSelectionLease, ${source.slice(methodStart, methodEnd)} };`, scope);
++  return { scope, api: scope.api, book, other, requests, authority,
++    ops: [{ type: 'notebook', version: 1, id: 'book', pageNumber: 1, changes: [{ type: 'insert', object: { boardObjectId: 'ink', type: 'path' } }] }],
++    async reply({ reject = false } = {}) { assert.ok(replies.length, 'real authority request pending'); const next = replies.shift(); reject ? next.reject(Error('network unavailable')) : next.resolve(); await new Promise(setImmediate); },
++  };
++}
++
++for (const phase of ['applyingRemoteRef', 'applyingHistoryRef']) {
++  test(`pending notebook publication remains authorized during ${phase}`, async () => {
++    const f = await pendingLeaseFixture(); f.scope[phase].current = true;
++    assert.equal(await f.api.acquireLocalSelectionLease(f.book), false, 'new UI gestures still blocked during display/history work');
++    const pending = f.api.leaseForOperations(f.ops);
++    assert.equal(f.requests.length, 1, 'previously queued edit must request actual authority permission');
++    await f.reply(); assert.equal(await pending, true);
++  });
++}
++
++test('superseded notebook lease waits for the newer covering grant instead of stopping its queue', async () => {
++  const f = await pendingLeaseFixture(); const pending = f.api.leaseForOperations(f.ops);
++  const newer = f.api.acquireLocalSelectionLease([f.book, f.other]);
++  await f.reply(); await f.reply(); assert.equal(await newer, true); assert.equal(await pending, true);
++  assert.equal(f.requests.length, 2, 'reuse newer superset, do not displace it with a redundant request');
++});
++
++test('selection clear while a notebook permission request is pending does not discard the queued intent', async () => {
++  const f = await pendingLeaseFixture(); const pending = f.api.leaseForOperations(f.ops);
++  f.api.releaseLocalSelectionLease(f.book); await f.reply();
++  assert.equal(f.requests.length, 2, 'reacquire once after local generation change');
++  await f.reply(); assert.equal(await pending, true);
++});
++
++test('real foreign notebook lock is still denied without retries', async () => {
++  const f = await pendingLeaseFixture(); f.authority.acquire({ clientId: 'student', lockToken: 'foreign-lock', objectIds: ['book'] });
++  const pending = f.api.leaseForOperations(f.ops); await f.reply(); assert.equal(await pending, false); assert.equal(f.requests.length, 1);
++});
++
++test('network failure is not retried as a local selection change', async () => {
++  const f = await pendingLeaseFixture(); const pending = f.api.leaseForOperations(f.ops);
++  await f.reply({ reject: true }); assert.equal(await pending, false); assert.equal(f.requests.length, 1);
++});
++
++test('lost editing permission rejects even a previously granted notebook lease', async () => {
++  const f = await pendingLeaseFixture(); const pending = f.api.leaseForOperations(f.ops); await f.reply(); assert.equal(await pending, true);
++  f.scope.canEditRef.current = false; assert.equal(await f.api.leaseForOperations(f.ops), false);
++});
++
++test('a pending notebook grant never publishes to a replacement canvas', async () => {
++  const f = await pendingLeaseFixture(); const pending = f.api.leaseForOperations(f.ops);
++  f.scope.fabricCanvasRef.current = { getActiveObject: () => null, requestRenderAll() {} }; await f.reply(); assert.equal(await pending, false);
++});
+diff --git a/src/components/Board.jsx b/src/components/Board.jsx
+index 1e2b889..6b90e70 100644
+--- a/src/components/Board.jsx
++++ b/src/components/Board.jsx
+@@ -7315,8 +7315,11 @@ function BoardWorkspace({
+     }
+   }, [boardId, boardKey, setSelectionLeaseInteraction]);
+ 
+-  const acquireLocalSelectionLease = useCallback((target) => {
+-    if (!target || !canEditRef.current || applyingRemoteRef.current || applyingHistoryRef.current) {
++  const acquireLocalSelectionLease = useCallback((target, { forPendingOperation = false } = {}) => {
++    // Projection/history blocks NEW UI gestures, not the authority permission
++    // check for an already queued durable edit. Both still require a real grant.
++    if (!target || !canEditRef.current
++      || (!forPendingOperation && (applyingRemoteRef.current || applyingHistoryRef.current))) {
+       return Promise.resolve(false);
+     }
+     // ShareScreen is a realtime-only media object, not a durable board object.
+@@ -8846,13 +8849,33 @@ function BoardWorkspace({
+     editText: editNotebookText, erase: eraseNotebookChildren, ensure: ensureNotebookController,
+     refreshControls() { updatePdfControls(); updateSelectionState(); },
+     async leaseForOperations(ops) {
+-      const confirmed = new Set((notebookControllerRef.current?.getConfirmedState().snapshot.canvas.objects ?? [])
++      const controller = notebookControllerRef.current, canvas = fabricCanvasRef.current;
++      const current = () => canEditRef.current && canvas === fabricCanvasRef.current
++        && controller === notebookControllerRef.current;
++      if (!current()) return false;
++      const confirmed = new Set((controller?.getConfirmedState().snapshot.canvas.objects ?? [])
+         .map(object => String(object.boardObjectId)));
+       const ids = [...operationObjectIds(ops)].filter(id => confirmed.has(id));
+       if (!ids.length) return true;
+-      const lease = selectionLeaseRef.current;
+-      if (lease.state === 'granted' && lease.expiresAt > Date.now() && ids.every(id => lease.ids.includes(id))) return true;
+-      return acquireLocalSelectionLease(ids.map(id => registeredObjectsById(id)[0] ?? { boardObjectId: id }));
++      const covers = lease => ids.every(id => lease.ids.includes(id));
++      // A selection change may supersede a request while its reply is in flight.
++      // Reuse the newer covering grant/promise; only a LOCAL generation change
++      // permits another attempt. Real denial/network failure is not retried.
++      for (let attempt = 0; attempt < 4 && current(); attempt++) {
++        const lease = selectionLeaseRef.current;
++        if (lease.state === 'granted' && lease.expiresAt > Date.now() && covers(lease)) return true;
++        const pending = lease.state === 'pending' && covers(lease)
++          ? lease.promise
++          : acquireLocalSelectionLease(ids.map(id => registeredObjectsById(id)[0] ?? { boardObjectId: id }),
++            { forPendingOperation: true });
++        const generation = selectionLeaseRef.current.generation;
++        await pending;
++        if (!current()) return false;
++        const next = selectionLeaseRef.current;
++        if (next.state === 'granted' && next.expiresAt > Date.now() && covers(next)) return true;
++        if (next.generation === generation) return false;
++      }
++      return false;
+     },
+   };
+ 
