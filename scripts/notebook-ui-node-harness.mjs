@@ -42,6 +42,13 @@ function callback(name,scope) {
  return new Function('scope',`with(scope){return (${source.slice(expression.start,expression.end)});}`)(scope);
 }
 function globalFunction(name,scope){const node=nodes.find(node=>node.type==='FunctionDeclaration'&&node.id?.name===name);if(!node)throw Error(`Missing Board function ${name}`);return new Function('scope',`with(scope){${source.slice(node.start,node.end)};return ${name};}`)(scope);}
+export function canvasListener(event, scope) {
+ const node=nodes.find(node=>node.type==='CallExpression'&&node.callee?.object?.name==='canvas'&&node.callee?.property?.name==='on'
+  &&node.arguments[0]?.value===event&&node.arguments[1]?.type==='ArrowFunctionExpression');
+ if(!node)throw new Error(`Missing Canvas listener ${event}`);
+ const expression=node.arguments[1];
+ return new Function('scope',`with(scope){return (${source.slice(expression.start,expression.end)});}`)(scope);
+}
 function onCommit(scope){const node=nodes.find(node=>node.type==='Property'&&node.method&&node.key?.name==='onCommit');if(!node)throw Error('Missing Board onCommit');return new Function('scope',`with(scope){return ({${source.slice(node.start,node.end)}}).onCommit;}`)(scope);}
 export async function authorityFixture(objects){
  const outcomes=new Map(),commits=[];
@@ -60,7 +67,7 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
   fabricCanvasRef:ref(canvas),boardReadyRef:ref(true),clientIdRef:ref(clientId),canEditRef:ref(true),activeToolRef:ref('select'),
   revisionRef:ref(authority.getRevision()),authoritativeApplyQueueRef:ref(Promise.resolve()),applyingRemoteRef:ref(false),applyingHistoryRef:ref(false),
   notebookControllerRef:ref(null),notebookControllerInitRef:ref(null),notebookControllerEpochRef:ref(0),notebookGapRevisionRef:ref(null),notebookCommitBridgeRef:ref(null),notebookHandlersRef:ref({}),
-  notebookQueueRef:ref(Promise.resolve()),notebookMutationActiveRef:ref(false),notebookTextEditRef:ref(null),
+  notebookQueueRef:ref(Promise.resolve()),notebookMutationActiveRef:ref(false),notebookTextEditRef:ref(null),notebookPageTextExitRef:ref(new WeakSet()),
   historyGenerationRef:ref(0),undoStackRef:ref(history),redoStackRef:ref([]),localDeletionMutationIdsRef:ref(new Map()),
   authoritativeObjectStatesRef:ref(new Map()),authoritativeSelectionTransactionsRef:ref(new Map()),authoritativeBackgroundStateRef:ref({revision:0,background:'blank'}),
   remoteSelectionTransactionsRef:ref(new Map()),remoteDrawSessionsRef:ref(new Map()),remoteTransformSessionsRef:ref(new Map()),remotePreviewTokensRef:ref(new Map()),remotePreviewPendingRef:ref({records:new Map()}),remoteDeletedObjectIdsRef:ref(new Map()),

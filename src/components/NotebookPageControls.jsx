@@ -1,27 +1,56 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { createNotebookNavigationTap, installNotebookNavigationInput } from '../lib/notebookNavigation.js';
 import { useLanguage } from './LanguageProvider.jsx';
 
 const stopPropagation = (event) => event.stopPropagation();
 
-export default function NotebookPageControls({ pageNumber = 1, canEdit, busy = false, position, onPageChange, onEditText }) {
+function NotebookArrow({ label, disabled, direction, onActivate, inputRef }) {
+  const latest = useRef(null);
+  latest.current = { disabled, onActivate };
+  const tap = useMemo(() => createNotebookNavigationTap({
+    canActivate: () => !latest.current.disabled && (inputRef.current?.allowsActivation() ?? false),
+    activate: () => latest.current.onActivate(),
+  }), [inputRef]);
+  return <button type="button" title={label} aria-label={label} disabled={disabled}
+    onPointerDown={tap.down} onPointerMove={tap.move} onPointerUp={tap.up}
+    onPointerCancel={tap.cancel} onLostPointerCapture={tap.cancel} onClick={tap.click}>
+    {direction < 0 ? '‹' : '›'}
+  </button>;
+}
+
+export default function NotebookPageControls({ notebooks = [], canEdit, busy = false, onPageChange }) {
   const { ui } = useLanguage();
+  const layerRef = useRef(null), inputRef = useRef(null);
+  useEffect(() => {
+    const input = installNotebookNavigationInput(layerRef.current);
+    inputRef.current = input;
+    return () => { input.dispose(); if (inputRef.current === input) inputRef.current = null; };
+  }, []);
   const disabled = !canEdit || busy;
   return (
-    <div className="notebook-page-controls" style={position} role="group" aria-label={ui('Страницы блокнота')}
-      onPointerDown={stopPropagation} onPointerUp={stopPropagation} onPointerMove={stopPropagation}
-      onTouchStart={stopPropagation} onTouchEnd={stopPropagation} onClick={stopPropagation}
-      onDoubleClick={stopPropagation} onKeyDown={stopPropagation}>
-      <div className="notebook-page-buttons">
-        {pageNumber > 1 ? (
-          <button type="button" title={ui('Предыдущая страница')} aria-label={ui('Предыдущая страница')}
-            disabled={disabled} onClick={() => onPageChange(pageNumber - 1)}>‹</button>
-        ) : <span className="notebook-page-arrow-space" aria-hidden="true" />}
-        <span className="notebook-page-number" aria-live="polite" aria-atomic="true">{pageNumber}</span>
-        <button type="button" title={ui('Следующая страница')} aria-label={ui('Следующая страница')}
-          disabled={disabled} onClick={() => onPageChange(pageNumber + 1)}>›</button>
-      </div>
-      {onEditText && <button type="button" className="notebook-edit-text" disabled={disabled} onClick={onEditText}>{ui('Редактировать текст')}</button>}
+    <div className="notebook-navigation-layer" ref={layerRef}>
+      {notebooks.map(({ id, pageNumber, position }) => (
+        <div key={id} className="notebook-page-controls" data-notebook-id={id} style={position}
+          role="group" aria-label={ui('Страницы блокнота')}
+          onPointerDown={stopPropagation} onPointerUp={stopPropagation}
+          onMouseDown={stopPropagation} onMouseUp={stopPropagation}
+          onTouchStart={stopPropagation} onTouchEnd={stopPropagation}
+          onClick={stopPropagation} onDoubleClick={stopPropagation} onKeyDown={stopPropagation}>
+          <div className="notebook-nav-island notebook-nav-previous">
+            <NotebookArrow label={ui('Предыдущая страница')} disabled={disabled || pageNumber <= 1} direction={-1}
+              inputRef={inputRef} onActivate={() => onPageChange(-1, id, true)} />
+          </div>
+          <span className="notebook-nav-island notebook-page-number" aria-live="polite" aria-atomic="true"
+            onPointerDown={event => { event.preventDefault(); event.stopPropagation(); }}>
+            {pageNumber}
+          </span>
+          <div className="notebook-nav-island notebook-nav-next">
+            <NotebookArrow label={ui('Следующая страница')} disabled={disabled} direction={1}
+              inputRef={inputRef} onActivate={() => onPageChange(1, id, true)} />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

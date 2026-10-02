@@ -46,6 +46,9 @@ export function holdNotebookTransformProjection(controller, { eventTarget = glob
     released = true; detach(); clearTimeout(releaseTimer); controller.resumeProjection(); onRelease();
   };
   function end(event) {
+    // Window capture also sees element blur when a toolbar button gives focus
+    // to the canvas. That must not retire the newly started native transform.
+    if (event.type === 'blur' && event.target !== eventTarget) return;
     if (ended || released || (event.type.startsWith('pointer') && event.pointerId !== pointerId)) return;
     ended = true; detach();
     // A browser can flush microtasks between native listeners. Yield a task,
