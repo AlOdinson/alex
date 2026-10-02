@@ -193,17 +193,24 @@ try {
     const selectAll = async () => {
       await owner.getByRole('button', { name: 'Выделение', exact: true }).click();
       await owner.evaluate(async (url) => (await import(url)).selectTestObjects(window.__boundedRefs().canvas), new URL('scripts/bounded-verification-browser-fixture.js', home).href);
-      await wait('group controls ready', () => owner.getByRole('button', { name: 'Удалить выбранное', exact: true }).isEnabled());
+      await wait('group controls ready', () => owner.getByRole('button', { name: 'Копировать', exact: true }).isEnabled());
     };
     await selectAll();
-    // The similarly named .selection-floating-proxy is the COLOR TOOLBAR,
-    // not the selection's drag target. Drag the actual Fabric selection center.
+    // Exact pointerdown hit testing intentionally rejects transparent gaps in
+    // a selection. Its bounding-box center lies between these repeated strokes.
+    // Start on actual ink near the center, not the floating color toolbar or a
+    // blank point. Keep native pointer input and all permission checks intact.
     const center = await owner.evaluate(() => {
       const canvas = window.__boundedRefs().canvas;
-      const point = canvas.getActiveObject().getCenterPoint();
+      const active = canvas.getActiveObject();
+      const midpoint = active.getCenterPoint();
+      const point = active.getObjects().map(object => object.getCenterPoint())
+        .sort((a, b) => a.distanceFrom(midpoint) - b.distanceFrom(midpoint))[0];
       const v = canvas.viewportTransform; const rect = canvas.upperCanvasEl.getBoundingClientRect();
-      return { x: rect.left + point.x * v[0] + point.y * v[2] + v[4],
-        y: rect.top + point.x * v[1] + point.y * v[3] + v[5] };
+      const x = point.x * v[0] + point.y * v[2] + v[4];
+      const y = point.x * v[1] + point.y * v[3] + v[5];
+      if (canvas.isTargetTransparent(active, x, y)) throw new Error('Group drag must start on visible ink');
+      return { x: rect.left + x, y: rect.top + y };
     });
     // Also exercise an old missing target: its incoming transform must not block
     // the Canvas revision, and the bounded repair must restore the moved object.
@@ -214,6 +221,12 @@ try {
       canvas.getObjects().filter((o) => o.boardObjectId === id).forEach((o) => canvas.remove(o));
     }, { id: first, module: replicaModule });
     await owner.mouse.move(center.x, center.y); await owner.mouse.down();
+    await wait('native group drag has an editable target', () => owner.evaluate(() => {
+      const canvas = window.__boundedRefs().canvas;
+      const active = canvas.getActiveObject();
+      return active && canvas._currentTransform?.target === active
+        && !active.lockMovementX && !active.lockMovementY;
+    }));
     await owner.mouse.move(center.x + 35, center.y + 25, { steps: 8 }); await owner.mouse.up();
     await owner.evaluate(() => window.__boundedRefs().canvas.discardActiveObject());
     await wait('group move reaches both devices', async () => {
@@ -226,7 +239,9 @@ try {
     await wait('one undo reverses all 300 moves', async () => samePositions(beforeMove, await positions(owner)) && samePositions(beforeMove, await positions(student)), 90000);
     await owner.getByRole('button', { name: /Вернуть —/ }).click();
     await wait('one redo reapplies all 300 moves', async () => samePositions(afterMove, await positions(owner)) && samePositions(afterMove, await positions(student)), 90000);
-    await selectAll(); await owner.getByRole('button', { name: 'Удалить выбранное', exact: true }).click();
+    // The current toolbar has no selection-delete button. Use its supported
+    // keyboard command while keeping the real group/history handlers intact.
+    await selectAll(); await owner.keyboard.press('Delete');
     await wait('300-object deletion converges', async () => await count(owner) === 0 && await count(student) === 0, 90000);
     await owner.getByRole('button', { name: /Отменить —/ }).click();
     await wait('one undo restores deleted group', async () => samePositions(afterMove, await positions(owner)) && samePositions(afterMove, await positions(student)), 90000);
@@ -235,7 +250,7 @@ try {
       const state = window.__boundedRefs().realtime.getVerificationStats();
       return !state.active && !state.pendingIds && !state.sweepPending;
     }), 90000);
-    results.push({ name: '300-object real group move, one undo/redo, delete and restore', passed: true });
+    results.push({ name: '300-object real group move, one undo/redo, delete and restore', deletionInput: 'keyboard-delete', passed: true });
     await owner.reload(); await enter(owner, 'Synthetic owner');
     await wait('new board opt-in survives reload', () => owner.evaluate(() => window.__boundedRefs().realtime.getVerificationStats().enabled));
     results.push({ name: 'new-board capability survives reload', passed: true });

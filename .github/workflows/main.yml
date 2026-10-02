@@ -29,6 +29,8 @@ jobs:
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
       - run: npm run test:student:storage
+      - name: Storage deadlines, notebook verification and late-join regressions
+        run: node --test scripts/test-bounded*.mjs scripts/test-late-join-*.mjs scripts/test-board-creation-storage.mjs
       - run: npm run test:notebook
       - run: npm run test:notebook:operations-performance
       - run: npm run test:media

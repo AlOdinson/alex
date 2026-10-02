@@ -243,7 +243,11 @@ async function run(ownerIndex) {
       const rotated = await converge(pages, 1, `${profile.name} rotation`);
       assert.notDeepEqual(rotated, snapshots.at(-1)); snapshots.push(rotated); checks++;
       head = await revision(owner);
-      await button(page, 'Удалить выбранное', profile);
+      // Selection deletion is a keyboard command in the current toolbar.
+      // Exercise the real input handler (including an external keyboard for
+      // touch profiles), not a removed button or an internal delete callback.
+      await page.bringToFront();
+      await page.keyboard.press('Delete');
       await wait('delete durable', async () => await revision(owner) > head);
       snapshots.push(await converge(pages, 0, `${profile.name} delete`)); checks++;
       for (let cycle = 0; cycle < 3; cycle++) {
@@ -269,7 +273,7 @@ async function run(ownerIndex) {
       console.log(JSON.stringify({ engine: ENGINE, owner: profiles[ownerIndex].name, actor: profile.name, checks, passed: true }));
     }
     assert.deepEqual(errors, [], 'unexpected browser runtime errors');
-    results.push({ transport: process.env.HISTORY_TURN_PASSWORD ? 'ci-loopback-turn' : 'production-default-ice', engine: ENGINE, owner: profiles[ownerIndex].name, participants: profiles.map((p) => p.name), checks, passed: true });
+    results.push({ transport: process.env.HISTORY_TURN_PASSWORD ? 'ci-loopback-turn' : 'production-default-ice', engine: ENGINE, owner: profiles[ownerIndex].name, participants: profiles.map((p) => p.name), deletionInput: 'keyboard-delete', checks, passed: true });
   } catch (error) {
     fs.writeFileSync(`history-e2e-results/${ENGINE}-failure.json`, JSON.stringify({ ownerIndex, message: error.message, stack: error.stack, errors }, null, 2));
     for (const [index, page] of pages.entries()) {

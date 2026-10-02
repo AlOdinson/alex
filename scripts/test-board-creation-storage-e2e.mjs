@@ -90,9 +90,16 @@ try {
     const store = await import(url);
     return store.createAuthorityBoard({
       boardId: 'existing-sentinel', ownerKey: 'existing-owner',
+      notebookTombstones: { 'deleted-child': { clientId: 'owner', mutationId: 'keep-deletion' } },
       snapshot: { version: 2, background: 'grid', canvas: { objects: [{ type: 'rect', boardObjectId: 'keep-me', left: 42 }] } },
     });
   }, storeModule);
+  // Compare the same public read APIs before and after rollback. Library rows
+  // deliberately omit child tombstones; a full board read must preserve them.
+  const sentinelLibrary = await records(timeoutPage);
+  const readSentinel = () => timeoutPage.evaluate(async (url) =>
+    (await import(url)).getAuthorityBoard('existing-sentinel'), storeModule);
+  assert.deepEqual(await readSentinel(), sentinel, 'sentinel was not fully persisted');
   await timeoutPage.evaluate(() => {
     const originalAdd = IDBObjectStore.prototype.add;
     const originalTimer = window.setTimeout;
@@ -117,7 +124,8 @@ try {
   await timeoutPage.evaluate(() => window.restoreStorage());
   const afterTimeout = await records(timeoutPage);
   assert.equal(afterTimeout.length, 1, 'timed-out add must have been rolled back');
-  assert.deepEqual(afterTimeout[0], sentinel, 'existing board changed during rollback');
+  assert.deepEqual(afterTimeout, sentinelLibrary, 'existing library changed during rollback');
+  assert.deepEqual(await readSentinel(), sentinel, 'existing snapshot or child tombstones changed during rollback');
   await createAndWait(timeoutPage);
   assert.equal((await records(timeoutPage)).length, 2);
   results.push({ engine, nativeTransactionRollback: 'passed', existingBoardPreserved: 'passed', retryAfterTimeout: 'passed' });
