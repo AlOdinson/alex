@@ -1,0 +1,40 @@
+--- a/scripts/test-selection-lease-transform.mjs
++++ b/scripts/test-selection-lease-transform.mjs
+@@ -5,2 +5,3 @@
+ import { createTeacherObjectLockAuthority } from '../src/lib/teacherObjectLocks.js';
++import { holdNotebookTransformProjection } from '../src/lib/notebookBoardActions.js';
+ 
+@@ -20,3 +21,3 @@
+ 
+-function fixture() {
++function fixture({ notebook = false } = {}) {
+   let sequence = 0;
+@@ -30,3 +31,3 @@
+   };
+-  const state = { active: target, starts: 0, calls: 0, requests: 0, statuses: [] };
++  const state = { active: target, starts: 0, calls: 0, requests: 0, statuses: [], projectionDepth: 0 };
+   const handlers = new Map();
+@@ -49,2 +50,8 @@
+     useCallback: (fn) => fn,
++    notebookRuntimeEnabled: notebook, holdNotebookTransformProjection,
++    notebookControllerRef: ref(notebook ? {
++      suspendProjection() { state.projectionDepth++; },
++      resumeProjection() { state.projectionDepth--; },
++    } : null),
++    notebookQueueRef: ref(Promise.resolve()),
+     flattenTarget: (object) => object ? [object] : [],
+@@ -248 +255,14 @@
+ });
++
++
++test('actual Board native transform holds notebook projection until its release', async () => {
++  const f = fixture({ notebook: true });
++  const gesture = f.gesture();
++  assert.equal(f.state.projectionDepth, 1);
++  await f.reply();
++  assert.equal(gesture.move(), true);
++  f.endPointer('pointerup');
++  await new Promise(setImmediate);
++  assert.equal(f.state.projectionDepth, 0);
++  assert.equal(f.listenerCount(), 0);
++});
