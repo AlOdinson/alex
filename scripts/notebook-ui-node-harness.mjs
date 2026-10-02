@@ -35,13 +35,13 @@ function visit(node){if(!node||typeof node!=='object')return;if(node.type)nodes.
   if(Array.isArray(value))value.forEach(visit);else visit(value);
  }}
 visit(parsed.program);
-function callback(name,scope) {
+export function callback(name,scope) {
  const node=nodes.find(node=>node.type==='VariableDeclarator'&&node.id?.name===name&&node.init?.callee?.name==='useCallback');
  const expression=node?.init?.arguments?.[0];
  if(!expression)throw new Error(`Missing Board callback ${name}`);
  return new Function('scope',`with(scope){return (${source.slice(expression.start,expression.end)});}`)(scope);
 }
-function globalFunction(name,scope){const node=nodes.find(node=>node.type==='FunctionDeclaration'&&node.id?.name===name);if(!node)throw Error(`Missing Board function ${name}`);return new Function('scope',`with(scope){${source.slice(node.start,node.end)};return ${name};}`)(scope);}
+export function globalFunction(name,scope){const node=nodes.find(node=>node.type==='FunctionDeclaration'&&node.id?.name===name);if(!node)throw Error(`Missing Board function ${name}`);return new Function('scope',`with(scope){${source.slice(node.start,node.end)};return ${name};}`)(scope);}
 function onCommit(scope){const node=nodes.find(node=>node.type==='Property'&&node.method&&node.key?.name==='onCommit');if(!node)throw Error('Missing Board onCommit');return new Function('scope',`with(scope){return ({${source.slice(node.start,node.end)}}).onCommit;}`)(scope);}
 export async function authorityFixture(objects){
  const outcomes=new Map(),commits=[];
@@ -115,4 +115,12 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
   async receive(result,sourceClientId){return scope.applyRemoteOps(result.appliedOps,result.revision,false,result.appliedBackground,result.actionId,sourceClientId);},
   async close(){scope.boardReadyRef.current=false;scope.notebookControllerEpochRef.current++;scope.notebookControllerRef.current?.dispose();scope.notebookControllerRef.current=null;await realtime.disconnect();await canvas.dispose();},
  };
+}
+
+export function canvasListener(eventName, scope) {
+ const node=nodes.find(node=>node.type==='CallExpression' && node.callee?.object?.name==='canvas'
+  && node.callee?.property?.name==='on' && node.arguments?.[0]?.value===eventName);
+ const expression=node?.arguments?.[1];
+ if(!expression)throw new Error(`Missing Board listener ${eventName}`);
+ return new Function('scope',`with(scope){return (${source.slice(expression.start,expression.end)});}`)(scope);
 }

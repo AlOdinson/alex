@@ -98,9 +98,23 @@ try{
  await page.evaluate(()=>window.toolbar().onUndo());
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===3);
  await page.evaluate(()=>window.toolbar().setTool('select'));
- // Static images are captured; PDF/GIF remain separate board objects.
- await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles({name:'square.png',mimeType:'image/png',buffer:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7l8AAAAASUVORK5CYII=','base64')});
+ // Initial image placement remains whole, even when overlapping the notebook.
+ const png=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=100;c.height=80;c.getContext('2d').fillRect(0,0,100,80);return c.toDataURL().split(',')[1];});
+ await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles({name:'square.png',mimeType:'image/png',buffer:Buffer.from(png,'base64')});
+ await page.waitForFunction(()=>window.testCanvas.getObjects().some(o=>o.type==='image'&&o.storagePath));
+ assert.equal(await page.evaluate(()=>window.notebook().getPageObjects().length),3);
+ const inserted=await page.evaluate(()=>{
+  const c=window.testCanvas,o=c.getObjects().find(o=>o.type==='image'&&o.storagePath);window.insertedImageId=o.boardObjectId;
+  if(o.clipPath)throw Error('Initial image was clipped');c.setActiveObject(o);c.requestRenderAll();
+  const point=o.getCenterPoint(),v=c.viewportTransform,r=c.upperCanvasEl.getBoundingClientRect();
+  return {x:r.left+point.x*v[0]+point.y*v[2]+v[4],y:r.top+point.x*v[1]+point.y*v[3]+v[5]};
+ });
+ // Capture happens through a subsequent native drag/release, not file insertion.
+ await page.mouse.move(inserted.x,inserted.y);await page.mouse.down();
+ await page.waitForFunction(()=>window.testCanvas._currentTransform&&!window.testCanvas._currentTransform.target.lockMovementX);
+ await page.mouse.move(inserted.x+20,inserted.y+15,{steps:8});await page.mouse.up();
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===4);
+ assert.equal(await page.evaluate(()=>window.testCanvas.getObjects().some(o=>o.boardObjectId===window.insertedImageId)),false);
  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles('scripts/fixtures/media/animated.gif');
  await page.waitForFunction(()=>window.testCanvas.getObjects().some(o=>o.mediaKind==='gif'));
  assert.equal(await page.evaluate(()=>window.notebook().getPageObjects().length),4);

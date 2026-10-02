@@ -44,6 +44,9 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
   const pageChanged = page !== beforePageNumber;
   const freshRecords = records.filter(record => pageChanged
     || !equal(visualRecord(currentById.get(String(record.boardObjectId)) ?? {}), visualRecord(record)));
+  // Decide what this projection changes BEFORE asynchronous image/child loading.
+  // A page-only job must not reinterpret a later drag as a frame delta to undo.
+  const frame = notebookFramePatch(notebook.toObject(['boardObjectId']), target);
   const prepared = await util.enlivenObjects(freshRecords, { signal });
   let installed = false, disposed = false;
   const current = () => !installed && !disposed && !signal?.aborted && isCurrent() && guard()
@@ -52,7 +55,6 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
     isCurrent: current,
     apply() {
       if (!current()) return false;
-      const frame = notebookFramePatch(notebook.toObject(['boardObjectId']), target);
       const contentChanged = pageChanged || prepared.length > 0 || records.length !== beforeRecords.length
         || records.some((record, index) => record.boardObjectId !== beforeRecords[index]?.boardObjectId);
       // Invalidate obsolete navigation/delta preparations, never new local input.
