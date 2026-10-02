@@ -37,7 +37,14 @@ export class BoardNotebook extends Group {
     this._pageContentInvalid = false;
     this.objectCaching = true;
     this.noScaleCache = false;
-    this.on('removed', () => { this.releasePageCache(); retireNotebookPageWork(this); });
+    this.on('removed', ({ target } = {}) => {
+      this.releasePageCache();
+      // Fabric emits `removed` when dismantling ActiveSelection too. The
+      // notebook is still on the same canvas: do not invalidate prepared pages
+      // during the projection's own selection cleanup.
+      if (String(target?.type).toLowerCase() === 'activeselection' && this.canvas) return;
+      retireNotebookPageWork(this);
+    });
     this.notebookPageNumber = Math.max(1, notebookPageNumber);
     this.clipPath = new Rect({ width: this.width, height: this.height, originX: 'center', originY: 'center', strokeWidth: 0 });
     this.setControlsVisibility({ mt: false, mb: false, ml: false, mr: false, mtr: false });

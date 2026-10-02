@@ -4433,10 +4433,8 @@ function BoardWorkspace({
         applyingRemoteRef.current = false;
         object.setCoords();
         canvas.requestRenderAll();
-        if (!metadata && await notebookHandlersRef.current.capture?.(object)) {
-          completed.push(...canvas.getObjects().filter(isBoardNotebook).slice(-1));
-          continue;
-        }
+        // Initial file placement is not a drop gesture. Keep the whole image,
+        // even over a notebook; a subsequent deliberate transform may capture it.
         const records = getObjectRecords([object]);
         recordAction({ type: 'add', records });
         realtimeRef.current?.sendPreview?.(records);
@@ -5454,7 +5452,10 @@ function BoardWorkspace({
           if (!current()) throw new Error('Доска закрыта; неподтверждённые действия сохранены');
           if (!await notebookHandlersRef.current.leaseForOperations?.(action.ops)) throw new Error('Не удалось подтвердить право редактирования блокнота');
           const results = await sendDurableOps(action.ops, { atomic: true, actionId: action.actionId,
-            history: Boolean(action.history), skipNotebookSession: true, notebookManaged: true });
+            history: Boolean(action.history), skipNotebookSession: true, notebookManaged: true,
+            // The controller already owns this action's ordering. Re-entering the
+            // deferred transform flush can await this very action's acknowledgement.
+            skipDeferredFlush: true });
           const result = results?.at(-1);
           if (!result) throw new Error('Не получено подтверждение изменения блокнота');
           return { ...result, actionId: action.actionId, clientId: action.clientId };
@@ -8613,11 +8614,12 @@ function BoardWorkspace({
     return results;
   }, [sendDurableOps, syncFromServer]);
 
-  const notebookForObject = useCallback((object) => {
+  const notebookForObject = useCallback((object, excluded = []) => {
     if (!object || isBoardNotebook(object) || isTextObject(object) && object.isEditing
       || isBoardMedia(object) || object.pendingImage) return null;
     return [...(fabricCanvasRef.current?.getObjects() ?? [])].reverse().find(candidate =>
-      isBoardNotebook(candidate) && notebookObjectIntersection(candidate, object).intersects) ?? null;
+      isBoardNotebook(candidate) && !excluded.includes(candidate)
+        && notebookObjectIntersection(candidate, object).intersects) ?? null;
   }, []);
 
   const captureIntoNotebook = useCallback(async (object, { before = [], published = false, newText = false } = {}) => {
@@ -8703,6 +8705,35 @@ function BoardWorkspace({
   }, [notebookForObject, queueNotebookMutation, acquireLocalSelectionLease, ownsSelectionLease,
     getObjectRecords, recordAction, commitNotebookOps, schedulePersistence,
     releaseLocalSelectionLease, updateSelectionState, removeRegisteredObjectsById, incrementalNotebookActions]);
+
+  const dropSelectionIntoNotebook = useCallback((objects, { before = [] } = {}) => {
+    if (!notebookRuntimeEnabled || !canEditRef.current) return Promise.resolve(false);
+    const canvas = fabricCanvasRef.current;
+    const sources = [...new Set(objects)].filter(object => canvas?.getObjects().includes(object));
+    const entries = sources.map(object => {
+      const notebook = notebookForObject(object, sources);
+      return { object, notebook, pageNumber: notebook?.notebookPageNumber };
+    });
+    if (!entries.some(entry => entry.notebook)) return Promise.resolve(false);
+    // Pin release geometry, not the original pointerdown position. A later move,
+    // page switch or canvas replacement must not be swallowed by an old async drop.
+    const watched = [...new Set([...sources, ...entries.map(entry => entry.notebook).filter(Boolean)])];
+    const versions = watched.map(object => ({ object, matrix: object.calcTransformMatrix().slice(),
+      width: object.width, height: object.height, updatedAt: object.updatedAt }));
+    const isCurrent = () => fabricCanvasRef.current === canvas && canEditRef.current
+      && versions.every(value => canvas.getObjects().includes(value.object)
+        && value.object.width === value.width && value.object.height === value.height
+        && value.object.updatedAt === value.updatedAt
+        && value.object.calcTransformMatrix().every((v, i) => Math.abs(v - value.matrix[i]) < 1e-7))
+      && entries.every(entry => !entry.notebook || entry.notebook.notebookPageNumber === entry.pageNumber);
+    return queueNotebookMutation(async () => {
+      // Earlier standalone edits must reach authority before this compound edit.
+      await deferredTransformFlushRef.current?.({ force: true });
+      await realtimeRef.current?.flushPending?.();
+      if (!isCurrent()) throw new Error('Объекты или страница изменились — повторите перенос');
+      return incrementalNotebookActions.drop(entries, { before, isCurrent });
+    });
+  }, [notebookForObject, queueNotebookMutation, incrementalNotebookActions]);
 
   const addNotebook = useCallback(() => {
     if (!canEditRef.current) return;
@@ -8821,6 +8852,7 @@ function BoardWorkspace({
     finally { if (ownsSelectionLease(notebooks)) releaseLocalSelectionLease(notebooks); }
   }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, recordAction, commitNotebookOps, releaseLocalSelectionLease, ownsSelectionLease, incrementalNotebookActions]);
   notebookHandlersRef.current = { capture: captureIntoNotebook, candidate: notebookForObject,
+    drop: dropSelectionIntoNotebook,
     editText: editNotebookText, erase: eraseNotebookChildren, ensure: ensureNotebookController,
     refreshControls() { updatePdfControls(); updateSelectionState(); },
     async leaseForOperations(ops) {
@@ -10193,12 +10225,23 @@ function BoardWorkspace({
     }
 
     function queueDeferredTransformPersistence(entries) {
-      for (const entry of Array.isArray(entries) ? entries : []) {
-        if (!entry?.id || !entry?.transform) continue;
+      const valid = (Array.isArray(entries) ? entries : []).filter(entry => entry?.id && entry?.transform);
+      const op = createLightweightTransformOp(valid);
+      // A released notebook frame must enter its optimistic model synchronously.
+      // Otherwise the next page/child projection can restore its old coordinates
+      // during the ordinary 24ms batching window. No network ACK is awaited here.
+      if (op && notebookRuntimeEnabled && isNotebookControlledAction([op], notebookControllerRef.current)) {
+        valid.forEach(cacheLightweightTransformEntry);
+        sendLightweightTransforms(valid, { skipDeferredFlush: true }).catch(error => {
+          setSaveStatus(error.message); setSyncTone('error');
+        });
+        return;
+      }
+      for (const entry of valid) {
         cacheLightweightTransformEntry(entry);
         deferredTransformEntries.set(String(entry.id), entry);
       }
-      scheduleDeferredTransformFlush();
+      if (valid.length) scheduleDeferredTransformFlush();
     }
 
     async function flushDeferredTransformPersistence({
@@ -11091,7 +11134,7 @@ function BoardWorkspace({
     window.addEventListener('pointerup', finishBoardScreenSharePointerTransform);
     window.addEventListener('pointercancel', finishBoardScreenSharePointerTransform);
 
-    canvas.on('object:modified', ({ target }) => {
+    canvas.on('object:modified', ({ target, action, transform }) => {
       restoreTargetFindAfterTransform();
       if (applyingRemoteRef.current || applyingHistoryRef.current || !target) return;
       if (isBoardScreenShareObject(target)) {
@@ -11218,9 +11261,19 @@ function BoardWorkspace({
       // The commit is only an O(selected objects) matrix patch and contains no Fabric
       // mutation. Queue it synchronously for groups too, so a delayed animation frame
       // cannot hold locks or drop the first of two rapid Pencil moves.
-      if (selectedObjects.length === 1 && notebookHandlersRef.current.candidate?.(selectedObjects[0])) {
+      // Only a released move is a drop. Insertion, selection and resize/rotate
+      // must not cut a picture that happens to overlap a notebook.
+      const notebookDrop = notebookRuntimeEnabled && (action ?? transform?.action) === 'drag' && selectedObjects.some(object =>
+        notebookHandlersRef.current.candidate?.(object, selectedObjects));
+      if (notebookDrop) {
+        notebookHandlersRef.current.drop(selectedObjects, { before: beforeRecords })
+          .then(captured => { if (!captured) commitObjects(); })
+          .catch(error => { setSaveStatus(error.message); setSyncTone('error'); });
+      } else if (!notebookRuntimeEnabled && selectedObjects.length === 1
+        && notebookHandlersRef.current.candidate?.(selectedObjects[0])) {
         notebookHandlersRef.current.capture(selectedObjects[0], { before: beforeRecords, published: true })
-          .then(captured => { if (!captured) commitObjects(); });
+          .then(captured => { if (!captured) commitObjects(); })
+          .catch(error => { setSaveStatus(error.message); setSyncTone('error'); });
       } else commitObjects();
       if (completedPointerType === 'pen') {
         finalizePencilTransformPatches(selectedObjects, startingViewportRects);

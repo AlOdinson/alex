@@ -83,6 +83,86 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
     }
   }
 
+  /** One released selection is one atomic action, including members outside all
+   * notebooks. Prepare every split first; never dismantle a live selection early. */
+  async function drop(entries, { before = [], isCurrent = () => true } = {}) {
+    const canvas = getCanvas(), prepared = [];
+    const sources = entries.map(entry => entry.object);
+    const notebooks = [...new Set(entries.map(entry => entry.notebook).filter(Boolean))];
+    if (!notebooks.length || !sources.length) return false;
+    const target = [...new Set([...notebooks, ...sources])];
+    const current = () => getCanvas() === canvas && isCurrent() && target.every(object => canvas?.getObjects().includes(object))
+      && entries.every(entry => !entry.notebook || entry.notebook.notebookPageNumber === entry.pageNumber);
+    if (!current()) throw stale();
+    const controller = await getController();
+    if (!await acquireLease(target)) throw new Error('Объекты заняты другим участником — перенос не сохранён');
+    let enqueued = false;
+    try {
+      for (const entry of entries) {
+        if (!current() || !ownsLease(target)) throw stale();
+        const fragments = entry.notebook ? await captureNotebookObject(entry.notebook, entry.object) : null;
+        if (entry.notebook && !fragments) throw stale();
+        prepared.push({ ...entry, fragments });
+      }
+      if (!current() || !ownsLease(target)) throw stale();
+      const beforeById = new Map(before.map(record => [String(record.object.boardObjectId), record]));
+      const currentRecords = getRecords(sources);
+      const currentById = new Map(currentRecords.map(record => [String(record.object.boardObjectId), record]));
+      const actionId = randomToken(24), ops = [], nextIndices = new Map();
+      for (const entry of prepared) {
+        const { object, notebook, pageNumber, fragments } = entry;
+        const id = String(object.boardObjectId), sourceBefore = beforeById.get(id);
+        if (!sourceBefore) throw new Error('Не найдено исходное состояние переноса');
+        if (!fragments) {
+          ops.push(...createConditionalRecordPatchOps([sourceBefore], [currentById.get(id)]));
+          continue;
+        }
+        const inside = stamp(fragments.inside), outside = fragments.outside;
+        const zIndex = nextIndices.get(notebook) ?? notebook.getPageObjects().length;
+        nextIndices.set(notebook, zIndex + 1);
+        ops.push(operation(notebook, pageNumber, [{ type: 'insert', object: serialized(inside), zIndex, ifAbsent: true }]));
+        if (outside) {
+          outside.boardObjectId = id; stamp(outside);
+          entry.outsideRecord = { object: serialized(outside), zIndex: currentById.get(id).zIndex };
+          ops.push(...createConditionalRecordPatchOps([sourceBefore], [entry.outsideRecord]));
+        } else ops.push(...createConditionalDeleteOps([sourceBefore]).map(op => ({ ...op, mutationId: randomToken(24) })));
+      }
+      const handle = controller.enqueue({ actionId, ops: guardOps(ops, actionId) }); enqueued = true;
+      const historyAction = history(handle);
+      mutate(() => {
+        // ActiveSelection members hold wrapper-local coordinates until dismantled.
+        // All inside/outside fragments have already been prepared in scene space.
+        const oldOrder = canvas.getObjects();
+        const replacements = new Map(prepared.filter(entry => entry.fragments)
+          .map(entry => [entry.object, entry.fragments.outside]));
+        canvas.discardActiveObject();
+        for (const { object, notebook, fragments } of prepared) {
+          if (!fragments) continue;
+          canvas.remove(object); notebook.addPageObject(fragments.inside);
+          if (fragments.outside) canvas.add(fragments.outside);
+        }
+        // Numeric old z-indices shift when earlier sources are fully absorbed.
+        // Substitute fragments into the surviving order, leaving untouched layers
+        // in place rather than lifting an outside fragment above unrelated ink.
+        const outside = new Set([...replacements.values()].filter(Boolean));
+        oldOrder.map(object => replacements.has(object) ? replacements.get(object) : object)
+          .filter(Boolean).forEach((object, index) => { if (outside.has(object)) canvas.moveObjectTo(object, index); });
+        for (const notebook of notebooks) {
+          const op = ops.findLast(op => op.type === 'notebook' && op.id === String(notebook.boardObjectId));
+          notebook.updatedAt = op.updatedAt; notebook.updatedBy = clientId;
+        }
+      });
+      follow(handle, target, controller, historyAction);
+      onChange([...notebooks, ...prepared.map(entry => entry.fragments ? entry.fragments.outside : entry.object).filter(Boolean)]);
+      canvas.requestRenderAll(); return true;
+    } finally {
+      if (!enqueued) {
+        for (const entry of prepared) { entry.fragments?.inside?.dispose(); entry.fragments?.outside?.dispose(); }
+        if (ownsLease(target)) releaseLease(target);
+      }
+    }
+  }
+
   async function changePage(notebook, page) {
     if (!isBoardNotebook(notebook) || page === notebook.notebookPageNumber) return false;
     const from = notebook.notebookPageNumber;
@@ -168,5 +248,5 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
       follow(handle, notebooks, controller, historyAction); onChange(notebooks); canvas.requestRenderAll(); return true;
     } finally { if (!enqueued && ownsLease(notebooks)) releaseLease(notebooks); }
   }
-  return { capture, changePage, saveText, erase };
+  return { capture, drop, changePage, saveText, erase };
 }
