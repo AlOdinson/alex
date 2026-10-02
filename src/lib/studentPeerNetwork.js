@@ -20,6 +20,7 @@ export function createStudentPeerNetwork({
   clientId = '',
   teacherId,
   liveEnabled = true,
+  enableNotebookOperations = false,
   signaling,
   rtcConfig = {},
   getRevision,
@@ -151,6 +152,7 @@ export function createStudentPeerNetwork({
         onError: failConnection,
       });
       nextSession = createSession({
+        enableNotebookOperations,
         boardId,
         onProgress: (event) => {
           initialStep = event.step;
@@ -332,6 +334,7 @@ export function createStudentPeerNetwork({
 
     getSelectedPath() { return selectedPath; },
 
+    getNotebookVersion() { return session?.getNotebookVersion?.() ?? 0; },
     getVerificationMode() {
       return session?.getVerificationMode?.() ?? { version: 0, epoch: '' };
     },

@@ -1,3 +1,4 @@
+import { createNotebookVerificationCache } from './notebookVerification.js';
 import { isVerificationKey } from './boundedVerificationDigest.js';
 import { validVerificationRecords } from './boundedVerificationState.js';
 
@@ -39,6 +40,23 @@ async function contentMatches(actual, expected, budget, options, depth = 0) {
     // Image bytes are identified by the persisted asset path. Blob URLs differ
     // legitimately between devices, and a loading placeholder is checked separately.
     if (key === 'src' && expected.storagePath && actual.storagePath === expected.storagePath) continue;
+    if (key === 'notebookPages' && normalizedType(actual) === 'boardnotebook') {
+      const actualPages = actual.notebookPages, expectedPages = expected.notebookPages;
+      if (!Array.isArray(actualPages) || !Array.isArray(expectedPages) || actualPages.length !== expectedPages.length) return false;
+      for (let page = 0; page < expectedPages.length; page++) {
+        if (await options.notebookCache.pageHash(actualPages[page], { budget })
+          !== await options.notebookCache.pageHash(expectedPages[page], { budget })) return false;
+        const pause = budget.checkpoint(); if (pause) await pause;
+      }
+      // Frozen serialized pages alone cannot prove that the visible Fabric
+      // children were hydrated correctly. Inspect that page, never hidden ones.
+      if (typeof actual.getPageObjects === 'function') {
+        const visible = Array.isArray(actual._objects) ? actual._objects : actual.getPageObjects();
+        const matched = await contentMatches(visible, expectedPages[Number(expected.notebookPageNumber ?? 1) - 1] ?? [], budget, options, depth + 1);
+        if (matched !== true) return matched;
+      }
+      continue;
+    }
     let value = actual[key];
     if (key === 'type') {
       if (normalizedType(actual) !== String(expected.type).toLowerCase()) return false;
@@ -74,6 +92,7 @@ export function createBoundedCanvasVerifier({
   if (![getCanvas, getRegistry, getRevision, getBackground, placementMatches, apply].every((f) => typeof f === 'function')) {
     throw new TypeError('Canvas verification adapters are required');
   }
+  const notebookCache = createNotebookVerificationCache();
   let iterator = null;
   let iteratorRegistry = null;
   let remaining = 0;
@@ -138,7 +157,7 @@ export function createBoundedCanvasVerifier({
           if (ranks.get(actual) !== record.zIndex) structuralRepair = true;
           continue;
         }
-        const matched = await contentMatches(actual, record.object, context.budget, { stylesToArray });
+        const matched = await contentMatches(actual, record.object, context.budget, { stylesToArray, notebookCache });
         if (matched === null) return false;
         if (!matched) repairs.push(record);
       }

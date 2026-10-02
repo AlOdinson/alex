@@ -1,3 +1,4 @@
+import { validNotebookFingerprint, createNotebookVerificationRepair } from './notebookVerification.js';
 import { createVerificationBudget, verificationDigest } from './boundedVerificationDigest.js';
 
 const validId = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200;
@@ -7,6 +8,8 @@ export function validVerificationRequest(request) {
     && Array.isArray(request.entries) && request.entries.length <= 100
     && new Set(request.entries.map((e) => e?.id)).size === request.entries.length
     && request.entries.every((e) => validId(e?.id) && /^[a-f0-9]{64}$/.test(e?.hash ?? ''))
+    && (request.digestVersion == null || request.digestVersion === 1 || request.digestVersion === 2)
+    && request.entries.every(entry => entry.notebook == null || request.digestVersion === 2 && validNotebookFingerprint(entry.notebook))
     && (request.backgroundHash == null || /^[a-f0-9]{64}$/.test(request.backgroundHash));
 }
 
@@ -16,6 +19,9 @@ export async function buildVerificationReply(view, request, epoch, options = {})
     epoch, revision: view.revision(),
   };
   if (!validVerificationRequest(request)) return { ...base, status: 'invalid' };
+  const digestVersion = view.digestVersion?.() ?? 1;
+  if (digestVersion !== (request.digestVersion ?? 1)) return { ...base, digestVersion, status: 'incompatible' };
+  if (digestVersion !== 1) base.digestVersion = digestVersion;
   if (request.epoch !== epoch || request.revision !== view.revision()) return { ...base, status: 'stale' };
   const stamp = view.capture();
   const budget = createVerificationBudget({ ...options,
@@ -26,9 +32,11 @@ export async function buildVerificationReply(view, request, epoch, options = {})
     const compared = [];
     for (const entry of request.entries) {
       const expected = view.read(entry.id);
-      compared.push(expected);
-      const hash = await verificationDigest(expected, { budget });
-      if (hash !== entry.hash) repairs.push(expected);
+      const fingerprint = view.fingerprint ? await view.fingerprint(expected, { budget })
+        : { hash: await verificationDigest(expected, { budget }) };
+      const repair = digestVersion === 2 ? createNotebookVerificationRepair(expected, entry.notebook, fingerprint.notebook) : expected;
+      compared.push(repair);
+      if (fingerprint.hash !== entry.hash) repairs.push(repair);
     }
     // A structural sweep establishes an ordered prefix. Re-insert its checked
     // anchors together when repairing: moving a mismatching member can shift a

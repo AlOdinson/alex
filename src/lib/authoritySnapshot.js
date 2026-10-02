@@ -1,3 +1,5 @@
+import { freezeSnapshotNotebookPages, freezeNotebookRecord } from './notebookRecords.js';
+import { applyNotebookOperation } from './notebookOperations.js';
 import { applySerializedObjectPatch } from './operationProtocol.js';
 
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
@@ -64,6 +66,15 @@ function applyMutable(snapshot, ops, background = null, committedAt = null) {
   const sourceOps = (Array.isArray(ops) ? ops : []).filter((op) => (
     op?.type !== 'upsert' || !isSerializedActiveSelection(op.object)
   ));
+  // Compound edits and notebook deltas are staged in intent order by the
+  // authority. Do not move an insertion behind a patch that depends on it.
+  // Keep the legacy batch-layer algorithm for independent ordinary operations.
+  if (sourceOps.length > 1 && sourceOps.some(op => op?.atomicGroup || op?.type === 'notebook')) {
+    for (const op of sourceOps) applyMutable(snapshot, [op], null, deterministicTimestamp);
+    if (['grid', 'dots', 'blank'].includes(background)) snapshot.background = background;
+    return snapshot;
+  }
+
   const isExplicitReorder = (op) => (
     (op?.type === 'upsert' && op.object?.boardObjectId && Boolean(op.reorder || op.restore))
     || (op?.type === 'patch' && op.id && Boolean(op.reorder))
@@ -89,6 +100,17 @@ function applyMutable(snapshot, ops, background = null, committedAt = null) {
     .map((object) => [String(object.boardObjectId), object]));
 
   for (const op of orderedOps) {
+    if (op?.type === 'notebook') {
+      const existing = objectById.get(String(op.id));
+      if (!existing) continue;
+      const next = { ...existing };
+      const delta = applyNotebookOperation(next, op);
+      if (!delta.changed) continue;
+      const index = objects.indexOf(existing);
+      if (index >= 0) objects[index] = next;
+      objectById.set(String(op.id), next);
+      continue;
+    }
     if (op?.type === 'delete' && op.id) {
       const id = String(op.id);
       const existing = objectById.get(id);
@@ -165,6 +187,7 @@ function applyMutable(snapshot, ops, background = null, committedAt = null) {
       : (Number.isInteger(op.zIndex) ? op.zIndex : objects.length);
     const targetIndex = Math.max(0, Math.min(objects.length, requestedIndex));
     const nextObject = cloneValue(op.object);
+    if (String(nextObject.type).toLowerCase() === 'boardnotebook') freezeNotebookRecord(nextObject.notebookPages);
     if (safeTimestamp(nextObject.updatedAt) == null && deterministicTimestamp != null) {
       nextObject.updatedAt = deterministicTimestamp;
     }
@@ -187,7 +210,7 @@ function applyMutable(snapshot, ops, background = null, committedAt = null) {
 }
 
 export function applyAuthorityOps(sourceSnapshot, ops, background = null, committedAt = null) {
-  return applyMutable(cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT), ops, background, committedAt);
+  return applyMutable(freezeSnapshotNotebookPages(cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT)), ops, background, committedAt);
 }
 
 export function applyAuthorityOpsInPlace(snapshot, ops, background = null, committedAt = null) {
@@ -198,7 +221,7 @@ export function applyAuthorityOpsInPlace(snapshot, ops, background = null, commi
 }
 
 export function applyAuthorityActions(sourceSnapshot, actions) {
-  const snapshot = cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT);
+  const snapshot = freezeSnapshotNotebookPages(cloneValue(sourceSnapshot ?? EMPTY_SNAPSHOT));
   for (const action of Array.isArray(actions) ? actions : []) {
     applyMutable(snapshot, action?.ops ?? [], action?.background ?? null, action?.committedAt ?? null);
   }

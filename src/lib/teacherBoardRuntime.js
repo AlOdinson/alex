@@ -1,5 +1,5 @@
 import { openBrowserBoardAuthority } from './browserBoardAuthority.js';
-import { getAuthorityBoard } from './browserAuthorityStore.js';
+import { getAuthorityBoardMetadata } from './browserAuthorityStore.js';
 import { createTeacherPeerHub } from './teacherPeerHub.js';
 import { createBoardPeerSignalingBridge } from './boardPeerSignaling.js';
 import { createTeacherPeerNetwork } from './teacherPeerNetwork.js';
@@ -11,6 +11,7 @@ export async function createTeacherBoardRuntime({
   clientId,
   sendScreenShareSignal,
   rtcConfig = {},
+  enableNotebookOperations = false,
   onRemoteCommit = () => {},
   onPeerState = () => {},
   onLiveEvent = () => {},
@@ -18,7 +19,7 @@ export async function createTeacherBoardRuntime({
   onBoardControl = () => {},
   onError = () => {},
   openAuthority = openBrowserBoardAuthority,
-  getBoardMetadata = getAuthorityBoard,
+  getBoardMetadata = getAuthorityBoardMetadata,
   createHub = createTeacherPeerHub,
   createSignaling = createBoardPeerSignalingBridge,
   createNetwork = createTeacherPeerNetwork,
@@ -33,7 +34,7 @@ export async function createTeacherBoardRuntime({
   }
   if (typeof getBoardMetadata !== 'function') throw new Error('getBoardMetadata is required');
 
-  const authority = await openAuthority({ boardId: safeBoardId });
+  const authority = await openAuthority({ boardId: safeBoardId, enableNotebookOperations });
   const lockAuthority = createLockAuthority();
   const hub = createHub({
     boardId: safeBoardId,
@@ -110,6 +111,11 @@ export async function createTeacherBoardRuntime({
 
     ensureMediaAsset(assetId) { return hub.ensureMediaAsset(assetId); },
     requestMediaAsset(assetId, options) { return hub.requestMediaAsset(assetId, options); },
+    getNotebookVersion() { return authority.getNotebookVersion?.() ?? 0; },
+    getNotebookCheckpoint() {
+      return { snapshot: authority.getSnapshot(), revision: authority.getRevision(),
+        tombstones: authority.getTombstones?.() ?? {}, notebookTombstones: authority.getNotebookTombstones?.() ?? {} };
+    },
     getRevision() {
       return authority.getRevision();
     },
@@ -154,6 +160,7 @@ export async function createTeacherBoardRuntime({
         }
       }
 
+      await hub.assertNotebookAction?.(proposal.ops || []);
       await hub.assertMediaAction?.(proposal.ops || []);
       const commit = await authority.commitAction(proposal);
       if (!commit?.duplicate) await hub.broadcastCommit(commit);

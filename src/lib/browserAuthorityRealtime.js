@@ -409,6 +409,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
     name = 'Участник',
     permission = 'view',
     webrtcLiveV1 = false,
+    enableNotebookOperations = false,
     getKnownRevision = () => 0,
     onOps,
     onUsers,
@@ -524,6 +525,7 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   };
 
   session = createSession({
+    enableNotebookOperations,
     onProgress,
     onRuntimeState: (state) => { recordConnection('runtime', {state}); setOwnerReady(state === 'ready'); },
     offlineCacheKey: realtimeKey,
@@ -681,6 +683,9 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   let lastWake = 0;
   return {
     ...core,
+    getNotebookVersion: () => session.getNotebookVersion?.() ?? 0,
+    getNotebookCheckpoint: () => session.getNotebookCheckpoint?.() ?? null,
+    whenRuntimeReady: () => session.whenRuntimeReady?.(),
     recoverConnections() {
       if (disconnected) return Promise.resolve();
       if (wakeTask) return wakeTask;

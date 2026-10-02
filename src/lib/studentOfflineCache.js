@@ -1,3 +1,4 @@
+import { assertNotebookCommitReadable } from './notebookProtocol.js';
 import { withLocalFileLifecycle } from './localFileLifecycle.js';
 import { deleteCachedSnapshot } from './idb.js';
 import { sha256 } from './ids.js';
@@ -253,7 +254,7 @@ export async function studentOfflineScope(boardId, roomKey) {
   return sha256(`alex-student-view:${boardId}:${roomKey}`);
 }
 
-export async function readStudentOfflineSnapshot(boardId, roomKey, { storage = studentOfflineStorage,
+export async function readStudentOfflineSnapshot(boardId, roomKey, { storage = studentOfflineStorage, onError = () => {},
   yieldTask = () => new Promise((resolve) => setTimeout(resolve, 0)),
 } = {}) {
   try {
@@ -270,12 +271,16 @@ export async function readStudentOfflineSnapshot(boardId, roomKey, { storage = s
       if (!validRevision(commit.revision)) break;
       if (commit.revision <= revision) continue;
       if (commit.revision !== revision + 1 || !Array.isArray(commit.ops)) break;
+      assertNotebookCommitReadable(commit);
       applyAuthorityOpsInPlace(snapshot, commit.ops, commit.background ?? null);
       revision = commit.revision; savedAt = commit.savedAt;
       if (++processed % 50 === 0) await yieldTask();
     }
     return { snapshot, revision, savedAt };
-  } catch { return null; } // Viewing-cache failure must not prevent live connection.
+  } catch (error) {
+    try { onError(error); } catch { /* optional archive observer */ }
+    return null; // Never label an unsupported or partial notebook as fully replayed.
+  }
 }
 
 export function createStudentOfflineRecorder({ boardId, roomKey, storage = studentOfflineStorage,
@@ -303,7 +308,9 @@ export function createStudentOfflineRecorder({ boardId, roomKey, storage = stude
     commit(commit) {
       if (closed || !validRevision(commit?.revision) || !Array.isArray(commit?.ops) || commit.changed === false) return;
       try {
+        assertNotebookCommitReadable(commit);
         const record = { revision: commit.revision, ops: clone(commit.ops),
+          ...(commit.notebookVersion ? { notebookVersion: commit.notebookVersion } : {}),
           background: commit.background ?? null, savedAt: now() };
         enqueue((key) => storage.append(key, record));
       } catch (error) { reportError(error); }

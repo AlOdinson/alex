@@ -11,7 +11,7 @@ try {
   for(let i=0;i<100;i++){try{if((await fetch(base)).ok)break;}catch{}await new Promise(r=>setTimeout(r,100));}
   const page=await browser.newPage();
   await page.goto(base+'scripts/board-media-fixture.html');
-  const report=await page.evaluate(async()=>{const {benchmarkNotebooks}=await import('./notebook-performance-fixture.js');return benchmarkNotebooks();});
+  const report=await page.evaluate(async incremental=>{const {benchmarkNotebooks}=await import('./notebook-performance-fixture.js');return benchmarkNotebooks({incremental});},process.argv.includes('--stage-b'));
   const output=process.env.NOTEBOOK_BENCHMARK_OUTPUT||'/tmp/notebook-performance.json';
   await writeFile(output,JSON.stringify(report,null,2)+'\n');
   console.log(JSON.stringify(report,null,2));
@@ -22,8 +22,12 @@ try {
       if(!process.argv.includes('--stage-a')) {
         checks.push([`compact forward ${JSON.stringify(r.scenario)}`,r.forwardBytes<=16384]);
         checks.push([`compact inverse ${JSON.stringify(r.scenario)}`,r.inverseBytes<=16384]);
+        checks.push([`hidden pages untouched ${JSON.stringify(r.scenario)}`,r.hiddenPageChanges===0]);
+        const first=report.results.find(s=>s.scenario.pages===1&&s.scenario.strokes===r.scenario.strokes);
+        checks.push([`page-count independent payload ${JSON.stringify(r.scenario)}`,r.forwardBytes/first.forwardBytes<=1.05&&r.inverseBytes/first.inverseBytes<=1.05]);
       }
     }
+    checks.push(['no repeated image encoding',report.results.find(r=>r.scenario.images)?.imageEncodes===0]);
     assert.deepEqual(checks.filter(([,pass])=>!pass),[],`Performance gates failed. Full results: ${output}`);
   }
 } finally {await browser?.close();server.kill();}

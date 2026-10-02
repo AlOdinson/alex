@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const source=fs.readFileSync(new URL('../src/components/Board.jsx',import.meta.url),'utf8');
-function callback(name,scope){const start=source.indexOf(`  const ${name} = useCallback(`);const end=source.indexOf('\n\n  const ',start+1);return new Function('scope',`with(scope){${source.slice(start,end)};return ${name};}`)(scope);}
+function callback(name,scope){scope={notebookRuntimeEnabled:false,incrementalNotebookActions:{},...scope};const start=source.indexOf(`  const ${name} = useCallback(`);const end=source.indexOf('\n\n  const ',start+1);return new Function('scope',`with(scope){${source.slice(start,end)};return ${name};}`)(scope);}
 test('page hydration must not publish after its notebook lease expires',async()=>{
  let granted=true,published=0;
  const notebook={notebookPageNumber:1,boardObjectId:'book'};

@@ -16,7 +16,7 @@ try {
  for(const size of [{width:1280,height:720,fps:60},{width:1920,height:1080,fps:60}]) {
   const report=await page.evaluate(async size=>{const m=await import('./notebook-performance-fixture.js');return m.benchmarkReceivedNotebookVideo(size);},size);
   results.push(report);console.log(JSON.stringify(report,null,2));
-  assert.equal(report.fullSceneRenders,0);assert.equal(report.visibleObjects,401);assert.deepEqual(report.errors,[]);
+  assert.equal(report.fullSceneRenders,0);assert.equal(report.visibleObjects,report.scenario.strokes+1+300);assert.equal(report.pendingActions,300);assert.ok(report.maxForwardBytes<=16384&&report.maxInverseBytes<=16384);assert.deepEqual(report.errors,[]);
   assert.ok(report.received.framesDecoded>=60);assert.equal(report.received.frameWidth,size.width);assert.equal(report.received.frameHeight,size.height);
  }
  await writeFile('/tmp/notebook-received-video.json',JSON.stringify(results,null,2)+'\n');

@@ -82,7 +82,9 @@ export function createBoundedBoardVerifier({
         const confirmingPage = remotePage;
         const entries = [];
         for (const id of batch.ids) {
-          entries.push({ id, hash: await verificationDigest(view.read(id), { budget }) });
+          const fingerprint = view.fingerprint ? await view.fingerprint(view.read(id), { budget })
+            : { hash: await verificationDigest(view.read(id), { budget }) };
+          entries.push({ id, ...fingerprint });
         }
         if (batch.fullSweep && remoteScanRevision !== stamp.revision) {
           remoteCursor = 0; remoteSweepDone = false; remotePage = [];
@@ -90,6 +92,7 @@ export function createBoundedBoardVerifier({
         remoteScanRevision = stamp.revision;
         const payload = {
           revision: stamp.revision, entries, fullSweep: batch.fullSweep,
+          ...((view.digestVersion?.() ?? 1) !== 1 ? { digestVersion: view.digestVersion() } : {}),
           // Checking a tiny background value also detects a previously missed change.
           backgroundHash: await verificationDigest(view.background(), { budget }),
           scanCursor: remoteCursor,
@@ -98,7 +101,7 @@ export function createBoundedBoardVerifier({
         const reply = await request(payload);
         if (!current()) return { complete: false };
         const requested = new Set(batch.ids);
-        if (reply?.version !== 1 || reply.epoch !== epoch || reply.revision !== stamp.revision
+        if ((reply?.digestVersion ?? 1) !== (view.digestVersion?.() ?? 1) || reply?.version !== 1 || reply.epoch !== epoch || reply.revision !== stamp.revision
           || reply.status !== 'ok' || !Array.isArray(reply.checkedIds)
           || reply.checkedIds.length !== requested.size
           || new Set(reply.checkedIds).size !== requested.size

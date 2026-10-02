@@ -1,3 +1,6 @@
+import { verificationDigest } from './boundedVerificationDigest.js';
+import { createNotebookVerificationCache, validNotebookVerificationRepair, applyNotebookVerificationRepair } from './notebookVerification.js';
+import { freezeSnapshotNotebookPages } from './notebookRecords.js';
 import { authoritySnapshotLookup } from './authoritySnapshot.js';
 
 export const isBoundedVerificationBoard = (board) => board?.verificationVersion === 1;
@@ -5,13 +8,15 @@ export const validVerificationRecords = (records) => Array.isArray(records)
   && records.length <= 100
   && new Set(records.map((r) => r?.id)).size === records.length
   && records.every((r) => typeof r?.id === 'string' && r.id.length > 0 && r.id.length <= 200
+    && (!Object.hasOwn(r, 'notebookRepair') || validNotebookVerificationRepair(r))
     && (r.object === null || (r.object && typeof r.object === 'object'
       && !Array.isArray(r.object) && r.object.boardObjectId === r.id
       && Number.isInteger(r.zIndex) && r.zIndex >= 0)));
 
 // The getters must expose internal serialized state, never getReplicaState() or
 // authority.getSnapshot(), which clone entire boards. Callers must not mutate reads.
-export function createVerificationView({ getSnapshot, getRevision }) {
+export function createVerificationView({ getSnapshot, getRevision, notebookVersion = 0 }) {
+  const notebookCache = notebookVersion === 1 ? createNotebookVerificationCache() : null;
   if (typeof getSnapshot !== 'function' || typeof getRevision !== 'function') {
     throw new TypeError('Verification view requires state/revision getters');
   }
@@ -23,6 +28,9 @@ export function createVerificationView({ getSnapshot, getRevision }) {
     return { snapshot, lookup: authoritySnapshotLookup(snapshot) };
   };
   return {
+    digestVersion: () => notebookCache ? 2 : 1,
+    fingerprint: (record, options = {}) => notebookCache ? notebookCache.fingerprint(record, options)
+      : verificationDigest(record, options).then(hash => ({ hash })),
     revision: () => Number(getRevision()),
     background: () => current().snapshot.background,
     count: () => current().lookup.objects.length,
@@ -83,8 +91,14 @@ export function applyVerificationRecords(snapshot, records, background = null) {
   // Repairs are exact state replacement, not new operations. The action reducer
   // supplies default timestamps for unstamped imports, which would make a repaired
   // object differ from its canonical source and fail its next digest again.
-  const restored = records.filter((r) => r.object !== null).sort((a, b) => a.zIndex - b.zIndex)
-    .map((r) => ({ ...r, object: structuredClone(r.object) }));
+  const restored = [];
+  for (const record of records.filter(record => record.object !== null).sort((a, b) => a.zIndex - b.zIndex)) {
+    const object = record.notebookRepair
+      ? applyNotebookVerificationRepair(snapshot.canvas.objects.find(object => object.boardObjectId === record.id), record)
+      : freezeSnapshotNotebookPages({ canvas: { objects: [structuredClone(record.object)] } }).canvas.objects[0];
+    if (!object) return false; // Validate every repair before touching the shared state.
+    restored.push({ ...record, object });
+  }
   const objects = snapshot.canvas.objects.filter((o) => !ids.has(String(o?.boardObjectId ?? '')));
   for (const record of restored) objects.splice(Math.min(objects.length, record.zIndex), 0, record.object);
   snapshot.canvas.objects = objects;

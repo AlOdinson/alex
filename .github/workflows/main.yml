@@ -16,6 +16,9 @@ concurrency:
   group: pages-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VITE_NOTEBOOK_OPERATIONS_V1: "true"
+
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -27,6 +30,9 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm run test:student:storage
       - run: npm run test:notebook
+      - run: npm run test:notebook:operations-performance
+      - run: npm run test:media
+      - run: npm run test:pencil
       - run: npm run test:connections
       - run: npm run test:browser-authority
       - run: npm run test:sync:ci
@@ -42,7 +48,7 @@ jobs:
           - {os: ubuntu-latest, engine: chromium}
           - {os: macos-latest, engine: webkit}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 12
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
@@ -63,10 +69,10 @@ jobs:
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
         run: npm run test:notebook:browser
-      - name: Notebook hydration and immutable page performance gates
+      - name: Notebook incremental queue, compact payload and hydration performance gates
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
-        run: npm run test:notebook:performance -- --stage-a
+        run: npm run test:notebook:performance -- --stage-b
       - name: Notebook with real received video at 720p60 and 1080p60
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
@@ -80,7 +86,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: connection-direct-${{ matrix.engine }}
-          path: connection-direct-results/
+          path: |
+            connection-direct-results/
+            /tmp/notebook-performance.json
+            /tmp/notebook-received-video.json
           retention-days: 7
 
   build:

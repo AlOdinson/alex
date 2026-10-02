@@ -1,9 +1,9 @@
 {
-  "version": "1.42.1",
-  "packageVersion": "1.42.1",
-  "base": "1.42.0",
-  "release": "Linear notebook page hydration and cached screen-share rendering",
+  "version": "1.43.0",
+  "packageVersion": "1.43.0",
+  "base": "1.42.1",
+  "release": "Incremental notebook editing, durable local queue and compact shared history",
   "date": "2026-10-02",
-  "name": "notebook-performance-a",
-  "label": "Alex Board 1.42.1"
+  "name": "notebook-performance-b-c",
+  "label": "Alex Board 1.43.0"
 }

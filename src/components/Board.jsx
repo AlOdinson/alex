@@ -1,3 +1,14 @@
+import { snapshotNotebookGesturePages, bindNotebookGestureTarget, consumeNotebookGesturePage } from '../lib/notebookGestureTarget.js';
+import { createNotebookCommitBridge } from '../lib/notebookCommitBridge.js';
+import { createNotebookBoardController } from '../lib/notebookBoardController.js';
+import { createNotebookBoardActions } from '../lib/notebookBoardActions.js';
+import { prepareNotebookProjection } from '../lib/notebookProjection.js';
+import { stageNotebookVisualOperations } from '../lib/notebookVisualBatch.js';
+import { acquireNotebookClientIdentity } from '../lib/notebookClientIdentity.js';
+import { createNotebookOutbox } from '../lib/browserAuthorityStore.js';
+import { isNotebookRuntimeEnabled } from '../lib/notebookProtocol.js';
+import { applyNotebookOperation } from '../lib/notebookOperations.js';
+import { operationObjectIds } from '../lib/operationProtocol.js';
 import NotebookPageControls, { NotebookTextEditor } from './NotebookPageControls.jsx';
 import { NOTEBOOK_FIELDS, createBoardNotebook, isBoardNotebook, setNotebookPage, captureNotebookObject, notebookObjectIntersection } from '../lib/boardNotebook.js';
 import PdfPageControls from './PdfPageControls.jsx';
@@ -1186,19 +1197,14 @@ function transformOperationEntries(op) {
   return [];
 }
 
-function affectedOperationIds(ops) {
-  const ids = new Set();
-  for (const op of Array.isArray(ops) ? ops : []) {
-    if (op?.type === 'delete' && op.id) ids.add(String(op.id));
-    if (op?.type === 'patch' && op.id) ids.add(String(op.id));
-    if (op?.type === 'upsert' && op.object?.boardObjectId) {
-      ids.add(String(op.object.boardObjectId));
-    }
-    transformOperationEntries(op).forEach((entry) => {
-      if (entry?.id) ids.add(String(entry.id));
-    });
-  }
-  return ids;
+function affectedOperationIds(ops) { return operationObjectIds(ops); }
+
+function isNotebookControlledAction(ops, controller) {
+  if (!controller) return false;
+  const notebooks = new Set(controller.getState().snapshot.canvas.objects.filter(isBoardNotebook).map(object => String(object.boardObjectId)));
+  const pendingIds = controller.pendingObjectIds();
+  return (ops ?? []).some(op => op?.type === 'notebook' || isBoardNotebook(op?.object))
+    || [...operationObjectIds(ops)].some(id => notebooks.has(id) || pendingIds.has(id));
 }
 
 function finalVerificationOps(actions, results) {
@@ -1569,6 +1575,8 @@ function sceneRectFromViewportRect(rect, viewport) {
 }
 
 
+const notebookRuntimeEnabled = isNotebookRuntimeEnabled();
+
 export default function Board({ boardId }) {
   const urlBoardKey = useMemo(getKeyFromUrl, [boardId]);
   const rememberedOwnerKey = useMemo(
@@ -1582,6 +1590,22 @@ export default function Board({ boardId }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [guestName, setGuestName] = useState('');
+  const [notebookIdentity, setNotebookIdentity] = useState({ boardId, ready: !notebookRuntimeEnabled, error: '' });
+  useEffect(() => {
+    if (!notebookRuntimeEnabled) return undefined;
+    const abort = new AbortController();
+    let identity;
+    setNotebookIdentity({ boardId, ready: false, error: '' });
+    acquireNotebookClientIdentity({ boardId, signal: abort.signal }).then(value => {
+      identity = value;
+      if (abort.signal.aborted) { value.release(); return; }
+      participantClientIdRef.current = value.clientId;
+      setNotebookIdentity({ boardId, ready: true, error: '' });
+    }).catch(caught => {
+      if (!abort.signal.aborted) setNotebookIdentity({ boardId, ready: false, error: caught.message });
+    });
+    return () => { abort.abort(); identity?.release(); };
+  }, [boardId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1674,13 +1698,14 @@ export default function Board({ boardId }) {
   }, [boardId, boardKey]);
 
   const pendingRole = rememberedOwnerKey ? 'teacher' : 'student';
-  if (loading) {
+  const notebookIdentityError = notebookRuntimeEnabled ? notebookIdentity.error : '';
+  if (loading || notebookRuntimeEnabled && !notebookIdentityError && (!notebookIdentity.ready || notebookIdentity.boardId !== boardId)) {
     return <LanguageProvider role={pendingRole}>{pendingRole === 'student'
       ? <div className="guest-view-loading" role="status">Просмотр</div>
       : <AccessMessage title="Открываю доску">Загружаю сохранённое состояние…</AccessMessage>}</LanguageProvider>;
   }
-  if (error) {
-    return <LanguageProvider role={pendingRole}><AccessMessage title="Ошибка доступа">{error}</AccessMessage></LanguageProvider>;
+  if (error || notebookIdentityError) {
+    return <LanguageProvider role={pendingRole}><AccessMessage title="Ошибка доступа">{error || notebookIdentityError}</AccessMessage></LanguageProvider>;
   }
   if (!access) {
     return <LanguageProvider role={pendingRole}><AccessMessage title="Доска не найдена">Ссылка неверна или доступ был отозван.</AccessMessage></LanguageProvider>;
@@ -1773,6 +1798,11 @@ function BoardWorkspace({
   const [notebookTextEditor, setNotebookTextEditor] = useState(null);
   const notebookTextEditRef = useRef(null);
   const notebookHandlersRef = useRef({});
+  const notebookControllerRef = useRef(null);
+  const notebookControllerInitRef = useRef(null);
+  const notebookControllerEpochRef = useRef(0);
+  const notebookCommitBridgeRef = useRef(null);
+  const notebookGapRevisionRef = useRef(null);
   const notebookQueueRef = useRef(Promise.resolve());
   const notebookMutationActiveRef = useRef(false);
   const notebookControlSignatureRef = useRef('');
@@ -2522,6 +2552,14 @@ function BoardWorkspace({
     };
 
     for (const op of Array.isArray(ops) ? ops : []) {
+      if (op?.type === 'notebook') {
+        const previous = authoritativeObjectStatesRef.current.get(String(op.id))?.op;
+        if (previous?.type === 'upsert' && isBoardNotebook(previous.object)) {
+          const object = { ...previous.object }; applyNotebookOperation(object, op);
+          remember(op.id, { ...previous, object, preserveOrder: true }, object.updatedAt);
+        } else remember(op.id, op, op.updatedAt);
+        continue;
+      }
       if (op?.type === 'delete' && op.id) {
         remember(op.id, { ...op }, Number(op.updatedAt ?? recordedAt));
         continue;
@@ -2594,6 +2632,13 @@ function BoardWorkspace({
       }
     }
   }, []);
+
+  if (!notebookCommitBridgeRef.current) notebookCommitBridgeRef.current = createNotebookCommitBridge({
+    getController: () => notebookControllerRef.current,
+    getRevision: () => Number(revisionRef.current ?? 0),
+    setRevision: revision => { revisionRef.current = revision; },
+    remember: rememberAuthoritativeOps,
+  });
 
   const seedAuthoritativeSnapshot = useCallback((snapshot, revision) => {
     const objects = Array.isArray(snapshot?.canvas?.objects) ? snapshot.canvas.objects : [];
@@ -3554,11 +3599,20 @@ function BoardWorkspace({
   const sendDurableOps = useCallback((ops, {
     atomic = false,
     skipDeferredFlush = false,
+    skipNotebookSession = false,
+    notebookManaged = false,
     serializedSize: providedSerializedSize = null,
     history = false,
     actionId = null,
   } = {}) => {
     const source = Array.isArray(ops) ? ops.filter(Boolean) : [];
+    const controller = notebookControllerRef.current;
+    if (notebookRuntimeEnabled && !skipNotebookSession && isNotebookControlledAction(source, controller)) {
+      try {
+        const handle = controller.enqueue({ ops: source, history, ...(actionId ? { actionId } : {}) });
+        return handle.settled.then(result => [result]);
+      } catch (error) { return Promise.reject(error); }
+    }
     const run = () => {
       const realtime = realtimeRef.current;
       const chunks = atomic ? (source.length ? [source] : []) : splitDurableOperations(source);
@@ -3590,6 +3644,7 @@ function BoardWorkspace({
           serializedSize,
           atomic: atomic && index === 0,
           ...(history ? { history: true } : {}),
+          ...(notebookManaged ? { notebookManaged: true } : {}),
           ...(actionId ? { actionId } : {}),
         })).finally(() => {
           objectIds.forEach((objectId) => {
@@ -4803,6 +4858,7 @@ function BoardWorkspace({
   const getLocalMutationIds = useCallback(({ includePending = true } = {}) => {
     const ids = new Set([
       ...(localLockIdsRef.current ?? []).filter(Boolean).map(String),
+      ...(includePending ? notebookControllerRef.current?.pendingObjectIds() ?? [] : []),
       ...(includePending && !rebasingPendingActionsRef.current
         ? pendingLocalObjectMutationCountsRef.current.keys()
         : []),
@@ -4921,22 +4977,38 @@ function BoardWorkspace({
             ))
             .map(([id]) => String(id)),
         );
-        const sanitizedSnapshot = applyOpsToSnapshot(snapshot, []);
-        const effectiveSnapshot = protectedDeletedIds.size
-          ? {
-            ...sanitizedSnapshot,
-            canvas: {
-              ...sanitizedSnapshot.canvas,
-              objects: (sanitizedSnapshot.canvas.objects ?? []).filter((object) => (
-                !protectedDeletedIds.has(String(object?.boardObjectId ?? ''))
-              )),
-            },
-          }
-          : sanitizedSnapshot;
-
-        applyingRemoteRef.current = true;
+        const controller = notebookControllerRef.current;
+        let confirmedSnapshot = snapshot, restored = false;
+        const previousApplyingRemote = applyingRemoteRef.current;
+        if (controller) {
+          controller.suspendProjection(); controller.pause('Восстанавливаю состояние блокнота');
+        }
         try {
+          if (controller) {
+            const checkpoint = realtimeRef.current?.getNotebookCheckpoint?.();
+            if (checkpoint && checkpoint.revision >= Number(revision)) {
+              confirmedSnapshot = checkpoint.snapshot; revision = checkpoint.revision;
+              controller.rebase(checkpoint);
+            } else controller.rebase({ snapshot, revision: Number(revision) });
+            snapshot = controller.getState().snapshot;
+          }
+          const sanitizedSnapshot = applyOpsToSnapshot(snapshot, []);
+          const effectiveSnapshot = protectedDeletedIds.size
+            ? {
+              ...sanitizedSnapshot,
+              canvas: {
+                ...sanitizedSnapshot.canvas,
+                objects: (sanitizedSnapshot.canvas.objects ?? []).filter((object) => (
+                  !protectedDeletedIds.has(String(object?.boardObjectId ?? ''))
+                )),
+              },
+            }
+            : sanitizedSnapshot;
+
+          applyingRemoteRef.current = true;
           await loadCanvasJsonProgressively(canvas, effectiveSnapshot.canvas);
+          if (canvas !== fabricCanvasRef.current || !boardReadyRef.current
+            || controller && controller !== notebookControllerRef.current) return;
           rebuildObjectRegistry();
           deduplicateBoardObjects(canvas);
           rebuildObjectRegistry();
@@ -4964,15 +5036,22 @@ function BoardWorkspace({
           updateSelectionStyleState();
           canvas.requestRenderAll();
           if (isOwner) await setCachedSnapshot(boardId, {
-            snapshot: effectiveSnapshot,
+            snapshot: controller ? confirmedSnapshot : effectiveSnapshot,
             revision: revisionRef.current,
             savedAt: Date.now(),
           });
           await pruneConfirmedActionsThrough(boardId, revisionRef.current);
           retryPendingServerImages();
           schedulePersistence(1_000);
+          restored = true;
         } finally {
-          applyingRemoteRef.current = false;
+          applyingRemoteRef.current = previousApplyingRemote;
+          if (controller && controller === notebookControllerRef.current) {
+            controller.resumeProjection();
+            // A failed/retired load is not proof that queued writes are safe to
+            // resume. Keep their durable identities until a successful recovery.
+            if (restored) controller.resume();
+          }
         }
       });
 
@@ -5139,13 +5218,17 @@ function BoardWorkspace({
     if (!isCurrent()) return false;
     const canvas = fabricCanvasRef.current;
     const pendingActions = Array.isArray(actions) ? actions : [];
-    const ops = pendingActions.flatMap((action) => (
+    let ops = pendingActions.flatMap((action) => (
       Array.isArray(action?.ops) ? action.ops : []
     ));
     const pendingBackground = [...pendingActions]
       .reverse()
       .find((action) => BACKGROUNDS.has(action?.background))?.background ?? null;
     if (!canvas || (!ops.length && !pendingBackground)) return false;
+    ops = stageNotebookVisualOperations(ops, id => {
+      const object = registeredObjectsById(id).find(candidate => !candidate.transientPreview && !candidate.transientSelectionProxy);
+      return object ? (isBoardNotebook(object) ? serializeObject(object) : serializedObjectCacheRef.current.get(object)) : null;
+    });
 
     const selectedIds = canvas.getActiveObjects()
       .map((object) => object.boardObjectId)
@@ -5154,7 +5237,7 @@ function BoardWorkspace({
     const affectedIds = affectedOperationIds(ops);
     const touchesSelection = selectedIds.some((id) => affectedIds.has(id));
     const prepared = ops.map((op) => ({ op, revived: null, serialized: null }));
-    const reviveEntries = prepared
+    let reviveEntries = prepared
       .map((entry, index) => {
         const { op } = entry;
         if (op?.type === 'upsert' && op.object?.boardObjectId) {
@@ -5174,39 +5257,65 @@ function BoardWorkspace({
       })
       .filter(Boolean);
 
-    if (reviveEntries.length) {
-      reviveEntries.forEach((entry) => {
-        prepared[entry.index].serialized = entry.serialized;
-      });
-      const serialized = reviveEntries.map((entry) => entry.serialized);
-      try {
-        await preloadSerializedImages(serialized);
-        const revived = await enlivenImageAwareObjects(serialized);
-        reviveEntries.forEach((entry, index) => {
-          prepared[entry.index].revived = revived[index] ?? null;
+    try {
+      const ordinaryEntries = [];
+      for (const entry of reviveEntries) {
+        const current = registeredObjectsById(entry.serialized.boardObjectId).find(isBoardNotebook);
+        if (current && isBoardNotebook(entry.serialized)) {
+          prepared[entry.index].serialized = entry.serialized;
+          prepared[entry.index].notebook = current;
+          // A full snapshot is used only for new notebook objects. Existing roots
+          // retain Fabric identity and only changed visible children are revived.
+          prepared[entry.index].projection = await prepareNotebookProjection(current, entry.serialized, { isCurrent });
+        } else ordinaryEntries.push(entry);
+      }
+      reviveEntries = ordinaryEntries;
+    } catch (error) {
+      prepared.forEach(entry => entry.projection?.dispose());
+      throw error;
+    }
+    try {
+      if (reviveEntries.length) {
+        reviveEntries.forEach((entry) => {
+          prepared[entry.index].serialized = entry.serialized;
         });
-      } catch {
-        for (const entry of reviveEntries) {
-          try {
-            // eslint-disable-next-line no-await-in-loop
-            await preloadSerializedImages(entry.serialized);
-            // eslint-disable-next-line no-await-in-loop
-            const [revived] = await enlivenImageAwareObjects([entry.serialized]);
-            prepared[entry.index].revived = revived ?? null;
-          } catch {
-            const serializedType = String(entry.serialized?.type ?? '').toLowerCase();
-            if (serializedType !== 'image' && entry.serialized?.objectKind !== 'image') throw new Error('Не удалось восстановить локальный объект');
-            prepared[entry.index].revived = createPendingImagePlaceholder(entry.serialized);
+        const serialized = reviveEntries.map((entry) => entry.serialized);
+        try {
+          await preloadSerializedImages(serialized);
+          const revived = await enlivenImageAwareObjects(serialized);
+          reviveEntries.forEach((entry, index) => {
+            prepared[entry.index].revived = revived[index] ?? null;
+          });
+        } catch {
+          for (const entry of reviveEntries) {
+            try {
+              // eslint-disable-next-line no-await-in-loop
+              await preloadSerializedImages(entry.serialized);
+              // eslint-disable-next-line no-await-in-loop
+              const [revived] = await enlivenImageAwareObjects([entry.serialized]);
+              prepared[entry.index].revived = revived ?? null;
+            } catch {
+              const serializedType = String(entry.serialized?.type ?? '').toLowerCase();
+              if (serializedType !== 'image' && entry.serialized?.objectKind !== 'image') throw new Error('Не удалось восстановить локальный объект');
+              prepared[entry.index].revived = createPendingImagePlaceholder(entry.serialized);
+            }
           }
         }
       }
+    } catch (error) {
+      for (const entry of prepared) {
+        entry.projection?.dispose();
+        try { entry.revived?.dispose?.(); } catch { /* detached object only */ }
+      }
+      throw error;
     }
 
     // A selective integrity repair may have awaited image/path revival while a
     // newer gesture, undo or commit arrived. Dispose detached replacements rather
     // than applying stale state. Legacy callers keep the default no-op guard.
-    if (canvas !== fabricCanvasRef.current || !isCurrent()) {
+    if (canvas !== fabricCanvasRef.current || !isCurrent() || prepared.some(entry => entry.projection && !entry.projection.isCurrent())) {
       for (const entry of prepared) {
+        entry.projection?.dispose();
         try { entry.revived?.dispose?.(); } catch { /* detached object only */ }
       }
       return false;
@@ -5224,8 +5333,16 @@ function BoardWorkspace({
           || (op?.type === 'patch' && op.reorder && op.id)
         ))
         .map(({ op }) => String(op.object?.boardObjectId ?? op.id)));
-      atomicReorderIds.forEach((objectId) => removeRegisteredObjectsById(objectId));
-      for (const { op, revived, serialized } of prepared) {
+      atomicReorderIds.forEach((objectId) => {
+        if (!prepared.some(entry => entry.projection && entry.notebook.boardObjectId === objectId)) removeRegisteredObjectsById(objectId);
+      });
+      for (const { op, revived, serialized, projection, notebook } of prepared) {
+        if (projection) {
+          if (!projection.apply()) throw new Error('Страница изменилась во время подготовки отображения');
+          serializedObjectCacheRef.current.set(notebook, { ...serialized });
+          if ((op.reorder || op.restore) && Number.isInteger(op.zIndex)) canvas.moveObjectTo(notebook, clamp(op.zIndex, 0, canvas.getObjects().length - 1));
+          touched.push(notebook); continue;
+        }
         if (op?.type === 'delete' && op.id) {
           removeRegisteredObjectsById(op.id);
           continue;
@@ -5258,7 +5375,7 @@ function BoardWorkspace({
         revived.transientLiveDraw = false;
         revived.transientAwaitingCommit = false;
         canvas.add(revived);
-        serializedObjectCacheRef.current.set(revived, serialized ?? op.object ?? serializeObject(revived));
+        serializedObjectCacheRef.current.set(revived, { ...(serialized ?? op.object ?? serializeObject(revived)) });
         touched.push(revived);
         const requestedIndex = op.type === 'upsert'
           ? (op.preserveOrder && previousIndex >= 0 ? previousIndex : op.zIndex)
@@ -5286,6 +5403,7 @@ function BoardWorkspace({
         }
       }
     } finally {
+      prepared.forEach(entry => entry.projection?.dispose());
       applyingRemoteRef.current = false;
       canvas.renderOnAddRemove = previousRenderOnAddRemove;
       canvas.requestRenderAll();
@@ -5298,6 +5416,82 @@ function BoardWorkspace({
     registeredObjectsById,
     removeRegisteredObjectsById,
   ]);
+
+  const ensureNotebookController = useCallback(async ({ refresh = false } = {}) => {
+    if (!notebookRuntimeEnabled || !boardReadyRef.current) return null;
+    const realtime = realtimeRef.current, canvas = fabricCanvasRef.current;
+    if (!realtime || !canvas) return null;
+    const existing = notebookControllerRef.current;
+    if (existing) {
+      if (refresh) {
+        await realtime.whenRuntimeReady?.();
+        if (!boardReadyRef.current || canvas !== fabricCanvasRef.current
+          || realtime !== realtimeRef.current || existing !== notebookControllerRef.current) return null;
+        const checkpoint = realtime.getNotebookCheckpoint?.();
+        if (checkpoint) existing.rebase(checkpoint);
+        existing.resume();
+      }
+      return existing;
+    }
+    if (notebookControllerInitRef.current) return notebookControllerInitRef.current;
+    const epoch = notebookControllerEpochRef.current;
+    const current = () => epoch === notebookControllerEpochRef.current && canvas === fabricCanvasRef.current && boardReadyRef.current;
+    const task = (async () => {
+      await realtime.whenRuntimeReady?.();
+      if (realtime.getNotebookVersion?.() !== 1) throw new Error('Для редактирования блокнота обновите страницу на устройстве учителя');
+      const outbox = createNotebookOutbox({ boardId, clientId: clientIdRef.current });
+      const initialPendingActions = await outbox.list();
+      // Initial/checkpoint boundary only. A normal subsequent stroke never waits
+      // for this flush and never fetches a complete board snapshot.
+      await realtime.flushPending?.();
+      if (!current()) return null;
+      const checkpoint = realtime.getNotebookCheckpoint?.();
+      if (!checkpoint) throw new Error('Подтверждённое состояние блокнота ещё не загружено');
+      const controller = createNotebookBoardController({ confirmedState: checkpoint,
+        clientId: clientIdRef.current, outbox, initialPendingActions, maxInFlight: 1,
+        canEdit: () => current() && canEditRef.current && realtime.getNotebookVersion?.() === 1,
+        publish: async action => {
+          if (!current()) throw new Error('Доска закрыта; неподтверждённые действия сохранены');
+          if (!await notebookHandlersRef.current.leaseForOperations?.(action.ops)) throw new Error('Не удалось подтвердить право редактирования блокнота');
+          const results = await sendDurableOps(action.ops, { atomic: true, actionId: action.actionId,
+            history: Boolean(action.history), skipNotebookSession: true, notebookManaged: true });
+          const result = results?.at(-1);
+          if (!result) throw new Error('Не получено подтверждение изменения блокнота');
+          return { ...result, actionId: action.actionId, clientId: action.clientId };
+        },
+        paint: async (view, { objectIds, reorderIds, isCurrent }) => {
+          if (!current()) return false;
+          const records = new Map(view.snapshot.canvas.objects.map((object, zIndex) => [String(object.boardObjectId), { object, zIndex }]));
+          const ops = [...objectIds].map(id => {
+            const record = records.get(id);
+            return record ? { type: 'upsert', ...record, preserveOrder: !reorderIds.has(id), reorder: reorderIds.has(id) }
+              : { type: 'delete', id };
+          });
+          if (!ops.length) return true;
+          const applied = await replayPendingActionsLocally([{ ops }], { isCurrent: () => current() && isCurrent() });
+          if (applied) notebookHandlersRef.current.refreshControls?.();
+          return applied;
+        },
+        onPending: event => {
+          if (!current()) return;
+          const count = Math.max(event.pendingCount, pendingServerWritesRef.current);
+          setPendingCount(count);
+          if (count) { setSaveStatus(`${count} изменений ожидают подтверждения`); setSyncTone('saving'); }
+          if (event.needsSync && notebookGapRevisionRef.current !== event.actionId) {
+            notebookGapRevisionRef.current = event.actionId;
+            queueMicrotask(() => { if (current()) syncFromServer(false); });
+          } else if (!event.needsSync) notebookGapRevisionRef.current = null;
+        },
+        onError: error => { if (current()) { setSaveStatus(error.message); setSyncTone('error'); } },
+      });
+      if (!current()) { controller.dispose(); return null; }
+      notebookControllerRef.current = controller;
+      return controller;
+    })();
+    notebookControllerInitRef.current = task;
+    try { return await task; }
+    finally { if (notebookControllerInitRef.current === task) notebookControllerInitRef.current = null; }
+  }, [boardId, replayPendingActionsLocally, sendDurableOps, syncFromServer]);
 
   const reconcileAuthoritativeIds = useCallback(async (
     objectIds,
@@ -5461,7 +5655,7 @@ function BoardWorkspace({
         // eslint-disable-next-line no-await-in-loop
         await new Promise((resolve) => window.setTimeout(resolve, 250));
       }
-      pendingActions = await realtime?.getPendingActions?.() ?? [];
+      pendingActions = (await realtime?.getPendingActions?.() ?? []).filter(action => !action.notebookManaged);
       rebasingPendingActionsRef.current = true;
 
       try {
@@ -5923,6 +6117,8 @@ function BoardWorkspace({
   const commitConditionalHistoryOps = useCallback(async (ops, actionId) => {
     const safeOps = Array.isArray(ops) ? ops.filter(Boolean) : [];
     if (!safeOps.length) return { changed: false, appliedOps: [], historyInverseOps: [] };
+    const controller = notebookControllerRef.current;
+    const notebookManaged = notebookRuntimeEnabled && isNotebookControlledAction(safeOps, controller);
     const results = await sendDurableOps(safeOps, { atomic: true, history: true, actionId });
     const result = Array.isArray(results) ? results.at(-1) : null;
     if (!result) throw new Error('Не получено подтверждение отмены');
@@ -5933,7 +6129,8 @@ function BoardWorkspace({
       throw new Error('Обновите страницу доски на устройстве учителя для синхронизации истории');
     }
     const appliedOps = Array.isArray(result.appliedOps) ? result.appliedOps : [];
-    if (result.changed !== false) {
+    if (notebookManaged) await controller.whenPainted();
+    else if (result.changed !== false) {
       // Unlike ordinary drawing, undo is not optimistically painted. Use the same
       // revision-ordered Canvas path as every receiver, never an unversioned replay
       // that could overwrite a newer commit received while waiting for the ack.
@@ -5978,7 +6175,7 @@ function BoardWorkspace({
     canvas?.discardActiveObject?.();
     await notebookQueueRef.current.catch(() => undefined);
     await deferredTransformFlushRef.current?.({ force: true });
-    await realtimeRef.current?.flushPending?.();
+    if (!notebookControllerRef.current?.pendingCount()) await realtimeRef.current?.flushPending?.();
     await authoritativeApplyQueueRef.current;
   }, [commitLocalSelectionTransaction]);
 
@@ -6115,6 +6312,47 @@ function BoardWorkspace({
         if (incomingRevision > Number(revisionRef.current ?? 0) + 1) {
           syncFromServer(true);
           return false;
+        }
+        let notebookController = notebookControllerRef.current;
+        const notebookRelated = notebookRuntimeEnabled && (isNotebookControlledAction(ops, notebookController)
+          || ops.some(op => op?.type === 'notebook' || isBoardNotebook(op?.object))
+          || [...affectedIds].some(id => registeredObjectsById(id).some(isBoardNotebook)));
+        if (notebookRelated) {
+          notebookController ||= await ensureNotebookController();
+          if (!notebookController) throw new Error('Обработчик блокнота ещё не готов');
+          notebookCommitBridgeRef.current.ack({ actionId: _actionId || `revision:${incomingRevision}`,
+            clientId: sourceClientId, revision: incomingRevision, ops, background: incomingBackground,
+            accepted: true, changed: true }, { managed: true });
+          await notebookCommitBridgeRef.current.settle();
+          if (notebookController.getConfirmedState().revision < incomingRevision) { syncFromServer(false); return false; }
+          // Retire matching live/crop previews only after the complete confirmed
+          // batch is visible. Never remove the just-installed durable fragments.
+          const completedTransactions = new Set([...selectionTransactionIds, ...deleteMatchedTransactionIds]);
+          const beforeCleanup = applyingRemoteRef.current;
+          applyingRemoteRef.current = true;
+          try {
+            for (const object of canvas.getObjects()) {
+              const transient = object.transientPreview || object.transientSelectionProxy || object.transientTransformFallback;
+              if (transient && (affectedIds.has(String(object.boardObjectId))
+                || completedTransactions.has(String(object.selectionTransactionId ?? '')))) canvas.remove(object);
+            }
+            for (const [key, session] of remoteDrawSessionsRef.current) {
+              if (affectedIds.has(String(session.objectId))) remoteDrawSessionsRef.current.delete(key);
+            }
+            for (const transactionId of completedTransactions) {
+              remoteSelectionTransactionsRef.current.set(transactionId, { phase: 'authoritative', receivedAt: Date.now() });
+              authoritativeSelectionTransactionsRef.current.set(transactionId, { revision: incomingRevision, recordedAt: Date.now() });
+            }
+          } finally { applyingRemoteRef.current = beforeCleanup; }
+          for (const id of affectedIds) {
+            remotePreviewTokensRef.current.delete(id); remotePreviewPendingRef.current.records.delete(id);
+            if (deletedIds.has(id)) remoteDeletedObjectIdsRef.current.set(id, { timestamp: Date.now(), clientId: sourceClientId, confirmed: true });
+            else remoteDeletedObjectIdsRef.current.delete(id);
+          }
+          if (hasBackgroundChange) { applyBackground(incomingBackground); authoritativeBackgroundStateRef.current = { revision: incomingRevision, background: incomingBackground }; }
+          bufferSnapshotAction(ops, incomingBackground, incomingRevision);
+          updateSelectionState(); updateSelectionStyleState();
+          return true;
         }
         const localMutationIds = getLocalMutationIds();
         if ([...affectedIds].some((objectId) => localMutationIds.has(objectId))) {
@@ -6462,6 +6700,14 @@ function BoardWorkspace({
               });
             });
           revisionRef.current = incomingRevision;
+          if (notebookControllerRef.current) {
+            notebookCommitBridgeRef.current.ack({ actionId: _actionId || `revision:${incomingRevision}`,
+              clientId: sourceClientId, revision: incomingRevision, ops, background: incomingBackground,
+              accepted: true, changed: true }, { paint: false });
+            // A previous notebook ack may have been waiting for precisely this
+            // ordinary revision. Its corrected page must now become visible too.
+            await notebookCommitBridgeRef.current.settle();
+          }
           bufferSnapshotAction(ops, incomingBackground, incomingRevision);
           queueMicrotask(() => retryPendingServerImages());
           if (transformOnly) {
@@ -6489,6 +6735,7 @@ function BoardWorkspace({
     return guardedTask;
   }, [
     applyBackground,
+    ensureNotebookController,
     applyObjectInteractivityToObjects,
     bufferSnapshotAction,
     deduplicateRegisteredObjectIds,
@@ -8289,6 +8536,50 @@ function BoardWorkspace({
     }
   }, [acquireLocalSelectionLease, mutateSelection, updatePdfControls]);
 
+  const incrementalNotebookActions = useMemo(() => createNotebookBoardActions({
+    getCanvas: () => fabricCanvasRef.current,
+    getController: async () => {
+      const controller = await ensureNotebookController();
+      if (!controller) throw new Error('Подключение блокнота ещё не готово');
+      controller.retryPaint(); return controller;
+    },
+    clientId: clientIdRef.current, getRecords: getObjectRecords,
+    acquireLease: acquireLocalSelectionLease, ownsLease: ownsSelectionLease,
+    releaseLease: releaseLocalSelectionLease,
+    mutate: work => {
+      const previous = applyingRemoteRef.current;
+      applyingRemoteRef.current = true;
+      try { return work(); } finally { applyingRemoteRef.current = previous; }
+    },
+    recordAction: (action, metadata) => {
+      if (metadata?.newText) {
+        const latest = undoStackRef.current.at(-1);
+        if (latest?.type === 'add' && latest.records?.length === 1 && latest.records[0].object.boardObjectId === metadata.sourceId) {
+          if (metadata.split) latest.records = metadata.historySource;
+          else undoStackRef.current.pop();
+        }
+      }
+      recordAction(action);
+    },
+    onChange: objects => {
+      for (const object of objects) serializedObjectCacheRef.current.set(object, serializeObject(object));
+      penTransformSpatialApiRef.current?.updateObjects?.(objects);
+      applyObjectInteractivityToObjects(objects, { render: false });
+      updatePdfControls(); updateSelectionState(); schedulePersistence();
+    },
+    onError: (error, action) => {
+      if (error.code === 'notebook_disposed') return;
+      if (error.code === 'notebook_action_rejected' && action) {
+        undoStackRef.current = undoStackRef.current.filter(entry => entry !== action);
+        redoStackRef.current = redoStackRef.current.filter(entry => entry !== action);
+        updateHistoryButtons();
+      }
+      setSaveStatus(error.message); setSyncTone('error');
+    },
+  }), [ensureNotebookController, getObjectRecords, acquireLocalSelectionLease, ownsSelectionLease,
+    releaseLocalSelectionLease, recordAction, applyObjectInteractivityToObjects, updatePdfControls,
+    updateSelectionState, schedulePersistence, updateHistoryButtons]);
+
   // Serialize notebook mutations locally as well as at the shared authority. A page
   // flip cannot overtake a stroke that is still preparing its clipped fragments.
   const queueNotebookMutation = useCallback((work) => {
@@ -8329,15 +8620,23 @@ function BoardWorkspace({
       isBoardNotebook(candidate) && notebookObjectIntersection(candidate, object).intersects) ?? null;
   }, []);
 
-  const captureIntoNotebook = useCallback((object, { before = [], published = false, newText = false } = {}) => {
+  const captureIntoNotebook = useCallback(async (object, { before = [], published = false, newText = false } = {}) => {
     const candidate = notebookForObject(object);
-    if (!candidate) return Promise.resolve(false);
-    const pageNumber = candidate.notebookPageNumber;
+    const pageNumber = notebookRuntimeEnabled
+      ? consumeNotebookGesturePage(object, candidate) : candidate?.notebookPageNumber;
+    if (!candidate) return false;
     return queueNotebookMutation(async () => {
       const canvas = fabricCanvasRef.current;
       const notebook = canvas?.getObjects().find(item => item.boardObjectId === candidate.boardObjectId);
       if (!notebook || !canvas.getObjects().includes(object)) return false;
       if (notebook.notebookPageNumber !== pageNumber) throw new Error('Страница блокнота изменилась — повторите действие');
+      if (notebookRuntimeEnabled) {
+        if (published) {
+          await deferredTransformFlushRef.current?.({ force: true });
+          await realtimeRef.current?.flushPending?.();
+        }
+        return incrementalNotebookActions.capture(notebook, object, { before, published, newText, pageNumber });
+      }
       const leaseTarget = published ? [notebook, object] : notebook;
       try {
         if (!await acquireLocalSelectionLease(leaseTarget)) return false;
@@ -8403,7 +8702,7 @@ function BoardWorkspace({
     });
   }, [notebookForObject, queueNotebookMutation, acquireLocalSelectionLease, ownsSelectionLease,
     getObjectRecords, recordAction, commitNotebookOps, schedulePersistence,
-    releaseLocalSelectionLease, updateSelectionState, removeRegisteredObjectsById]);
+    releaseLocalSelectionLease, updateSelectionState, removeRegisteredObjectsById, incrementalNotebookActions]);
 
   const addNotebook = useCallback(() => {
     if (!canEditRef.current) return;
@@ -8417,6 +8716,7 @@ function BoardWorkspace({
     const canvas = fabricCanvasRef.current;
     const notebook = canvas?.getActiveObject();
     if (!canEditRef.current || !isBoardNotebook(notebook) || notebook.notebookPageNumber === pageNumber) return;
+    if (notebookRuntimeEnabled) return incrementalNotebookActions.changePage(notebook, pageNumber);
     setNotebookBusy(true);
     try {
       if (!await acquireLocalSelectionLease(notebook)) return;
@@ -8429,7 +8729,7 @@ function BoardWorkspace({
       canvas.requestRenderAll();
     } catch (error) { await syncFromServer(true); throw error; }
     finally { setNotebookBusy(false); }
-  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, commitNotebookOps, updatePdfControls, assertNotebookLease, syncFromServer]);
+  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, commitNotebookOps, updatePdfControls, assertNotebookLease, syncFromServer, incrementalNotebookActions]);
 
   const editNotebookText = useCallback(async (notebook, point) => {
     const children = notebook?.getPageObjects?.() ?? [];
@@ -8447,6 +8747,15 @@ function BoardWorkspace({
     const canvas = fabricCanvasRef.current;
     if (!canvas?.getObjects().includes(notebook) || notebook.notebookPageNumber !== pageNumber
       || !notebook.getPageObjects().includes(child)) throw new Error('Страница изменилась; откройте текст заново');
+    if (notebookRuntimeEnabled) {
+      setNotebookBusy(true);
+      try {
+        if (await incrementalNotebookActions.saveText(editing, text)) {
+          notebookTextEditRef.current = null; setNotebookTextEditor(null);
+        }
+      } finally { setNotebookBusy(false); }
+      return;
+    }
     setNotebookBusy(true);
     try {
       if (!await acquireLocalSelectionLease(notebook)) return;
@@ -8490,8 +8799,9 @@ function BoardWorkspace({
       canvas.requestRenderAll();
     } catch (error) { await syncFromServer(true); throw error; }
     finally { setNotebookBusy(false); }
-  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, recordAction, commitNotebookOps, assertNotebookLease, syncFromServer]);
+  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, recordAction, commitNotebookOps, assertNotebookLease, syncFromServer, incrementalNotebookActions]);
   const eraseNotebookChildren = useCallback((entries) => queueNotebookMutation(async () => {
+    if (notebookRuntimeEnabled) return incrementalNotebookActions.erase(entries);
     const canvas = fabricCanvasRef.current;
     const notebooks = entries.map(entry => canvas?.getObjects().find(object => object.boardObjectId === entry.id)).filter(isBoardNotebook);
     if (!notebooks.length || !await acquireLocalSelectionLease(notebooks)) return;
@@ -8509,9 +8819,20 @@ function BoardWorkspace({
     canvas.requestRenderAll();
     try { await commitNotebookOps(createConditionalRecordPatchOps(before, after)); }
     finally { if (ownsSelectionLease(notebooks)) releaseLocalSelectionLease(notebooks); }
-  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, recordAction, commitNotebookOps, releaseLocalSelectionLease, ownsSelectionLease]);
+  }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, recordAction, commitNotebookOps, releaseLocalSelectionLease, ownsSelectionLease, incrementalNotebookActions]);
   notebookHandlersRef.current = { capture: captureIntoNotebook, candidate: notebookForObject,
-    editText: editNotebookText, erase: eraseNotebookChildren };
+    editText: editNotebookText, erase: eraseNotebookChildren, ensure: ensureNotebookController,
+    refreshControls() { updatePdfControls(); updateSelectionState(); },
+    async leaseForOperations(ops) {
+      const confirmed = new Set((notebookControllerRef.current?.getConfirmedState().snapshot.canvas.objects ?? [])
+        .map(object => String(object.boardObjectId)));
+      const ids = [...operationObjectIds(ops)].filter(id => confirmed.has(id));
+      if (!ids.length) return true;
+      const lease = selectionLeaseRef.current;
+      if (lease.state === 'granted' && lease.expiresAt > Date.now() && ids.every(id => lease.ids.includes(id))) return true;
+      return acquireLocalSelectionLease(ids.map(id => registeredObjectsById(id)[0] ?? { boardObjectId: id }));
+    },
+  };
 
   useEffect(() => {
     const canvasElement = canvasElementRef.current;
@@ -9296,7 +9617,9 @@ function BoardWorkspace({
     }
     let disposeThumbnail = null;
     loadInitialData().then(() => {
-      if (disposed || !isOwner) return;
+      if (disposed) return;
+      notebookHandlersRef.current.ensure?.().catch(error => { if (!disposed) { setSaveStatus(error.message); setSyncTone('error'); } });
+      if (!isOwner) return;
       disposeThumbnail = installBoardThumbnail({ canvas, window, document,
         save: (thumbnail) => saveBoardThumbnail(boardId, thumbnail),
       });
@@ -9315,6 +9638,7 @@ function BoardWorkspace({
       && !applyingRemoteRef.current
       && !historyCommandBusyRef.current
       && pendingServerWritesRef.current === 0
+      && !notebookControllerRef.current?.pendingCount()
       && pendingLocalObjectMutationCountsRef.current.size === 0
       && pendingLocalBackgroundMutationCountRef.current === 0
       && localLockIdsRef.current.length === 0
@@ -9371,6 +9695,7 @@ function BoardWorkspace({
       name: participantName,
       permission,
       webrtcLiveV1: isWebrtcLiveV1Enabled(),
+      enableNotebookOperations: notebookRuntimeEnabled,
       getKnownRevision: () => Number(revisionRef.current ?? 0),
       canVerifyCanvas,
       onVerificationRecords(records, context) {
@@ -9420,6 +9745,22 @@ function BoardWorkspace({
           opTypes: committedOpsForDiagnostic.map((operation) => operation?.type ?? 'unknown'),
           objectIds: [...affectedOperationIds(committedOpsForDiagnostic)],
         });
+        const notebookController = notebookControllerRef.current;
+        if (notebookController && (action?.notebookManaged || !action?.history)) {
+          try {
+            notebookCommitBridgeRef.current.ack({ ...result, actionId: result?.actionId || action.actionId,
+              clientId: action.clientId || clientIdRef.current }, { managed: Boolean(action?.notebookManaged), paint: Boolean(action?.notebookManaged) });
+          } catch (error) { setSaveStatus(error.message); setSyncTone('error'); notebookController.pause(error); }
+        }
+        if (action?.notebookManaged) {
+          authoritativeApplyQueueRef.current = authoritativeApplyQueueRef.current.catch(() => undefined).then(async () => {
+            if (notebookController !== notebookControllerRef.current) return;
+            await notebookCommitBridgeRef.current.settle();
+            if (result?.needsSync || Number(result.revision) > notebookController.getConfirmedState().revision) syncFromServer(false);
+            else if (!notebookController.pendingCount()) { setSaveStatus('Сохранено'); setSyncTone('saved'); }
+          }).catch(error => { if (!disposed) { setSaveStatus(error.message); setSyncTone('error'); } });
+          return;
+        }
         if (action?.history) return;
         const currentRevision = Number(revisionRef.current ?? 0);
         const committedRevision = Number(result?.revision ?? currentRevision);
@@ -9496,9 +9837,12 @@ function BoardWorkspace({
         }
       },
       onPendingChange(count) {
+        if (count === 0 && notebookControllerRef.current) {
+          notebookCommitBridgeRef.current.settle().catch(error => { if (!disposed) { setSaveStatus(error.message); setSyncTone('error'); } });
+        }
         pencilDiagnosticsRef.current?.record('DURABLE pending', { count: Number(count ?? 0) });
         pendingServerWritesRef.current = count;
-        setPendingCount(count);
+        setPendingCount(Math.max(count, notebookControllerRef.current?.pendingCount() ?? 0));
         if (count > 0 && navigator.onLine !== false) {
           setSaveStatus(count === 1 ? 'Сохраняется…' : `${count} изменений ожидают отправки`);
           setSyncTone('saving');
@@ -9513,6 +9857,10 @@ function BoardWorkspace({
         }
       },
       onStatus(status) {
+        if (notebookRuntimeEnabled && ['SUBSCRIBED', 'RECOVERED'].includes(status)) {
+          notebookHandlersRef.current.ensure?.({ refresh: true }).catch(error => { if (!disposed) { setSaveStatus(error.message); setSyncTone('error'); } });
+        }
+        if (status === 'ACTION_CONFIRMED' && notebookControllerRef.current?.pendingCount()) return;
         if (status === 'SUBSCRIBED') {
           setSaveStatus(isSupabaseConfigured ? 'Сохранено' : 'Локальный режим');
           setSyncTone('saved');
@@ -9778,7 +10126,17 @@ function BoardWorkspace({
       markObject(object, clientId);
       if (!isTextObject(object)) {
         try { if (await notebookHandlersRef.current.capture?.(object)) return; }
-        catch { if (!canvas.getObjects().includes(object)) return; }
+        catch (error) {
+          if (notebookRuntimeEnabled) {
+            // Keep unqueued input visible and explicitly unsaved. Never silently
+            // turn a refused notebook gesture into a different ordinary board edit.
+            setSaveStatus(error.message || 'Не удалось сохранить штрих в блокнот');
+            setSyncTone('error');
+            canvas.requestRenderAll();
+            return;
+          }
+          if (!canvas.getObjects().includes(object)) return;
+        }
       }
       const records = [recordForJustAddedObject(object)];
       pencilDiagnosticsRef.current?.record('BOARD commitAddedObject', {
@@ -10446,6 +10804,7 @@ function BoardWorkspace({
     }
 
     const notebookEraserEntries = new Map();
+    let partialNotebookGesturePages = null;
     function eraseAtClientPoint(clientX, clientY) {
       const pointer = objectEraserPointerRef.current;
       if (pointer?.active && pointer.lastX != null
@@ -10565,6 +10924,7 @@ function BoardWorkspace({
         if (queueIndex >= 0) pendingPencilQueueRef.current.splice(queueIndex, 1);
         window.clearTimeout(pendingPencil.cancelTimer);
         path.boardObjectId = pendingPencil.objectId;
+        if (notebookRuntimeEnabled) bindNotebookGestureTarget(path, pendingPencil.notebookGesturePages);
         path.creationSessionId = pendingPencil.sessionId;
         path.creationClientId = clientId;
         if (activePencilRef.current === pendingPencil) activePencilRef.current = null;
@@ -10583,6 +10943,8 @@ function BoardWorkspace({
         removeRegisteredObjectsByCreationSession(clientId, pendingPencil.sessionId, path);
       }
       if (isPartialEraserPath) {
+        if (notebookRuntimeEnabled) bindNotebookGestureTarget(path, partialNotebookGesturePages);
+        partialNotebookGesturePages = null;
         path.set({
           globalCompositeOperation: 'destination-out',
           isEraserPath: true,
@@ -10948,6 +11310,7 @@ function BoardWorkspace({
 
     canvas.on('text:editing:entered', ({ target }) => {
       if (!target?.boardObjectId) return;
+      if (notebookRuntimeEnabled) bindNotebookGestureTarget(target, snapshotNotebookGesturePages(canvas));
       textBeforeRef.current.set(target.boardObjectId, getObjectRecords([target]));
       sendLocalLock(target, true);
       // New text objects use a visible placeholder. The first time the user enters
@@ -11544,6 +11907,7 @@ function BoardWorkspace({
         });
         if (!object) return;
         markObject(object, clientId);
+        if (notebookRuntimeEnabled) bindNotebookGestureTarget(object, snapshotNotebookGesturePages(canvas));
         const baseWidth = Math.max(1, Number(object.width ?? 1));
         const baseHeight = Math.max(1, Number(object.height ?? 1));
         object.set({
@@ -11627,6 +11991,7 @@ function BoardWorkspace({
         const pendingPencil = {
           objectId,
           sessionId,
+          notebookGesturePages: notebookRuntimeEnabled ? snapshotNotebookGesturePages(canvas) : null,
           pointerId,
           pointerType: nativeEvent?.pointerType ?? 'unknown',
           generation,
@@ -11649,6 +12014,10 @@ function BoardWorkspace({
           x: Number(point.x),
           y: Number(point.y),
         });
+      }
+
+      if (notebookRuntimeEnabled && activeToolRef.current === 'eraser' && eraserModeRef.current === 'partial') {
+        partialNotebookGesturePages = snapshotNotebookGesturePages(canvas);
       }
 
       if (activeToolRef.current === 'text') {
@@ -11703,6 +12072,7 @@ function BoardWorkspace({
           evented: false,
         });
         markObject(line, clientId);
+        if (notebookRuntimeEnabled) bindNotebookGestureTarget(line, snapshotNotebookGesturePages(canvas));
         const sessionId = beginLiveDraw('line', line.boardObjectId, point, {
           stroke: hexToRgba(colorRef.current, opacityRef.current),
           width: widthRef.current,
@@ -13979,6 +14349,11 @@ function BoardWorkspace({
       window.removeEventListener('online', syncOnOnline);
       document.removeEventListener('visibilitychange', syncOnVisibility);
       boardReadyRef.current = false;
+      notebookControllerEpochRef.current++;
+      notebookControllerRef.current?.dispose();
+      notebookControllerRef.current = null;
+      notebookControllerInitRef.current = null;
+      notebookCommitBridgeRef.current?.clear();
       if (selectionBoxRef.current) {
         canvas.remove(selectionBoxRef.current);
         selectionBoxRef.current = null;

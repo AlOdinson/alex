@@ -241,3 +241,10 @@ test('reliable board-control methods use WebRTC control publisher while signalin
   assert.deepEqual(ably.map((entry) => entry.event), ['screen-share-signal']);
   assert.equal(durable.length, 1, 'background canonical state remains a durable authority action');
 });
+
+test('notebook queue ownership reaches local commit observer but not transport payload', async () => {
+  let observed, sent;
+  const core=createBrowserAuthorityRealtimeCore({clientId:'writer',session:{whenRuntimeReady:async()=>{},sendOps:async(ops,options)=>{sent=options;return {actionId:options.actionId,revision:1,ops};}},onCommit:(_result,action)=>{observed=action;}});
+  await core.sendOps([{type:'delete',id:'a'}],{actionId:'queued',notebookManaged:true});
+  assert.equal(observed.notebookManaged,true);assert.equal(sent.notebookManaged,undefined);await core.disconnect();
+});

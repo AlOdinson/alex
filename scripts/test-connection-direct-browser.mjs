@@ -57,7 +57,7 @@ async function createPage(context,id,owner=false,createBoard=false) {
     window.__connections=[];window.__pairs=[];window.__live=[];window.__states=[];window.__errors=[];
     const createConnection=options=>{const peer=createBrowserPeerConnection(options);window.__connections.push(peer);return peer;};
     const createPair=options=>{const pair=createDualPathPeerPair(options);window.__pairs.push(pair);return pair;};
-    const session=createBrowserBoardSession({boardId,clientId:id,permission:owner?'owner':'edit',webrtcLiveV1:true,
+    const session=createBrowserBoardSession({boardId,clientId:id,permission:owner?'owner':'edit',webrtcLiveV1:true,enableNotebookOperations:true,
       sendScreenShareSignal:payload=>window.routeSignal(JSON.parse(JSON.stringify(payload))),
       onLiveEvent:(type,payload,envelope)=>window.__live.push({type,payload,envelope}),
       onRuntimeState:(state,detail)=>window.__states.push({state,detail}),onError:error=>window.__errors.push(error.message),
@@ -113,6 +113,39 @@ try {
   assert.equal(await revision(owner),2,'IndexedDB authority survives owner replacement');
   await change(s2,'after-reload');await wait('durable edit after owner reload',async()=>await revision(owner)===3&&await revision(s1)===3);
   results.push('exclusive owner tab handoff, persisted board and student reconnect');
+  await wait('notebook capability negotiated',async()=>await owner.evaluate(()=>window.__session.getNotebookVersion()===1)&&await s1.evaluate(()=>window.__session.getNotebookVersion()===1)&&await s2.evaluate(()=>window.__session.getNotebookVersion()===1));
+  await owner.evaluate(async()=>{
+    const sample=i=>({type:'Path',boardObjectId:`initial-${i}`,path:Array.from({length:40},(_,k)=>[k?'L':'M',k,k+i%30]),stroke:'black',strokeWidth:2,fill:null});
+    await window.__session.sendOps([{type:'upsert',object:{type:'BoardNotebook',boardObjectId:'large-notebook',width:520,height:480,notebookPageNumber:20,
+      notebookPages:Array.from({length:20},()=>Array.from({length:300},(_,i)=>sample(i)))}}],{actionId:'large-notebook-create'});
+  });
+  await wait('large notebook checkpoint fanout',async()=>await revision(s1)===4&&await revision(s2)===4);
+  for(const [writer,label] of [[owner,'owner'],[s1,'student']]) {
+    const report=await writer.evaluate(async label=>{
+      let maximum=0,last=null;
+      for(let i=0;i<300;i++){
+        const ops=[{type:'notebook',version:1,id:'large-notebook',pageNumber:20,changes:[{type:'insert',ifAbsent:true,object:{type:'Path',boardObjectId:`${label}-ink-${i}`,path:Array.from({length:40},(_,k)=>[k?'L':'M',k,k+i%30]),stroke:'black',strokeWidth:2,fill:null}}]}];
+        maximum=Math.max(maximum,new TextEncoder().encode(JSON.stringify(ops)).length);
+        last=await window.__session.sendOps(ops,{actionId:`nb-${label}-${i}`});
+      }
+      window.__lastNotebookInverse=last.historyInverseOps;
+      return {maximum,revision:window.__session.getRevision()};
+    },label);
+    assert.ok(report.maximum<=16384);assert.equal(report.revision,label==='owner'?304:604);
+  }
+  await wait('600 compact notebook edits converge',async()=>await revision(owner)===604&&await revision(s1)===604&&await revision(s2)===604);
+  const notebookState=page=>page.evaluate(()=>window.__session.getNotebookCheckpoint().snapshot.canvas.objects.find(o=>o.boardObjectId==='large-notebook').notebookPages);
+  const expected=await notebookState(owner);
+  assert.equal(expected.length,20);assert.equal(expected[19].length,900);
+  assert.deepEqual(await notebookState(s1),expected);assert.deepEqual(await notebookState(s2),expected);
+  await s1.evaluate(async()=>{const result=await window.__session.sendOps(window.__lastNotebookInverse,{actionId:'nb-student-undo',history:true});window.__lastNotebookInverse=result.historyInverseOps;});
+  await wait('notebook compact undo fanout',async()=>await revision(owner)===605&&await revision(s2)===605);
+  assert.equal((await notebookState(s2))[19].length,899);
+  await s1.evaluate(()=>window.__session.sendOps(window.__lastNotebookInverse,{actionId:'nb-student-redo',history:true}));
+  await wait('notebook compact redo fanout',async()=>await revision(owner)===606&&await revision(s2)===606);
+  assert.deepEqual(await notebookState(s2),await notebookState(owner));
+  results.push('20 pages x 300 strokes, 300 teacher + 300 student compact edits, convergence and undo/redo over real SCTP');
+
   assert.deepEqual(errors,[]);
   const diagnostics=await owner.evaluate(()=>window.__session.getConnectionDiagnostics());
   for(const peer of diagnostics)assert.notEqual(peer.route?.localType,'relay');

@@ -1,3 +1,7 @@
+import { memoizeImmutableNotebookImage } from './notebookAssets.js';
+import { navigateNotebookPage, retireNotebookPageWork } from './notebookPageRuntime.js';
+export { applyPageDeltaToFabric } from './notebookPageRuntime.js';
+import { freezeNotebookRecord as freezeRecord } from './notebookRecords.js';
 import { randomToken } from './ids.js';
 import { notebookRenderCacheFor } from './notebookRenderCache.js';
 import { Group, Rect, FabricImage, FabricObject, LayoutManager, FixedLayout, Point, classRegistry, controlsUtils, util } from 'fabric';
@@ -8,13 +12,7 @@ const childFields = ['id', 'shapeType', 'boardObjectId', 'objectKind', 'storageP
 const inert = (object) => object.set({ selectable: false, evented: false });
 // Serialized page data is copy-on-write. Callers retaining a before-record never
 // share mutable Fabric properties with a subsequent edit.
-function freezeRecord(value) {
-  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
-    Object.values(value).forEach(freezeRecord);
-    Object.freeze(value);
-  }
-  return value;
-}
+
 function releaseSurface(object) {
   if (object?._cacheCanvas) object._cacheCanvas.width = object._cacheCanvas.height = 0;
   object?._removeCacheCanvas?.();
@@ -39,7 +37,7 @@ export class BoardNotebook extends Group {
     this._pageContentInvalid = false;
     this.objectCaching = true;
     this.noScaleCache = false;
-    this.on('removed', () => this.releasePageCache());
+    this.on('removed', () => { this.releasePageCache(); retireNotebookPageWork(this); });
     this.notebookPageNumber = Math.max(1, notebookPageNumber);
     this.clipPath = new Rect({ width: this.width, height: this.height, originX: 'center', originY: 'center', strokeWidth: 0 });
     this.setControlsVisibility({ mt: false, mb: false, ml: false, mr: false, mtr: false });
@@ -60,6 +58,7 @@ export class BoardNotebook extends Group {
   getPageObjects() { return this.getObjects(); }
 
   addPageObject(object) {
+    memoizeImmutableNotebookImage(object);
     if (!object.boardObjectId) object.boardObjectId = randomToken(14);
     // Group.add accepts world coordinates; preserve the prepared local placement.
     const matrix = object.calcOwnMatrix();
@@ -93,6 +92,31 @@ export class BoardNotebook extends Group {
     previous.forEach(object => object.dispose());
   }
 
+  applyPreparedPageDelta(records, prepared, pages) {
+    const previous = this.getPageObjects();
+    const byId = new Map(previous.map(object => [String(object.boardObjectId), object]));
+    const fresh = new Map(prepared.map(object => [String(object.boardObjectId), object]));
+    const desired = records.map(record => fresh.get(String(record.boardObjectId)) ?? byId.get(String(record.boardObjectId)));
+    if (desired.some(object => !object) || new Set(desired).size !== desired.length) {
+      throw new Error('Notebook visible page differs from the delta baseline');
+    }
+    const retained = new Set(desired), removed = previous.filter(object => !retained.has(object));
+    const matrices = prepared.map(object => object.calcOwnMatrix());
+    if (removed.length) this.remove(...removed);
+    if (prepared.length) this.add(...prepared.map(inert));
+    prepared.forEach((object, index) => {
+      util.applyTransformToObject(object, matrices[index]); object.setCoords();
+    });
+    // Only new/replaced children move. Existing siblings keep their Fabric object,
+    // masks, and immutable serialization; normal one-stroke work stays bounded.
+    desired.forEach((object, index) => {
+      if (fresh.has(String(object.boardObjectId))) this.moveObjectTo(object, index);
+      this._pageRecords.set(object, records[index]);
+    });
+    removed.forEach(object => { this._pageRecords.delete(object); object.dispose(); });
+    this.notebookPages = pages; this._pageContentInvalid = false; this.dirty = true;
+  }
+
   invalidatePageContent(child) {
     if (child) this._pageRecords.delete(child);
     else this._pageRecords = new WeakMap();
@@ -116,7 +140,7 @@ export class BoardNotebook extends Group {
       }
       const pages = this.notebookPages.slice();
       while (pages.length < this.notebookPageNumber) pages.push(Object.freeze([]));
-      pages[this.notebookPageNumber - 1] = Object.freeze(page);
+      pages[this.notebookPageNumber - 1] = freezeRecord(page);
       this.notebookPages = Object.freeze(pages);
     }
     this._pageContentInvalid = false;
@@ -159,6 +183,7 @@ export class BoardNotebook extends Group {
   isNotebookCompositingIsolated() { return Boolean(this.ownCaching && this._cacheCanvas); }
 
   dispose() {
+    retireNotebookPageWork(this, true);
     this.releasePageCache();
     return super.dispose();
   }
@@ -177,16 +202,8 @@ classRegistry.setClass(BoardNotebook);
 
 export const createBoardNotebook = (options = {}) => new BoardNotebook(options);
 
-export async function setNotebookPage(notebook, page) {
-  if (!isBoardNotebook(notebook) || !Number.isInteger(page) || page < 1 || page > Math.max(notebook.notebookPageNumber, notebook.notebookPages.length) + 1) return false;
-  if (page === notebook.notebookPageNumber) return true;
-  if (notebook._pageContentInvalid) notebook.syncPage({ invalidate: false });
-  const objects = await util.enlivenObjects(notebook.notebookPages[page - 1] || []);
-  notebook.notebookPageNumber = page;
-  notebook.replacePageObjects(objects, notebook.notebookPages[notebook.notebookPageNumber - 1]);
-  notebook.dirty = true;
-  notebook.canvas?.requestRenderAll();
-  return true;
+export function setNotebookPage(notebook, page, options = {}) {
+  return navigateNotebookPage(notebook, page, options);
 }
 
 // Separating-axis polygon test also handles rotated notebooks and thin paths.
@@ -231,7 +248,8 @@ export async function captureNotebookObject(notebook, object) {
   if (split && ['text', 'i-text', 'textbox'].includes(String(object.type).toLowerCase())) {
     const center = prepared.getCenterPoint();
     const bitmap = prepared.toCanvasElement({ enableRetinaScaling: false });
-    prepared = new FabricImage(bitmap, { left: center.x, top: center.y, originX: 'center', originY: 'center' });
+    prepared.dispose();
+    prepared = memoizeImmutableNotebookImage(new FabricImage(bitmap, { left: center.x, top: center.y, originX: 'center', originY: 'center' }));
   }
   const worldMatrix = prepared.calcTransformMatrix();
   const inside = prepared;

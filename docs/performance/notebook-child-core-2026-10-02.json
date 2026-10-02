@@ -1,0 +1,60 @@
+{
+  "scenario": "Pure notebook child model/preflight/history/apply; wire capability disabled in production",
+  "exclusions": [
+    "network",
+    "storage",
+    "Fabric rendering",
+    "screen sharing",
+    "physical devices"
+  ],
+  "environment": {
+    "node": "v22.16.0",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "AMD EPYC 9V74 80-Core Processor"
+  },
+  "generatedAt": "2026-10-02T08:03:09.084Z",
+  "structuralGatesPassed": true,
+  "results": [
+    {
+      "pages": 1,
+      "strokesPerPage": 300,
+      "pointsPerStroke": 40,
+      "measuredRepeats": 75,
+      "preparationP50Ms": 0.3735150000000118,
+      "preparationP95Ms": 0.6821340000000049,
+      "forwardBytes": 735,
+      "inverseBytes": 674
+    },
+    {
+      "pages": 6,
+      "strokesPerPage": 300,
+      "pointsPerStroke": 40,
+      "measuredRepeats": 75,
+      "preparationP50Ms": 0.34557399999999916,
+      "preparationP95Ms": 0.6446789999999964,
+      "forwardBytes": 735,
+      "inverseBytes": 674
+    },
+    {
+      "pages": 12,
+      "strokesPerPage": 300,
+      "pointsPerStroke": 40,
+      "measuredRepeats": 75,
+      "preparationP50Ms": 0.39928299999999695,
+      "preparationP95Ms": 2.500376999999986,
+      "forwardBytes": 736,
+      "inverseBytes": 675
+    },
+    {
+      "pages": 20,
+      "strokesPerPage": 300,
+      "pointsPerStroke": 40,
+      "measuredRepeats": 75,
+      "preparationP50Ms": 0.34721700000000055,
+      "preparationP95Ms": 0.5974180000000047,
+      "forwardBytes": 736,
+      "inverseBytes": 675
+    }
+  ]
+}

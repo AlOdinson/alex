@@ -1,3 +1,4 @@
+import { isNotebookRuntimeEnabled } from './notebookProtocol.js';
 import { copySerializedBoardImages } from './imageStorage.js';
 import { readStudentOfflineSnapshot } from './studentOfflineCache.js';
 import { applyAuthorityActions, applyAuthorityOps } from './authoritySnapshot.js';
@@ -57,6 +58,7 @@ function accessMetadata(board, permission, snapshot, revision) {
 }
 
 export function createBrowserBoardRepository({
+  enableNotebookOperations = isNotebookRuntimeEnabled(),
   getBoard = getAuthorityBoard,
   listBoards = listAuthorityBoards,
   createBoard = (title, studentName) => localBoardLibrary.createBoard(title, studentName),
@@ -84,7 +86,7 @@ export function createBrowserBoardRepository({
     else if (String(key ?? '') === String(board.shareKey ?? '')) permission = board.guestMode === 'view' ? 'view' : 'edit';
     if (!permission) return null;
 
-    const authority = await openAuthority({ boardId: board.boardId });
+    const authority = await openAuthority({ boardId: board.boardId, enableNotebookOperations });
     return accessMetadata(
       board,
       permission,
@@ -253,7 +255,7 @@ export function createBrowserBoardRepository({
       if (board) {
         const access = await localAccess(board, key);
         if (!access) return [];
-        const authority = await openAuthority({ boardId: board.boardId });
+        const authority = await openAuthority({ boardId: board.boardId, enableNotebookOperations });
         return authority.getCommitsAfter(safeRevision(sinceRevision), limit);
       }
       if (!String(key ?? '').trim()) return [];
@@ -301,7 +303,7 @@ export function createBrowserBoardRepository({
 
     async duplicateBoard(boardId, ownerKey, title = null) {
       const source = await requireOwner(boardId, ownerKey);
-      const authority = await openAuthority({ boardId: source.boardId });
+      const authority = await openAuthority({ boardId: source.boardId, enableNotebookOperations });
       const created = await createBoard(title ?? `${source.title ?? 'Доска'} — копия`, source.studentName ?? '');
       await saveSnapshot(created.boardId, await copySerializedBoardImages(authority.getSnapshot(), created.boardId), 0);
       return {
@@ -346,7 +348,7 @@ export function createBrowserBoardRepository({
 
     async applyBoardAction(boardId, key, action) {
       const board = await requireOwner(boardId, key);
-      const authority = await openAuthority({ boardId: board.boardId });
+      const authority = await openAuthority({ boardId: board.boardId, enableNotebookOperations });
       const commit = await authority.commitAction(action);
       return {
         revision: safeRevision(commit.revision),
@@ -393,7 +395,7 @@ export function createBrowserBoardRepository({
       if (typeof runtime?.compactSnapshot === 'function') {
         return safeRevision(await runtime.compactSnapshot());
       }
-      const authority = await openAuthority({ boardId: id });
+      const authority = await openAuthority({ boardId: id, enableNotebookOperations });
       if (typeof authority?.compactSnapshot !== 'function') {
         throw new Error('Teacher authority snapshot compaction is unavailable');
       }

@@ -10,6 +10,7 @@ export function createStudentBoardRuntime({
   applyCommit,
   installSnapshot,
   webrtcLiveEnabled = false,
+  enableNotebookOperations = false,
   rtcConfig = {},
   onAck = () => {},
   onState = () => {},
@@ -41,6 +42,7 @@ export function createStudentBoardRuntime({
   network = createNetwork({
     onProgress,
     onVerificationMode,
+    enableNotebookOperations,
     boardId: safeBoardId,
     clientId: safeClientId,
     teacherId: safeTeacherId,
@@ -100,6 +102,7 @@ export function createStudentBoardRuntime({
       return network?.getLiveStats?.() ?? null;
     },
 
+    getNotebookVersion() { return network?.getNotebookVersion?.() ?? 0; },
     getVerificationMode() { return network?.getVerificationMode?.() ?? { version: 0, epoch: '' }; },
     verifyObjects(request) {
       return network?.verifyObjects?.(request) ?? Promise.reject(new Error('Verification session is unavailable'));

@@ -1,3 +1,4 @@
+import { hasNotebookOperations, assertNotebookCommitReadable, notebookUpdateRequired, notebookUpdateSnapshot } from './notebookProtocol.js';
 import { collectMediaAssetIds, mediaUpdateSnapshot } from './mediaReferences.js';
 import { boardMediaAssets } from './mediaAssetStore.js';
 import { createMediaAssetTransfer, isMediaMessage } from './mediaAssetTransfer.js';
@@ -78,12 +79,37 @@ export function createTeacherPeerHub({
   const peers = new Map();
   const mediaPeers = new Map();
   const mediaVersions = new Map();
+  const notebookVersions = new Map();
+  const notebookNotices = new Map();
+  const notebookVersion = () => authority.getNotebookVersion?.() === 1 ? 1 : 0;
+  const notebookRequired = () => authority.getNotebookRequirement?.() === 1;
+  const notebookFields = () => notebookVersion() === 1
+    ? { notebookVersion: 1, ...(notebookRequired() ? { notebookRequired: 1 } : {}) } : {};
+  const peerNotebookVersion = peer => notebookVersions.get([...peers].find(([, value]) => value === peer)?.[0]) ?? null;
+  const needsNotebookNotice = peer => notebookRequired() && peerNotebookVersion(peer) === 0;
+  const sendNotebookNotice = async peer => {
+    const revision = safeRevision(authority.getRevision());
+    if (notebookNotices.get(peer) === revision) return;
+    notebookNotices.set(peer, revision);
+    try {
+      await peer.send('board-control', { event: 'mode', payload: { mode: 'view' } });
+      await peer.sendTextTransfer('snapshot', JSON.stringify({ snapshot: notebookUpdateSnapshot(), revision,
+        notebookVersion: 1, notebookRequired: 1 }), { transferId: createTransferId(), writeTimeoutMs: snapshotWriteTimeoutMs });
+    } catch (error) { notebookNotices.delete(peer); throw error; }
+  };
+  const assertNotebookAction = (ops, peerId = null) => {
+    if (peerId && notebookRequired() && notebookVersions.get(peerId) !== 1) throw notebookUpdateRequired();
+    if (!hasNotebookOperations(ops)) return;
+    assertNotebookCommitReadable({ ops }, notebookVersion());
+    if (!notebookRequired() && [...notebookVersions.values()].some(version => version !== 1)) throw notebookUpdateRequired();
+  };
   const mediaFields = () => boardId ? { mediaVersion: 1 } : {};
   const verificationView = authority.getVerificationView?.() ?? null;
   const verificationEpoch = verificationView ? defaultTransferId() : '';
   const verificationPending = new Set();
   const verificationFields = () => verificationView
-    ? { verificationVersion: 1, verificationEpoch } : {};
+    ? { verificationVersion: 1, verificationEpoch, ...((verificationView.digestVersion?.() ?? 1) !== 1
+      ? { verificationDigestVersion: verificationView.digestVersion() } : {}) } : {};
 
   const journalLimit = Math.max(1, Number(maxJournalCommits) || 256);
   const snapshotTimeout = Number.isFinite(Number(snapshotWriteTimeoutMs)) && Number(snapshotWriteTimeoutMs) > 0
@@ -104,6 +130,7 @@ export function createTeacherPeerHub({
     // already been installed under the same stable peer id.
     if (expectedTransport && transport !== expectedTransport) return false;
     peers.delete(id);
+    notebookVersions.delete(id); notebookNotices.delete(transport);
     mediaPeers.get(id)?.close(); mediaPeers.delete(id); mediaVersions.delete(id);
     if (id && typeof lockAuthority?.release === 'function') {
       Promise.resolve(lockAuthority.release({ clientId: id })).catch(() => undefined);
@@ -143,6 +170,13 @@ export function createTeacherPeerHub({
         try { transport.close?.({ closeChannel: true }); } catch { /* retired */ }
       };
       try {
+        // Unknown is not the same as legacy. An updated client may not have sent
+        // its first head yet; its initial sync will recover these revisions.
+        if ((notebookRequired() || hasNotebookOperations(commit?.ops)) && peerNotebookVersion(transport) === null) continue;
+        if (needsNotebookNotice(transport) || hasNotebookOperations(commit?.ops) && peerNotebookVersion(transport) !== 1) {
+          Promise.resolve(sendNotebookNotice(transport)).catch(retire);
+          continue;
+        }
         if(boardId && !peerSupportsMedia(transport)) {
           Promise.resolve(getSnapshot()).then(loaded => needsMediaNotice(transport,loaded?.snapshot)
             ? sendSnapshot(transport,loaded) : transport.send('commit',commit)).catch(retire);
@@ -155,11 +189,12 @@ export function createTeacherPeerHub({
   };
 
   const sendSnapshot = async (peer, prepared = null) => {
+    if (needsNotebookNotice(peer)) return sendNotebookNotice(peer);
     const loaded = prepared || await getSnapshot();
     const incompatible = needsMediaNotice(peer,loaded?.snapshot);
     if(incompatible) await peer.send('board-control',{event:'mode',payload:{mode:'view'}});
     const revision = safeRevision(loaded?.revision ?? authority.getRevision());
-    const payload = JSON.stringify({ snapshot: incompatible ? mediaUpdateSnapshot(loaded?.snapshot) : loaded?.snapshot ?? null, revision, ...(incompatible ? {} : verificationFields()), ...mediaFields() });
+    const payload = JSON.stringify({ snapshot: incompatible ? mediaUpdateSnapshot(loaded?.snapshot) : loaded?.snapshot ?? null, revision, ...(incompatible ? {} : verificationFields()), ...mediaFields(), ...notebookFields() });
     await peer.sendTextTransfer('snapshot', payload, {
       transferId: createTransferId(),
       writeTimeoutMs: snapshotTimeout,
@@ -167,11 +202,12 @@ export function createTeacherPeerHub({
   };
 
   const sendSync = async (peer, fromRevision) => {
+    if (needsNotebookNotice(peer)) return sendNotebookNotice(peer);
     if(boardId && !peerSupportsMedia(peer)){const loaded=await getSnapshot();if(needsMediaNotice(peer,loaded?.snapshot)){await sendSnapshot(peer,loaded);return;}}
     const currentRevision = safeRevision(authority.getRevision());
     const knownRevision = safeRevision(fromRevision);
     if (knownRevision >= currentRevision) {
-      await peer.send('head', { revision: currentRevision, ...verificationFields(), ...mediaFields() });
+      await peer.send('head', { revision: currentRevision, ...verificationFields(), ...mediaFields(), ...notebookFields() });
       return;
     }
 
@@ -184,7 +220,7 @@ export function createTeacherPeerHub({
         // eslint-disable-next-line no-await-in-loop
         await peer.send('commit', commit);
       }
-      await peer.send('head', { revision: currentRevision, ...verificationFields(), ...mediaFields() });
+      await peer.send('head', { revision: currentRevision, ...verificationFields(), ...mediaFields(), ...notebookFields() });
       return;
     }
 
@@ -192,7 +228,7 @@ export function createTeacherPeerHub({
   };
 
   const verifyPeer = async (peerId, peer, request) => {
-    if (!verificationView) return peer.send('head', { revision: safeRevision(authority.getRevision()), ...mediaFields() });
+    if (!verificationView) return peer.send('head', { revision: safeRevision(authority.getRevision()), ...mediaFields(), ...notebookFields() });
     if (verificationPending.has(peer)) return; // Never accumulate duplicate per-peer jobs.
     verificationPending.add(peer);
     const live = () => peers.get(peerId) === peer;
@@ -202,7 +238,7 @@ export function createTeacherPeerHub({
         const stamp = verificationView.capture();
         try {
           return await verificationJson({ v: 1, type: 'head', payload: {
-            revision: reply.revision, ...verificationFields(), ...mediaFields(), verification: reply,
+            revision: reply.revision, ...verificationFields(), ...mediaFields(), ...notebookFields(), verification: reply,
           } }, { signal, isCurrent: () => live() && verificationView.isCurrent(stamp)
             && (reply.status !== 'ok' || reply.revision === verificationView.revision()) });
         } catch (error) {
@@ -210,7 +246,7 @@ export function createTeacherPeerHub({
           reply = { version: 1, requestId: request?.requestId ?? '', epoch: verificationEpoch,
             revision: verificationView.revision(), status: 'stale' };
           return JSON.stringify({ v: 1, type: 'head', payload: { revision: reply.revision,
-            ...verificationFields(), ...mediaFields(), verification: reply } });
+            ...verificationFields(), ...mediaFields(), ...notebookFields(), verification: reply } });
         }
       };
       const encoded = typeof authority.runVerification === 'function'
@@ -219,12 +255,13 @@ export function createTeacherPeerHub({
       if (typeof peer.sendLowPriorityEncoded === 'function') await peer.sendLowPriorityEncoded(encoded);
       else await peer.send('head', JSON.parse(encoded).payload);
     } catch {
-      if (live()) await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields(), ...mediaFields(),
+      if (live()) await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields(), ...mediaFields(), ...notebookFields(),
         verification: { version: 1, requestId: request?.requestId ?? '', epoch: verificationEpoch, status: 'error' } });
     } finally { verificationPending.delete(peer); }
   };
 
-  const peerMayEdit = async (peerId) => Boolean(await canPeerEdit(String(peerId ?? '').trim()));
+  const peerMayEdit = async (peerId) => (!notebookRequired() || notebookVersions.get(String(peerId ?? '').trim()) === 1)
+    && Boolean(await canPeerEdit(String(peerId ?? '').trim()));
 
   const sendReadOnlyAck = async (peer, actionId) => {
     await peer.send('ack', {
@@ -238,7 +275,7 @@ export function createTeacherPeerHub({
       appliedBackground: null,
       skippedConflicts: [],
       rejectedObjectIds: [],
-      error: 'Board is view-only',
+      error: needsNotebookNotice(peer) ? notebookUpdateRequired().message : 'Board is view-only',
     });
   };
 
@@ -272,7 +309,10 @@ export function createTeacherPeerHub({
       if (!id) throw new Error('peerId is required');
       if (!transport?.send || !transport?.sendTextTransfer) throw new Error('peer transport is required');
       mediaPeers.get(id)?.close();
+      const previousTransport = peers.get(id);
+      if (previousTransport) notebookNotices.delete(previousTransport);
       peers.set(id, transport);
+      notebookVersions.set(id, null);
       mediaVersions.set(id, 0);
       if (boardId) mediaPeers.set(id, createMediaAssetTransfer({
         boardId, store: mediaStore,
@@ -286,7 +326,7 @@ export function createTeacherPeerHub({
 
     removePeer,
 
-    getVerificationMode() { return verificationView ? { version: 1, epoch: verificationEpoch } : { version: 0, epoch: '' }; },
+    getVerificationMode() { return verificationView ? { version: 1, epoch: verificationEpoch, ...((verificationView.digestVersion?.() ?? 1) !== 1 ? { digestVersion: verificationView.digestVersion() } : {}) } : { version: 0, epoch: '' }; },
 
     async ensureMediaAsset(assetId) {
       if (!(await mediaStore.get(boardId, assetId))) throw new Error('Медиафайл отсутствует');
@@ -309,6 +349,7 @@ export function createTeacherPeerHub({
     },
 
     assertMediaAction,
+    assertNotebookAction,
     broadcastCommit,
     sendBoardControl,
     broadcastBoardControl,
@@ -324,24 +365,31 @@ export function createTeacherPeerHub({
         await mediaPeers.get(safePeerId)?.handleMessage(message); return;
       }
       if (type === 'head-request') {
+        if (Object.hasOwn(payload, 'notebookVersion')) notebookVersions.set(safePeerId, payload.notebookVersion === 1 ? 1 : 0);
+        else if (notebookVersions.get(safePeerId) == null) notebookVersions.set(safePeerId, 0);
+        if (needsNotebookNotice(peer)) {
+          await sendNotebookNotice(peer);
+          await peer.send('head', { revision: safeRevision(authority.getRevision()), ...notebookFields() });
+          return;
+        }
         const wasMedia = mediaVersions.get(safePeerId) === 1;
         if (Object.prototype.hasOwnProperty.call(payload, 'mediaVersion')) mediaVersions.set(safePeerId, Number(payload.mediaVersion || 0));
         if(boardId && !payload.verification && !wasMedia){
           const loaded=await getSnapshot();
           if(collectMediaAssetIds(loaded?.snapshot).length) {
             await sendSnapshot(peer,loaded);
-            if(needsMediaNotice(peer,loaded?.snapshot)){await peer.send('head',{revision:safeRevision(authority.getRevision()),...mediaFields()});return;}
+            if(needsMediaNotice(peer,loaded?.snapshot)){await peer.send('head',{revision:safeRevision(authority.getRevision()),...mediaFields(), ...notebookFields()});return;}
           }
         }
         if(payload.verification && boardId && !peerSupportsMedia(peer)){
           const loaded=await getSnapshot();
           if(needsMediaNotice(peer,loaded?.snapshot)){
             await sendSnapshot(peer,loaded);
-            await peer.send('head',{revision:safeRevision(authority.getRevision()),...mediaFields(),verification:{version:1,requestId:payload.verification.requestId,epoch:payload.verification.epoch,status:'error'}});return;
+            await peer.send('head',{revision:safeRevision(authority.getRevision()),...mediaFields(), ...notebookFields(),verification:{version:1,requestId:payload.verification.requestId,epoch:payload.verification.epoch,status:'error'}});return;
           }
         }
         if (payload.verification) return verifyPeer(safePeerId, peer, payload.verification);
-        await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields(), ...mediaFields() });
+        await peer.send('head', { revision: safeRevision(authority.getRevision()), ...verificationFields(), ...mediaFields(), ...notebookFields() });
         return;
       }
 
@@ -379,7 +427,7 @@ export function createTeacherPeerHub({
               ? [...new Set((Array.isArray(payload.objectIds) ? payload.objectIds : []).map(String))]
               : [],
             conflicts: [],
-            error: 'Board is view-only',
+            error: needsNotebookNotice(peer) ? notebookUpdateRequired().message : 'Board is view-only',
           });
           return;
         }
@@ -450,6 +498,7 @@ export function createTeacherPeerHub({
       }
 
       try {
+        assertNotebookAction(proposal.ops || [], safePeerId);
         await assertMediaAction(proposal.ops || [], safePeerId);
         const commit = await authority.commitAction(proposal);
         if (commit?.duplicate) {

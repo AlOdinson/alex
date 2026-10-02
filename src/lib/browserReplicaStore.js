@@ -1,3 +1,5 @@
+import { freezeSnapshotNotebookPages } from './notebookRecords.js';
+import { assertNotebookCommitReadable } from './notebookProtocol.js';
 import { createVerificationView, applyVerificationRecords } from './boundedVerificationState.js';
 import { applyAuthorityOpsInPlace } from './authoritySnapshot.js';
 
@@ -44,7 +46,7 @@ export function installReplicaSnapshot(boardId, snapshot, revision = 0) {
   const key = boardKey(boardId);
   if (!key) throw new Error('boardId is required');
   const next = {
-    snapshot: cloneValue(snapshot ?? EMPTY_SNAPSHOT),
+    snapshot: freezeSnapshotNotebookPages(cloneValue(snapshot ?? EMPTY_SNAPSHOT)),
     revision: safeRevision(revision),
     commits: [],
     updatedAt: Date.now(),
@@ -63,6 +65,7 @@ export function applyReplicaCommit(boardId, commit) {
     return { applied: false, duplicate: false, needsSnapshot: true, revision: state.revision };
   }
 
+  assertNotebookCommitReadable(commit);
   applyAuthorityOpsInPlace(
     state.snapshot,
     Array.isArray(commit?.ops) ? commit.ops : [],
@@ -113,9 +116,10 @@ export function clearReplicaState(boardId) {
   return replicas.delete(key);
 }
 // Internal opt-in interfaces: no cloning of the whole replica for a small check.
-export function getReplicaVerificationView(boardId) {
+export function getReplicaVerificationView(boardId, { notebookVersion = 0 } = {}) {
   const key = boardKey(boardId);
   return createVerificationView({
+    notebookVersion,
     getSnapshot: () => ensureState(key).snapshot,
     getRevision: () => ensureState(key).revision,
   });

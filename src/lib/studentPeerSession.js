@@ -1,3 +1,4 @@
+import { hasNotebookOperations, assertNotebookCommitReadable, notebookUpdateRequired } from './notebookProtocol.js';
 import { boardMediaAssets } from './mediaAssetStore.js';
 import { createMediaAssetTransfer, isMediaMessage } from './mediaAssetTransfer.js';
 import { normalizeBoardControl } from './boardControlProtocol.js';
@@ -15,6 +16,8 @@ function defaultRequestId() {
 
 export function createStudentPeerSession({
   boardId = '',
+  enableNotebookOperations = false,
+  onNotebookMode = () => {},
   mediaStore = boardMediaAssets,
   transport,
   getRevision,
@@ -32,6 +35,15 @@ export function createStudentPeerSession({
   if (typeof applyCommit !== 'function') throw new Error('applyCommit is required');
   if (typeof installSnapshot !== 'function') throw new Error('installSnapshot is required');
 
+  let notebookVersion = 0;
+  let notebookRequired = false;
+  const notebookFields = () => enableNotebookOperations ? { notebookVersion: 1 } : {};
+  const learnNotebookMode = payload => {
+    if (Object.hasOwn(payload ?? {}, 'notebookVersion')) notebookVersion = Number(payload.notebookVersion) || 0;
+    if (payload?.notebookRequired) notebookRequired = true;
+    if (notebookRequired && (!enableNotebookOperations || notebookVersion !== 1)) throw notebookUpdateRequired();
+    try { onNotebookMode({ version: enableNotebookOperations && notebookVersion === 1 ? 1 : 0, required: notebookRequired }); } catch { /* optional observer */ }
+  };
   let mediaVersion = 0;
   const media = boardId ? createMediaAssetTransfer({ boardId, store: mediaStore,
     send: (type, payload) => (transport.sendMediaEncoded || transport.sendLowPriorityEncoded)
@@ -54,6 +66,9 @@ export function createStudentPeerSession({
     resolveInitialSync = resolve;
     rejectInitialSync = reject;
   });
+  // Closing or rejecting before start() must not create an orphan rejection.
+  // Callers still await the original promise and receive the original failure.
+  initialSync.catch(() => {});
   const lockWaiters = new Map();
   const actionWaiters = new Map();
   let verificationMode = { version: 0, epoch: '' };
@@ -61,12 +76,14 @@ export function createStudentPeerSession({
   const learnVerificationMode = (payload) => {
     if (payload?.verificationVersion !== 1 || typeof payload.verificationEpoch !== 'string' || !payload.verificationEpoch) return;
     const epoch = payload.verificationEpoch;
-    if (verificationMode.version === 1 && verificationMode.epoch === epoch) return;
+    const digestVersion = payload.verificationDigestVersion ?? 1;
+    if (digestVersion !== 1 && (!enableNotebookOperations || digestVersion !== 2)) return;
+    if (verificationMode.version === 1 && verificationMode.epoch === epoch && (verificationMode.digestVersion ?? 1) === digestVersion) return;
     if (verificationWaiter) {
       const waiter = verificationWaiter; verificationWaiter = null;
       waiter.reject(new Error('Verification teacher epoch changed'));
     }
-    verificationMode = { version: 1, epoch };
+    verificationMode = { version: 1, epoch, ...(digestVersion !== 1 ? { digestVersion } : {}) };
     try { onVerificationMode(verificationMode); } catch { /* optional observer */ }
   };
 
@@ -84,7 +101,7 @@ export function createStudentPeerSession({
   // Retry this idempotent probe until the teacher has definitely installed its message listener.
   const sendInitialHeadProbe = () => {
     if (closed || initialSyncSettled || initialHandshakeConfirmed) return;
-    Promise.resolve(transport.send('head-request', boardId ? { mediaVersion: 1 } : {})).catch(failInitialSync);
+    Promise.resolve(transport.send('head-request', { ...(boardId ? { mediaVersion: 1 } : {}), ...notebookFields() })).catch(failInitialSync);
     clearInitialProbe();
     const delays = [150, 400, 900, 1_500, 2_500];
     const delay = delays[Math.min(initialProbeCount, delays.length - 1)];
@@ -134,10 +151,14 @@ export function createStudentPeerSession({
     return task;
   };
 
-  const actionProposalPayload = (action) => ({
-    ...(action && typeof action === 'object' ? action : {}),
-    baseRevision: safeRevision(getRevision()),
-  });
+  const actionProposalPayload = action => {
+    if (hasNotebookOperations(action?.ops)) {
+      if (!enableNotebookOperations || notebookVersion !== 1) throw notebookUpdateRequired();
+      assertNotebookCommitReadable(action);
+    }
+    if (notebookRequired && (!enableNotebookOperations || notebookVersion !== 1)) throw notebookUpdateRequired();
+    return { ...(action && typeof action === 'object' ? action : {}), baseRevision: safeRevision(getRevision()) };
+  };
 
   return {
     start() {
@@ -182,6 +203,7 @@ export function createStudentPeerSession({
         }
 
         return enqueue(async () => {
+          learnNotebookMode(payload);
           const headRevision = safeRevision(payload.revision);
           if (!initialSyncSettled) {
             initialSyncTargetRevision = Math.max(initialSyncTargetRevision, headRevision);
@@ -243,6 +265,7 @@ export function createStudentPeerSession({
           await requestSync();
           return;
         }
+        assertNotebookCommitReadable(payload, enableNotebookOperations ? 1 : 0);
         if (!initialSyncSettled) reportConnectionProgress(onProgress, 6, 'painting');
         await applyCommit(payload);
       });
@@ -265,6 +288,7 @@ export function createStudentPeerSession({
           return;
         }
         if (!initialSyncSettled) reportConnectionProgress(onProgress, 6, 'painting');
+        learnNotebookMode(parsed);
         await installSnapshot(parsed.snapshot, revision);
         learnVerificationMode(parsed);
         if (closed) return;
@@ -277,6 +301,7 @@ export function createStudentPeerSession({
       });
     },
 
+    getNotebookVersion() { return enableNotebookOperations && notebookVersion === 1 ? 1 : 0; },
     getVerificationMode() { return { ...verificationMode }; },
 
     verifyObjects(request) {
@@ -291,7 +316,7 @@ export function createStudentPeerSession({
         const waiter = verificationWaiter; verificationWaiter = null; waiter.reject(error);
       };
       try {
-        const payload = { ...(boardId ? { mediaVersion: 1 } : {}), verification: { ...request, version: 1, requestId, epoch } };
+        const payload = { ...(boardId ? { mediaVersion: 1 } : {}), ...notebookFields(), verification: { ...request, version: 1, requestId, epoch } };
         const sending = typeof transport.sendLowPriorityEncoded === 'function'
           ? transport.sendLowPriorityEncoded(JSON.stringify({ v: 1, type: 'head-request', payload }))
           : transport.send('head-request', payload);
@@ -312,7 +337,8 @@ export function createStudentPeerSession({
 
     proposeActionAndWait(action) {
       if (closed) return Promise.reject(new Error('Student peer session is closed'));
-      const payload = actionProposalPayload(action);
+      let payload;
+      try { payload = actionProposalPayload(action); } catch (error) { return Promise.reject(error); }
       const actionId = String(payload.actionId ?? '').trim();
       if (!actionId) return Promise.reject(new Error('actionId is required'));
       if (actionWaiters.has(actionId)) {

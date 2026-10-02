@@ -1,3 +1,5 @@
+import { stageNotebookVisualOperations } from '../src/lib/notebookVisualBatch.js';
+import { isBoardNotebook } from '../src/lib/boardNotebook.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
@@ -25,6 +27,7 @@ test('async object revival rechecks the revision/gesture fence before touching t
   const expression = board.slice(start, end);
   const disposed = []; let current = true; const mutations = [];
   const env = {
+    stageNotebookVisualOperations, isBoardNotebook,
     fabricCanvasRef: { current: { getActiveObjects: () => [], add: () => mutations.push('add'), remove: () => mutations.push('remove') } },
     BACKGROUNDS: new Set(['grid', 'dots', 'blank']),
     affectedOperationIds: () => new Set(['a']),

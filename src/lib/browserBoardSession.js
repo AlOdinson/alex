@@ -38,6 +38,7 @@ export function createBrowserBoardSession({
   clientId,
   permission,
   webrtcLiveV1 = false,
+  enableNotebookOperations = false,
   localCapabilities = null,
   offlineCacheKey = '',
   sendScreenShareSignal,
@@ -83,6 +84,7 @@ export function createBrowserBoardSession({
   let runtime = null;
   let verifier = null;
   let verifierEpoch = '';
+  let verifierDigestVersion = 1;
   // Integrity failures are diagnostic only, never a reason to reject user edits.
   const verificationError = (error) => {
     try { console.warn('Additional board verification postponed', error); } catch { /* observer only */ }
@@ -93,11 +95,11 @@ export function createBrowserBoardSession({
   const configureVerification = (nextRuntime) => {
     const mode = nextRuntime?.getVerificationMode?.();
     if (mode?.version !== 1 || !mode.epoch || nextRuntime !== runtime || closed) return;
-    if (verifier && verifierEpoch === mode.epoch) return;
+    if (verifier && verifierEpoch === mode.epoch && verifierDigestVersion === (mode.digestVersion ?? 1)) return;
     verifier?.close?.();
-    verifier = null; verifierEpoch = mode.epoch;
+    verifier = null; verifierEpoch = mode.epoch; verifierDigestVersion = mode.digestVersion ?? 1;
     try {
-      const view = isOwner ? nextRuntime.getVerificationView?.() : getVerificationReplicaView(safeBoardId);
+      const view = isOwner ? nextRuntime.getVerificationView?.() : getVerificationReplicaView(safeBoardId, { notebookVersion: mode.digestVersion === 2 ? 1 : 0 });
       if (!view) return;
       verifier = createVerifier({
         enabled: true, epoch: mode.epoch, view,
@@ -377,6 +379,7 @@ export function createBrowserBoardSession({
     let nextRuntime;
     try {
       nextRuntime = await createTeacherRuntime({
+        enableNotebookOperations,
         boardId: safeBoardId,
         clientId: safeClientId,
         sendScreenShareSignal,
@@ -446,6 +449,7 @@ export function createBrowserBoardSession({
     };
 
     nextRuntime = createStudentRuntime({
+      enableNotebookOperations,
       onProgress: (event) => {
         if (!closed && nextRuntime && (connectingRuntime === nextRuntime || runtime === nextRuntime)) {
           reportConnectionProgress(onProgress, event.step, event.detail, event);
@@ -644,6 +648,15 @@ export function createBrowserBoardSession({
     },
     getVerificationStats() { return verifier?.stats?.() ?? { enabled: false }; },
     getRuntime() { return runtime; },
+    getNotebookVersion() { return runtime?.getNotebookVersion?.() ?? 0; },
+    getNotebookCheckpoint() {
+      if (runtime?.getNotebookCheckpoint) return runtime.getNotebookCheckpoint();
+      if (!isOwner && runtime?.getNotebookVersion?.() === 1) {
+        const replica = getReplica(safeBoardId);
+        return replica?.snapshot ? { snapshot: replica.snapshot, revision: replica.revision } : null;
+      }
+      return null;
+    },
     getCollaborationMode(peerId = teacherId) { return collaborationModeFor(peerId); },
     getLiveRoutingState() {
       const remoteIds = [...participantCapabilities.keys()].filter((id) => id && id !== safeClientId);

@@ -1,3 +1,6 @@
+import { freezeNotebookRecord } from './notebookRecords.js';
+import { isNotebookOperation, isSerializedNotebook, isNotebookPageNavigationAllowed } from './notebookOperations.js';
+
 const RUNTIME_ONLY_KEYS = new Set([
   'selectable',
   'evented',
@@ -160,7 +163,8 @@ export function createConditionalDeleteOps(records, { matchZIndex = false } = {}
 export function applySerializedObjectPatch(sourceObject, operation) {
   if (!sourceObject || operation?.type !== 'patch' || !operation.id) return null;
   if (String(sourceObject.boardObjectId ?? '') !== String(operation.id)) return null;
-  const next = cloneJsonValue(sourceObject);
+  // Child pages are copy-on-write; a frame patch must not copy or overwrite them.
+  const next = isSerializedNotebook(sourceObject) ? { ...sourceObject } : cloneJsonValue(sourceObject);
   for (const key of Array.isArray(operation.unset) ? operation.unset : []) {
     if (shouldSynchronizeKey(key)) delete next[key];
   }
@@ -169,6 +173,15 @@ export function applySerializedObjectPatch(sourceObject, operation) {
     : {}).forEach(([key, value]) => {
     if (shouldSynchronizeKey(key)) next[key] = cloneJsonValue(value);
   });
+  if (isSerializedNotebook(next) && next.notebookPages !== sourceObject.notebookPages) freezeNotebookRecord(next.notebookPages);
+  if (isSerializedNotebook(sourceObject) && Object.hasOwn(operation.patch ?? {}, 'notebookPageNumber')) {
+    if (!isNotebookPageNavigationAllowed(sourceObject, next.notebookPageNumber)) return null;
+    if (next.notebookPageNumber > next.notebookPages.length) {
+      const pages = next.notebookPages.slice();
+      while (pages.length < next.notebookPageNumber) pages.push(Object.freeze([]));
+      next.notebookPages = Object.freeze(pages);
+    }
+  }
   next.boardObjectId = String(operation.id);
   next.updatedAt = Number(operation.updatedAt ?? next.updatedAt ?? Date.now());
   next.updatedBy = operation.updatedBy ?? next.updatedBy ?? null;
@@ -178,6 +191,7 @@ export function applySerializedObjectPatch(sourceObject, operation) {
 export function operationObjectIds(operations) {
   const ids = new Set();
   for (const operation of Array.isArray(operations) ? operations : []) {
+    if (operation?.type === 'notebook' && operation.id) ids.add(String(operation.id));
     if (operation?.type === 'delete' && operation.id) ids.add(String(operation.id));
     if (operation?.type === 'patch' && operation.id) ids.add(String(operation.id));
     if (operation?.type === 'upsert' && operation.object?.boardObjectId) {
@@ -197,6 +211,7 @@ export function operationObjectIds(operations) {
 
 export function isAuthoritativeBoardOperation(operation) {
   if (!operation || typeof operation !== 'object') return false;
+  if (operation.type === 'notebook') return isNotebookOperation(operation);
   if (operation.type === 'delete') return Boolean(operation.id);
   if (operation.type === 'patch') return Boolean(operation.id)
     && operation.patch != null

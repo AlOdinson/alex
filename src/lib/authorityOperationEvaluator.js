@@ -1,3 +1,6 @@
+import { applyAuthorityOpsInPlace } from './authoritySnapshot.js';
+import { evaluateNotebookOperation, updateNotebookTombstones, isSerializedNotebook, isNotebookPageNavigationAllowed } from './notebookOperations.js';
+
 function cloneValue(value) {
   if (value == null || typeof value !== 'object') return value;
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -114,6 +117,11 @@ function evaluatePatch(operation, currentById, appliedOps, skipped) {
   const id = String(operation?.id ?? '');
   if (!id) return;
   const current = currentById.get(id);
+  if (isSerializedNotebook(current?.object) && hasOwn(operation.patch, 'notebookPageNumber')
+    && !isNotebookPageNavigationAllowed(current.object, operation.patch.notebookPageNumber)) {
+    skipped.push({ objectId: id, reason: 'notebook_page_invalid' });
+    return;
+  }
   const conditioned = conditionalKeysPresent(operation);
 
   if (!current?.object && conditioned) {
@@ -212,65 +220,74 @@ function evaluateTransform(operation, currentById, appliedOps, skipped) {
 export function evaluateAuthorityAction({
   snapshot,
   tombstones = {},
+  notebookTombstones = {},
+  notebookVersion = 0,
+  clientId = '',
+  actionId = '',
   ops = [],
   background = null,
 } = {}) {
-  // A split is one logical edit. Preflight each guarded group against the same
-  // snapshot before applying any of its members, including individual patch fields.
-  const groups = new Map();
-  for (const op of Array.isArray(ops) ? ops : []) {
-    if (op?.atomicGroup) {
-      const key = String(op.atomicGroup);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(op);
-    }
-  }
+  const sourceOps = (Array.isArray(ops) ? ops : []).filter(op => op && typeof op === 'object');
   const rejectedGroups = new Set();
-  const groupConflicts = [];
-  for (const [key, members] of groups) {
-    const check = evaluateAuthorityAction({ snapshot, tombstones,
-      ops: members.map(({ atomicGroup, ...op }) => op) });
-    if (check.skippedConflicts.length) {
-      rejectedGroups.add(key);
-      groupConflicts.push(...check.skippedConflicts);
-    }
-  }
-  const currentById = objectIndex(snapshot);
-  const appliedOps = [];
-  const skippedConflicts = [...groupConflicts];
-  let appliedBackground = ['grid', 'dots', 'blank'].includes(background) ? background : null;
+  const rejectedConflicts = [];
+  const context = { clientId, actionId };
 
-  for (const operation of Array.isArray(ops) ? ops : []) {
-    if (!operation || typeof operation !== 'object') continue;
-    if (rejectedGroups.has(String(operation.atomicGroup ?? ''))) continue;
-    if (operation.type === 'background') {
-      if (['grid', 'dots', 'blank'].includes(operation.background)) {
-        if (operation.ifBackground === snapshot?.background) appliedBackground = operation.background;
-        else skippedConflicts.push({ objectId: '__background', reason: 'background_changed' });
+  // Start again without a failed group rather than keeping its earlier members.
+  // This also preserves original order for interleaved groups and dependent ops.
+  // Each restart rejects a new group, so the number of passes is bounded.
+  for (;;) {
+    const staged = { ...snapshot, canvas: { ...snapshot?.canvas,
+      objects: (snapshot?.canvas?.objects ?? []).map(object => ({ ...object })),
+    } };
+    const stagedTombstones = Object.assign(Object.create(null), tombstones);
+    let stagedNotebookTombstones = notebookTombstones;
+    const appliedOps = [], skippedConflicts = [...rejectedConflicts];
+    let appliedBackground = ['grid', 'dots', 'blank'].includes(background) ? background : null;
+    let restart = false;
+
+    for (const operation of sourceOps) {
+      const group = operation.atomicGroup ? String(operation.atomicGroup) : null;
+      if (group && rejectedGroups.has(group)) continue;
+      const currentById = objectIndex(staged);
+      const accepted = [], conflicts = [];
+      let nextBackground = null;
+      if (operation.type === 'background') {
+        if (['grid', 'dots', 'blank'].includes(operation.background)) {
+          if (operation.ifBackground === staged.background) nextBackground = operation.background;
+          else conflicts.push({ objectId: '__background', reason: 'background_changed' });
+        }
+      } else if (operation.type === 'upsert') evaluateUpsert(operation, stagedTombstones, accepted, conflicts);
+      else if (operation.type === 'delete') evaluateDelete(operation, currentById, accepted, conflicts);
+      else if (operation.type === 'patch') evaluatePatch(operation, currentById, accepted, conflicts);
+      else if (operation.type === 'transform') evaluateTransform(operation, currentById, accepted, conflicts);
+      else if (operation.type === 'notebook') {
+        if (notebookVersion !== 1) conflicts.push({ objectId: String(operation.id ?? ''), reason: 'notebook_protocol_disabled' });
+        else {
+          const result = evaluateNotebookOperation(currentById.get(String(operation.id))?.object,
+            operation, stagedNotebookTombstones, context);
+          conflicts.push(...result.skippedConflicts.map(conflict => ({ objectId: String(operation.id), ...conflict })));
+          if (result.changed) accepted.push({ ...cloneValue(operation), changes: result.appliedChanges });
+        }
       }
-      continue;
+      if (group && conflicts.length) {
+        rejectedGroups.add(group);
+        rejectedConflicts.push(...conflicts);
+        restart = true;
+        break;
+      }
+      skippedConflicts.push(...conflicts);
+      appliedOps.push(...accepted);
+      if (nextBackground != null) appliedBackground = nextBackground;
+      applyAuthorityOpsInPlace(staged, accepted, nextBackground);
+      for (const acceptedOp of accepted) {
+        if (acceptedOp.type === 'delete') stagedTombstones[String(acceptedOp.id)] = {
+          clientId, actionId, mutationId: String(acceptedOp.mutationId ?? actionId),
+        };
+        else if (acceptedOp.type === 'upsert') delete stagedTombstones[String(acceptedOp.object.boardObjectId)];
+      }
+      stagedNotebookTombstones = updateNotebookTombstones(stagedNotebookTombstones, accepted, context);
     }
-    if (operation.type === 'upsert') {
-      evaluateUpsert(operation, tombstones, appliedOps, skippedConflicts);
-      continue;
-    }
-    if (operation.type === 'delete') {
-      evaluateDelete(operation, currentById, appliedOps, skippedConflicts);
-      continue;
-    }
-    if (operation.type === 'patch') {
-      evaluatePatch(operation, currentById, appliedOps, skippedConflicts);
-      continue;
-    }
-    if (operation.type === 'transform') {
-      evaluateTransform(operation, currentById, appliedOps, skippedConflicts);
-    }
+    if (!restart) return { changed: appliedOps.length > 0 || appliedBackground !== null,
+      appliedOps, appliedBackground, skippedConflicts };
   }
-
-  return {
-    changed: appliedOps.length > 0 || appliedBackground !== null,
-    appliedOps,
-    appliedBackground,
-    skippedConflicts,
-  };
 }

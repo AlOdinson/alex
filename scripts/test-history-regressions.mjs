@@ -38,6 +38,7 @@ async function boardHarness(objects, options = {}) {
   const status = [];
   const scope = {
     useCallback: (fn) => fn, useEffect: () => {}, HISTORY_LIMIT: 1000,
+    notebookRuntimeEnabled: false, notebookControllerRef: ref(null),
     createInitialHistoryOps, refreshHistoryOps, createHistoryCommandQueue,
     randomToken: (() => { let i = 0; return () => `request-${++i}`; })(),
     historyCommandQueueRef: ref(null), historyGenerationRef: ref(0), historyHandlersRef: ref(null),

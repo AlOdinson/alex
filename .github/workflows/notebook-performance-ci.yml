@@ -1,0 +1,84 @@
+name: Notebook performance continuation
+
+on:
+  push:
+    branches: ['feature/notebook-performance-continuation-20261002', 'release/notebook-1.43.0']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notebook-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VITE_NOTEBOOK_OPERATIONS_V1: "true"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test:notebook
+      - run: node scripts/benchmark-notebook-operations.mjs
+      - run: npm run test:browser-authority
+      - run: npm run test:student:storage
+      - run: npm run test:connections
+      - run: npm run test:screen-share
+      - run: npm run test:sync:ci
+      - run: npm run test:media
+      - run: npm run test:pencil
+      - run: npm run build
+
+  browser:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, engine: chromium}
+          - {os: macos-latest, engine: webkit}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      VERIFICATION_BROWSER: ${{ matrix.engine }}
+      WEBKIT_LOCAL_ICE: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - name: Real direct peer fanout, recovery and large notebook edits
+        run: bash scripts/run-connection-direct-ci.sh
+      - name: PDF continuity during edits and notebook reconciliation
+        run: npm run test:pdf:continuity
+      - name: Existing notebook drawing, text, clipping, history and reload
+        run: npm run test:notebook:browser
+      - name: Existing hydration and cache performance gates
+        run: npm run test:notebook:performance -- --stage-b
+      - name: Existing notebook with actual received 720p60 and 1080p60 test video
+        run: npm run test:notebook:video
+      - name: Shared student asset lifecycle
+        run: npm run test:student:storage:browser
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-continuation-${{ matrix.engine }}
+          path: |
+            connection-direct-results/
+            /tmp/notebook-performance.json
+            /tmp/notebook-received-video.json
+          retention-days: 7

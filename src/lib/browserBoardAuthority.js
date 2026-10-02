@@ -1,3 +1,5 @@
+import { assertNotebookCommitReadable } from './notebookProtocol.js';
+import { updateNotebookTombstones } from './notebookOperations.js';
 import { createVerificationView, isBoundedVerificationBoard } from './boundedVerificationState.js';
 import { createVerificationWorkLane } from './boundedVerificationProtocol.js';
 import { isConditionalHistoryOperation, prepareAuthoritativeHistory } from './historyOperations.js';
@@ -89,6 +91,7 @@ async function loadContiguousJournal({ boardId, fromRevision, toRevision, loadCo
 
 export async function openBrowserBoardAuthority({
   boardId,
+  enableNotebookOperations = false,
   loadBoard = getAuthorityBoard,
   loadCommitsAfter = getAuthorityCommitsAfter,
   persistCommit = persistAuthorityCommit,
@@ -101,6 +104,9 @@ export async function openBrowserBoardAuthority({
 
   const board = await loadBoard(safeBoardId);
   if (!board) throw new Error('Authority board not found');
+  if (Number(board.notebookVersion ?? 0) > 1 || board.notebookVersion === 1 && !enableNotebookOperations) {
+    throw new Error('Notebook update required; this reader cannot edit the stored journal');
+  }
 
   const headRevision = safeRevision(board.revision);
   const snapshotRevision = safeRevision(board.snapshotRevision);
@@ -114,8 +120,11 @@ export async function openBrowserBoardAuthority({
     toRevision: headRevision,
     loadCommitsAfter,
   });
+  replay.forEach(commit => assertNotebookCommitReadable(commit, enableNotebookOperations ? 1 : 0));
   const currentSnapshot = applyAuthorityActions(board.snapshot, replay);
+  let notebookRequirement = board.notebookVersion === 1 ? 1 : 0;
   let currentTombstones = cloneValue(board.tombstones ?? {});
+  let currentNotebookTombstones = cloneValue(board.notebookTombstones ?? {});
 
   const authority = createTeacherAuthority({
     initialRevision: headRevision,
@@ -123,17 +132,20 @@ export async function openBrowserBoardAuthority({
       const persisted = await persistCommit(safeBoardId, attemptedCommit);
       if (persisted?.duplicate) return persisted;
       const durableCommit = persisted?.commit ?? attemptedCommit;
+      if (durableCommit.ops?.some(op => op?.type === 'notebook')) notebookRequirement = 1;
       applyAuthorityOpsInPlace(
         currentSnapshot,
         durableCommit?.ops ?? [],
         durableCommit?.background ?? null,
       );
       currentTombstones = updateTombstones(currentTombstones, durableCommit);
+      currentNotebookTombstones = updateNotebookTombstones(currentNotebookTombstones, durableCommit.ops, durableCommit);
       return persisted ?? { commit: durableCommit, duplicate: false };
     },
   });
 
   const verificationView = isBoundedVerificationBoard(board) ? createVerificationView({
+    notebookVersion: enableNotebookOperations ? 1 : 0,
     getSnapshot: () => currentSnapshot,
     getRevision: () => authority.getRevision(),
   }) : null;
@@ -152,6 +164,10 @@ export async function openBrowserBoardAuthority({
     const evaluation = evaluateAuthorityAction({
       snapshot: currentSnapshot,
       tombstones: currentTombstones,
+      notebookTombstones: currentNotebookTombstones,
+      notebookVersion: enableNotebookOperations ? 1 : 0,
+      clientId: String(action.clientId ?? ''),
+      actionId,
       ops: action.ops,
       background: action.background,
     });
@@ -205,6 +221,9 @@ export async function openBrowserBoardAuthority({
 
   return {
     boardId: safeBoardId,
+    getNotebookVersion() { return enableNotebookOperations ? 1 : 0; },
+    getNotebookRequirement() { return notebookRequirement; },
+    getNotebookTombstones() { return cloneValue(currentNotebookTombstones); },
     getRevision() {
       return authority.getRevision();
     },

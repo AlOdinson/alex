@@ -1,5 +1,10 @@
+import { isAuthoritativeBoardOperation } from './operationProtocol.js';
+import { isNotebookOperation, notebookChildKey } from './notebookOperations.js';
 const DB_NAME = 'alex-board-authority';
-const DB_VERSION = 1;
+const DB_VERSION = 3;
+const NOTEBOOK_OUTBOX_STORE = 'notebookOutbox';
+const SNAPSHOT_STORE = 'snapshots';
+const NOTEBOOK_TOMBSTONE_STORE = 'notebookTombstones';
 const BOARD_STORE = 'boards';
 const COMMIT_STORE = 'commits';
 const ASSET_STORE = 'assets';
@@ -69,6 +74,32 @@ function openDatabase() {
         const commits = db.createObjectStore(COMMIT_STORE, { keyPath: 'actionKey' });
         commits.createIndex(BOARD_REVISION_INDEX, ['boardId', 'revision'], { unique: true });
         commits.createIndex(BOARD_ID_INDEX, 'boardId', { unique: false });
+      }
+
+      if (!db.objectStoreNames.contains(SNAPSHOT_STORE)) {
+        db.createObjectStore(SNAPSHOT_STORE, { keyPath: 'boardId' });
+        const cursorRequest = request.transaction.objectStore(BOARD_STORE).openCursor();
+        cursorRequest.onsuccess = () => {
+          const cursor = cursorRequest.result;
+          if (!cursor) return;
+          const { snapshot = EMPTY_SNAPSHOT, ...metadata } = cursor.value;
+          request.transaction.objectStore(SNAPSHOT_STORE).put({ boardId: metadata.boardId, snapshot });
+          cursor.update(metadata);
+          cursor.continue();
+        };
+        // An abort rolls back both stores and the version. No partial migration
+        // can leave a metadata row with its old saved lesson missing.
+      }
+      if (!db.objectStoreNames.contains(NOTEBOOK_TOMBSTONE_STORE)) {
+        const tombstones = db.createObjectStore(NOTEBOOK_TOMBSTONE_STORE, { keyPath: ['boardId', 'childKey'] });
+        tombstones.createIndex(BOARD_ID_INDEX, 'boardId');
+      }
+
+      if (!db.objectStoreNames.contains(NOTEBOOK_OUTBOX_STORE)) {
+        const pending = db.createObjectStore(NOTEBOOK_OUTBOX_STORE, { keyPath: 'sequence', autoIncrement: true });
+        pending.createIndex('pendingAction', ['boardId', 'clientId', 'actionId'], { unique: true });
+        pending.createIndex('boardClient', ['boardId', 'clientId']);
+        pending.createIndex(BOARD_ID_INDEX, 'boardId');
       }
 
       if (!db.objectStoreNames.contains(ASSET_STORE)) {
@@ -150,6 +181,9 @@ function deleteRecordsByBoardId(store, boardId) {
 }
 
 function normalizeBoardInput(input) {
+  if (input?.notebookVersion != null && ![0, 1].includes(input.notebookVersion)) {
+    throw new Error('Unsupported notebook format version; update required');
+  }
   const boardId = String(input?.boardId ?? '').trim();
   if (!boardId) throw new Error('boardId is required');
   const now = Number(input?.createdAt ?? Date.now()) || Date.now();
@@ -166,6 +200,8 @@ function normalizeBoardInput(input) {
     snapshotRevision: 0,
     snapshot: cloneValue(input?.snapshot ?? EMPTY_SNAPSHOT),
     tombstones: cloneValue(input?.tombstones ?? {}),
+    notebookTombstones: cloneValue(input?.notebookTombstones ?? {}),
+    ...(input?.notebookVersion === 1 ? { notebookVersion: 1 } : {}),
     protocolVersion: 1,
     ...(input?.verificationVersion === 1 ? { verificationVersion: 1 } : {}),
     createdAt: now,
@@ -196,27 +232,54 @@ function applyCommitTombstones(source, commit) {
   return tombstones;
 }
 
+async function readStoredSnapshot(transaction, board) {
+  const record = await requestResult(transaction.objectStore(SNAPSHOT_STORE).get(board.boardId));
+  if (!record || !Object.hasOwn(record, 'snapshot')) throw new Error('Authority baseline is missing; do not clear site data');
+  return { ...board, snapshot: record.snapshot };
+}
+
 export async function createAuthorityBoard(input) {
   const board = normalizeBoardInput(input);
-  return withTransaction([BOARD_STORE], 'readwrite', async (transaction) => {
-    await requestResult(transaction.objectStore(BOARD_STORE).add(board));
+  return withTransaction([BOARD_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE], 'readwrite', async (transaction) => {
+    const { snapshot, notebookTombstones, ...metadata } = board;
+    await requestResult(transaction.objectStore(BOARD_STORE).add(metadata));
+    await requestResult(transaction.objectStore(SNAPSHOT_STORE).add({ boardId: board.boardId, snapshot }));
+    for (const [childKey, value] of Object.entries(notebookTombstones)) {
+      await requestResult(transaction.objectStore(NOTEBOOK_TOMBSTONE_STORE).put({ boardId: board.boardId, childKey, value }));
+    }
     return cloneValue(board);
   }, CREATE_TIMEOUT_MS);
 }
 
-export async function getAuthorityBoard(boardId) {
+/** Permission checks and head reads must not decode a lesson snapshot per stroke. */
+export async function getAuthorityBoardMetadata(boardId) {
   const key = String(boardId ?? '').trim();
   if (!key) return null;
-  return withTransaction([BOARD_STORE], 'readonly', async (transaction) => {
+  return withTransaction([BOARD_STORE], 'readonly', async transaction => {
     const board = await requestResult(transaction.objectStore(BOARD_STORE).get(key));
     return board ? cloneValue(board) : null;
   });
 }
 
+export async function getAuthorityBoard(boardId) {
+  const key = String(boardId ?? '').trim();
+  if (!key) return null;
+  return withTransaction([BOARD_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE], 'readonly', async transaction => {
+    const board = await requestResult(transaction.objectStore(BOARD_STORE).get(key));
+    if (!board) return null;
+    const [full, deleted] = await Promise.all([
+      readStoredSnapshot(transaction, board),
+      requestResult(transaction.objectStore(NOTEBOOK_TOMBSTONE_STORE).index(BOARD_ID_INDEX).getAll(key)),
+    ]);
+    return { ...full, notebookTombstones: Object.fromEntries(deleted.map(row => [row.childKey, row.value])) };
+  });
+}
+
 export async function listAuthorityBoards() {
-  const result = await withTransaction([BOARD_STORE], 'readonly', async (transaction) => {
+  const result = await withTransaction([BOARD_STORE, SNAPSHOT_STORE], 'readonly', async (transaction) => {
     const boards = await requestResult(transaction.objectStore(BOARD_STORE).getAll());
-    return (Array.isArray(boards) ? boards : [])
+    const full = await Promise.all((Array.isArray(boards) ? boards : []).map(board => readStoredSnapshot(transaction, board)));
+    return full
       .map(cloneValue)
       .sort((left, right) => Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0));
   }, LIBRARY_TIMEOUT_MS);
@@ -232,7 +295,7 @@ export async function listAuthorityBoards() {
 export async function updateAuthorityBoardMetadata(boardId, patch = {}) {
   const key = String(boardId ?? '').trim();
   if (!key) throw new Error('boardId is required');
-  return withTransaction([BOARD_STORE], 'readwrite', async (transaction) => {
+  return withTransaction([BOARD_STORE, SNAPSHOT_STORE], 'readwrite', async (transaction) => {
     const boards = transaction.objectStore(BOARD_STORE);
     const board = await requestResult(boards.get(key));
     if (!board) throw new Error('Authority board not found');
@@ -252,19 +315,22 @@ export async function updateAuthorityBoardMetadata(boardId, patch = {}) {
     }
     next.updatedAt = Date.now();
     await requestResult(boards.put(next));
-    return cloneValue(next);
+    return readStoredSnapshot(transaction, next);
   });
 }
 
 export async function deleteAuthorityBoard(boardId) {
   const key = String(boardId ?? '').trim();
   if (!key) return false;
-  const removed = await withTransaction([BOARD_STORE, COMMIT_STORE, ASSET_STORE], 'readwrite', async (transaction) => {
+  const removed = await withTransaction([BOARD_STORE, COMMIT_STORE, ASSET_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE, NOTEBOOK_OUTBOX_STORE], 'readwrite', async (transaction) => {
     const boards = transaction.objectStore(BOARD_STORE);
     const existing = await requestResult(boards.get(key));
     if (!existing) return false;
     await Promise.all([
       requestResult(boards.delete(key)),
+      requestResult(transaction.objectStore(SNAPSHOT_STORE).delete(key)),
+      deleteRecordsByBoardId(transaction.objectStore(NOTEBOOK_TOMBSTONE_STORE), key),
+      deleteRecordsByBoardId(transaction.objectStore(NOTEBOOK_OUTBOX_STORE), key),
       deleteRecordsByBoardId(transaction.objectStore(COMMIT_STORE), key),
       deleteRecordsByBoardId(transaction.objectStore(ASSET_STORE), key),
     ]);
@@ -347,7 +413,7 @@ export async function persistAuthorityCommit(boardId, commit) {
   if (!actionId) throw new Error('actionId is required');
   const actionKey = `${key}:${actionId}`;
 
-  return withTransaction([BOARD_STORE, COMMIT_STORE], 'readwrite', async (transaction) => {
+  return withTransaction([BOARD_STORE, COMMIT_STORE, NOTEBOOK_TOMBSTONE_STORE], 'readwrite', async (transaction) => {
     const boards = transaction.objectStore(BOARD_STORE);
     const commits = transaction.objectStore(COMMIT_STORE);
     const existing = await requestResult(commits.get(actionKey));
@@ -367,20 +433,35 @@ export async function persistAuthorityCommit(boardId, commit) {
       throw new Error(`Authority revision mismatch: expected ${expectedRevision}, received ${revision}`);
     }
 
+    const childOps = (commit.ops ?? []).filter(op => op?.type === 'notebook');
+    if (childOps.some(op => !isNotebookOperation(op))) throw new Error('Invalid notebook journal operation');
+    if (Number(board.notebookVersion ?? 0) > 1) throw new Error('Update required for this notebook');
+
     const record = {
       ...cloneValue(commit),
       boardId: key,
       actionId,
       actionKey,
       revision,
+      ...(childOps.length ? { notebookVersion: 1 } : {}),
     };
     const nextBoard = {
       ...board,
       revision,
+      ...(childOps.length ? { notebookVersion: 1 } : {}),
       tombstones: applyCommitTombstones(board.tombstones, record),
       updatedAt: Number(commit?.committedAt ?? Date.now()) || Date.now(),
     };
 
+    const deleted = transaction.objectStore(NOTEBOOK_TOMBSTONE_STORE);
+    for (const operation of childOps) for (const change of operation.changes) {
+      const childKey = notebookChildKey(operation.id, operation.pageNumber, change.object?.boardObjectId ?? change.id);
+      if (change.type === 'delete') await requestResult(deleted.put({ boardId: key, childKey, value: {
+        clientId: String(record.clientId ?? ''), actionId, revision,
+        mutationId: String(change.mutationId ?? operation.mutationId ?? actionId),
+      } }));
+      else if (change.type === 'insert') await requestResult(deleted.delete([key, childKey]));
+    }
     await requestResult(commits.add(record));
     await requestResult(boards.put(nextBoard));
     return { commit: cloneValue(record), duplicate: false };
@@ -421,7 +502,7 @@ export async function saveAuthoritySnapshot(boardId, snapshot, revision) {
   if (!key) throw new Error('boardId is required');
   const snapshotRevision = Math.max(0, Number(revision ?? 0) || 0);
 
-  return withTransaction([BOARD_STORE], 'readwrite', async (transaction) => {
+  return withTransaction([BOARD_STORE, SNAPSHOT_STORE], 'readwrite', async (transaction) => {
     const boards = transaction.objectStore(BOARD_STORE);
     const board = await requestResult(boards.get(key));
     if (!board) throw new Error('Authority board not found');
@@ -430,9 +511,9 @@ export async function saveAuthoritySnapshot(boardId, snapshot, revision) {
     }
     if (snapshotRevision < Number(board.snapshotRevision ?? 0)) return Number(board.snapshotRevision ?? 0);
 
+    await requestResult(transaction.objectStore(SNAPSHOT_STORE).put({ boardId: key, snapshot: cloneValue(snapshot ?? EMPTY_SNAPSHOT) }));
     await requestResult(boards.put({
       ...board,
-      snapshot: cloneValue(snapshot ?? EMPTY_SNAPSHOT),
       snapshotRevision,
       updatedAt: Math.max(Number(board.updatedAt ?? 0), Date.now()),
     }));
@@ -467,4 +548,68 @@ export async function getAuthorityAsset(boardId, assetId) {
     const record = await requestResult(transaction.objectStore(ASSET_STORE).get(key));
     return record ?? null;
   });
+}
+
+
+/**
+ * Durable local pending intents share the existing database, but not the board
+ * baseline/commit stores. This also works for a student without an owner board.
+ * Stable action identities are append-once; only acknowledgement or an explicit
+ * clear/delete removes a row. Sequence keys preserve order across browser reload.
+ */
+export function createNotebookOutbox({ boardId, clientId, maxPending = 1024, maxActionBytes = 8 * 1024 * 1024 } = {}) {
+  const board = String(boardId ?? '').trim(), client = String(clientId ?? '').trim();
+  if (!board || !client) throw new TypeError('Notebook outbox board and client are required');
+  if (![maxPending, maxActionBytes].every(value => Number.isSafeInteger(value) && value > 0)) throw new TypeError('Invalid notebook outbox limits');
+  const scope = [board, client];
+  function validate(input) {
+    if (!input || !String(input.actionId ?? '').trim() || input.clientId !== client) throw new TypeError('Notebook outbox action/client identity is invalid');
+    if (!Array.isArray(input.ops) || !input.ops.length || !input.ops.every(isAuthoritativeBoardOperation)) throw new TypeError('Invalid notebook outbox operations');
+    const action = cloneValue(input), encoded = JSON.stringify(action);
+    if (new TextEncoder().encode(encoded).byteLength > maxActionBytes) throw new Error('Notebook outbox action exceeds byte limit');
+    return { action, encoded };
+  }
+  return {
+    async save(input) {
+      const { action, encoded } = validate(input);
+      return withTransaction([NOTEBOOK_OUTBOX_STORE], 'readwrite', async transaction => {
+        const store = transaction.objectStore(NOTEBOOK_OUTBOX_STORE);
+        const previous = await requestResult(store.index('pendingAction').get([board, client, action.actionId]));
+        if (previous) {
+          if (JSON.stringify(previous.action) !== encoded) throw new Error('Notebook action identity already contains different content');
+          return previous.sequence;
+        }
+        if (await requestResult(store.index('boardClient').count(IDBKeyRange.only(scope))) >= maxPending) {
+          throw new Error('Notebook outbox full; existing unsent actions retained');
+        }
+        return requestResult(store.add({ boardId: board, clientId: client, actionId: action.actionId, action }));
+      }, CREATE_TIMEOUT_MS);
+    },
+    async list() {
+      return withTransaction([NOTEBOOK_OUTBOX_STORE], 'readonly', async transaction => {
+        const values = await requestResult(transaction.objectStore(NOTEBOOK_OUTBOX_STORE).index('boardClient').getAll(IDBKeyRange.only(scope)));
+        return values.map(record => {
+          validate(record.action); // Unknown future operations are not silently skipped.
+          return cloneValue(record.action);
+        });
+      }, LIBRARY_TIMEOUT_MS);
+    },
+    async remove(actionId) {
+      return withTransaction([NOTEBOOK_OUTBOX_STORE], 'readwrite', async transaction => {
+        const store = transaction.objectStore(NOTEBOOK_OUTBOX_STORE);
+        const key = await requestResult(store.index('pendingAction').getKey([board, client, String(actionId)]));
+        if (key != null) await requestResult(store.delete(key));
+      }, CREATE_TIMEOUT_MS);
+    },
+    async clear() {
+      return withTransaction([NOTEBOOK_OUTBOX_STORE], 'readwrite', transaction => new Promise((resolve, reject) => {
+        const cursor = transaction.objectStore(NOTEBOOK_OUTBOX_STORE).index('boardClient').openCursor(IDBKeyRange.only(scope));
+        cursor.onerror = () => reject(cursor.error);
+        cursor.onsuccess = () => {
+          if (!cursor.result) { resolve(); return; }
+          cursor.result.delete(); cursor.result.continue();
+        };
+      }), CREATE_TIMEOUT_MS);
+    },
+  };
 }

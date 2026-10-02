@@ -1,3 +1,4 @@
+import { isNotebookOperation, isSerializedNotebook, invertNotebookOperation } from './notebookOperations.js';
 import { applyAuthorityOpsInPlace } from './authoritySnapshot.js';
 import { createConditionalDeleteOps, createConditionalRecordPatchOps, operationObjectIds } from './operationProtocol.js';
 
@@ -8,6 +9,7 @@ const records = (value) => (Array.isArray(value) ? value : []).filter((record) =
 const entries = (op) => Array.isArray(op?.objects) ? op.objects : (op?.id ? [op] : []);
 
 export function isConditionalHistoryOperation(op) {
+  if (op?.type === 'notebook') return isNotebookOperation(op);
   if (op?.type === 'background') return has(op, 'ifBackground');
   if (op?.type === 'transform') return entries(op).some((entry) => has(entry, 'ifTransform') || has(entry, 'ifZIndex'));
   return ['ifFields', 'ifAbsent', 'ifObjectVersion', 'ifDeletedBy', 'ifDeletedMutationId', 'ifZIndex']
@@ -22,7 +24,8 @@ export function prepareAuthoritativeHistory(snapshot, appliedOps, appliedBackgro
   const original = Array.isArray(snapshot?.canvas?.objects) ? snapshot.canvas.objects : [];
   const beforeById = new Map(original.map((object, zIndex) => [String(object.boardObjectId), { object, zIndex }]));
   const preview = { ...snapshot, canvas: { ...snapshot?.canvas, objects: original.map((object) => (
-    ids.has(String(object.boardObjectId)) ? clone(object) : object
+    ids.has(String(object.boardObjectId))
+      ? (isSerializedNotebook(object) ? { ...object } : clone(object)) : object
   )) } };
   applyAuthorityOpsInPlace(preview, appliedOps, appliedBackground);
   const afterById = new Map(preview.canvas.objects.map((object, zIndex) => [String(object.boardObjectId), { object, zIndex }]));
@@ -35,9 +38,30 @@ export function prepareAuthoritativeHistory(snapshot, appliedOps, appliedBackgro
   });
   const inverse = [];
   for (const id of ids) {
-    const before = beforeById.get(id);
-    const after = afterById.get(id);
-    const relevant = appliedOps.filter((op) => operationObjectIds([op]).has(id));
+    let before = beforeById.get(id);
+    let after = afterById.get(id);
+    let relevant = appliedOps.filter((op) => operationObjectIds([op]).has(id));
+    const childOps = relevant.filter(op => op.type === 'notebook');
+    const lifecycle = relevant.some(op => op.type === 'upsert' || op.type === 'delete'
+      || op.type === 'patch' && (has(op.patch, 'notebookPages') || op.unset?.includes('notebookPages')));
+    if (before && after && isSerializedNotebook(before.object) && isSerializedNotebook(after.object) && !lifecycle) {
+      const pages = new Map();
+      for (const childOp of childOps) {
+        const prior = pages.get(childOp.pageNumber);
+        const changes = childOp.changes.map(change => change.type === 'delete'
+          ? { ...change, mutationId: change.mutationId ?? childOp.mutationId ?? actionId } : change);
+        pages.set(childOp.pageNumber, { ...childOp, changes: [...(prior?.changes ?? []), ...changes] });
+      }
+      for (const childOp of pages.values()) inverse.push(...invertNotebookOperation(before.object, childOp,
+        { clientId, actionId, mutationId: actionId, afterState: after.object }));
+      relevant = relevant.filter(op => op.type !== 'notebook');
+      if (!relevant.length) continue;
+      // Geometry history is independent of page content. Never turn a frame undo
+      // into a whole-notebook patch that would erase another participant's ink.
+      const frame = object => { const { notebookPages, ...rest } = object; return rest; };
+      before = { ...before, object: frame(before.object) };
+      after = { ...after, object: frame(after.object) };
+    }
     if (before && !after) {
       const deletion = relevant.filter((op) => op.type === 'delete').at(-1);
       inverse.push({
@@ -123,7 +147,8 @@ export function refreshHistoryOps(ops, clientId, now = Date.now()) {
     value.updatedBy = clientId;
   };
   return clone(ops).map((op) => {
-    if (op.type === 'upsert') stamp(op.object);
+    if (op.type === 'notebook') { stamp(op); op.changes.forEach(stamp); }
+    else if (op.type === 'upsert') stamp(op.object);
     else if (op.type === 'patch') stamp(op);
     else if (op.type === 'transform') entries(op).forEach(stamp);
     return op;
