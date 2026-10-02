@@ -1,0 +1,43 @@
+name: Notebook performance continuation
+
+on:
+  push:
+    branches: ['feature/notebook-performance-continuation-20261002']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notebook-performance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Capture source and installed dependencies for reproducible offline tests
+        run: |
+          git archive --format=tar HEAD > "$RUNNER_TEMP/notebook-workspace.tar"
+          tar --append --file="$RUNNER_TEMP/notebook-workspace.tar" node_modules
+          gzip "$RUNNER_TEMP/notebook-workspace.tar"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notebook-workspace-${{ github.sha }}
+          path: ${{ runner.temp }}/notebook-workspace.tar.gz
+          retention-days: 2
+      - run: npm run test:notebook
+      - run: npm run test:browser-authority
+      - run: npm run test:student:storage
+      - run: npm run test:connections
+      - run: npm run test:screen-share
+      - run: npm run test:sync:ci
+      - run: npm run build
