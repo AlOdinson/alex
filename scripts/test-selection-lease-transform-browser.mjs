@@ -22,6 +22,8 @@ const ctx=pixels.getContext('2d'); ctx.fillStyle='#2867ad'; ctx.fillRect(0,0,200
 const target=new FabricImage(pixels,{left:150,top:150,originX:'left',originY:'top',boardObjectId:'image',objectKind:'image'});
 canvas.add(target); canvas.setActiveObject(target); target.setCoords(); canvas.renderAll();
 const state={starts:0,ends:0,denied:false,requests:0}; let reply=null; let disposed=false;
+// This isolated fixture contains an ordinary image, not a notebook.
+const notebookRuntimeEnabled=false;
 const fabricCanvasRef=ref(canvas), activeToolRef=ref('select');
 const selectionLeaseInteractionStateRef=ref(new Map());
 const selectionLeaseRef=ref({generation:0,token:null,ids:[],state:'none',promise:null,expiresAt:0});
@@ -82,6 +84,7 @@ try {
     await page.mouse.move(point.x,point.y); await page.mouse.down();
     assert.equal((await read()).action,scale?'scale':'drag',scenario+' must start intended Fabric action');
     await page.mouse.move(point.x+10,point.y+6);
+    assert.deepEqual(errors,[],scenario+' must not throw in the native transform handler');
     const waiting=await read();
     assert.equal(waiting.left,initial.left);assert.equal(waiting.scaleX,initial.scaleX);
     assert.equal(waiting.starts,0);
