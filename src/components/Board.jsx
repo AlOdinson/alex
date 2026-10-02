@@ -730,6 +730,14 @@ function applySharpRenderingPolicy(object, visited = new Set()) {
   if (!object || visited.has(object)) return object;
   visited.add(object);
 
+  // Notebook content owns a zoom/DPR-aware Fabric cache. Merely registering or
+  // moving its frame must not invalidate or revisit every child on the page.
+  if (isBoardNotebook(object)) {
+    object.objectCaching = true;
+    object.noScaleCache = false;
+    return object;
+  }
+
   const children = typeof object.getObjects === 'function' ? object.getObjects() : [];
   children.forEach((child) => applySharpRenderingPolicy(child, visited));
   if (object.clipPath) applySharpRenderingPolicy(object.clipPath, visited);

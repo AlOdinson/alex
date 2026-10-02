@@ -1,7 +1,7 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.42.0",
+  "version": "1.42.1",
   "type": "module",
   "scripts": {
     "test:connection-progress": "node --test scripts/test-connection-progress.mjs",
@@ -24,8 +24,10 @@
     "test:pdf:continuity": "node scripts/test-pdf-continuity-browser.mjs",
     "test:student:storage": "node --test scripts/test-student-image-dedup.mjs scripts/test-student-lesson-library.mjs scripts/test-student-offline-cache.mjs scripts/test-student-offline-view.mjs scripts/test-student-offline-baseline.mjs scripts/test-media-asset-store.mjs scripts/test-media-asset-transfer.mjs",
     "test:student:storage:browser": "node scripts/test-student-storage-browser.mjs",
-    "test:notebook": "node --test scripts/test-board-notebook.mjs scripts/test-notebook-history.mjs scripts/test-notebook-lease.mjs",
-    "test:notebook:browser": "node scripts/test-notebook-browser.mjs"
+    "test:notebook": "node --test scripts/test-board-notebook.mjs scripts/test-notebook-history.mjs scripts/test-notebook-lease.mjs scripts/test-notebook-cache.mjs",
+    "test:notebook:browser": "node scripts/test-notebook-browser.mjs",
+    "test:notebook:performance": "node scripts/benchmark-notebook-performance.mjs",
+    "test:notebook:video": "node scripts/test-notebook-screen-share-browser.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",

@@ -131,7 +131,7 @@ try{
   if(!apply)throw Error('Missing authoritative apply handler');
   const {getBoardRuntime}=await import('/alex/src/lib/browserBoardRuntimeRegistry.js');
   const runtime=getBoardRuntime(boardId),n=window.testCanvas.getObjects().find(o=>o.type==='boardnotebook');
-  const pages=n.toObject().notebookPages;
+  const pages=n.serializeNotebookForSnapshot().notebookPages;
   pages.push([structuredClone(pages[0].find(o=>o.type==='Image'))]);
   const ops=[{type:'patch',id:n.boardObjectId,patch:{notebookPages:pages,notebookPageNumber:2},updatedAt:Date.now(),updatedBy:'remote'}];
   const outcome=await runtime.commitTeacherAction({actionId:'notebook-remote-page',baseRevision:runtime.getRevision(),ops});

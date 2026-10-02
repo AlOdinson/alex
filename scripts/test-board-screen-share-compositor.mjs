@@ -97,3 +97,23 @@ test('thumbnail/export rendering cannot overwrite the live compositor cache',asy
   const h=fixture();h.canvas.toCanvasElement(0.5,{filter:item=>!item.transientScreenShare});
   h.paint('#aadd22');assert.equal(h.compositor.present(),true);const fast=h.pixels();h.render();equivalent(fast,h.pixels());await h.close();
 });
+
+test('stationary selected isolated notebook keeps controls and skips full scenes at DPR 1/2',async()=>{
+  // A cached group uses the same isolation contract as BoardNotebook, without
+  // mixing fabric/node and browser Fabric class registries in this pixel fixture.
+  for(const retina of [1,2]) for(const beforeVideo of [false,true]) {
+    const h=fixture({retina});
+    const ink=new Rect({left:-20,top:-20,width:45,height:45,fill:'rgba(255,0,0,.5)'});
+    const eraser=new Rect({left:0,top:0,width:20,height:20,globalCompositeOperation:'destination-out'});
+    const notebook=new Group([ink,eraser],{left:15,top:20,objectCaching:true,backgroundColor:'white',width:70,height:70});
+    notebook.isNotebookCompositingIsolated=()=>Boolean(notebook.ownCaching&&notebook._cacheCanvas);
+    h.canvas.add(notebook);if(beforeVideo)h.canvas.moveObjectTo(notebook,0);
+    h.canvas.setActiveObject(notebook);h.render();h.render();
+    let renders=0;h.canvas.on('before:render',()=>renders++);
+    for(let i=0;i<60;i++){h.paint(i%2?'#faab22':'#3366aa');assert.equal(h.compositor.present(),true);}
+    assert.equal(renders,0);const fast=h.pixels();h.render();equivalent(fast,h.pixels());
+    notebook.set('left',notebook.left+5);h.canvas.fire('object:moving',{target:notebook});assert.equal(h.compositor.present(),false);
+    h.render();assert.equal(h.compositor.present(),true);
+    await h.close();
+  }
+});

@@ -1,10 +1,29 @@
 import { randomToken } from './ids.js';
+import { notebookRenderCacheFor } from './notebookRenderCache.js';
 import { Group, Rect, FabricImage, FabricObject, LayoutManager, FixedLayout, Point, classRegistry, controlsUtils, util } from 'fabric';
 
 export const NOTEBOOK_FIELDS = ['notebookPages', 'notebookPageNumber'];
 export const isBoardNotebook = (object) => String(object?.type).toLowerCase() === 'boardnotebook';
 const childFields = ['id', 'shapeType', 'boardObjectId', 'objectKind', 'storagePath', 'isEraserPath', 'updatedAt', 'updatedBy'];
 const inert = (object) => object.set({ selectable: false, evented: false });
+// Serialized page data is copy-on-write. Callers retaining a before-record never
+// share mutable Fabric properties with a subsequent edit.
+function freezeRecord(value) {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.values(value).forEach(freezeRecord);
+    Object.freeze(value);
+  }
+  return value;
+}
+function releaseSurface(object) {
+  if (object?._cacheCanvas) object._cacheCanvas.width = object._cacheCanvas.height = 0;
+  object?._removeCacheCanvas?.();
+}
+function releaseChildSurfaces(object) {
+  releaseSurface(object);
+  if (object.clipPath) releaseChildSurfaces(object.clipPath);
+  object.getObjects?.().forEach(releaseChildSurfaces);
+}
 
 /** Only the visible page is enlivened; all other pages remain durable JSON. */
 export class BoardNotebook extends Group {
@@ -15,7 +34,12 @@ export class BoardNotebook extends Group {
     super([], { width: 520, height: 480, originX: 'left', originY: 'top', backgroundColor: '#ffffff', strokeWidth: 0, ...frame,
       layoutManager: new LayoutManager(new FixedLayout()), subTargetCheck: false,
       lockScalingFlip: true, lockRotation: true });
-    this.notebookPages = notebookPages.length ? notebookPages : [[]];
+    this.notebookPages = freezeRecord(structuredClone(notebookPages.length ? notebookPages : [[]]));
+    this._pageRecords = new WeakMap();
+    this._pageContentInvalid = false;
+    this.objectCaching = true;
+    this.noScaleCache = false;
+    this.on('removed', () => this.releasePageCache());
     this.notebookPageNumber = Math.max(1, notebookPageNumber);
     this.clipPath = new Rect({ width: this.width, height: this.height, originX: 'center', originY: 'center', strokeWidth: 0 });
     this.setControlsVisibility({ mt: false, mb: false, ml: false, mr: false, mtr: false });
@@ -42,27 +66,93 @@ export class BoardNotebook extends Group {
     this.add(inert(object));
     util.applyTransformToObject(object, matrix);
     object.setCoords();
-    this.syncPage();
+    this.syncPage({ invalidate: false });
     this.dirty = true;
     return object;
   }
 
-  syncPage() {
+  replacePageObjects(objects) {
+    const previous = this.getPageObjects();
+    this.remove(...previous);
+    const matrices = objects.map(object => object.calcOwnMatrix());
+    objects.forEach(object => {
+      if (!object.boardObjectId) object.boardObjectId = randomToken(14);
+      inert(object);
+    });
+    if (objects.length) this.add(...objects);
+    objects.forEach((object, index) => {
+      util.applyTransformToObject(object, matrices[index]);
+      object.setCoords();
+    });
+    this._pageRecords = new WeakMap();
+    this.syncPage({ invalidate: false });
+    this.dirty = true;
+    previous.forEach(object => object.dispose());
+  }
+
+  invalidatePageContent(child) {
+    if (child) this._pageRecords.delete(child);
+    else this._pageRecords = new WeakMap();
+    this._pageContentInvalid = true;
+    this.dirty = true;
+  }
+
+  syncPage({ invalidate = true } = {}) {
+    if (invalidate) this.invalidatePageContent();
     const objects = this.getPageObjects();
     if (objects.length || this.notebookPageNumber <= this.notebookPages.length) {
-      while (this.notebookPages.length < this.notebookPageNumber) this.notebookPages.push([]);
-      this.notebookPages[this.notebookPageNumber - 1] = objects.map((object) => object.toObject(childFields));
+      const page = objects.map(object => {
+        if (!this._pageRecords.has(object)) this._pageRecords.set(object,
+          freezeRecord(structuredClone(object.toObject(childFields))));
+        return this._pageRecords.get(object);
+      });
+      const pages = this.notebookPages.slice();
+      while (pages.length < this.notebookPageNumber) pages.push(Object.freeze([]));
+      pages[this.notebookPageNumber - 1] = Object.freeze(page);
+      this.notebookPages = Object.freeze(pages);
     }
-    this.dirty = true;
+    this._pageContentInvalid = false;
     return this.notebookPages;
   }
 
   toObject(propertiesToInclude = []) {
-    this.syncPage();
+    if (this._pageContentInvalid) this.syncPage({ invalidate: false });
     // FabricObject serialization avoids a second copy under Group.objects.
     const result = FabricObject.prototype.toObject.call(this, propertiesToInclude.filter((key) => !NOTEBOOK_FIELDS.includes(key)));
     delete result.clipPath;
-    return { ...result, notebookPages: this.notebookPages.map((page) => page.map((object) => structuredClone(object))), notebookPageNumber: this.notebookPageNumber };
+    return { ...result, notebookPages: this.notebookPages, notebookPageNumber: this.notebookPageNumber };
+  }
+
+  serializeNotebookForSnapshot(propertiesToInclude = []) {
+    return structuredClone(this.toObject(propertiesToInclude));
+  }
+
+  releasePageCache() {
+    this._pageRenderCache?.release(this);
+    this._pageRenderCache = null;
+    releaseSurface(this);
+    releaseSurface(this.clipPath);
+  }
+
+  renderCache(options) {
+    const cache = notebookRenderCacheFor(this.canvas);
+    if (this._pageRenderCache !== cache) this.releasePageCache();
+    this._pageRenderCache = cache;
+    const wasDirty = this.dirty || !this._cacheCanvas;
+    const previousZoomX = this.zoomX, previousZoomY = this.zoomY;
+    super.renderCache(options);
+    // Child masks were baked into the page. Keeping those bitmaps duplicates
+    // page pixels and makes image-heavy pages grow without bound.
+    if (wasDirty || previousZoomX !== this.zoomX || previousZoomY !== this.zoomY) this.getPageObjects().forEach(releaseChildSurfaces);
+    cache?.acquire(this, { surfaces: [this._cacheCanvas, this.clipPath?._cacheCanvas].filter(Boolean),
+      onEvict: () => {releaseSurface(this);releaseSurface(this.clipPath);this.dirty = true;} });
+  }
+
+  isNotebookCompositingIsolated() { return Boolean(this.ownCaching && this._cacheCanvas); }
+
+  dispose() {
+    this.releasePageCache();
+    return super.dispose();
   }
 
   static async fromObject(serialized, options = {}) {
@@ -70,7 +160,7 @@ export class BoardNotebook extends Group {
     const notebook = new BoardNotebook(frame);
     if (shadow) notebook.shadow = (await util.enlivenObjectEnlivables({ shadow }, options)).shadow;
     const objects = await util.enlivenObjects(notebook.notebookPages[notebook.notebookPageNumber - 1] || [], options);
-    for (const object of objects) notebook.addPageObject(object);
+    notebook.replacePageObjects(objects);
     notebook.setCoords();
     return notebook;
   }
@@ -82,11 +172,10 @@ export const createBoardNotebook = (options = {}) => new BoardNotebook(options);
 export async function setNotebookPage(notebook, page) {
   if (!isBoardNotebook(notebook) || !Number.isInteger(page) || page < 1 || page > Math.max(notebook.notebookPageNumber, notebook.notebookPages.length) + 1) return false;
   if (page === notebook.notebookPageNumber) return true;
-  notebook.syncPage();
+  if (notebook._pageContentInvalid) notebook.syncPage({ invalidate: false });
   const objects = await util.enlivenObjects(notebook.notebookPages[page - 1] || []);
-  notebook.remove(...notebook.getPageObjects());
   notebook.notebookPageNumber = page;
-  for (const object of objects) notebook.addPageObject(object);
+  notebook.replacePageObjects(objects);
   notebook.dirty = true;
   notebook.canvas?.requestRenderAll();
   return true;

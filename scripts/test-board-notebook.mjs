@@ -124,3 +124,54 @@ test('recapturing an outside fragment cannot duplicate page child identities', a
   assert.notEqual(first.inside.boardObjectId,second.inside.boardObjectId);
   assert.notEqual(first.inside.boardObjectId,'source');
 });
+
+test('hydrating 600 children is linear and reads leave the render cache clean', async () => {
+  const sample = new Rect({width:8,height:8}).toObject();
+  const original = Rect.prototype.toObject;
+  let visits = 0;
+  Rect.prototype.toObject = function(...args) {visits++;return original.apply(this,args);};
+  try {
+    const book = await (await import('../src/lib/boardNotebook.js')).BoardNotebook.fromObject({notebookPages:[Array.from({length:600},()=>structuredClone(sample))]});
+    assert.ok(visits <= 1200, `600 children serialized ${visits} times`);
+    book.dirty=false;visits=0;
+    book.toObject();book.toObject();
+    assert.equal(book.dirty,false,'serialization is not a content mutation');
+    assert.ok(visits<=2,'unchanged children must not be serialized again');
+  } finally {Rect.prototype.toObject=original;}
+});
+
+test('incremental child serialization preserves immutable before records and hidden pages', async () => {
+  const book=createBoardNotebook();
+  const first=new Rect({width:8,height:8,fill:'red'});book.addPageObject(first);
+  const before=book.toObject(),beforeJSON=JSON.stringify(before);
+  let visits=0;const original=first.toObject;first.toObject=function(...args){visits++;return original.apply(this,args);};
+  book.addPageObject(new Rect({width:4,height:4}));
+  book.toObject();
+  assert.equal(visits,0,'adding a sibling must not serialize the existing child');
+  first.set('fill','blue');book.invalidatePageContent(first);book.toObject();
+  assert.equal(JSON.stringify(before),beforeJSON,'retained history must not be mutated');
+  const page=book.toObject().notebookPages[0];
+  await setNotebookPage(book,2);
+  book.addPageObject(new Rect({width:2,height:2}));
+  const after=book.toObject();
+  assert.equal(after.notebookPages[0],page,'unchanged hidden records are shared immutably');
+  assert.notEqual(book.serializeNotebookForSnapshot().notebookPages,after.notebookPages,'explicit snapshot detaches data');
+});
+
+test('cached notebook stays visible at zoom and releases old page surfaces', async () => {
+  const book=createBoardNotebook({left:10,top:10,width:150,height:150});
+  book.addPageObject(new Rect({left:-65,top:-65,width:100,height:100,fill:'red',strokeWidth:0}));
+  const c=new StaticCanvas(null,{width:500,height:500,enableRetinaScaling:false,renderOnAddRemove:false});c.add(book);c.renderAll();
+  const previous=book.getPageObjects()[0];
+  c.setZoom(2);c.cancelRequestedRender();c.renderAll();
+  assert.deepEqual([...c.getContext().getImageData(70,70,1,1).data],[255,0,0,255]);
+  book.dirty=false;book.toObject();c.renderAll();
+  assert.deepEqual([...c.getContext().getImageData(70,70,1,1).data],[255,0,0,255]);
+  await setNotebookPage(book,2);c.cancelRequestedRender();c.renderAll();
+  assert.equal(previous._cacheCanvas,undefined);
+  await setNotebookPage(book,1);c.cancelRequestedRender();c.renderAll();
+  assert.deepEqual([...c.getContext().getImageData(70,70,1,1).data],[255,0,0,255]);
+  const {notebookRenderCacheFor}=await import('../src/lib/notebookRenderCache.js');
+  assert.ok(notebookRenderCacheFor(c).bytesUsed()>0);await c.dispose();
+  assert.equal(notebookRenderCacheFor(c).bytesUsed(),0);
+});

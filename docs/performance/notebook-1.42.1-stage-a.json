@@ -1,0 +1,163 @@
+{
+  "environment": {
+    "browser": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.8010.0 Safari/537.36",
+    "dpr": 1,
+    "hardwareConcurrency": 9,
+    "video": "none (stroke-only benchmark)"
+  },
+  "results": [
+    {
+      "scenario": {
+        "pages": 1,
+        "strokes": 100,
+        "points": 40
+      },
+      "strokePreparationP50Ms": 15.600000001490116,
+      "strokePreparationP95Ms": 22.5,
+      "forwardBytes": 349925,
+      "inverseBytes": 349925,
+      "childSerializationVisits": 1,
+      "hydrationVisits": 100,
+      "pageHydrations": 1,
+      "fullSceneRenders": null,
+      "cacheBytes": null,
+      "pendingActions": 0,
+      "convergence": null
+    },
+    {
+      "scenario": {
+        "pages": 6,
+        "strokes": 100,
+        "points": 40
+      },
+      "strokePreparationP50Ms": 76.89999999850988,
+      "strokePreparationP95Ms": 83.69999999552965,
+      "forwardBytes": 2089975,
+      "inverseBytes": 2089975,
+      "childSerializationVisits": 1,
+      "hydrationVisits": 100,
+      "pageHydrations": 1,
+      "fullSceneRenders": null,
+      "cacheBytes": null,
+      "pendingActions": 0,
+      "convergence": null
+    },
+    {
+      "scenario": {
+        "pages": 12,
+        "strokes": 100,
+        "points": 40
+      },
+      "strokePreparationP50Ms": 164.5,
+      "strokePreparationP95Ms": 227.80000000447035,
+      "forwardBytes": 4178035,
+      "inverseBytes": 4178035,
+      "childSerializationVisits": 1,
+      "hydrationVisits": 100,
+      "pageHydrations": 1,
+      "fullSceneRenders": null,
+      "cacheBytes": null,
+      "pendingActions": 0,
+      "convergence": null
+    },
+    {
+      "scenario": {
+        "pages": 20,
+        "strokes": 100,
+        "points": 40
+      },
+      "strokePreparationP50Ms": 286.80000000447035,
+      "strokePreparationP95Ms": 321,
+      "forwardBytes": 6962115,
+      "inverseBytes": 6962115,
+      "childSerializationVisits": 1,
+      "hydrationVisits": 100,
+      "pageHydrations": 1,
+      "fullSceneRenders": null,
+      "cacheBytes": null,
+      "pendingActions": 0,
+      "convergence": null
+    },
+    {
+      "scenario": {
+        "pages": 1,
+        "strokes": 300,
+        "points": 40
+      },
+      "strokePreparationP50Ms": 39.899999998509884,
+      "strokePreparationP95Ms": 45.69999999552965,
+      "forwardBytes": 1045314,
+      "inverseBytes": 1045314,
+      "childSerializationVisits": 1,
+      "hydrationVisits": 300,
+      "pageHydrations": 1,
+      "fullSceneRenders": null,
+      "cacheBytes": null,
+      "pendingActions": 0,
+      "convergence": null
+    },
+    {
+      "scenario": {
+        "pages": 6,
+        "strokes": 300,
+        "points": 40
+      },
+      "strokePreparationP50Ms": 251.89999999850988,
+      "strokePreparationP95Ms": 288.1000000014901,
+      "forwardBytes": 6262634,
+      "inverseBytes": 6262634,
+      "childSerializationVisits": 1,
+      "hydrationVisits": 300,
+      "pageHydrations": 1,
+      "fullSceneRenders": null,
+      "cacheBytes": null,
+      "pendingActions": 0,
+      "convergence": null
+    },
+    {
+      "scenario": {
+        "pages": 12,
+        "strokes": 300,
+        "points": 40
+      },
+      "strokePreparationP50Ms": 586.2000000029802,
+      "strokePreparationP95Ms": 724.2999999970198,
+      "forwardBytes": 12523418,
+      "inverseBytes": 12523418,
+      "childSerializationVisits": 1,
+      "hydrationVisits": 300,
+      "pageHydrations": 1,
+      "fullSceneRenders": null,
+      "cacheBytes": null,
+      "pendingActions": 0,
+      "convergence": null
+    },
+    {
+      "scenario": {
+        "pages": 20,
+        "strokes": 300,
+        "points": 40
+      },
+      "strokePreparationP50Ms": 1001,
+      "strokePreparationP95Ms": 1077.9000000059605,
+      "forwardBytes": 20871130,
+      "inverseBytes": 20871130,
+      "childSerializationVisits": 1,
+      "hydrationVisits": 300,
+      "pageHydrations": 1,
+      "fullSceneRenders": null,
+      "cacheBytes": null,
+      "pendingActions": 0,
+      "convergence": null
+    },
+    {
+      "scenario": {
+        "images": 1,
+        "strokes": 100
+      },
+      "imageEncodes": 0,
+      "childSerializationVisits": 100,
+      "inlineImageBytes": 25953
+    }
+  ]
+}

@@ -7,7 +7,7 @@ const SCENE_EVENTS = ['object:added', 'object:removed', 'object:modified',
 
 function sourceOver(object) {
   return (!object.globalCompositeOperation || object.globalCompositeOperation === 'source-over')
-    && (!object.getObjects || object.getObjects().every(sourceOver));
+    && (object.isNotebookCompositingIsolated?.() || !object.getObjects || object.getObjects().every(sourceOver));
 }
 
 export function createBoardScreenShareCompositor({ object, document: doc = globalThis.document }) {
@@ -17,6 +17,7 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
   let valid = false;
   let disposed = false;
   let signature = '';
+  let selectedObject = null;
   let detachHooks = () => {};
 
   const invalidate = () => { valid = false; };
@@ -39,9 +40,12 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
     object.calcTransformMatrix(), object.width, object.height, object.cropX, object.cropY,
     object.opacity, object.visible, canvas.imageSmoothingEnabled, canvas.patternQuality,
   ]);
-  const supported = () => !canvas.getActiveObject?.() && !canvas._currentTransform
+  const supported = () => {
+    const selected = canvas.getActiveObject?.();
+    return (!selected || selected.isNotebookCompositingIsolated?.()) && !canvas._currentTransform
     && !canvas.clipPath && !canvas.overlayImage && !canvas.overlayColor
     && object.visible && sourceOver(object);
+  };
 
   const attach = () => {
     if (disposed || canvas === object.canvas) return;
@@ -95,6 +99,7 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
       upperContext.imageSmoothingEnabled = ctx.imageSmoothingEnabled;
       upperContext.patternQuality = ctx.patternQuality;
       originalRenderObjects.call(this, upperContext, objects.slice(index + 1));
+      selectedObject = canvas.getActiveObject?.() ?? null;
       signature = state();
       valid = true;
     };
@@ -120,7 +125,7 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
     if (!isVisible()) return false;
     attach();
     if (!canvas) { object.canvas?.requestRenderAll?.(); return false; }
-    if (!valid || canvas.nextRenderHandle || !supported() || signature !== state()) {
+    if (!valid || canvas.nextRenderHandle || !supported() || selectedObject !== (canvas.getActiveObject?.() ?? null) || signature !== state()) {
       canvas.requestRenderAll();
       return false;
     }
@@ -136,6 +141,12 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
       object.render(ctx);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.drawImage(upper, 0, 0);
+      // Fabric paints selection controls on the lower canvas after the scene.
+      // Repaint only this small overlay; never revisit page geometry.
+      if (selectedObject && !canvas.skipControlsDrawing) {
+        ctx.scale(retina, retina);
+        canvas.drawControls(ctx);
+      }
     } finally { ctx.restore(); }
     // Do not clear contextTop: it can contain the active brush preview or the
     // temporary selection controls drawn by Board during an interaction.
