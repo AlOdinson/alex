@@ -1,0 +1,65 @@
+name: Materialize verified receiver fix
+on:
+  push:
+    branches: ['fix/screen-share-receiver-20261003']
+    paths: ['.delivery/receiver-fix.*', '.github/workflows/receiver-fix-delivery.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: receiver-fix-delivery
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: fix/screen-share-receiver-20261003
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify transport checksum and exact source tree
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, pathlib
+          parts = [pathlib.Path('.delivery/receiver-fix.%02d' % i) for i in range(4)]
+          encoded = ''.join(p.read_text().strip() for p in parts)
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          assert len(patch) == 61316
+          assert hashlib.sha256(patch).hexdigest() == '199c41359bc39001b18e2aae7dc8dfdc0a22be4fd2b279abc74e4c5c10369376'
+          pathlib.Path('/tmp/receiver-fix.patch').write_bytes(patch)
+          PY
+          git apply --check /tmp/receiver-fix.patch
+          git apply /tmp/receiver-fix.patch
+          git rm .delivery/receiver-fix.00 .delivery/receiver-fix.01 .delivery/receiver-fix.02 .delivery/receiver-fix.03 .github/workflows/receiver-fix-delivery.yml
+          git add -A
+          test "$(git write-tree)" = b583c10420837f28eb0ada8af18f9dd182e8d670
+          git diff --cached --check
+      - run: npm ci --no-audit --no-fund
+      - name: Verify screen-share logic and production build
+        run: |
+          set -o pipefail
+          npm run test:screen-share | tee "$RUNNER_TEMP/receiver-unit.log"
+          npm run build | tee "$RUNNER_TEMP/receiver-build.log"
+      - name: Commit tested source to isolated feature branch
+        run: |
+          test "$(git write-tree)" = b583c10420837f28eb0ada8af18f9dd182e8d670
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: recover received screen-share frames and avoid empty-scene copies (1.43.3)'
+          git push origin HEAD:refs/heads/fix/screen-share-receiver-20261003
+          git rev-parse HEAD > "$RUNNER_TEMP/receiver-commit.txt"
+          git archive --format=tar.gz HEAD > "$RUNNER_TEMP/receiver-verified-source.tar.gz"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: receiver-verified-source
+          path: |
+            ${{ runner.temp }}/receiver-unit.log
+            ${{ runner.temp }}/receiver-build.log
+            ${{ runner.temp }}/receiver-commit.txt
+            ${{ runner.temp }}/receiver-verified-source.tar.gz
+          retention-days: 7
