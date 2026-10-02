@@ -1,0 +1,82 @@
+diff --git a/scripts/test-notebook-navigation.mjs b/scripts/test-notebook-navigation.mjs
+index 2473b0d..d368752 100644
+--- a/scripts/test-notebook-navigation.mjs
++++ b/scripts/test-notebook-navigation.mjs
+@@ -1,5 +1,6 @@
+ import test from 'node:test';
+ import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
+ import { JSDOM } from 'jsdom';
+ import { getEnv } from 'fabric/node';
+ import { setEnv, Canvas, Rect, Textbox, ActiveSelection, util } from 'fabric';
+@@ -202,3 +203,32 @@ test('a pen sample with zero buttons does not hand its ongoing stroke to the nav
+     assert.equal(f.layer.dataset.gestureActive, 'true');
+   } finally { gate.dispose(); f.dom.window.close(); }
+ });
++
++// Exercise the actual window capture handler: React's bubble stop is too late
++// to stop the board's Space-pan / Delete / arrow-key shortcuts.
++test('focused notebook controls retain native keyboard activation instead of board shortcuts', () => {
++  const source = readFileSync(new URL('../src/components/Board.jsx', import.meta.url), 'utf8');
++  const from = source.indexOf('    function handleKeyDown(event) {');
++  const to = source.indexOf('    function handleKeyUp(event)', from);
++  assert.ok(from >= 0 && to > from);
++  const f = domFixture();
++  const state = { deleted: 0, panned: 0 };
++  const scope = { canvas: { getActiveObject: () => null },
++    HTMLInputElement: f.dom.window.HTMLInputElement, HTMLTextAreaElement: f.dom.window.HTMLTextAreaElement,
++    HTMLSelectElement: f.dom.window.HTMLSelectElement, IText: Textbox, isOwner: false,
++    spacePressedRef: { current: false }, canEditRef: { current: true }, heldArrowKeys: new Map(),
++    startArrowPan: () => state.panned++, deleteSelection: () => state.deleted++ };
++  const handler = new Function('scope', `with(scope){${source.slice(from, to)};return handleKeyDown;}`)(scope);
++  try {
++    const button = f.layer.querySelector('button');
++    for (const [key, code] of [[' ', 'Space'], ['Enter', 'Enter'], ['Delete', 'Delete'], ['ArrowLeft', 'ArrowLeft']]) {
++      let prevented = false;
++      handler({ target: button, key, code, preventDefault: () => { prevented = true; }, stopPropagation() {} });
++      assert.equal(prevented, false, `${code} belongs to the focused notebook control`);
++    }
++    assert.equal(scope.spacePressedRef.current, false); assert.deepEqual(state, { deleted: 0, panned: 0 });
++    let prevented = false;
++    handler({ target: f.canvas, key: ' ', code: 'Space', preventDefault: () => { prevented = true; }, stopPropagation() {} });
++    assert.equal(prevented, true); assert.equal(scope.spacePressedRef.current, true, 'board Space-pan is unchanged away from controls');
++  } finally { f.dom.window.close(); }
++});
+diff --git a/src/components/Board.jsx b/src/components/Board.jsx
+index d1a8356..1e2b889 100644
+--- a/src/components/Board.jsx
++++ b/src/components/Board.jsx
+@@ -14134,6 +14134,9 @@ function BoardWorkspace({
+     let gameLibrarySequenceStartedAt = 0;
+ 
+     function handleKeyDown(event) {
++      // Native button activation belongs to the notebook chrome, not Space-pan
++      // or selection shortcuts. This listener runs before React bubble handlers.
++      if (event.target?.closest?.('.notebook-nav-island')) return;
+       const isShortcut = event.metaKey || event.ctrlKey;
+       const target = event.target;
+       const isTextInput = target instanceof HTMLInputElement
+diff --git a/scripts/test-notebook-drop-browser.mjs b/scripts/test-notebook-drop-browser.mjs
+index 54f7f8f..875a58b 100644
+--- a/scripts/test-notebook-drop-browser.mjs
++++ b/scripts/test-notebook-drop-browser.mjs
+@@ -51,9 +51,6 @@ try {
+     window.book=()=>window.c.getObjects().find(o=>o.type==='boardnotebook');
+     window.screenPoint=point=>{const v=window.c.viewportTransform,r=window.c.upperCanvasEl.getBoundingClientRect();return {x:r.left+point.x*v[0]+point.y*v[2]+v[4],y:r.top+point.x*v[1]+point.y*v[3]+v[5]};};
+   });
+-  await drawOnPage('page-one');await selectBook();await next();await page.waitForFunction(()=>window.book().notebookPageNumber===2);
+-  await drawOnPage('page-two');await selectBook();
+-  const frame=await page.evaluate(()=>{const n=window.book(),p=n.getBoundingRect();return {left:n.left,top:n.top,point:window.screenPoint({x:p.left+350,y:p.top+220})};});
+   await page.evaluate(() => {
+     const n = window.book(); window.navigationTrace = [];
+     const trace = (kind, extra = {}) => { if (window.navigationTrace.length < 500) window.navigationTrace.push({kind, t:performance.now(), left:n.left, top:n.top, transform:window.c._currentTransform?.action, locked:n.lockMovementX, ...extra}); };
+@@ -63,6 +60,9 @@ try {
+     for(let h=f.memoizedState;h;h=h.next){const v=h.memoizedState?.current;if(v?.suspendProjection&&v?.resumeProjection){for(const name of ['suspendProjection','resumeProjection']){const original=v[name];v[name]=(...args)=>{trace(name);return original(...args);};}}}
+     for(const kind of ['pointerdown','pointerup','blur']) window.addEventListener(kind,e=>trace('window '+kind,{target:e.target?.className,pointerId:e.pointerId}),true);
+   });
++  await drawOnPage('page-one');await selectBook();await next();await page.waitForFunction(()=>window.book().notebookPageNumber===2);
++  await drawOnPage('page-two');await selectBook();
++  const frame=await page.evaluate(()=>{const n=window.book(),p=n.getBoundingRect();return {left:n.left,top:n.top,point:window.screenPoint({x:p.left+350,y:p.top+220})};});
+   await drag(frame.point,60,35);
+   await next();await page.waitForFunction(()=>window.book().notebookPageNumber===3);
+   const moved=await page.evaluate(()=>({left:window.book().left,top:window.book().top,pages:window.book().notebookPages.map(p=>p.length)}));
