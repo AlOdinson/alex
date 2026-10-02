@@ -10,11 +10,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          ref: 21b8048ff85ed6652c7005783f56f1567b4d68bc
           persist-credentials: false
       - name: Export exact source baseline
         run: |
-          git archive --format=tar.gz --output=/tmp/notebook-main-source.tar.gz 21b8048ff85ed6652c7005783f56f1567b4d68bc
-          git ls-tree -r 21b8048ff85ed6652c7005783f56f1567b4d68bc > /tmp/notebook-source-hashes.txt
+          git archive --format=tar.gz --output=/tmp/notebook-main-source.tar.gz HEAD
+          git ls-tree -r HEAD > /tmp/notebook-source-hashes.txt
       - uses: actions/upload-artifact@v4
         with:
           name: notebook-main-source
