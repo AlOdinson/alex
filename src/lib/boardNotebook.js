@@ -71,7 +71,7 @@ export class BoardNotebook extends Group {
     return object;
   }
 
-  replacePageObjects(objects) {
+  replacePageObjects(objects, records = null) {
     const previous = this.getPageObjects();
     this.remove(...previous);
     const matrices = objects.map(object => object.calcOwnMatrix());
@@ -85,6 +85,9 @@ export class BoardNotebook extends Group {
       object.setCoords();
     });
     this._pageRecords = new WeakMap();
+    if (records) objects.forEach((object, index) => {
+      if (records[index]?.boardObjectId === object.boardObjectId) this._pageRecords.set(object, records[index]);
+    });
     this.syncPage({ invalidate: false });
     this.dirty = true;
     previous.forEach(object => object.dispose());
@@ -106,6 +109,11 @@ export class BoardNotebook extends Group {
           freezeRecord(structuredClone(object.toObject(childFields))));
         return this._pageRecords.get(object);
       });
+      const previous = this.notebookPages[this.notebookPageNumber - 1];
+      if (previous?.length === page.length && page.every((record, index) => previous[index] === record)) {
+        this._pageContentInvalid = false;
+        return this.notebookPages;
+      }
       const pages = this.notebookPages.slice();
       while (pages.length < this.notebookPageNumber) pages.push(Object.freeze([]));
       pages[this.notebookPageNumber - 1] = Object.freeze(page);
@@ -160,7 +168,7 @@ export class BoardNotebook extends Group {
     const notebook = new BoardNotebook(frame);
     if (shadow) notebook.shadow = (await util.enlivenObjectEnlivables({ shadow }, options)).shadow;
     const objects = await util.enlivenObjects(notebook.notebookPages[notebook.notebookPageNumber - 1] || [], options);
-    notebook.replacePageObjects(objects);
+    notebook.replacePageObjects(objects, notebook.notebookPages[notebook.notebookPageNumber - 1]);
     notebook.setCoords();
     return notebook;
   }
@@ -175,7 +183,7 @@ export async function setNotebookPage(notebook, page) {
   if (notebook._pageContentInvalid) notebook.syncPage({ invalidate: false });
   const objects = await util.enlivenObjects(notebook.notebookPages[page - 1] || []);
   notebook.notebookPageNumber = page;
-  notebook.replacePageObjects(objects);
+  notebook.replacePageObjects(objects, notebook.notebookPages[notebook.notebookPageNumber - 1]);
   notebook.dirty = true;
   notebook.canvas?.requestRenderAll();
   return true;

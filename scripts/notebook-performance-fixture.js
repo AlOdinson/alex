@@ -59,7 +59,8 @@ export async function benchmarkReceivedNotebookVideo({width=1920,height=1080,fps
   sender=createBrowserPeerConnection({...options,initiator:true,sendSignal:s=>{queueMicrotask(()=>receiver.handleSignal(s).catch(e=>errors.push(e.message)));}});
   receiver=createBrowserPeerConnection({...options,sendSignal:s=>{queueMicrotask(()=>sender.handleSignal(s).catch(e=>errors.push(e.message)));}});
   const received=new Promise(resolve=>receiver.getPeerConnection().ontrack=e=>resolve(e.streams[0]||new MediaStream([e.track])));
-  sender.getPeerConnection().addTrack(stream.getVideoTracks()[0],stream);
+  const track=stream.getVideoTracks()[0];track.contentHint='detail';
+  const rtpSender=sender.getPeerConnection().addTrack(track,stream);
   const canvas=new Canvas(document.createElement('canvas'),{width:1000,height:800,renderOnAddRemove:false,enableRetinaScaling:true,preserveObjectStacking:true});
   document.body.append(canvas.wrapperEl);
   const media=createBoardScreenShareMedia({sessionId:'notebook-perf',layout:{left:0,top:0,width:640,height:360}});
@@ -70,6 +71,12 @@ export async function benchmarkReceivedNotebookVideo({width=1920,height=1080,fps
   let videoTimeout;
   try {
     await sender.start();
+    const {SCREEN_SHARE_ULTRA_PROFILE}=await import('../src/lib/screenShare.js');
+    const parameters=rtpSender.getParameters();
+    parameters.degradationPreference='maintain-resolution';
+    parameters.encodings=(parameters.encodings?.length?parameters.encodings:[{}]).map(encoding=>({...encoding,
+      maxBitrate:SCREEN_SHARE_ULTRA_PROFILE.maxBitrate,maxFramerate:fps,scaleResolutionDownBy:1}));
+    await rtpSender.setParameters(parameters);
     media.setStream(await Promise.race([received,new Promise((_,reject)=>{videoTimeout=setTimeout(()=>reject(Error('No received WebRTC stream')),15000);})]));
     const waitFrames=frames=>new Promise((resolve,reject)=>{
       const timeout=setTimeout(()=>reject(Error(`Timed out receiving ${frames} frames (${errors}); sender=${sender.getPeerConnection().connectionState}, receiver=${receiver.getPeerConnection().connectionState}, ready=${media.video.readyState}, size=${media.video.videoWidth}x${media.video.videoHeight}, tracks=${media.video.srcObject?.getTracks().map(t=>`${t.readyState}/${t.muted}`)}, gathering=${sender.getPeerConnection().iceGatheringState}`)),15000);

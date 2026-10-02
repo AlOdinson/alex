@@ -175,3 +175,14 @@ test('cached notebook stays visible at zoom and releases old page surfaces', asy
   assert.ok(notebookRenderCacheFor(c).bytesUsed()>0);await c.dispose();
   assert.equal(notebookRenderCacheFor(c).bytesUsed(),0);
 });
+
+test('page navigation preserves serialized child data exactly instead of round-tripping it', async () => {
+  const record=new Rect({left:-11.123456,top:-6.876543,width:13,height:7,angle:13.37}).toObject(['boardObjectId']);
+  record.boardObjectId='stable-child';record.metadataFromSnapshot={source:'retained'};
+  const {BoardNotebook}=await import('../src/lib/boardNotebook.js');
+  const book=await BoardNotebook.fromObject({notebookPages:[[record],[]]});
+  assert.deepEqual(book.toObject().notebookPages[0][0],record,'hydration is a read, not an edit');
+  const before=JSON.stringify(book.toObject().notebookPages);
+  await setNotebookPage(book,2);await setNotebookPage(book,1);
+  assert.equal(JSON.stringify(book.toObject().notebookPages),before,'navigation must not conflict with an earlier conditional undo');
+});

@@ -44,7 +44,12 @@ try{
  await page.waitForFunction(()=>window.notebook()?.notebookPageNumber===1);
  assert.equal(await page.evaluate(()=>window.notebook().getPageObjects().length),1);
  await page.evaluate(()=>window.toolbar().onUndo());
- await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===0);
+ try {await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===0);}
+ catch(error){console.error('NOTEBOOK UNDO DIAGNOSTICS',await page.evaluate(async boardId=>{
+   const {getBoardRuntime}=await import('/alex/src/lib/browserBoardRuntimeRegistry.js');
+   const runtime=getBoardRuntime(boardId);return {status:document.querySelector('.toolbar-status')?.textContent,
+     body:document.body.innerText,local:window.notebook()?.toObject(),authority:runtime.getSnapshot()};
+ },board.boardId));throw error;}
  await page.evaluate(()=>window.toolbar().onRedo());
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===1);
  // Whole text stays editable through the notebook editor.
