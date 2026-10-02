@@ -80,6 +80,11 @@ jobs:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
           WEBKIT_LOCAL_ICE: '1'
         run: npm run test:notebook:video
+      - name: Empty receiving screen, real mode switches and stalled callback recovery
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+          WEBKIT_LOCAL_ICE: '1'
+        run: npm run test:screen-share:receiver:browser
       - name: Shared student files and final lesson cleanup
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
@@ -90,6 +95,7 @@ jobs:
           name: connection-direct-${{ matrix.engine }}
           path: |
             connection-direct-results/
+            screen-share-receiver-results/
             /tmp/notebook-performance.json
             /tmp/notebook-received-video.json
           retention-days: 7

@@ -18,6 +18,7 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
   let disposed = false;
   let signature = '';
   let selectedObject = null;
+  let videoOnlyScene = false;
   let detachHooks = () => {};
 
   const invalidate = () => { valid = false; };
@@ -32,6 +33,7 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
     detachHooks();
     detachHooks = () => {};
     canvas = null;
+    videoOnlyScene = false;
     release();
   };
   const state = () => JSON.stringify([
@@ -73,6 +75,13 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
       }
       invalidate();
       const index = objects.indexOf(object);
+      videoOnlyScene = index === 0 && objects.length === 1;
+      if (videoOnlyScene) {
+        // There is no static geometry to amortize. Two full-window pixel copies
+        // cost more than native video/background rendering, especially at DPR2.
+        release();
+        return originalRenderObjects.call(this, ctx, objects);
+      }
       const width = canvas.lowerCanvasEl.width, height = canvas.lowerCanvasEl.height;
       if (index < 0 || !supported() || width * height > MAX_CACHE_PIXELS
         || objects.some(item => item !== object && item.transientScreenShare)
@@ -125,6 +134,14 @@ export function createBoardScreenShareCompositor({ object, document: doc = globa
     if (!isVisible()) return false;
     attach();
     if (!canvas) { object.canvas?.requestRenderAll?.(); return false; }
+    if (videoOnlyScene) {
+      // The frame pump already runs on requestAnimationFrame. Present now rather
+      // than scheduling an additional display tick; renderAll keeps native
+      // selection/overlays/brush behavior and re-evaluates scene membership.
+      canvas.cancelRequestedRender?.();
+      canvas.renderAll();
+      return true;
+    }
     if (!valid || canvas.nextRenderHandle || !supported() || selectedObject !== (canvas.getActiveObject?.() ?? null) || signature !== state()) {
       canvas.requestRenderAll();
       return false;

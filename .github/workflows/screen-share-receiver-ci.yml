@@ -1,0 +1,52 @@
+name: Screen-share receiver frame regression
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['fix/screen-share-receiver-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: receiver-fix-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  receiver:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, receiver: chromium, cross: '0', browsers: chromium}
+          - {os: macos-latest, receiver: webkit, cross: '0', browsers: webkit}
+          - {os: macos-latest, receiver: chromium, cross: '1', browsers: 'chromium webkit'}
+          - {os: macos-latest, receiver: webkit, cross: '1', browsers: 'chromium webkit'}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      VERIFICATION_BROWSER: ${{ matrix.receiver }}
+      RECEIVER_CROSS_ENGINE: ${{ matrix.cross }}
+      WEBKIT_LOCAL_ICE: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test:screen-share
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.browsers }}
+      - name: Measure previous receiver, with explicitly injected callback stalls
+        run: |
+          git show d3f04e21b38472e33ec49f371fce2aca14bcd06a:src/lib/boardScreenShare.js > src/lib/boardScreenShare.js
+          git show d3f04e21b38472e33ec49f371fce2aca14bcd06a:src/lib/boardScreenShareCompositor.js > src/lib/boardScreenShareCompositor.js
+          RECEIVER_BASELINE=1 npm run test:screen-share:receiver:browser
+      - name: Verify fixed empty receiver, mode changes and distinct-frame recovery
+        run: |
+          git restore src/lib/boardScreenShare.js src/lib/boardScreenShareCompositor.js
+          npm run test:screen-share:receiver:browser
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: receiver-fix-${{ matrix.receiver }}-cross-${{ matrix.cross }}
+          path: screen-share-receiver-results/
+          retention-days: 7
