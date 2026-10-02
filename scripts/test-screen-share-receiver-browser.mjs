@@ -20,7 +20,12 @@ try {
       args: ['--no-sandbox','--autoplay-policy=no-user-gesture-required','--disable-features=WebRtcHideLocalIpsWithMdns','--allow-loopback-in-peer-connection'],
       ...(process.env.CHROMIUM_EXECUTABLE ? {executablePath:process.env.CHROMIUM_EXECUTABLE} : {}),
     } : {})}); browsers.push(browser);
-    const context = await browser.newContext({ viewport: {width:1920,height:1080}, deviceScaleFactor:2 });
+    // Isolate the receiving pipeline: keep its 4K backing canvas, but avoid
+    // running a second 4K preview on the sender on the same CI CPU. Capture
+    // remains 1920x1080 at 60 and all real sender mode/encoder code is unchanged.
+    const context = await browser.newContext(role === 'viewer'
+      ? { viewport: {width:1920,height:1080}, deviceScaleFactor:2 }
+      : { viewport: {width:1000,height:640}, deviceScaleFactor:1 });
     const page = pages[role] = await context.newPage();
     if (engine === 'webkit' && process.env.WEBKIT_LOCAL_ICE === '1') {
       const implementation = page._connection.toImpl(page);
