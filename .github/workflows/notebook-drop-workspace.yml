@@ -3,7 +3,7 @@ on:
   push:
     branches: [work/notebook-drop-workspace-20261002]
 permissions:
-  contents: write
+  contents: read
 jobs:
   workspace:
     runs-on: ubuntu-latest
@@ -13,30 +13,29 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
-          ref: 1f0a515d2ce5cbfabf6cf14b346db10977143669
+          ref: 7f7d13c33c790fc6edc199e0bb053bab1a041e9b
           path: target
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Reconstruct hash-pinned test correction
-        run: python3 .work/apply-notebook-followup.py
-      - name: Validate notebook regressions and build
+      - name: Observe native notebook history
+        run: python3 .work/diagnose-native-drop.py
+      - name: Native Chromium drop and history
         working-directory: target
+        env:
+          VITE_NOTEBOOK_OPERATIONS_V1: true
         run: |
           npm ci --no-audit --no-fund
-          npm run test:notebook > /tmp/notebook-drop-tests.log 2>&1
-          npm run build > /tmp/notebook-drop-build.log 2>&1
-      - name: Store immutable test source blobs only
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 .work/apply-notebook-followup.py --publish-blobs
+          npm install --no-save --no-package-lock playwright-core@1.62.1
+          export CHROMIUM_EXECUTABLE=$(command -v google-chrome)
+          test -n "$CHROMIUM_EXECUTABLE"
+          node scripts/test-notebook-drop-browser.mjs > /tmp/notebook-native-diagnostic.log 2>&1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: notebook-drop-blobs
+          name: notebook-native-diagnostic
           path: |
-            /tmp/notebook-drop-blobs.json
-            /tmp/notebook-drop-tests.log
-            /tmp/notebook-drop-build.log
+            target/connection-direct-results/
+            /tmp/notebook-native-diagnostic.log
           retention-days: 3
