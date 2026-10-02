@@ -1,14 +1,1 @@
-{
-  "package-lock.json": "3d8f2ee9d82d762107332bce7d6551b6ddc72832",
-  "package.json": "79619523685778c82bd4755e9bee98047ff5fff2",
-  "public/version.json": "c03cb44f796a26adda95664d76f1cc7bfa44432c",
-  "scripts/notebook-drop-node-harness.mjs": "47e000e86d6b43ca3a5aa78c48afa892f561da72",
-  "scripts/notebook-ui-node-harness.mjs": "0a4ced219792fbf6c2650b0c68b02a5037ab2b7a",
-  "scripts/test-notebook-browser.mjs": "c0888fd3925f1756384979b8e7316b19897879b2",
-  "scripts/test-notebook-drop-browser.mjs": "6f875cc7f1fc973a21a805af3e41f3ff6a689459",
-  "scripts/test-notebook-drop-regressions.mjs": "5252152b6f2a8adde1297c75f955f39f21418ad9",
-  "src/components/Board.jsx": "d3de120494509197e2abe1e2a11a8a4ad4802e52",
-  "src/lib/boardNotebook.js": "e91bbf8428b2783c99a17ac3bfb620a84777131b",
-  "src/lib/notebookBoardActions.js": "c64d25592d215cec380898e59147768f2fb96888",
-  "src/lib/notebookProjection.js": "ec3a2276c022ba144a8124b37a5824ebad0858a1"
-}
+{"scripts/test-notebook-browser.mjs":"6d7c48bcf1677d1bf85b1912650858f9aea3574e","scripts/test-notebook-drop-browser.mjs":"464453e43a44de096321d9d421bcc8fdcfc0748a","scripts/test-notebook-drop-regressions.mjs":"07227b8130dfe5f8808387d5ff94f6988f221c60"}

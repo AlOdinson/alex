@@ -13,24 +13,24 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v6
         with:
-          ref: 21b8048ff85ed6652c7005783f56f1567b4d68bc
+          ref: 1f0a515d2ce5cbfabf6cf14b346db10977143669
           path: target
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Reconstruct hash-pinned local patch
-        run: python3 .work/apply-notebook-drop.py
-      - name: Validate source and notebook behavior
+      - name: Reconstruct hash-pinned test correction
+        run: python3 .work/apply-notebook-followup.py
+      - name: Validate notebook regressions and build
         working-directory: target
         run: |
           npm ci --no-audit --no-fund
           npm run test:notebook > /tmp/notebook-drop-tests.log 2>&1
           npm run build > /tmp/notebook-drop-build.log 2>&1
-      - name: Store immutable source blobs only
+      - name: Store immutable test source blobs only
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 .work/apply-notebook-drop.py --publish-blobs
+        run: python3 .work/apply-notebook-followup.py --publish-blobs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
