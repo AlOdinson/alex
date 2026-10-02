@@ -1,0 +1,83 @@
+name: Import verified notebook 1.43.0 source
+
+on:
+  push:
+    branches: ['release/notebook-1.43.0-import']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: notebook-source-import-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  import-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify complete patch and reconstruct exact reviewed tree
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, lzma, os, pathlib, subprocess
+          source = pathlib.Path('.release/notebook-1.43.0')
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          manifest = json.loads((source / 'manifest.json').read_text())
+          data = bytearray()
+          for part in manifest['parts']:
+              chunk = (source / part['name']).read_bytes()
+              assert len(chunk) == part['bytes'], part['name']
+              assert hashlib.sha256(chunk).hexdigest() == part['sha256'], part['name']
+              data.extend(chunk)
+          assert hashlib.sha256(data).hexdigest() == manifest['xz_sha256']
+          patch = lzma.decompress(data)
+          assert hashlib.sha256(patch).hexdigest() == manifest['patch_sha256']
+          patch_path = temp / 'notebook-1.43.0.patch'
+          patch_path.write_bytes(patch)
+          (temp / 'notebook-import-manifest.json').write_text(json.dumps(manifest))
+          subprocess.run(['git', 'checkout', '--detach', manifest['base_commit']], check=True)
+          assert subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip() == manifest['base_tree']
+          subprocess.run(['git', 'apply', '--check', str(patch_path)], check=True)
+          subprocess.run(['git', 'apply', '--index', str(patch_path)], check=True)
+          tree = subprocess.check_output(['git', 'write-tree'], text=True).strip()
+          assert tree == manifest['source_tree'], (tree, manifest['source_tree'])
+          print('Verified exact source tree:', tree)
+          PY
+      - name: Store source objects without changing any branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const cp = require('node:child_process');
+            const manifest = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'notebook-import-manifest.json')));
+            const git = args => cp.execFileSync('git', args, {encoding:'utf8'}).trim();
+            const paths = cp.execFileSync('git', ['diff', '--cached', '--name-only', '-z', manifest.base_commit], {encoding:'utf8'}).split('\0').filter(Boolean);
+            const entries = [];
+            for (const file of paths) {
+              if (!fs.existsSync(file)) { entries.push({path:file, mode:'100644', type:'blob', sha:null}); continue; }
+              const stage = git(['ls-files', '--stage', '--', file]).split(/\s+/);
+              if (!['100644','100755'].includes(stage[0])) throw new Error('Unexpected file mode: '+file);
+              const data = fs.readFileSync(file);
+              const blob = await github.rest.git.createBlob({...context.repo, encoding:'base64', content:data.toString('base64')});
+              if (blob.data.sha !== stage[1]) throw new Error('Blob checksum mismatch: '+file);
+              entries.push({path:file, mode:stage[0], type:'blob', sha:blob.data.sha});
+            }
+            const tree = await github.rest.git.createTree({...context.repo, base_tree:manifest.base_tree, tree:entries});
+            if (tree.data.sha !== manifest.source_tree) throw new Error('Remote source tree checksum mismatch');
+            const commit = await github.rest.git.createCommit({...context.repo, message:'feat: prepare notebook 1.43.0 incremental editing release candidate', tree:tree.data.sha, parents:[manifest.base_commit]});
+            const result = {base_commit:manifest.base_commit, source_tree:tree.data.sha, commit_sha:commit.data.sha, files:entries.length, branch_changed:false, deployed:false};
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'notebook-source-import.json'), JSON.stringify(result,null,2));
+            core.info(JSON.stringify(result));
+            await core.summary.addHeading('Verified notebook source import').addCodeBlock(JSON.stringify(result,null,2),'json').write();
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notebook-source-import
+          path: ${{ runner.temp }}/notebook-source-import.json
+          retention-days: 7

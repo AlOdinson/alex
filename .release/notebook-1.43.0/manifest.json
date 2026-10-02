@@ -1,0 +1,17 @@
+{
+  "base_commit": "f766f2207495d52576cfee6bb4e2b8e6605f2bf8",
+  "base_tree": "d13206386ed924222508b70b4fccb96208403165",
+  "source_tree": "aecd149ed00776649b1035bc85eae5d4002d23b5",
+  "patch_sha256": "9e8720470525b531fa8c34562c1c903853becb25fa7079c38f57e6114b536109",
+  "xz_sha256": "72d7c0d0aa4333f4db98205e8dfb42ae31745e2c72f91c3da59a47f41f5ecea0",
+  "parts": [
+    {"name":"part-00.xzpart","bytes":12000,"sha256":"4e28cf082ee19a381b41e2bed0b8e44645f426dc801ab3c12eab164a5da52848"},
+    {"name":"part-01.xzpart","bytes":12000,"sha256":"6d2f0d077a0dc84a246be32596c1d4a32d627b8c51bdd66e863d849d41345461"},
+    {"name":"part-02.xzpart","bytes":12000,"sha256":"d271c2b2d331eebd1c726adbf262bf5d91e17b139520f484eb2be9ae1531ad0b"},
+    {"name":"part-03.xzpart","bytes":12000,"sha256":"11306b8292c3753adecba4523676ce820a3cf2b2f492f449488c3a91423e7f90"},
+    {"name":"part-04.xzpart","bytes":12000,"sha256":"6ae9ea5222856625ef28d1c5c02c4282b0098298c9d84ecc681983a3690cb7c4"},
+    {"name":"part-05.xzpart","bytes":12000,"sha256":"897eb18e8b28f0b0ea66b7dd91cbcf34ad0a90de2c48e30b9b1cdbcbc0976d55"},
+    {"name":"part-06.xzpart","bytes":12000,"sha256":"8ad5e94d51e8a56251af5b576a561895b428663e169d9d070579a8b9644670e6"},
+    {"name":"part-07.xzpart","bytes":10540,"sha256":"395990420c146957b0227cdfff034704d4a34e1bf1aa65334c8c7a97572da5ed"}
+  ]
+}
