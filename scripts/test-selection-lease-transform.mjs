@@ -3,6 +3,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createTeacherObjectLockAuthority } from '../src/lib/teacherObjectLocks.js';
+import { holdNotebookTransformProjection } from '../src/lib/notebookBoardActions.js';
 
 // Execute the production callback bodies, not a copied model of the fix. Transport
 // latency and Fabric's active-gesture identity are controlled by the fixture.
@@ -18,7 +19,7 @@ const callbacks = source.slice(leaseStart, leaseEnd) + source.slice(transformSta
 const noop = () => {};
 const ref = (current) => ({ current });
 
-function fixture() {
+function fixture({ notebook = false } = {}) {
   let sequence = 0;
   const now = 1_000_000;
   const authority = createTeacherObjectLockAuthority({ now: () => now });
@@ -28,7 +29,7 @@ function fixture() {
     lockScalingY: false, lockRotation: false, hasControls: true,
     left: 100, top: 80, scaleX: 1, scaleY: 1,
   };
-  const state = { active: target, starts: 0, calls: 0, requests: 0, statuses: [] };
+  const state = { active: target, starts: 0, calls: 0, requests: 0, statuses: [], projectionDepth: 0 };
   const handlers = new Map();
   const nativeListeners = new Map();
   const replies = [];
@@ -47,6 +48,12 @@ function fixture() {
   const context = {
     console: { ...console, warn: noop }, Date: { now: () => now }, canvas, disposed: false,
     useCallback: (fn) => fn,
+    notebookRuntimeEnabled: notebook, holdNotebookTransformProjection,
+    notebookControllerRef: ref(notebook ? {
+      suspendProjection() { state.projectionDepth++; },
+      resumeProjection() { state.projectionDepth--; },
+    } : null),
+    notebookQueueRef: ref(Promise.resolve()),
     flattenTarget: (object) => object ? [object] : [],
     fabricCanvasRef: ref(canvas), activeToolRef: ref('select'),
     selectionLeaseInteractionStateRef: ref(new Map()),
@@ -244,5 +251,18 @@ test('ending a different pointer does not cancel the pending image gesture', asy
   f.endPointer('pointercancel', 2);
   await f.reply();
   assert.equal(g.move(), true);
+  assert.equal(f.listenerCount(), 0);
+});
+
+
+test('actual Board native transform holds notebook projection until its release', async () => {
+  const f = fixture({ notebook: true });
+  const gesture = f.gesture();
+  assert.equal(f.state.projectionDepth, 1);
+  await f.reply();
+  assert.equal(gesture.move(), true);
+  f.endPointer('pointerup');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(f.state.projectionDepth, 0);
   assert.equal(f.listenerCount(), 0);
 });

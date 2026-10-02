@@ -1,7 +1,7 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.43.0",
+  "version": "1.43.1",
   "type": "module",
   "scripts": {
     "test:connection-progress": "node --test scripts/test-connection-progress.mjs",
@@ -24,8 +24,8 @@
     "test:pdf:continuity": "node scripts/test-pdf-continuity-browser.mjs",
     "test:student:storage": "node --test scripts/test-student-image-dedup.mjs scripts/test-student-lesson-library.mjs scripts/test-student-offline-cache.mjs scripts/test-student-offline-view.mjs scripts/test-student-offline-baseline.mjs scripts/test-media-asset-store.mjs scripts/test-media-asset-transfer.mjs",
     "test:student:storage:browser": "node scripts/test-student-storage-browser.mjs",
-    "test:notebook": "node --test scripts/test-notebook-assets.mjs scripts/test-notebook-board-actions.mjs scripts/test-notebook-board-controller.mjs scripts/test-notebook-board-integration.mjs scripts/test-notebook-cache.mjs scripts/test-notebook-client-identity.mjs scripts/test-notebook-commit-bridge.mjs scripts/test-notebook-gesture-target.mjs scripts/test-notebook-history.mjs scripts/test-notebook-lease.mjs scripts/test-notebook-operations.mjs scripts/test-notebook-outbox.mjs scripts/test-notebook-page-delta.mjs scripts/test-notebook-performance-fixture.mjs scripts/test-notebook-projection.mjs scripts/test-notebook-protocol-compat.mjs scripts/test-notebook-runtime-gate.mjs scripts/test-notebook-session.mjs scripts/test-notebook-storage.mjs scripts/test-notebook-ui-runtime.mjs scripts/test-notebook-verification.mjs scripts/test-notebook-visual-batch.mjs scripts/test-board-notebook.mjs",
-    "test:notebook:browser": "node scripts/test-notebook-browser.mjs",
+    "test:notebook": "node --test scripts/test-notebook-drop-regressions.mjs scripts/test-notebook-assets.mjs scripts/test-notebook-board-actions.mjs scripts/test-notebook-board-controller.mjs scripts/test-notebook-board-integration.mjs scripts/test-notebook-cache.mjs scripts/test-notebook-client-identity.mjs scripts/test-notebook-commit-bridge.mjs scripts/test-notebook-gesture-target.mjs scripts/test-notebook-history.mjs scripts/test-notebook-lease.mjs scripts/test-notebook-operations.mjs scripts/test-notebook-outbox.mjs scripts/test-notebook-page-delta.mjs scripts/test-notebook-performance-fixture.mjs scripts/test-notebook-projection.mjs scripts/test-notebook-protocol-compat.mjs scripts/test-notebook-runtime-gate.mjs scripts/test-notebook-session.mjs scripts/test-notebook-storage.mjs scripts/test-notebook-ui-runtime.mjs scripts/test-notebook-verification.mjs scripts/test-notebook-visual-batch.mjs scripts/test-board-notebook.mjs",
+    "test:notebook:browser": "node scripts/test-notebook-browser.mjs && node scripts/test-notebook-drop-browser.mjs",
     "test:notebook:performance": "node scripts/benchmark-notebook-performance.mjs",
     "test:notebook:video": "node scripts/test-notebook-screen-share-browser.mjs",
     "test:notebook:operations-performance": "node scripts/benchmark-notebook-operations.mjs"

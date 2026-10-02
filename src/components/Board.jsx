@@ -1,7 +1,7 @@
 import { snapshotNotebookGesturePages, bindNotebookGestureTarget, consumeNotebookGesturePage } from '../lib/notebookGestureTarget.js';
 import { createNotebookCommitBridge } from '../lib/notebookCommitBridge.js';
 import { createNotebookBoardController } from '../lib/notebookBoardController.js';
-import { createNotebookBoardActions } from '../lib/notebookBoardActions.js';
+import { createNotebookBoardActions, holdNotebookTransformProjection } from '../lib/notebookBoardActions.js';
 import { prepareNotebookProjection } from '../lib/notebookProjection.js';
 import { stageNotebookVisualOperations } from '../lib/notebookVisualBatch.js';
 import { acquireNotebookClientIdentity } from '../lib/notebookClientIdentity.js';
@@ -4433,10 +4433,8 @@ function BoardWorkspace({
         applyingRemoteRef.current = false;
         object.setCoords();
         canvas.requestRenderAll();
-        if (!metadata && await notebookHandlersRef.current.capture?.(object)) {
-          completed.push(...canvas.getObjects().filter(isBoardNotebook).slice(-1));
-          continue;
-        }
+        // Initial upload/paste is always a standalone image. Notebook clipping
+        // happens only after the user subsequently moves and releases it.
         const records = getObjectRecords([object]);
         recordAction({ type: 'add', records });
         realtimeRef.current?.sendPreview?.(records);
@@ -5454,7 +5452,7 @@ function BoardWorkspace({
           if (!current()) throw new Error('Доска закрыта; неподтверждённые действия сохранены');
           if (!await notebookHandlersRef.current.leaseForOperations?.(action.ops)) throw new Error('Не удалось подтвердить право редактирования блокнота');
           const results = await sendDurableOps(action.ops, { atomic: true, actionId: action.actionId,
-            history: Boolean(action.history), skipNotebookSession: true, notebookManaged: true });
+            history: Boolean(action.history), skipNotebookSession: true, skipDeferredFlush: true, notebookManaged: true });
           const result = results?.at(-1);
           if (!result) throw new Error('Не получено подтверждение изменения блокнота');
           return { ...result, actionId: action.actionId, clientId: action.clientId };
@@ -8704,6 +8702,24 @@ function BoardWorkspace({
     getObjectRecords, recordAction, commitNotebookOps, schedulePersistence,
     releaseLocalSelectionLease, updateSelectionState, removeRegisteredObjectsById, incrementalNotebookActions]);
 
+  const captureNotebookSelection = useCallback(async (objects, { before = [] } = {}) => {
+    if (!notebookRuntimeEnabled || objects.some(isBoardNotebook)) return false;
+    const entries = objects.map(object => {
+      const notebook = notebookForObject(object);
+      return { object, notebook, pageNumber: notebook?.notebookPageNumber,
+        sourceMatrix: object.calcTransformMatrix().slice(),
+        notebookMatrix: notebook?.calcTransformMatrix().slice() };
+    });
+    if (!entries.some(entry => entry.notebook)) return false;
+    return queueNotebookMutation(async () => {
+      // Flush earlier ordinary placements before deriving conditional drop guards.
+      // The new drop itself is not yet in either queue, so this cannot self-wait.
+      await deferredTransformFlushRef.current?.({ force: true });
+      await realtimeRef.current?.flushPending?.();
+      return incrementalNotebookActions.captureSelection(entries, { before });
+    });
+  }, [notebookForObject, queueNotebookMutation, incrementalNotebookActions]);
+
   const addNotebook = useCallback(() => {
     if (!canEditRef.current) return;
     const point = getViewportSceneCenter();
@@ -8820,7 +8836,7 @@ function BoardWorkspace({
     try { await commitNotebookOps(createConditionalRecordPatchOps(before, after)); }
     finally { if (ownsSelectionLease(notebooks)) releaseLocalSelectionLease(notebooks); }
   }), [queueNotebookMutation, acquireLocalSelectionLease, getObjectRecords, recordAction, commitNotebookOps, releaseLocalSelectionLease, ownsSelectionLease, incrementalNotebookActions]);
-  notebookHandlersRef.current = { capture: captureIntoNotebook, candidate: notebookForObject,
+  notebookHandlersRef.current = { capture: captureIntoNotebook, captureSelection: captureNotebookSelection, candidate: notebookForObject,
     editText: editNotebookText, erase: eraseNotebookChildren, ensure: ensureNotebookController,
     refreshControls() { updatePdfControls(); updateSelectionState(); },
     async leaseForOperations(ops) {
@@ -10124,7 +10140,7 @@ function BoardWorkspace({
     async function commitAddedObject(object) {
       if (!object || applyingRemoteRef.current || applyingHistoryRef.current) return;
       markObject(object, clientId);
-      if (!isTextObject(object)) {
+      if (!isTextObject(object) && !isImageObject(object)) {
         try { if (await notebookHandlersRef.current.capture?.(object)) return; }
         catch (error) {
           if (notebookRuntimeEnabled) {
@@ -10193,12 +10209,22 @@ function BoardWorkspace({
     }
 
     function queueDeferredTransformPersistence(entries) {
-      for (const entry of Array.isArray(entries) ? entries : []) {
-        if (!entry?.id || !entry?.transform) continue;
-        cacheLightweightTransformEntry(entry);
-        deferredTransformEntries.set(String(entry.id), entry);
+      const valid = (Array.isArray(entries) ? entries : []).filter(entry => entry?.id && entry?.transform);
+      valid.forEach(cacheLightweightTransformEntry);
+      const controller = notebookControllerRef.current;
+      if (notebookRuntimeEnabled && controller
+        && isNotebookControlledAction([createLightweightTransformOp(valid)], controller)) {
+        // A page flip may follow pointerup before the old 24ms flush. Put the
+        // frame into the optimistic model now, not after a timer/ack. Keep a
+        // mixed selection together and never wait on this action's own flush.
+        valid.forEach(entry => deferredTransformEntries.delete(String(entry.id)));
+        sendLightweightTransforms(valid, { skipDeferredFlush: true }).catch(error => {
+          setSaveStatus(error.message); setSyncTone('error');
+        });
+        return;
       }
-      scheduleDeferredTransformFlush();
+      for (const entry of valid) deferredTransformEntries.set(String(entry.id), entry);
+      if (valid.length) scheduleDeferredTransformFlush();
     }
 
     async function flushDeferredTransformPersistence({
@@ -10967,6 +10993,7 @@ function BoardWorkspace({
       commitAddedObject(path);
     });
 
+    const notebookTransformProjectionHolds = new Set();
     canvas.on('before:transform', ({ transform, e: nativeEvent }) => {
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
       if (isBoardScreenShareObject(transform.target)) {
@@ -10974,6 +11001,14 @@ function BoardWorkspace({
         currentTransformStartRef.current = null;
         currentTransformMovedRef.current = false;
         return;
+      }
+      if (notebookRuntimeEnabled && notebookControllerRef.current) {
+        const release = holdNotebookTransformProjection(notebookControllerRef.current, {
+          eventTarget: window, pointerId: nativeEvent?.pointerId ?? null,
+          getPending: () => notebookQueueRef.current,
+          onRelease: () => notebookTransformProjectionHolds.delete(release),
+        });
+        notebookTransformProjectionHolds.add(release);
       }
       const beginLeasedTransform = () => {
         suppressTargetFindDuringTransform();
@@ -11218,9 +11253,16 @@ function BoardWorkspace({
       // The commit is only an O(selected objects) matrix patch and contains no Fabric
       // mutation. Queue it synchronously for groups too, so a delayed animation frame
       // cannot hold locks or drop the first of two rapid Pencil moves.
-      if (selectedObjects.length === 1 && notebookHandlersRef.current.candidate?.(selectedObjects[0])) {
+      if (notebookRuntimeEnabled && !selectedObjects.some(isBoardNotebook)
+        && selectedObjects.some(object => notebookHandlersRef.current.candidate?.(object))) {
+        notebookHandlersRef.current.captureSelection(selectedObjects, { before: beforeRecords })
+          .then(captured => { if (!captured) commitObjects(); })
+          .catch(error => { setSaveStatus(error.message); setSyncTone('error'); });
+      } else if (!notebookRuntimeEnabled && selectedObjects.length === 1
+        && notebookHandlersRef.current.candidate?.(selectedObjects[0])) {
         notebookHandlersRef.current.capture(selectedObjects[0], { before: beforeRecords, published: true })
-          .then(captured => { if (!captured) commitObjects(); });
+          .then(captured => { if (!captured) commitObjects(); })
+          .catch(error => { setSaveStatus(error.message); setSyncTone('error'); });
       } else commitObjects();
       if (completedPointerType === 'pen') {
         finalizePencilTransformPatches(selectedObjects, startingViewportRects);
@@ -14242,6 +14284,8 @@ function BoardWorkspace({
       host.removeEventListener('dragenter', handleDragOver);
       host.removeEventListener('dragover', handleDragOver);
       host.removeEventListener('drop', handleDrop);
+      notebookTransformProjectionHolds.forEach(release => release());
+      notebookTransformProjectionHolds.clear();
       window.removeEventListener('pointerup', finishBoardScreenSharePointerTransform);
       window.removeEventListener('pointercancel', finishBoardScreenSharePointerTransform);
       window.clearInterval(localLockRefreshInterval);

@@ -1,5 +1,5 @@
 import { captureNotebookObject, isBoardNotebook } from './boardNotebook.js';
-import { util } from 'fabric';
+import { util, FabricObject } from 'fabric';
 import { randomToken } from './ids.js';
 import { createConditionalDeleteOps, createConditionalRecordPatchOps } from './operationProtocol.js';
 import { prepareNotebookProjection } from './notebookProjection.js';
@@ -7,6 +7,60 @@ import { prepareNotebookProjection } from './notebookProjection.js';
 const CHILD_FIELDS = ['id', 'shapeType', 'boardObjectId', 'objectKind', 'storagePath', 'isEraserPath', 'updatedAt', 'updatedBy'];
 const serialized = object => object.toObject(CHILD_FIELDS);
 const stale = () => new Error('Страница блокнота изменилась — повторите действие');
+
+const placementKeys = ['left', 'top', 'originX', 'originY', 'angle', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY'];
+const geometryKeys = [...placementKeys, 'width', 'height', 'strokeWidth', 'strokeUniform'];
+function dropSourceBaseline(record, canonical) {
+  if (!record || !canonical || placementKeys.every(key => record.object[key] === canonical.object[key])) return record;
+  // ActiveSelection serializes members using a center origin. The saved object
+  // may use a left/top origin: these are the SAME placement, not a user conflict.
+  // Convert only equivalent geometry. Keep all content guards from gesture start.
+  const matrix = value => new FabricObject(Object.fromEntries(geometryKeys
+    .filter(key => Object.hasOwn(value, key)).map(key => [key, value[key]]))).calcTransformMatrix();
+  const expected = matrix(record.object), actual = matrix(canonical.object);
+  if (!expected.every((value, i) => Number.isFinite(value) && Math.abs(value - actual[i]) < 1e-7)) return record;
+  const object = { ...record.object };
+  for (const key of placementKeys) {
+    if (Object.hasOwn(canonical.object, key)) object[key] = canonical.object[key];
+    else delete object[key];
+  }
+  return { ...record, object };
+}
+
+
+/** Keep acknowledgements out of a held Fabric gesture. The confirmed model and
+ * network keep advancing; only projection waits until release/drop preparation.
+ * Capture-phase release schedules the next task so Fabric's own pointerup can
+ * enqueue the final geometry or compound drop before projection resumes.
+ */
+export function holdNotebookTransformProjection(controller, { eventTarget = globalThis.window,
+  pointerId = null, getPending = () => null, onRelease = () => {} } = {}) {
+  if (!controller || !eventTarget?.addEventListener) return () => {};
+  let ended = false, released = false, releaseTimer = null;
+  const types = pointerId == null
+    ? ['mouseup', 'touchend', 'touchcancel', 'blur', 'pagehide']
+    : ['pointerup', 'pointercancel', 'blur', 'pagehide'];
+  const detach = () => types.forEach(type => eventTarget.removeEventListener(type, end, true));
+  const release = () => {
+    if (released) return;
+    released = true; detach(); clearTimeout(releaseTimer); controller.resumeProjection(); onRelease();
+  };
+  function end(event) {
+    if (ended || released || (event.type.startsWith('pointer') && event.pointerId !== pointerId)) return;
+    ended = true; detach();
+    // A browser can flush microtasks between native listeners. Yield a task,
+    // not a microtask, or the old frame can paint before Fabric's pointerup.
+    releaseTimer = setTimeout(() => {
+      releaseTimer = null;
+      if (released) return;
+      try { Promise.resolve(getPending()).catch(() => {}).finally(release); }
+      catch { release(); }
+    }, 0);
+  }
+  controller.suspendProjection();
+  types.forEach(type => eventTarget.addEventListener(type, end, true));
+  return release;
+}
 
 /** Notebook gesture preparation is serialized by Board, NOT by network replies. */
 export function createNotebookBoardActions({ getCanvas, getController, clientId, getRecords, recordAction,
@@ -78,6 +132,93 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
     } finally {
       if (!enqueued) {
         prepared?.inside?.dispose(); prepared?.outside?.dispose();
+        if (ownsLease(target)) releaseLease(target);
+      }
+    }
+  }
+
+  async function captureSelection(entries, { before = [] } = {}) {
+    const canvas = getCanvas();
+    const members = entries.filter(entry => canvas?.getObjects().includes(entry.object));
+    if (members.length !== entries.length || !members.some(entry => entry.notebook)) return false;
+    // Freeze release geometry before ANY asynchronous queue/controller/lease wait.
+    const frames = new Map(members.flatMap(entry => [
+      [entry.object, entry.sourceMatrix ?? entry.object.calcTransformMatrix().slice()],
+      ...(entry.notebook ? [[entry.notebook, entry.notebookMatrix ?? entry.notebook.calcTransformMatrix().slice()]] : []),
+    ]));
+    const controller = await getController();
+    const notebooks = [...new Set(members.map(entry => entry.notebook).filter(Boolean))];
+    const target = [...new Set([...notebooks, ...members.map(entry => entry.object)])];
+    if (!await acquireLease(target)) throw new Error('Объект или блокнот занят другим участником — перенос не сохранён');
+    const prepared = [];
+    let enqueued = false;
+    try {
+      // Keep all members at the release position while asynchronous image/text
+      // preparation runs. A later gesture must not be consumed by an older drop.
+      const current = () => getCanvas() === canvas && ownsLease(target)
+        && target.every(object => canvas.getObjects().includes(object)
+          && frames.get(object).every((value, i) => Math.abs(value - object.calcTransformMatrix()[i]) < 1e-7))
+        && members.every(entry => !entry.notebook || entry.notebook.notebookPageNumber === entry.pageNumber);
+      if (!current()) throw stale();
+      const sourceById = new Map(before.map(record => [String(record.object.boardObjectId), record]));
+      const modelById = new Map(controller.getState().snapshot.canvas.objects.map((object, zIndex) => [String(object.boardObjectId), { object, zIndex }]));
+      for (const entry of members) {
+        const fragments = entry.notebook ? await captureNotebookObject(entry.notebook, entry.object) : null;
+        prepared.push({ ...entry, fragments });
+        if (!current()) throw stale();
+      }
+      if (!prepared.some(entry => entry.fragments)) return false;
+      const actionId = randomToken(24), ops = [], pageOffsets = new Map(), changed = new Set(notebooks);
+      for (const entry of prepared) {
+        const { object, notebook, pageNumber, fragments } = entry;
+        const id = String(object.boardObjectId);
+        const canonical = modelById.get(id);
+        const previous = dropSourceBaseline(sourceById.get(id), canonical) ?? canonical;
+        if (!previous) throw new Error('Исходный объект ещё не сохранён — повторите перенос');
+        if (!fragments) {
+          ops.push(...createConditionalRecordPatchOps([previous], getRecords([object])));
+          changed.add(object);
+          continue;
+        }
+        const inside = stamp(fragments.inside), outside = fragments.outside;
+        const offset = pageOffsets.get(notebook) ?? 0;
+        pageOffsets.set(notebook, offset + 1);
+        ops.push(operation(notebook, pageNumber, [{ type: 'insert', object: serialized(inside),
+          zIndex: notebook.getPageObjects().length + offset, ifAbsent: true }]));
+        entry.zIndex = previous.zIndex;
+        if (outside) {
+          outside.boardObjectId = id; stamp(outside);
+          ops.push(...createConditionalRecordPatchOps([previous], [{ object: serialized(outside), zIndex: entry.zIndex }]));
+          changed.add(outside);
+        } else ops.push(...createConditionalDeleteOps([previous]));
+      }
+      if (!current()) throw stale();
+      // One authority action and one inverse cover the entire moved selection,
+      // including members left outside. Never persist half a boundary split.
+      const handle = controller.enqueue({ actionId, ops: guardOps(ops, actionId) });
+      enqueued = true;
+      const historyAction = history(handle);
+      mutate(() => {
+        const active = canvas.getActiveObject?.();
+        if (active && (target.includes(active) || active.getObjects?.().some(object => target.includes(object)))) canvas.discardActiveObject();
+        for (const { object, notebook, fragments, zIndex } of prepared) {
+          if (!fragments) continue;
+          canvas.remove(object);
+          notebook.addPageObject(fragments.inside);
+          const op = ops.find(op => op.type === 'notebook' && op.id === String(notebook.boardObjectId));
+          notebook.updatedAt = op.updatedAt; notebook.updatedBy = clientId;
+          if (fragments.outside) {
+            canvas.add(fragments.outside);
+            canvas.moveObjectTo(fragments.outside, Math.max(0, zIndex));
+          }
+        }
+      });
+      follow(handle, target, controller, historyAction);
+      onChange([...changed]); canvas.requestRenderAll();
+      return true;
+    } finally {
+      if (!enqueued) {
+        for (const entry of prepared) { entry.fragments?.inside?.dispose(); entry.fragments?.outside?.dispose(); }
         if (ownsLease(target)) releaseLease(target);
       }
     }
@@ -168,5 +309,5 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
       follow(handle, notebooks, controller, historyAction); onChange(notebooks); canvas.requestRenderAll(); return true;
     } finally { if (!enqueued && ownsLease(notebooks)) releaseLease(notebooks); }
   }
-  return { capture, changePage, saveText, erase };
+  return { capture, captureSelection, changePage, saveText, erase };
 }
