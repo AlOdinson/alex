@@ -14,8 +14,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-latest, engine: chromium}
-          - {os: macos-latest, engine: webkit}
+          - {os: ubuntu-latest, engine: chromium, kind: same}
+          - {os: macos-latest, engine: webkit, kind: same}
+          - {os: macos-latest, engine: webkit, kind: cross}
+          - {os: macos-latest, engine: chromium, kind: cross}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
@@ -31,12 +33,17 @@ jobs:
           node-version: 22
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
-      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
-      - name: Empty receiving board, native reference, decode versus canvas and labelled probes
-        run: node scripts/run-empty-receiver-audit.mjs
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.kind == 'cross' && 'chromium webkit' || matrix.engine }}
+      - name: Empty receiving board and independent native video reference
+        run: |
+          if [ '${{ matrix.kind }}' = 'cross' ]; then
+            node scripts/run-cross-browser-receiver-audit.mjs
+          else
+            node scripts/run-empty-receiver-audit.mjs
+          fi
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: empty-receiver-fps-${{ matrix.engine }}
+          name: empty-receiver-${{ matrix.kind }}-${{ matrix.engine }}
           path: receiver-diagnostic-results/
           retention-days: 7
