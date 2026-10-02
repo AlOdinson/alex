@@ -13,11 +13,11 @@ export function install(role) {
   window.RTCPeerConnection = class extends NativePeer {
     constructor() { super({ iceServers: [] }); d.peers.push(this); }
   };
-  navigator.mediaDevices.getDisplayMedia = async () => {
+  const devices = navigator.mediaDevices;
+  const captureGeneratedScreen = async () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     const source = document.createElement('canvas'); source.width = 1920; source.height = 1080;
-    // Keep the generated capture source paintable in WebKit. Its detached
-    // canvas capture can deliver a constant image despite advancing RTP frames.
+    // This visible source is test-only; the receiver still has an empty scene.
     source.style.cssText = 'position:fixed;right:0;bottom:0;width:320px;height:180px;pointer-events:none';
     document.body.append(source);
     const ctx = source.getContext('2d'); let n = 0;
@@ -35,6 +35,12 @@ export function install(role) {
     paint(); d.captureTimer = setInterval(paint, 1000 / 60);
     d.capture = source.captureStream(60); return d.capture;
   };
+  // Retain the MediaDevices wrapper and override the navigator property as well.
+  // A method assignment alone did not survive to capture in native WebKit CI:
+  // capturePaints stayed undefined and its default gray source was measured.
+  Object.defineProperty(devices, 'getDisplayMedia', {configurable:true, value:captureGeneratedScreen});
+  Object.defineProperty(navigator, 'mediaDevices', {configurable:true, value:devices});
+  d.devices = devices;
   const clientId = `receiver-test-${role}`;
   const users = [{ clientId: 'receiver-test-host', permission: 'owner', name: 'Host' },
     { clientId: 'receiver-test-viewer', permission: 'edit', name: 'Viewer' }];

@@ -60,6 +60,7 @@ try {
       width:after.width,height:after.height,objects:after.objects,pump:after.pump,before,after,sender};
     reports.push(result); console.log(label, name, JSON.stringify({...result,before:undefined,after:undefined,sender:undefined}));
     await writeFile(`${output}/${label}.json`, JSON.stringify({senderEngine,receiverEngine,baseline,reports,errors},null,2));
+    assert.ok(sender.capturePaints > 0, 'generated screen capture override must actually be invoked');
     assert.equal(after.objects,1,'receiving board must contain only the video');
     assert.ok(result.decodedFps >= (name.startsWith('standard') ? 6 : 10),'test connection must actually deliver video');
     if (!baseline) {
