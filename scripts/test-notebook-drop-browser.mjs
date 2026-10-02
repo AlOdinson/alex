@@ -73,7 +73,7 @@ try{
  await page.reload();await page.waitForFunction(()=>document.documentElement.dataset.alexDurableEditState==='ready');await accessors();await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===4);assert.deepEqual(await notebookMatrix(),moved);
  checks.push('reload preserves moved frame and captured content');assert.deepEqual(errors,[]);
  console.log(JSON.stringify({engine:engineName,passed:true,checks},null,2));
-}catch(error){errors.push(String(error.stack??error));if(page)await page.screenshot({path:`/tmp/notebook-drop-${engineName}.png`}).catch(()=>{});throw error;}
+}catch(error){errors.push(String(error.stack??error));await mkdir('connection-direct-results',{recursive:true});if(page){await page.screenshot({path:`connection-direct-results/notebook-drop-${engineName}-failure.png`}).catch(()=>{});const state=await page.evaluate(()=>({body:document.body?.innerText,objects:window.testCanvas?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,matrix:o.calcTransformMatrix(),page:o.notebookPageNumber,count:o.getPageObjects?.().length})),active:window.testCanvas?.getActiveObject()?.type,transform:window.testCanvas?._currentTransform?.action})).catch(()=>null);await writeFile(`connection-direct-results/notebook-drop-${engineName}-failure.json`,JSON.stringify(state,null,2));}throw error;}
 finally{
  await mkdir('connection-direct-results',{recursive:true});
  await writeFile(`connection-direct-results/notebook-drop-${engineName}.json`,JSON.stringify({engine:engineName,checks,errors},null,2));

@@ -95,7 +95,7 @@ test('initial static image upload remains whole even over notebook',async()=>{
   const s=ui.scope,bitmap=util.createCanvasElement();bitmap.width=100;bitmap.height=80;bitmap.getContext('2d').fillRect(0,0,100,80);
   Object.assign(s,{isAcceptedBoardFile:()=>true,getViewportSceneCenter:()=>({x:210,y:200}),
    createImagePlaceholder:point=>new Rect({left:point.x,top:point.y,width:20,height:20}),
-   storeBoardImage:async()=>({storagePath:'fixture',url:bitmap.toDataURL()}),loadImageElement:async()=>bitmap,
+   storeBoardImage:async()=>({storagePath:null,url:bitmap.toDataURL()}),loadImageElement:async()=>bitmap,
    MIN_ZOOM:0.05,publishBoardImage:async publish=>publish(),selectInsertedObjects:objects=>ui.canvas.setActiveObject(objects[0]),
   });
   s.sendRecordUpserts=callback('sendRecordUpserts',s);s.addImageFiles=callback('addImageFiles',s);s.realtimeRef.current.requestSync=async()=>{};

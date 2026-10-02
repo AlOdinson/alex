@@ -99,12 +99,14 @@ try{
  await page.waitForFunction(()=>window.notebook()?.getPageObjects().length===3);
  await page.evaluate(()=>window.toolbar().setTool('select'));
  // Initial image placement remains whole, even when overlapping the notebook.
+ await page.evaluate(()=>{window.beforeImageIds=window.testCanvas.getObjects().map(o=>o.boardObjectId);});
  const png=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=100;c.height=80;c.getContext('2d').fillRect(0,0,100,80);return c.toDataURL().split(',')[1];});
  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles({name:'square.png',mimeType:'image/png',buffer:Buffer.from(png,'base64')});
- await page.waitForFunction(()=>window.testCanvas.getObjects().some(o=>o.type==='image'&&o.storagePath));
+ await page.waitForFunction(()=>window.testCanvas.getObjects().some(o=>o.type==='image'&&!window.beforeImageIds.includes(o.boardObjectId)&&!o.transientPreview));
  assert.equal(await page.evaluate(()=>window.notebook().getPageObjects().length),3);
  const inserted=await page.evaluate(()=>{
-  const c=window.testCanvas,o=c.getObjects().find(o=>o.type==='image'&&o.storagePath);window.insertedImageId=o.boardObjectId;
+  const c=window.testCanvas,o=c.getObjects().find(o=>o.type==='image'&&!window.beforeImageIds.includes(o.boardObjectId)&&!o.transientPreview);window.insertedImageId=o.boardObjectId;
+  if(o.storagePath!==null||!o.getSrc().startsWith('data:image/'))throw Error('Expected local inline image');
   if(o.clipPath)throw Error('Initial image was clipped');c.setActiveObject(o);c.requestRenderAll();
   const point=o.getCenterPoint(),v=c.viewportTransform,r=c.upperCanvasEl.getBoundingClientRect();
   return {x:r.left+point.x*v[0]+point.y*v[2]+v[4],y:r.top+point.x*v[1]+point.y*v[3]+v[5]};
