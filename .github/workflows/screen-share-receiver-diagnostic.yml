@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 10
     env:
       VERIFICATION_BROWSER: ${{ matrix.engine }}
+      RECEIVER_AUDIT_CROSS: ${{ matrix.kind == 'cross' && '1' || '0' }}
       WEBKIT_LOCAL_ICE: '1'
       VITE_NOTEBOOK_OPERATIONS_V1: 'true'
     steps:
@@ -34,16 +35,11 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.kind == 'cross' && 'chromium webkit' || matrix.engine }}
-      - name: Empty receiving board and independent native video reference
-        run: |
-          if [ '${{ matrix.kind }}' = 'cross' ]; then
-            node scripts/run-cross-browser-receiver-audit.mjs
-          else
-            node scripts/run-empty-receiver-audit.mjs
-          fi
+      - name: Empty receiver compositor same-connection A/B
+        run: node scripts/run-empty-receiver-compositor-audit.mjs
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: empty-receiver-${{ matrix.kind }}-${{ matrix.engine }}
+          name: compositor-ab-${{ matrix.kind }}-${{ matrix.engine }}
           path: receiver-diagnostic-results/
           retention-days: 7
