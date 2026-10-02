@@ -196,14 +196,21 @@ try {
       await wait('group controls ready', () => owner.getByRole('button', { name: 'Копировать', exact: true }).isEnabled());
     };
     await selectAll();
-    // The similarly named .selection-floating-proxy is the COLOR TOOLBAR,
-    // not the selection's drag target. Drag the actual Fabric selection center.
+    // Exact pointerdown hit testing intentionally rejects transparent gaps in
+    // a selection. Its bounding-box center lies between these repeated strokes.
+    // Start on actual ink near the center, not the floating color toolbar or a
+    // blank point. Keep native pointer input and all permission checks intact.
     const center = await owner.evaluate(() => {
       const canvas = window.__boundedRefs().canvas;
-      const point = canvas.getActiveObject().getCenterPoint();
+      const active = canvas.getActiveObject();
+      const midpoint = active.getCenterPoint();
+      const point = active.getObjects().map(object => object.getCenterPoint())
+        .sort((a, b) => a.distanceFrom(midpoint) - b.distanceFrom(midpoint))[0];
       const v = canvas.viewportTransform; const rect = canvas.upperCanvasEl.getBoundingClientRect();
-      return { x: rect.left + point.x * v[0] + point.y * v[2] + v[4],
-        y: rect.top + point.x * v[1] + point.y * v[3] + v[5] };
+      const x = point.x * v[0] + point.y * v[2] + v[4];
+      const y = point.x * v[1] + point.y * v[3] + v[5];
+      if (canvas.isTargetTransparent(active, x, y)) throw new Error('Group drag must start on visible ink');
+      return { x: rect.left + x, y: rect.top + y };
     });
     // Also exercise an old missing target: its incoming transform must not block
     // the Canvas revision, and the bounded repair must restore the moved object.
@@ -214,6 +221,12 @@ try {
       canvas.getObjects().filter((o) => o.boardObjectId === id).forEach((o) => canvas.remove(o));
     }, { id: first, module: replicaModule });
     await owner.mouse.move(center.x, center.y); await owner.mouse.down();
+    await wait('native group drag has an editable target', () => owner.evaluate(() => {
+      const canvas = window.__boundedRefs().canvas;
+      const active = canvas.getActiveObject();
+      return active && canvas._currentTransform?.target === active
+        && !active.lockMovementX && !active.lockMovementY;
+    }));
     await owner.mouse.move(center.x + 35, center.y + 25, { steps: 8 }); await owner.mouse.up();
     await owner.evaluate(() => window.__boundedRefs().canvas.discardActiveObject());
     await wait('group move reaches both devices', async () => {
