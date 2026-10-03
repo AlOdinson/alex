@@ -18,44 +18,41 @@ jobs:
         with: {fetch-depth: 0}
       - uses: actions/setup-node@v4
         with: {node-version: 22}
-      - name: Decode and verify the already reviewed recovery patch
+      - name: Decode exact reviewed patch, not the earlier integration
         run: |
           python3 - <<'PY'
           import pathlib, base64, gzip, hashlib
-          parts = sorted(pathlib.Path('.delivery').glob('notebook-split-*.b64'))
-          assert len(parts) == 3
-          patch = gzip.decompress(base64.b64decode(''.join(p.read_text() for p in parts)))
-          assert hashlib.sha256(patch).hexdigest() == 'c415f98f52b26f3af9070e19894c1f911d2a51f3fe41ee2507cba891ecd7febc'
-          pathlib.Path('/tmp/notebook-true-split.patch').write_bytes(patch)
+          patch = gzip.decompress(base64.b64decode(pathlib.Path('.delivery/notebook-split-review.b64').read_text()))
+          assert hashlib.sha256(patch).hexdigest() == '10d37b0fd0c02bd3c95ec7b82558536be06e97c789cc10ea470c9e9995b1dbb2'
+          pathlib.Path('/tmp/notebook-split-review.patch').write_bytes(patch)
           PY
-          git apply --check /tmp/notebook-true-split.patch
-          git apply /tmp/notebook-true-split.patch
-          test "$(git hash-object src/lib/boardNotebook.js)" = 17c09b53b1d4e3880bf0629c6d32be91f6c3092e
-          test "$(git hash-object src/lib/notebookBoardActions.js)" = 9d4093b8653f16bab9a18ae366a48629074c93d4
+          git apply --check /tmp/notebook-split-review.patch
+          git apply /tmp/notebook-split-review.patch
       - run: npm ci --no-audit --no-fund
-      - name: Full local regressions before publishing feature-branch commit
+      - name: Regression suites, including the actual Canvas verification fence
         run: |
-          mkdir -p /tmp/split-integration-results
+          mkdir -p /tmp/split-review-results
+          node --test scripts/test-bounded-verification*.mjs > /tmp/split-review-results/bounded-verification.txt 2>&1
           for suite in test:notebook test:student:reading test:student:storage test:media test:browser-authority test:connections test:pencil test:sync:ci test:screen-share build; do
-            npm run "$suite" > "/tmp/split-integration-results/${suite//:/-}.txt" 2>&1 || { cat "/tmp/split-integration-results/${suite//:/-}.txt"; exit 1; }
+            npm run "$suite" > "/tmp/split-review-results/${suite//:/-}.txt" 2>&1 || { cat "/tmp/split-review-results/${suite//:/-}.txt"; exit 1; }
           done
-      - name: Commit only verified product, documentation and test files to the feature branch
+      - name: Commit verified product and tests to the existing feature branch only
         id: commit
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add docs/notebook-1.43.5-true-split.md docs/superpowers/plans/2026-10-03-notebook-true-split.md package.json package-lock.json public/version.json scripts/test-board-notebook.mjs scripts/test-notebook-assets.mjs scripts/test-notebook-board-actions.mjs scripts/test-notebook-drop-regressions.mjs scripts/test-notebook-true-split-browser.mjs scripts/test-notebook-true-split.mjs src/lib/boardNotebook.js src/lib/notebookBoardActions.js
-          git commit -m 'feat: integrate true notebook geometry and pixel fragments (1.43.5)'
+          git add src/components/Board.jsx src/lib/notebookSplitFragments.js scripts/test-notebook-true-split.mjs docs/notebook-1.43.5-true-split.md
+          git commit -m 'fix: preserve strokes during true-cut preparation and retain group shadows'
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          git bundle create /tmp/split-integration-results/source.bundle HEAD
-          git archive HEAD | gzip > /tmp/split-integration-results/source.tar.gz
-          git rev-parse HEAD HEAD^{tree} > /tmp/split-integration-results/source-sha.txt
+          git bundle create /tmp/split-review-results/source.bundle HEAD
+          git archive HEAD | gzip > /tmp/split-review-results/source.tar.gz
+          git rev-parse HEAD HEAD^{tree} > /tmp/split-review-results/source-sha.txt
           git push origin HEAD:refs/heads/feat/notebook-true-split-20261003
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: notebook-split-integrated-source
-          path: /tmp/split-integration-results
+          name: notebook-split-reviewed-source
+          path: /tmp/split-review-results
           retention-days: 7
   browser:
     needs: integrate
@@ -76,21 +73,21 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
-      - name: Actual pencil, image drop, text fragments, undo and reload
+      - name: All unchanged navigation assertions and real true-split gestures
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
           VITE_NOTEBOOK_OPERATIONS_V1: 'true'
-        run: npm run test:notebook:split:browser
-      - name: Existing notebook editing and navigation
-        env:
-          VERIFICATION_BROWSER: ${{ matrix.engine }}
-          VITE_NOTEBOOK_OPERATIONS_V1: 'true'
-        run: npm run test:notebook:browser
+        run: |
+          mkdir -p notebook-true-split-results
+          git rev-parse HEAD HEAD^{tree} > notebook-true-split-results/source-sha.txt
+          npm run test:notebook:browser > notebook-true-split-results/browser.log 2>&1 || { tail -100 notebook-true-split-results/browser.log; exit 1; }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: notebook-split-native-${{ matrix.engine }}
           path: |
             notebook-true-split-results/
+            notebook-navigation-results/
+            notebook-drop-results/
             connection-direct-results/
           retention-days: 7
