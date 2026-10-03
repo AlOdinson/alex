@@ -4,7 +4,7 @@ export { applyPageDeltaToFabric } from './notebookPageRuntime.js';
 import { freezeNotebookRecord as freezeRecord } from './notebookRecords.js';
 import { randomToken } from './ids.js';
 import { notebookRenderCacheFor } from './notebookRenderCache.js';
-import { Group, Rect, FabricImage, FabricObject, LayoutManager, FixedLayout, Point, classRegistry, controlsUtils, util } from 'fabric';
+import { Group, Rect, FabricObject, LayoutManager, FixedLayout, Point, classRegistry, controlsUtils, util } from 'fabric';
 
 export const NOTEBOOK_FIELDS = ['notebookPages', 'notebookPageNumber'];
 export const isBoardNotebook = (object) => String(object?.type).toLowerCase() === 'boardnotebook';
@@ -227,42 +227,34 @@ export function notebookObjectIntersection(notebook, object) {
   return { intersects: polygonsOverlap(points, corners), contained: points.every((p) => p.x >= -w && p.x <= w && p.y >= -h && p.y <= h) };
 }
 
-function addBoundaryClip(object, notebook, worldMatrix, inverted) {
-  const clip = new Rect({ width: notebook.width, height: notebook.height, originX: 'center', originY: 'center', strokeWidth: 0, inverted });
-  util.applyTransformToObject(clip, util.multiplyTransformMatrices(util.invertTransform(worldMatrix), notebook.calcTransformMatrix()));
-  if (object.clipPath?.absolutePositioned) {
-    util.applyTransformToObject(object.clipPath, util.multiplyTransformMatrices(util.invertTransform(worldMatrix), object.clipPath.calcOwnMatrix()));
-    object.clipPath.absolutePositioned = false;
-  }
-  object.clipPath = object.clipPath ? util.mergeClipPaths(object.clipPath, clip) : clip;
-}
+const containsCutMask = object => Boolean(object.clipPath || object.getObjects?.().some(containsCutMask));
 
-/** Prepare both fragments before the caller changes the board/history. */
+/** Prepare physically independent fragments before changing source/history. */
 export async function captureNotebookObject(notebook, object) {
-  if (!isBoardNotebook(notebook) || !object || isBoardNotebook(object) || ['gif', 'pdf'].includes(object.mediaKind)) return null;
+  if (!isBoardNotebook(notebook) || !object || object.visible === false || object.opacity <= 0
+    || isBoardNotebook(object) || ['gif', 'pdf'].includes(object.mediaKind)) return null;
   const { intersects, contained } = notebookObjectIntersection(notebook, object);
   if (!intersects) return null;
-  let prepared = await object.clone(childFields);
-  util.applyTransformToObject(prepared, object.calcTransformMatrix());
-  const split = !contained;
-  if (split && ['text', 'i-text', 'textbox'].includes(String(object.type).toLowerCase())) {
-    const center = prepared.getCenterPoint();
-    const bitmap = prepared.toCanvasElement({ enableRetinaScaling: false });
-    prepared.dispose();
-    prepared = memoizeImmutableNotebookImage(new FabricImage(bitmap, { left: center.x, top: center.y, originX: 'center', originY: 'center' }));
-  }
-  const worldMatrix = prepared.calcTransformMatrix();
-  const inside = prepared;
-  inside.boardObjectId = randomToken(14);
-  const outside = split ? await prepared.clone(childFields) : null;
-  if (outside) util.applyTransformToObject(outside, worldMatrix);
-  if (split) {
-    addBoundaryClip(inside, notebook, worldMatrix, false);
-    addBoundaryClip(outside, notebook, worldMatrix, true);
-  }
-  util.applyTransformToObject(inside, util.multiplyTransformMatrices(util.invertTransform(notebook.calcTransformMatrix()), worldMatrix));
-  inert(inside);
-  inside.setCoords();
-  outside?.setCoords();
-  return { inside, outside, split };
+  const sourceMatrix = object.calcTransformMatrix().slice();
+  const prepared = await object.clone(childFields);
+  util.applyTransformToObject(prepared, sourceMatrix);
+  let inside = prepared, outside = null;
+  const materializeMasks = containsCutMask(prepared);
+  try {
+    if (!contained || materializeMasks) {
+      // Keep the clipping engine out of empty notebooks and ordinary whole-object captures.
+      const { splitNotebookFragments } = await import('./notebookSplitFragments.js');
+      const fragments = await splitNotebookFragments(notebook, prepared);
+      if (!fragments.inside) { prepared.dispose(); return null; }
+      outside = fragments.outside;
+      if (!outside && !materializeMasks) {
+        // No visible paint was removed: text remains editable, not an image of whitespace.
+        fragments.inside.dispose();
+      } else { inside = fragments.inside; prepared.dispose(); }
+    }
+    inside.boardObjectId = randomToken(14);
+    util.applyTransformToObject(inside, util.multiplyTransformMatrices(util.invertTransform(notebook.calcTransformMatrix()), inside.calcTransformMatrix()));
+    inert(inside); inside.setCoords(); outside?.setCoords();
+    return { inside, outside, split: Boolean(outside) };
+  } catch (error) { inside?.dispose(); outside?.dispose(); if(inside!==prepared) prepared.dispose(); throw error; }
 }

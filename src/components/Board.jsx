@@ -9702,6 +9702,9 @@ function BoardWorkspace({
       && Number(revisionRef.current ?? 0) === Number(expectedRevision)
       && !applyingRemoteRef.current
       && !historyCommandBusyRef.current
+      // A released stroke is still local input while true-cut preparation runs.
+      // It has no outbox entry/lease yet and must not be "repaired" as a ghost.
+      && !notebookMutationActiveRef.current
       && pendingServerWritesRef.current === 0
       && !notebookControllerRef.current?.pendingCount()
       && pendingLocalObjectMutationCountsRef.current.size === 0

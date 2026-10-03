@@ -5,14 +5,16 @@ import {setEnv, FabricImage, Textbox, Rect} from 'fabric';
 import {BoardNotebook,captureNotebookObject} from '../src/lib/boardNotebook.js';
 setEnv(getEnv());
 const api=await import('../src/lib/notebookAssets.js').catch(()=>({}));
-test('clipped editable text encodes its bitmap exactly once for both fragments and subsequent strokes',async()=>{
+test('clipped editable text encodes each independent bitmap once, never again on subsequent strokes',async()=>{
  const book=new BoardNotebook({boardObjectId:'book',left:20,top:20,width:300,height:300});
  const text=new Textbox('Crossing boundary',{left:0,top:60,width:220,fontSize:24});text.boardObjectId='text';
  const proto=getEnv().document.defaultView.HTMLCanvasElement.prototype,original=proto.toDataURL;let encodes=0;
  proto.toDataURL=function(...args){encodes++;return original.apply(this,args);};let prepared;
  try {prepared=await captureNotebookObject(book,text);assert.equal(prepared.split,true);assert.ok(prepared.inside instanceof FabricImage);book.addPageObject(prepared.inside);
   for(let i=0;i<100;i++){book.addPageObject(Object.assign(new Rect({width:3,height:3}),{boardObjectId:`ink-${i}`}));book.toObject();}
-  prepared.outside.toObject();book.toObject();assert.equal(encodes,1);
+  prepared.outside.toObject();book.toObject();assert.equal(encodes,2);
+  assert.notEqual(prepared.inside.getSrc(),prepared.outside.getSrc());
+  assert.equal(prepared.inside.clipPath,undefined);assert.equal(prepared.outside.clipPath,undefined);
  }finally{proto.toDataURL=original;prepared?.outside?.dispose();text.dispose();book.dispose();}
 });
 test('immutable sources are inline-compatible and replacing the image source invalidates its memo',()=>{

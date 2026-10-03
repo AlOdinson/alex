@@ -104,6 +104,9 @@ jobs:
             connection-direct-results/
             screen-share-receiver-results/
             student-document-reading-results/
+            notebook-true-split-results/
+            notebook-navigation-results/
+            notebook-drop-results/
             /tmp/notebook-performance.json
             /tmp/notebook-received-video.json
           retention-days: 7
