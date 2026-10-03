@@ -1,9 +1,9 @@
 {
-  "version": "1.43.3",
-  "packageVersion": "1.43.3",
-  "base": "1.43.2",
-  "release": "Recover received screen-share frames and remove empty-scene layer copies",
+  "version": "1.43.4",
+  "packageVersion": "1.43.4",
+  "base": "1.43.3",
+  "release": "Read cached PDF and notebook pages without editing permission",
   "date": "2026-10-03",
-  "name": "screen-share-receiver-frame-pump",
-  "label": "Alex Board 1.43.3"
+  "name": "student-readonly-document-navigation",
+  "label": "Alex Board 1.43.4"
 }

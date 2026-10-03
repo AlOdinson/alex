@@ -64,7 +64,7 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
  const scope={
   notebookRuntimeEnabled:true,disposed:false,canvas,clientId,boardId:`node-${clientId}-${randomToken(10)}`,boardKey:'key',isOwner:true,
   BACKGROUNDS:new Set(['blank','grid','dots']),HISTORY_LIMIT:1000,window:{setTimeout:()=>0,clearTimeout(){}},navigator:{onLine:true},console:{warn(){},error:error=>errors.push(error)},
-  fabricCanvasRef:ref(canvas),boardReadyRef:ref(true),clientIdRef:ref(clientId),canEditRef:ref(true),activeToolRef:ref('select'),
+  fabricCanvasRef:ref(canvas),boardReadyRef:ref(true),clientIdRef:ref(clientId),canEditRef:ref(true),canReadDocumentsRef:ref(false),studentDocumentReaderRef:ref(null),activeToolRef:ref('select'),
   revisionRef:ref(authority.getRevision()),authoritativeApplyQueueRef:ref(Promise.resolve()),applyingRemoteRef:ref(false),applyingHistoryRef:ref(false),
   notebookControllerRef:ref(null),notebookControllerInitRef:ref(null),notebookControllerEpochRef:ref(0),notebookGapRevisionRef:ref(null),notebookCommitBridgeRef:ref(null),notebookHandlersRef:ref({}),
   notebookQueueRef:ref(Promise.resolve()),notebookMutationActiveRef:ref(false),notebookTextEditRef:ref(null),notebookPageTextExitRef:ref(new WeakSet()),

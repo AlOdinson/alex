@@ -1,9 +1,11 @@
 {
   "name": "alex-board-mvp",
   "private": true,
-  "version": "1.43.3",
+  "version": "1.43.4",
   "type": "module",
   "scripts": {
+    "test:student:reading": "node --test scripts/test-student-document-reading.mjs",
+    "test:student:reading:browser": "node scripts/test-student-document-reading-browser.mjs",
     "test:connection-progress": "node --test scripts/test-connection-progress.mjs",
     "dev": "node scripts/copy-pdf-support.mjs && vite",
     "build": "node scripts/copy-pdf-support.mjs && vite build",
