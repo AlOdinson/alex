@@ -29,6 +29,7 @@ jobs:
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
       - run: npm run test:student:storage
+      - run: npm run test:student:reading
       - name: Storage deadlines, notebook verification and late-join regressions
         run: node --test scripts/test-bounded*.mjs scripts/test-late-join-*.mjs scripts/test-board-creation-storage.mjs
       - run: npm run test:notebook
@@ -89,6 +90,12 @@ jobs:
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
         run: npm run test:student:storage:browser
+      - name: Offline student reads PDF and notebook pages without editing
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: |
+          node scripts/copy-pdf-support.mjs
+          npm run test:student:reading:browser
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -96,6 +103,7 @@ jobs:
           path: |
             connection-direct-results/
             screen-share-receiver-results/
+            student-document-reading-results/
             /tmp/notebook-performance.json
             /tmp/notebook-received-video.json
           retention-days: 7
