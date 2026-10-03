@@ -1,0 +1,42 @@
+name: Notebook split navigation diagnosis
+on:
+  push:
+    branches: [feat/notebook-true-split-20261003]
+    paths: ['.github/workflows/notebook-split-navigation-diagnostic.yml']
+permissions:
+  contents: read
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: db95dd0bd17dbdd1d9cbbe628ba6369ad7eb6e5c
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Record failed gesture without changing product code or assertions
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('scripts/test-notebook-navigation-browser.mjs')
+          s=p.read_text()
+          s=s.replace("window.book = () =>", "window.gestures = []; window.c.on('path:created', ({path}) => { window.gestures.push(path.toObject(['boardObjectId', 'creationSessionId'])); });\n    window.book = () =>", 1)
+          s=s.replace("text: document.body.innerText, tool:", "gestures: window.gestures, dataset: {...document.documentElement.dataset}, objects: window.c?.getObjects().map(o=>o.toObject(['boardObjectId', 'creationSessionId', 'updatedAt', 'updatedBy'])), text: document.body.innerText, tool:")
+          p.write_text(s)
+          PY
+          mkdir -p notebook-navigation-results
+          git rev-parse HEAD > notebook-navigation-results/source-sha.txt
+          node scripts/test-notebook-navigation-browser.mjs > notebook-navigation-results/run.log 2>&1 || { cat notebook-navigation-results/*-failure.json; tail -30 notebook-navigation-results/run.log; exit 1; }
+        env:
+          VERIFICATION_BROWSER: chromium
+          VITE_NOTEBOOK_OPERATIONS_V1: 'true'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: notebook-navigation-diagnostic
+          path: notebook-navigation-results/
+          retention-days: 7
