@@ -22,6 +22,7 @@ jobs:
       - name: New and existing regression suites
         run: |
           mkdir -p offline-verification
+          npm run test:student:reading > offline-verification/document-reading.txt 2>&1
           node --test scripts/test-screen-runtime-readiness.mjs > offline-verification/screen-readiness.txt 2>&1
           node --test scripts/test-student-offline-view.mjs scripts/test-student-offline-cache.mjs scripts/test-student-offline-baseline.mjs > offline-verification/new.txt 2>&1
           npm run test:browser-authority > offline-verification/authority.txt 2>&1
@@ -47,9 +48,15 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm install --no-audit --no-fund
-      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
-      - if: matrix.engine == 'webkit'
-        run: node node_modules/playwright-core/cli.js install webkit
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - name: Cached PDF and notebook selection, page pixels, input locks and reload
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+          VITE_NOTEBOOK_OPERATIONS_V1: "true"
+        run: |
+          node scripts/copy-pdf-support.mjs
+          npm run test:student:reading:browser
       - name: Owner offline, student reload, read-only navigation and real reconnect
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
@@ -63,4 +70,5 @@ jobs:
           path: |
             student-offline-results
             verification-evidence
+            student-document-reading-results
           retention-days: 7
