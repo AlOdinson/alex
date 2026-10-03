@@ -1,9 +1,9 @@
 {
-  "version": "1.43.4",
-  "packageVersion": "1.43.4",
-  "base": "1.43.3",
-  "release": "Read cached PDF and notebook pages without editing permission",
+  "version": "1.43.5",
+  "packageVersion": "1.43.5",
+  "base": "1.43.4",
+  "release": "Physically split notebook vector, image and clipped text fragments",
   "date": "2026-10-03",
-  "name": "student-readonly-document-navigation",
-  "label": "Alex Board 1.43.4"
+  "name": "notebook-true-fragments",
+  "label": "Alex Board 1.43.5"
 }

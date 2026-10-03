@@ -41,11 +41,20 @@ test('capture preserves source and world geometry while clipping a boundary cros
   const before = JSON.stringify(object.toObject());
   const result = await captureNotebookObject(notebook, object);
   assert.equal(result.split, true);
-  assert.equal(result.inside.clipPath.inverted, false);
-  assert.equal(result.outside.clipPath.inverted, true);
+  assert.equal(result.inside.clipPath, undefined);
+  assert.equal(result.outside.clipPath, undefined);
   notebook.addPageObject(result.inside);
-  near(result.inside.calcTransformMatrix(), object.calcTransformMatrix());
-  near(result.outside.calcTransformMatrix(), object.calcTransformMatrix());
+  const inverse = util.invertTransform(notebook.calcTransformMatrix());
+  // The former 100-unit rectangle is genuinely partitioned into 65 and 35.
+  const localPoints = fragment => fragment.path.filter(command=>command.length>=3).map(command => {
+    const matrix=util.multiplyTransformMatrices(inverse,fragment.calcTransformMatrix());
+    const x=command[1]-fragment.pathOffset.x,y=command[2]-fragment.pathOffset.y;
+    return {x:matrix[0]*x+matrix[2]*y+matrix[4],y:matrix[1]*x+matrix[3]*y+matrix[5]};
+  });
+  const insidePoints = localPoints(result.inside), outsidePoints = localPoints(result.outside);
+  const range = points => [Math.min(...points.map(p=>p.x)), Math.max(...points.map(p=>p.x))];
+  range(insidePoints).forEach((v,i)=>assert.ok(Math.abs(v-[195,260][i])<.001));
+  range(outsidePoints).forEach((v,i)=>assert.ok(Math.abs(v-[260,295][i])<.001));
   assert.equal(JSON.stringify(object.toObject()), before);
   assert.equal(notebook.width, 520);
 });
@@ -56,7 +65,7 @@ test('whole text stays editable; cut text produces two static image fragments', 
   const captured = await captureNotebookObject(notebook, whole);
   assert.equal(captured.split, false);
   assert.equal(captured.inside.type, 'textbox');
-  const crossing = new Textbox('cut text', { left: 490, top: 100, width: 100, fontSize: 24 });
+  const crossing = new Textbox('cut text', { left: 510, top: 100, width: 100, fontSize: 24, originX: 'left', originY: 'top' });
   const source = JSON.stringify(crossing.toObject());
   const cut = await captureNotebookObject(notebook, crossing);
   assert.equal(cut.split, true);

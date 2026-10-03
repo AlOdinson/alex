@@ -89,16 +89,25 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
     id: String(notebook.boardObjectId), pageNumber, changes, updatedAt: Date.now(), updatedBy: clientId });
 
   async function capture(notebook, object, { before = [], published = false, newText = false, pageNumber = notebook.notebookPageNumber } = {}) {
-    const controller = await getController(), canvas = getCanvas();
+    const canvas = getCanvas();
     if (!canvas?.getObjects().includes(notebook) || !canvas.getObjects().includes(object)) return false;
     const target = published ? [notebook, object] : notebook;
-    if (!await acquireLease(target)) throw new Error('Блокнот сейчас занят другим участником — штрих не сохранён, повторите действие');
-    let prepared = null, enqueued = false;
+    const frames = [notebook, object].map(item => item.calcTransformMatrix().slice());
+    const current = () => getCanvas() === canvas && notebook.notebookPageNumber === pageNumber
+      && [notebook, object].every((item, index) => canvas.getObjects().includes(item)
+        && frames[index].every((value, i) => Math.abs(value - item.calcTransformMatrix()[i]) < 1e-7));
+    let prepared = null, enqueued = false, leaseAcquired = false;
     try {
+      // Broad-phase bounds may intersect while all actual ink misses the page.
+      // Determine real fragments before any controller/network/lease work.
       prepared = await captureNotebookObject(notebook, object);
+      if (!current()) throw stale();
       if (!prepared) return false;
-      if (getCanvas() !== canvas || notebook.notebookPageNumber !== pageNumber || !canvas.getObjects().includes(notebook)
-        || !canvas.getObjects().includes(object) || !ownsLease(target)) throw stale();
+      const controller = await getController();
+      if (!current()) throw stale();
+      if (!await acquireLease(target)) throw new Error('Блокнот сейчас занят другим участником — штрих не сохранён, повторите действие');
+      leaseAcquired = true;
+      if (!current() || !ownsLease(target)) throw stale();
       const sourceBefore = before.length ? before : getRecords([object]);
       const sourceId = String(object.boardObjectId), actionId = randomToken(24), mutationId = randomToken(24);
       const historySource = newText && prepared.split ? getRecords([object]) : sourceBefore;
@@ -135,7 +144,7 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
     } finally {
       if (!enqueued) {
         prepared?.inside?.dispose(); prepared?.outside?.dispose();
-        if (ownsLease(target)) releaseLease(target);
+        if (leaseAcquired && ownsLease(target)) releaseLease(target);
       }
     }
   }

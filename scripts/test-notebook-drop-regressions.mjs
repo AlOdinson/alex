@@ -86,7 +86,10 @@ test('dropping a moved selection captures intersecting members atomically and on
     assert.equal(await ui.scope.captureNotebookSelection(objects,{before}),true);await ui.flush();
     assert.equal(ui.book().getPageObjects().length,3);assert.ok(ui.book().getPageObjects().some(o=>o.text==='whole text'));
     assert.equal(ui.canvas.getObjects().find(o=>o.boardObjectId==='outside').left,30);
-    assert.ok(ui.canvas.getObjects().find(o=>o.boardObjectId==='picture')?.clipPath?.inverted);
+    const remnant=ui.canvas.getObjects().find(o=>o.boardObjectId==='picture');
+    assert.ok(remnant);assert.equal(remnant.clipPath,undefined);
+    assert.ok(remnant.width<80,'outside retains only the actual remaining image pixels');
+    assert.notEqual(remnant.getSrc(),picture.getSrc());
     assert.equal(ui.history.length,1);assert.equal(ui.history[0].type,'compound');
     const undo=await ui.scope.commitConditionalHistoryOps(ui.history[0].nextHistoryOps);await ui.flush();
     assert.equal(ui.book().getPageObjects().length,0);assert.equal(ui.canvas.getObjects().length,5);
@@ -230,4 +233,29 @@ test('native capture release cannot project before later Fabric event listeners 
     assert.equal(depth,1,'capture-phase microtasks resumed projection before the Fabric release listener');
     await new Promise(resolve=>setTimeout(resolve,10));assert.equal(depth,0);
   }finally{cleanup();}
+});
+
+for(const kind of ['vector','image'])test(`true ${kind} fragments converge on two participants and restore the full source only on undo`,async()=>{
+ const {FabricImage,util}=await import('fabric');
+ const book=new BoardNotebook({boardObjectId:'book',left:200,top:200,width:300,height:300,notebookPages:[[]]});
+ let object;if(kind==='vector')object=new Path('M 0 0 L 600 0',{left:-650,top:260,originX:'left',originY:'top',stroke:'red',strokeWidth:6,fill:null});
+ else{const c=util.createCanvasElement();c.width=600;c.height=90;c.getContext('2d').fillRect(0,0,600,90);object=new FabricImage(c,{left:-650,top:260,originX:'left',originY:'top'});}
+ object.boardObjectId='split-source';const original=serialized(object);
+ const {authority}=await authorityFixture([book,object].map(serialized));book.dispose();object.dispose();
+ const receiver=await createUiHarness({authority,clientId:'student'}),writer=await createUiHarness({authority,deliver:async(result,id)=>receiver.receive(result,id)});
+ const noMasks=o=>!o.clipPath&&(o.getObjects?.()??[]).every(noMasks);
+ try{
+  const source=writer.canvas.getObjects().find(o=>o.boardObjectId==='split-source'),before=writer.scope.getObjectRecords([source]);
+  source.set({left:100});source.setCoords();assert.equal(await writer.scope.captureNotebookSelection([source],{before}),true);await writer.flush();
+  for(const ui of [writer,receiver]){
+   assert.equal(ui.book().getPageObjects().length,1);assert.ok(noMasks(ui.book().getPageObjects()[0]));
+   const outside=ui.canvas.getObjects().find(o=>o.boardObjectId==='split-source');assert.ok(noMasks(outside));
+   const clone=await outside.clone(),c=new (await import('fabric')).StaticCanvas(null,{width:800,height:500,enableRetinaScaling:false,renderOnAddRemove:false});c.add(clone);c.renderAll();
+   assert.equal(c.getContext().getImageData(350,kind==='image'?280:263,1,1).data[3],0,'removed portion is genuinely absent without any notebook');await c.dispose();
+  }
+  const undo=await writer.scope.commitConditionalHistoryOps(writer.history[0].nextHistoryOps);await writer.flush();
+  for(const ui of [writer,receiver]){const restored=ui.canvas.getObjects().find(o=>o.boardObjectId==='split-source');assert.equal(restored.left,-650);assert.equal(restored.type,kind==='vector'?'path':'image');if(kind==='image')assert.equal(restored.getSrc(),original.src);else assert.deepEqual(restored.path,original.path);assert.equal(ui.book().getPageObjects().length,0);}
+  await writer.scope.commitConditionalHistoryOps(undo.historyInverseOps);await writer.flush();
+  for(const ui of [writer,receiver]){assert.equal(ui.book().getPageObjects().length,1);assert.ok(noMasks(ui.book().getPageObjects()[0]));assert.deepEqual(ui.errors,[]);}
+ }finally{await writer.close();await receiver.close();}
 });

@@ -80,3 +80,17 @@ test('a denied notebook lease rejects capture instead of silently publishing an 
  const actions=api.createNotebookBoardActions({getCanvas:()=>canvas,getController:async()=>({enqueue(){enqueued++;}}),acquireLease:async()=>false});
  try{await assert.rejects(actions.capture(book,source),/блокнот|занят/i);assert.equal(enqueued,0);assert.ok(canvas.getObjects().includes(source));}finally{await canvas.dispose();}
 });
+
+test('an empty painted intersection neither starts a controller nor requests a notebook lease',async()=>{
+ const env=await setup();let controllers=0,leases=0;
+ const p=new Path('M 0 0 L 380 0 L 380 380',{stroke:'red',strokeWidth:4,fill:null});p.boardObjectId='outside';env.canvas.add(p);
+ const actions=api.createNotebookBoardActions({getCanvas:()=>env.canvas,getController:async()=>{controllers++;return env.controller;},clientId:'teacher',acquireLease:async()=>{leases++;return true;},ownsLease:()=>true,releaseLease:()=>{},getRecords:()=>[],recordAction:()=>{throw Error('empty capture creates no history');}});
+ try{assert.equal(await actions.capture(env.book,p),false);assert.equal(controllers,0);assert.equal(leases,0);assert.ok(env.canvas.getObjects().includes(p));assert.equal(env.book.getPageObjects().length,0);}
+ finally{await env.close();}
+});
+test('a source moved during preparation is not consumed by the earlier single capture',async()=>{
+ const env=await setup();const p=new Rect({left:30,top:80,width:80,height:60,fill:'red'});p.boardObjectId='source';env.canvas.add(p);
+ const original=p.clone.bind(p);let resume;p.clone=async(...args)=>{await new Promise(r=>resume=r);return original(...args);};
+ try{const pending=env.actions.capture(env.book,p);for(let i=0;i<30&&!resume;i++)await Promise.resolve();assert.ok(resume);p.set({left:90});p.setCoords();resume();await assert.rejects(pending,/Страница/);assert.ok(env.canvas.getObjects().includes(p));assert.equal(env.book.getPageObjects().length,0);assert.equal(env.history.length,0);}
+ finally{await env.close();}
+});
