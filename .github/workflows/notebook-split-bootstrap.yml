@@ -1,0 +1,29 @@
+name: Notebook split dependency preparation
+on:
+  push:
+    branches: [feat/notebook-true-split-20261003]
+    paths: ['.github/workflows/notebook-split-bootstrap.yml']
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Prepare pinned geometry dependency in isolated workspace
+        run: |
+          mkdir -p /tmp/notebook-split-preparation
+          git rev-parse HEAD > /tmp/notebook-split-preparation/base.sha
+          npm install --save-exact clipper-lib@6.4.2 --ignore-scripts --no-audit --no-fund
+          npm view clipper-lib@6.4.2 dist --json > /tmp/notebook-split-preparation/clipper-dist.json
+          tar -czf /tmp/notebook-split-preparation/source.tar.gz --exclude=.git --exclude=node_modules .
+          tar -czf /tmp/notebook-split-preparation/clipper-lib.tar.gz node_modules/clipper-lib
+          npm pack playwright-core@1.62.1 --pack-destination /tmp/notebook-split-preparation --ignore-scripts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notebook-split-preparation
+          path: /tmp/notebook-split-preparation
+          retention-days: 7
