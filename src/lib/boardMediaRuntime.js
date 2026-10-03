@@ -141,6 +141,7 @@ export function createBoardMediaRuntime({canvas,boardId,store=boardMediaAssets,r
   scan();
   return {
     hydrate,update,remove,
+    isPdfReady(object){const state=states.get(object);return Boolean(!disposed && object?.mediaKind==='pdf' && state?.media && state.hasPixels && !state.busy);},
     retry(object){const state=states.get(object);if(!state||state.busy)return;failures.delete(object);remove(object);return hydrate(object);},
     getLoadStates(){return [...states].filter(([,state])=>!state.hasPixels||state.error).map(([object,state])=>({object,phase:state.phase,loaded:state.loaded||0,total:state.total||0,error:state.error?.message||''}));},
     async prepareAsset(metadata){

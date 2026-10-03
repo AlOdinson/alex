@@ -148,3 +148,37 @@ test('repeated offline runtime notifications keep reading focus available, inclu
     assert.equal(canvas.skipTargetFind,false);
   } finally { cleanup(); await canvas.dispose(); }
 });
+
+test('PDF pagination waits for hydrated pixels instead of silently losing an early tap', async () => {
+  const { createBoardMediaRuntime } = await import('../src/lib/boardMediaRuntime.js');
+  const canvas = makeCanvas(), document = pdf(); canvas.add(document);
+  let finish;
+  const pixels = document.getElement();
+  const runtime = createBoardMediaRuntime({canvas,boardId:'saved-room',
+    store:{get:async()=>({metadata:{kind:'pdf'},blob:new Blob(['%PDF-'])})},
+    pdfFactory:async()=>({renderPage:()=>new Promise(resolve=>finish=resolve),dispose(){}})});
+  try {
+    assert.equal(runtime.isPdfReady?.(document) ?? false,false);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(runtime.isPdfReady?.(document) ?? false,false);
+    finish({element:pixels,width:80,height:100});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(runtime.isPdfReady?.(document) ?? false,true,'page controls require a decoded PDF');
+    runtime.remove(document);
+    assert.equal(runtime.isPdfReady?.(document) ?? false,false);
+  } finally { runtime.dispose(); await canvas.dispose(); }
+});
+
+test('actual PDF controls reflect local hydration readiness without scanning other files', async () => {
+  const canvas=makeCanvas(), document=pdf();canvas.add(document);canvas.setActiveObject(document);
+  let ready=false,controls;
+  const scope={fabricCanvasRef:ref(canvas),mediaRuntimeRef:ref({isPdfReady:o=>{assert.equal(o,document);return ready;}}),
+    isBoardMedia,util:{transformPoint:p=>p},Point:class{constructor(x,y){Object.assign(this,{x,y});}},
+    notebookNavigationRef:ref({read:()=>[]}),notebookControlSignatureRef:ref('[]'),pdfControlSignatureRef:ref(''),
+    setNotebookControls(){},setPdfControls:value=>controls=value};
+  try {
+    const update=callback('updatePdfControls',scope);update();
+    assert.equal(controls.navigationReady,false);ready=true;update();assert.equal(controls.navigationReady,true);
+    assert.match(source,/canNavigate=\{\(canEdit \|\| canReadDocuments\) && pdfControls.navigationReady\}/);
+  } finally{await canvas.dispose();}
+});

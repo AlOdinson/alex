@@ -2945,6 +2945,7 @@ function BoardWorkspace({
       const width = Math.max(148, Math.min(400, box.width));
       const scale = zoom * Math.min(1, box.width / 148);
       value = { id: object.boardObjectId, pageNumber: object.pageNumber || 1, pageCount: object.pageCount || 1,
+        navigationReady: mediaRuntimeRef.current?.isPdfReady(object) ?? false,
         position: { width, maxWidth: 'none', left: point.x, top: point.y + 8 * scale,
           transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'top center' } };
     }
@@ -8937,7 +8938,7 @@ function BoardWorkspace({
     const mediaRuntime = createBoardMediaRuntime({ canvas, boardId,
       requestAsset: (assetId, options) => realtimeRef.current?.requestMediaAsset?.(assetId, options),
       onReady: updatePdfControls,
-      onStatusChange: updateMediaLoadOverlays,
+      onStatusChange: () => { updateMediaLoadOverlays(); updatePdfControls(); },
       onError: error => { setSaveStatus(error.message); setSyncTone('error'); } });
     mediaRuntimeRef.current = mediaRuntime;
     const studentDocumentReader = createStudentDocumentReader({ canvas,
@@ -14762,7 +14763,7 @@ function BoardWorkspace({
           onPageChange={changeNotebookPage} />
         {notebookTextEditor && <NotebookTextEditor {...notebookTextEditor} busy={notebookBusy}
           onSave={saveNotebookText} onCancel={() => { notebookTextEditRef.current = null; setNotebookTextEditor(null); }} />}
-        {pdfControls && <PdfPageControls key={pdfControls.id} {...pdfControls} canEdit={canEdit} canNavigate={canEdit || canReadDocuments} busy={pdfPageBusy} onPageChange={changePdfPage} />}
+        {pdfControls && <PdfPageControls key={pdfControls.id} {...pdfControls} canEdit={canEdit} canNavigate={(canEdit || canReadDocuments) && pdfControls.navigationReady} busy={pdfPageBusy} onPageChange={changePdfPage} />}
         <MediaLoadStatus entries={mediaLoadOverlays} onRetry={object=>mediaRuntimeRef.current?.retry(object)} />
         <div
           ref={selectionMarqueeElementRef}
