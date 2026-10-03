@@ -28,7 +28,7 @@ jobs:
           npm run test:browser-authority > offline-verification/authority.txt 2>&1
           npm run test:sync:ci > offline-verification/sync.txt 2>&1
           npm run test:screen-share > offline-verification/screen.txt 2>&1
-          node --test scripts/test-bounded*.mjs scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs > offline-verification/bounded.txt 2>&1
+          node --test scripts/test-bounded*.mjs scripts/test-late-join-*.mjs scripts/test-board-creation-storage.mjs > offline-verification/bounded.txt 2>&1
           npm run build > offline-verification/build.txt 2>&1
       - uses: actions/upload-artifact@v4
         if: always()
@@ -48,7 +48,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm install --no-audit --no-fund
-      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      # Preserve the established real-reconnect fixture engine and its loopback relay.
+      # The Pages release gate separately exercises document reading on 1.62.1.
+      - run: npm install --no-save --no-package-lock playwright-core@1.55.0
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
       - name: Cached PDF and notebook selection, page pixels, input locks and reload
         env:
