@@ -17,21 +17,26 @@ jobs:
       sha: ${{ steps.patch.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
-      - name: Apply exact diagnostic patch on the isolated branch
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - name: Apply exact verified readiness patch on the isolated branch
         id: patch
         run: |
           set -euo pipefail
           test "$GITHUB_REF_NAME" = feat/student-readonly-documents-20261003
-          if test -f .student-reading-trial.patch.b64; then
-            base64 -d .student-reading-trial.patch.b64 | gunzip > /tmp/reading.patch
-            echo 'ad05599f2f9b2a1717d21cb3e8bc18b9f042a64f4ac1d81ecb6c86a0ff493f5d  /tmp/reading.patch' | sha256sum -c -
+          if test -f .student-reading-ready.patch.b64; then
+            base64 -d .student-reading-ready.patch.b64 | gunzip > /tmp/reading.patch
+            echo '1d0f5f961a98e45d43342c0d4e48f156397bd45f098e6a50601338299bbd7691  /tmp/reading.patch' | sha256sum -c -
             git apply --check /tmp/reading.patch
             git apply /tmp/reading.patch
-            rm .student-reading-trial.patch.b64
-            node --check scripts/test-student-document-reading-browser.mjs
+            rm .student-reading-ready.patch.b64
+            npm ci --no-audit --no-fund
+            npm run test:student:reading
+            npm run test:media
+            npm run build
             git diff --check
-            git add scripts/test-student-document-reading-browser.mjs .student-reading-trial.patch.b64
-            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'test: assert durable PDF fixture and visible page pixels'
+            git add src/lib/boardMediaRuntime.js src/components/Board.jsx scripts/test-student-document-reading.mjs .student-reading-ready.patch.b64
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix: enable PDF navigation only after local hydration completes'
             git push origin HEAD:refs/heads/feat/student-readonly-documents-20261003
           fi
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -58,8 +63,7 @@ jobs:
         with:
           ref: ${{ needs.source.outputs.sha }}
       - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+        with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
