@@ -19,7 +19,7 @@ function NotebookArrow({ label, disabled, direction, onActivate, inputRef }) {
   </button>;
 }
 
-export default function NotebookPageControls({ notebooks = [], canEdit, busy = false, onPageChange }) {
+export default function NotebookPageControls({ notebooks = [], canEdit, canNavigate = canEdit, readOnly = false, busy = false, onPageChange }) {
   const { ui } = useLanguage();
   const layerRef = useRef(null), inputRef = useRef(null);
   useEffect(() => {
@@ -27,10 +27,10 @@ export default function NotebookPageControls({ notebooks = [], canEdit, busy = f
     inputRef.current = input;
     return () => { input.dispose(); if (inputRef.current === input) inputRef.current = null; };
   }, []);
-  const disabled = !canEdit || busy;
+  const disabled = !canNavigate || busy;
   return (
     <div className="notebook-navigation-layer" ref={layerRef}>
-      {notebooks.map(({ id, pageNumber, position }) => (
+      {notebooks.map(({ id, pageNumber, pageCount, position }) => (
         <div key={id} className="notebook-page-controls" data-notebook-id={id} style={position}
           role="group" aria-label={ui('Страницы блокнота')}
           onPointerDown={stopPropagation} onPointerUp={stopPropagation}
@@ -46,7 +46,7 @@ export default function NotebookPageControls({ notebooks = [], canEdit, busy = f
             {pageNumber}
           </span>
           <div className="notebook-nav-island notebook-nav-next">
-            <NotebookArrow label={ui('Следующая страница')} disabled={disabled} direction={1}
+            <NotebookArrow label={ui('Следующая страница')} disabled={disabled || (readOnly && pageNumber >= pageCount)} direction={1}
               inputRef={inputRef} onActivate={() => onPageChange(1, id, true)} />
           </div>
         </div>

@@ -15,6 +15,7 @@ export function notebookNavigationLayout(notebook, canvas) {
   matrix[5] -= matrix[1] * width / 2 + matrix[3] * height / 2;
   if (!matrix.every(Number.isFinite)) return null;
   return { id: String(notebook.boardObjectId), pageNumber: notebook.notebookPageNumber || 1,
+    pageCount: Math.max(1, notebook.notebookPageNumber || 1, notebook.notebookPages?.length || 0),
     position: { width, height, transform: `matrix(${matrix.join(',')})`, transformOrigin: '0 0' } };
 }
 

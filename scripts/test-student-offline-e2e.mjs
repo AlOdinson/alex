@@ -98,7 +98,7 @@ async function assertBrowsing(page, touch) {
     document.dispatchEvent(event);
   });
   assert.deepEqual(await state(page), original, 'navigation, delete, undo and paste cannot mutate offline notes');
-  assert.equal(await page.getByRole('button', { name: 'Карандаш', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'Карандаш', exact: true }).count(), 0, 'editing toolbar remains hidden');
   assert.equal(await page.evaluate(() => window.__offlineCanvas().isDrawingMode), false);
   if (touch && engine === 'chromium') {
     const cd = await page.context().newCDPSession(page);
@@ -162,7 +162,7 @@ try {
       // Fresh device: there is no authority and no local cache. Do not invent a copy.
       const freshContext = await browser.newContext(); await instrument(freshContext); const fresh=await freshContext.newPage();
       await fresh.goto(guestUrl.href); await enter(fresh, 'New device', false); await pause(300);
-      assert.equal((await state(fresh)).length, 0); assert.equal(await fresh.getByRole('button', { name: 'Карандаш', exact: true }).isDisabled(), true);
+      assert.equal((await state(fresh)).length, 0); assert.equal(await fresh.getByRole('button', { name: 'Карандаш', exact: true }).count(), 0, 'editing toolbar remains hidden');
       await freshContext.close();
       // Real reconnect: the owner's stored data is still the only writable authority.
       owner = await ownerContext.newPage(); observe('owner-reconnected', owner); stage = 'reconnect';

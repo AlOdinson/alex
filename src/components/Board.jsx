@@ -10,6 +10,7 @@ import { isNotebookRuntimeEnabled } from '../lib/notebookProtocol.js';
 import { applyNotebookOperation } from '../lib/notebookOperations.js';
 import { operationObjectIds } from '../lib/operationProtocol.js';
 import { createNotebookNavigationTracker } from '../lib/notebookNavigation.js';
+import { applyStudentReadingInteractivity, createStudentDocumentReader } from '../lib/studentDocumentReading.js';
 import NotebookPageControls, { NotebookTextEditor } from './NotebookPageControls.jsx';
 import { NOTEBOOK_FIELDS, createBoardNotebook, isBoardNotebook, setNotebookPage, captureNotebookObject, notebookObjectIntersection } from '../lib/boardNotebook.js';
 import PdfPageControls from './PdfPageControls.jsx';
@@ -1864,6 +1865,8 @@ function BoardWorkspace({
     shape: { ...DEFAULT_DRAWING_STYLES.shape },
   });
   const canEditRef = useRef(false);
+  const canReadDocumentsRef = useRef(false);
+  const studentDocumentReaderRef = useRef(null);
   const runtimeReadyRef = useRef(false);
   const viewedSnapshotRef = useRef(Boolean(initialAccess.snapshot));
   const viewingArchiveRef = useRef(Boolean(initialAccess.offlineSnapshot));
@@ -2104,6 +2107,7 @@ function BoardWorkspace({
 
   const isOwner = permission === 'owner';
   const canEdit = (permission === 'owner' || permission === 'edit') && runtimeReady;
+  const canReadDocuments = !isOwner && !canEdit;
   const getInitialScreenShareBoardLayout = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     if (!canvas) return null;
@@ -2941,6 +2945,7 @@ function BoardWorkspace({
       const width = Math.max(148, Math.min(400, box.width));
       const scale = zoom * Math.min(1, box.width / 148);
       value = { id: object.boardObjectId, pageNumber: object.pageNumber || 1, pageCount: object.pageCount || 1,
+        navigationReady: mediaRuntimeRef.current?.isPdfReady(object) ?? false,
         position: { width, maxWidth: 'none', left: point.x, top: point.y + 8 * scale,
           transform: `translateX(-50%) scale(${scale})`, transformOrigin: 'top center' } };
     }
@@ -3152,6 +3157,7 @@ function BoardWorkspace({
     let renderNeeded = false;
 
     for (const object of new Set((objects ?? []).filter(Boolean))) {
+      if (applyStudentReadingInteractivity(object, canReadDocumentsRef.current)) continue;
       const remoteLock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
       const lockedByOther = Boolean(remoteLock && Number(remoteLock.expiresAt ?? 0) > now);
       const isLocalSelectionProxy = Boolean(
@@ -3202,6 +3208,7 @@ function BoardWorkspace({
     let renderNeeded = false;
 
     for (const object of canvas.getObjects()) {
+      if (applyStudentReadingInteractivity(object, canReadDocumentsRef.current)) continue;
       const remoteLock = object.boardObjectId ? remoteLocksRef.current.get(object.boardObjectId) : null;
       const lockedByOther = Boolean(remoteLock && Number(remoteLock.expiresAt ?? 0) > now);
       const isLocalSelectionProxy = Boolean(
@@ -3333,7 +3340,7 @@ function BoardWorkspace({
     const shouldDraw = canEditRef.current
       && !eyedropperActiveRef.current
       && (activeToolRef.current === 'pencil' || partialEraser);
-    const selectionToolActive = canEditRef.current
+    const selectionToolActive = (canEditRef.current || canReadDocumentsRef.current)
       && activeToolRef.current === 'select'
       && !eyedropperActiveRef.current;
     const keepActiveObject = selectionToolActive
@@ -4954,6 +4961,7 @@ function BoardWorkspace({
         const canvas = fabricCanvasRef.current;
         if (!canvas || !snapshot?.canvas) return;
         if (!viewingArchiveRef.current && Number(revision ?? 0) < Number(revisionRef.current ?? 0)) return;
+        studentDocumentReaderRef.current?.discard();
 
         const selectedIds = canvas
           .getActiveObjects()
@@ -8505,6 +8513,7 @@ function BoardWorkspace({
   const changePdfPage = useCallback(async (pageNumber) => {
     const canvas = fabricCanvasRef.current;
     const object = canvas?.getActiveObject();
+    if (canReadDocumentsRef.current) return studentDocumentReaderRef.current?.changePdfPage(object, pageNumber);
     if (pdfBusyRef.current || !canEditRef.current || !isBoardMedia(object) || object.mediaKind !== 'pdf'
       || pageNumber < 1 || pageNumber > object.pageCount || pageNumber === object.pageNumber) return;
     pdfBusyRef.current = true;
@@ -8726,6 +8735,7 @@ function BoardWorkspace({
   }, [getViewportSceneCenter, setTool, addObjectsToBoard]);
 
   const changeNotebookPage = useCallback((requestedPage, notebookId = null, relative = false) => {
+    if (canReadDocumentsRef.current) return studentDocumentReaderRef.current?.changeNotebookPage(requestedPage, notebookId, relative);
     // Finish an active draft before queueing the page turn. Its existing exit
     // handler captures it on the original page, but does not change tools here.
     const editing = fabricCanvasRef.current?.getActiveObject();
@@ -8928,9 +8938,17 @@ function BoardWorkspace({
     const mediaRuntime = createBoardMediaRuntime({ canvas, boardId,
       requestAsset: (assetId, options) => realtimeRef.current?.requestMediaAsset?.(assetId, options),
       onReady: updatePdfControls,
-      onStatusChange: updateMediaLoadOverlays,
+      onStatusChange: () => { updateMediaLoadOverlays(); updatePdfControls(); },
       onError: error => { setSaveStatus(error.message); setSyncTone('error'); } });
     mediaRuntimeRef.current = mediaRuntime;
+    const studentDocumentReader = createStudentDocumentReader({ canvas,
+      canRead: () => canReadDocumentsRef.current && !canEditRef.current && fabricCanvasRef.current === canvas,
+      getMediaRuntime: () => mediaRuntime,
+      onChange: () => { if (fabricCanvasRef.current === canvas) updatePdfControls(); },
+      onBusy: (kind, busy) => { if (kind === 'pdf') setPdfPageBusy(busy); else setNotebookBusy(busy); },
+      onError: error => { setSaveStatus(error.message); setSyncTone('error'); },
+    });
+    studentDocumentReaderRef.current = studentDocumentReader;
     canvas.on('after:render', updatePdfControls);
     canvas.on('after:render', updateMediaLoadOverlays);
     const mediaVisibility = () => mediaRuntime.suspend(document.hidden);
@@ -9679,7 +9697,7 @@ function BoardWorkspace({
     // these callbacks are used. Old boards never instantiate this adapter.
     let boundedCanvasVerifier = null;
     const canVerifyCanvas = (expectedRevision = Number(revisionRef.current ?? 0)) => (
-      boardReadyRef.current
+      !canReadDocumentsRef.current && boardReadyRef.current
       && fabricCanvasRef.current === canvas
       && Number(revisionRef.current ?? 0) === Number(expectedRevision)
       && !applyingRemoteRef.current
@@ -11026,6 +11044,10 @@ function BoardWorkspace({
 
     const notebookTransformProjectionHolds = new Set();
     canvas.on('before:transform', ({ transform, e: nativeEvent }) => {
+      if (!canEditRef.current) {
+        if (transform) transform.actionHandler = () => false;
+        return;
+      }
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
       if (isBoardScreenShareObject(transform.target)) {
         modifiedBeforeRecordsRef.current = [];
@@ -11327,14 +11349,14 @@ function BoardWorkspace({
       // event so a large ActiveSelection cannot block the contact itself.
       queueSelectionUiRefresh();
       const active = canvas.getActiveObject();
-      if (active && !notebookMutationActiveRef.current) acquireLocalSelectionLease(active);
+      if (canEditRef.current && active && !notebookMutationActiveRef.current) acquireLocalSelectionLease(active);
     };
     const finishTransactionalSelection = (selectionEvent = {}) => {
       queueSelectionUiRefresh();
       const releasedTarget = selectionEvent?.deselected?.[0]
         ?? [...selectionUiTouchedRef.current][0]
         ?? null;
-      if (!notebookMutationActiveRef.current) releaseLocalSelectionLease(releasedTarget);
+      if (canEditRef.current && !notebookMutationActiveRef.current) releaseLocalSelectionLease(releasedTarget);
       const nativeEvent = selectionEvent?.e;
       if (nativeEvent?.pointerType !== 'pen' || activeToolRef.current !== 'select') return;
       const controlsWereOnTop = Boolean(canvas.contextTopDirty);
@@ -14271,6 +14293,8 @@ function BoardWorkspace({
 
     return () => {
       disposed = true;
+      studentDocumentReader.dispose();
+      if (studentDocumentReaderRef.current === studentDocumentReader) studentDocumentReaderRef.current = null;
       authoritativeSnapshotGate.close();
       cancelCreationDraft('unmount');
       clearCreationPreview();
@@ -14508,6 +14532,7 @@ function BoardWorkspace({
 
   useEffect(() => {
     canEditRef.current = canEdit;
+    canReadDocumentsRef.current = canReadDocuments;
     if (canEdit && activeToolRef.current === 'select' && resumeToolRef.current !== 'select') {
       activeToolRef.current = resumeToolRef.current;
       setToolState(activeToolRef.current);
@@ -14542,18 +14567,31 @@ function BoardWorkspace({
     window.dispatchEvent(new CustomEvent('alex-board-readonly-view', {
       detail: { boardId, hasSnapshot: viewedSnapshotRef.current },
     }));
-  }, [applyObjectInteractivity, boardId, canEdit, configureBrushAndMode, isOwner]);
+  }, [applyObjectInteractivity, boardId, canEdit, canReadDocuments, configureBrushAndMode, isOwner]);
 
   useEffect(() => {
-    const update = (detail) => {
+    let stateGeneration = 0, restoringReading = false;
+    const update = async (detail) => {
       if (String(detail?.boardId ?? '') !== String(boardId)) return;
+      const generation = ++stateGeneration;
       const ready = detail.state === 'ready';
+      if (!ready && restoringReading) { studentDocumentReaderRef.current?.cancelPending(); restoringReading = false; }
+      if (ready && studentDocumentReaderRef.current?.hasLocalPages()) {
+        // Restore the shared page before allowing the first post-reconnect edit.
+        canReadDocumentsRef.current = false;
+        restoringReading = true;
+        try { await studentDocumentReaderRef.current.restore(); }
+        catch (error) { setSaveStatus(error.message); setSyncTone('error'); return; }
+        if (generation !== stateGeneration) return;
+        restoringReading = false;
+      }
       const wasEditable = canEditRef.current;
       if (wasEditable && !ready) resumeToolRef.current = activeToolRef.current;
       runtimeReadyRef.current = ready;
       if (ready) viewedSnapshotRef.current = true;
       // Revoke commands immediately, not only after React's next paint.
       canEditRef.current = ready && (permission === 'owner' || permission === 'edit');
+      canReadDocumentsRef.current = permission !== 'owner' && !canEditRef.current;
       const canvas = fabricCanvasRef.current;
       if (canvas && !canEditRef.current) {
         canvas.isDrawingMode = false;
@@ -14561,6 +14599,12 @@ function BoardWorkspace({
         canvas.skipTargetFind = true;
         canvas._currentTransform = null;
         if (wasEditable) canvas.upperCanvasEl?.removeAttribute('data-readonly-navigation');
+        // Repeated absence reports may not trigger a React state change. Reapply
+        // the document-only fence synchronously before re-enabling input.
+        activeToolRef.current = 'select';
+        applyObjectInteractivity();
+        configureBrushAndMode();
+        if (canReadDocumentsRef.current) canvas.upperCanvasEl?.setAttribute('data-readonly-navigation', 'true');
       }
       setRuntimeReady(ready);
     };
@@ -14568,8 +14612,8 @@ function BoardWorkspace({
     window.addEventListener('alex-board-runtime-state', listener);
     const data = document.documentElement.dataset;
     update({ boardId: data.alexDurableEditBoardId, state: data.alexDurableEditState });
-    return () => window.removeEventListener('alex-board-runtime-state', listener);
-  }, [boardId, permission]);
+    return () => { stateGeneration++; if (restoringReading) studentDocumentReaderRef.current?.cancelPending(); window.removeEventListener('alex-board-runtime-state', listener); };
+  }, [boardId, permission, applyObjectInteractivity, configureBrushAndMode]);
 
   useEffect(() => {
     cursorVisibilityRef.current?.refresh({ motion: true });
@@ -14637,7 +14681,7 @@ function BoardWorkspace({
 
   return (
     <main className="board-page">
-      <Toolbar
+      {!canReadDocuments && <Toolbar
         canEdit={canEdit}
         tool={tool}
         setTool={setTool}
@@ -14702,7 +14746,7 @@ function BoardWorkspace({
         eyedropperActive={eyedropperActive}
         onToggleEyedropper={toggleEyedropper}
         screenShare={screenShare}
-      />
+      />}
 
       {!isSupabaseConfigured && (
         <div className="local-mode-badge">Локальный тест: синхронизация только между вкладками</div>
@@ -14715,11 +14759,11 @@ function BoardWorkspace({
         data-readonly-view={!isOwner && !canEdit ? 'true' : 'false'}
       >
         <canvas ref={canvasElementRef} />
-        <NotebookPageControls notebooks={notebookControls} canEdit={canEdit} busy={notebookBusy}
+        <NotebookPageControls notebooks={notebookControls} canEdit={canEdit} canNavigate={canEdit || canReadDocuments} readOnly={canReadDocuments} busy={notebookBusy}
           onPageChange={changeNotebookPage} />
         {notebookTextEditor && <NotebookTextEditor {...notebookTextEditor} busy={notebookBusy}
           onSave={saveNotebookText} onCancel={() => { notebookTextEditRef.current = null; setNotebookTextEditor(null); }} />}
-        {pdfControls && <PdfPageControls key={pdfControls.id} {...pdfControls} canEdit={canEdit} busy={pdfPageBusy} onPageChange={changePdfPage} />}
+        {pdfControls && <PdfPageControls key={pdfControls.id} {...pdfControls} canEdit={canEdit} canNavigate={(canEdit || canReadDocuments) && pdfControls.navigationReady} busy={pdfPageBusy} onPageChange={changePdfPage} />}
         <MediaLoadStatus entries={mediaLoadOverlays} onRetry={object=>mediaRuntimeRef.current?.retry(object)} />
         <div
           ref={selectionMarqueeElementRef}
