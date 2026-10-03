@@ -11,16 +11,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
+        with: {fetch-depth: 0}
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - name: Prepare pinned geometry dependency in isolated workspace
         run: |
           mkdir -p /tmp/notebook-split-preparation
           git rev-parse HEAD > /tmp/notebook-split-preparation/base.sha
-          npm install --save-exact clipper-lib@6.4.2 --ignore-scripts --no-audit --no-fund
+          git bundle create /tmp/notebook-split-preparation/history.bundle HEAD refs/remotes/origin/main
+          npm install --save-exact clipper-lib@6.4.2 --no-audit --no-fund
           npm view clipper-lib@6.4.2 dist --json > /tmp/notebook-split-preparation/clipper-dist.json
           tar -czf /tmp/notebook-split-preparation/source.tar.gz --exclude=.git --exclude=node_modules .
-          tar -czf /tmp/notebook-split-preparation/clipper-lib.tar.gz node_modules/clipper-lib
+          tar -czf /tmp/notebook-split-preparation/dependencies.tar.gz node_modules
           npm pack playwright-core@1.62.1 --pack-destination /tmp/notebook-split-preparation --ignore-scripts
       - uses: actions/upload-artifact@v4
         with:
