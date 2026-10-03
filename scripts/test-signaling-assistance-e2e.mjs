@@ -19,7 +19,16 @@ async function wait(label, fn, ms = 40000) {
 }
 async function instrument(context, mode, owner) {
   await context.addInitScript(({ mode, owner, relay }) => {
-    window.__signalEvidence = { signals: [], pcCount: 0, protocolMismatch: 0, peerEvents: [] };
+    window.__signalEvidence = { signals: [], pcCount: 0, activePcCount: 0, maxActivePcCount: 0, protocolMismatch: 0, peerEvents: [] };
+    const peers = new Set();
+    const updatePeerCounts = () => {
+      // close() is synchronous but state-change events need not be dispatched
+      // for a locally closed peer. Inspect native state rather than event timing.
+      for (const peer of peers) if (peer.signalingState === 'closed') peers.delete(peer);
+      const evidence = window.__signalEvidence;
+      evidence.activePcCount = peers.size;
+      evidence.maxActivePcCount = Math.max(evidence.maxActivePcCount, peers.size);
+    };
     const NativePeer = window.RTCPeerConnection;
     const record = (pcId, event, extra = {}) => {
       window.__signalEvidence.peerEvents.push({
@@ -53,7 +62,18 @@ async function instrument(context, mode, owner) {
           urls: 'turn:127.0.0.1:3478?transport=udp', username: 'bounded-ci', credential: 'bounded-ci-loopback-only-20260925',
         }] } : config);
         const pcId = ++window.__signalEvidence.pcCount;
+        peers.add(this); updatePeerCounts();
+        const nativeClose = this.close.bind(this);
+        this.close = (...args) => {
+          try { return nativeClose(...args); }
+          finally {
+            updatePeerCounts();
+            record(pcId, 'pc-close', { signalingState: this.signalingState,
+              activePcCount: window.__signalEvidence.activePcCount });
+          }
+        };
         record(pcId, 'pc-created', {
+          activePcCount: window.__signalEvidence.activePcCount,
           connectionState: this.connectionState,
           iceConnectionState: this.iceConnectionState,
           signalingState: this.signalingState,
@@ -196,9 +216,15 @@ try {
       assert.deepEqual(after.map(x => x.signals.length), before.map(x => x.signals.length),
         'healthy selected channel must stop bootstrap signaling');
 
+      assert.deepEqual(after.map(x => x.pcCount), before.map(x => x.pcCount),
+        'healthy selected channel must not silently recreate peers');
       for (const evidence of after) {
-        assert.ok(evidence.pcCount >= 1 && evidence.pcCount <= 2,
+        assert.ok(Number.isInteger(evidence.pcCount) && evidence.pcCount >= 1,
+          'the fixture must create a real peer');
+        assert.equal(evidence.maxActivePcCount, 1,
           'sequential two-path bootstrap must never run more than one path at a time');
+        assert.equal(evidence.activePcCount, 1,
+          'a ready session must retain exactly one live peer');
         assert.equal(evidence.protocolMismatch, 0);
       }
 
