@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chromium, webkit } from 'playwright-core';
 
 // This fixture uses real IndexedDB, PDF decoding, React and native browser input.
@@ -11,8 +13,7 @@ const base = 'http://127.0.0.1:5173/alex';
 const out = 'student-document-reading-results';
 await mkdir(out, { recursive: true });
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1'], { stdio: 'ignore' });
-const browser = await (engine === 'webkit' ? webkit : chromium).launch({ headless: true,
-  ...(engine === 'chromium' ? { args: ['--no-sandbox'], ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {}) } : {}) });
+const profiles = []; let context;
 const results = [], errors = [], diagnostics = []; let page, stage = "start";
 async function bindCanvas(p) {
   await p.waitForFunction(() => document.querySelector('canvas.upper-canvas')?.dataset.readonlyNavigation === 'true');
@@ -54,7 +55,10 @@ async function saved(p, record) {
 try {
   for (let i=0;i<100;i++) { try { if ((await fetch(base)).ok) break; } catch {} await new Promise(r=>setTimeout(r,100)); }
   for (const touch of [false,true]) {
-    const context = await browser.newContext({ viewport:{width:1200,height:900}, hasTouch:touch });
+    // Match the production persistent browser profile: ephemeral WebKit cannot store PDF Blobs.
+    const profile = await mkdtemp(join(tmpdir(),'alex-student-reading-')); profiles.push(profile);
+    context = await (engine === 'webkit' ? webkit : chromium).launchPersistentContext(profile, {headless:true, viewport:{width:1200,height:900}, hasTouch:touch,
+      ...(engine === 'chromium' ? { args:['--no-sandbox'], ...(process.env.CHROMIUM_EXECUTABLE ? {executablePath:process.env.CHROMIUM_EXECUTABLE} : {}) } : {}) });
     await context.route('**/*', route => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort());
     page = await context.newPage(); page.on('pageerror', e => errors.push(e.message));
     await page.goto(`${base}/scripts/board-media-fixture.html`);
@@ -102,7 +106,8 @@ try {
     stage = 'PDF slider';
     const slider=page.locator('.pdf-page-slider'); await slider.focus(); await page.keyboard.press('Home');
     await page.waitForFunction(()=>window.object('pdf').pageNumber===1);
-    await page.keyboard.press('End'); await page.waitForFunction(()=>window.object('pdf').pageNumber===2);
+    await page.waitForFunction(() => !document.querySelector('.pdf-page-slider')?.disabled);
+    await slider.focus(); await page.keyboard.press('End'); await page.waitForFunction(()=>window.object('pdf').pageNumber===2);
     const pdfPixels=await page.evaluate(()=>{const o=window.object('pdf'),e=o.getElement();return {width:e.width,height:e.height,source:o.getSrc()};});
     assert.ok(pdfPixels.width>1&&pdfPixels.height>1,'PDF page two really decoded, not only a new number');
     stage = 'notebook pages';
@@ -132,7 +137,7 @@ try {
     assert.deepEqual(await saved(page,record),initial);
     results.push({engine,input:touch?'native touch selection':'mouse selection',pdfDecoded:true,pdfButtonsAndSlider:true,notebookPages:true,
       noBlankPageCreation:true,toolbarHidden:true,geometryProtected:true,archiveUnchanged:true,reload:true,transport:'intentionally offline'});
-    await context.close(); page=null;
+    await context.close(); context=null; page=null;
   }
   assert.deepEqual(errors,[]); console.log(JSON.stringify({results,errors,diagnostics},null,2));
 } catch(error) {
@@ -140,5 +145,6 @@ try {
     await writeFile(`${out}/${engine}-failure.json`,JSON.stringify({error:error.stack || String(error),stage,errors,diagnostics,details:await page.evaluate(()=>({text:document.body.innerText,data:{...document.documentElement.dataset},objects:window.c?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,page:o.pageNumber,nbpage:o.notebookPageNumber,evented:o.evented,selectable:o.selectable}))})).catch(()=>null)},null,2)); }
   throw error;
 } finally {
-  await writeFile(`${out}/${engine}.json`,JSON.stringify({results,errors,diagnostics},null,2)); await browser.close(); server.kill();
+  await writeFile(`${out}/${engine}.json`,JSON.stringify({results,errors,diagnostics},null,2)); await context?.close(); server.kill();
+  for (const profile of profiles) await rm(profile,{recursive:true,force:true});
 }
