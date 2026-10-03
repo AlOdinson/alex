@@ -8,3 +8,8 @@ dist/
 connection-direct-results/
 
 /public/pdfjs/
+
+notebook-true-split-results/
+
+notebook-navigation-results/
+notebook-drop-results/

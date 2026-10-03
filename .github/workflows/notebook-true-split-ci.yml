@@ -1,0 +1,68 @@
+name: Notebook true fragments
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths: ['src/lib/*notebook*', 'src/lib/boardNotebook.js', 'scripts/*notebook*', 'package*.json', '.github/workflows/notebook-true-split-ci.yml']
+permissions:
+  contents: read
+concurrency:
+  group: notebook-fragments-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  VITE_NOTEBOOK_OPERATIONS_V1: 'true'
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - name: Fragments, history, storage, permissions and existing notebook logic
+        run: |
+          mkdir -p notebook-true-split-results
+          npm run test:notebook > notebook-true-split-results/unit.txt 2>&1
+          npm run test:student:reading > notebook-true-split-results/reading.txt 2>&1
+          npm run test:media > notebook-true-split-results/media.txt 2>&1
+          npm run build > notebook-true-split-results/build.txt 2>&1
+          git rev-parse HEAD HEAD^{tree} > notebook-true-split-results/source-sha.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: notebook-fragments-unit
+          path: notebook-true-split-results
+          retention-days: 7
+  browser:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, engine: chromium}
+          - {os: macos-latest, engine: webkit}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - name: Native pencil and image drop, text option A, real fragments and undo/reload
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: npm run test:notebook:browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: notebook-fragments-${{ matrix.engine }}
+          path: |
+            notebook-true-split-results/
+            notebook-navigation-results/
+            notebook-drop-results/
+            connection-direct-results/
+          retention-days: 7
