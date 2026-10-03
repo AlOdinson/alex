@@ -13,7 +13,7 @@ await mkdir(out, { recursive: true });
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1'], { stdio: 'ignore' });
 const browser = await (engine === 'webkit' ? webkit : chromium).launch({ headless: true,
   ...(engine === 'chromium' ? { args: ['--no-sandbox'], ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {}) } : {}) });
-const results = [], errors = []; let page;
+const results = [], errors = [], diagnostics = []; let page, stage = "start";
 async function bindCanvas(p) {
   await p.waitForFunction(() => document.querySelector('canvas.upper-canvas')?.dataset.readonlyNavigation === 'true');
   await p.evaluate(() => {
@@ -35,7 +35,7 @@ async function bindCanvas(p) {
   await p.waitForFunction(() => window.c?.getObjects().length === 3);
 }
 async function enter(p) {
-  await p.locator('canvas.upper-canvas, input').first().waitFor();
+  await p.waitForFunction(() => Boolean(document.querySelector('canvas.upper-canvas')) || [...document.querySelectorAll('input')].some(e => e.type === 'text' && e.getBoundingClientRect().width));
   const name = p.getByLabel('Ваше имя');
   if (await name.isVisible()) { await name.fill('Offline reader'); await p.getByRole('button', {name:'Войти на доску',exact:true}).click(); }
   await bindCanvas(p);
@@ -62,10 +62,15 @@ try {
       const {Rect,Textbox,FabricImage} = await import('/alex/node_modules/.vite/deps/fabric.js');
       const {BoardNotebook} = await import('/alex/src/lib/boardNotebook.js');
       const {MEDIA_PLACEHOLDER_SRC} = await import('/alex/src/lib/boardMediaRuntime.js');
-      const {boardMediaAssets} = await import('/alex/src/lib/mediaAssetStore.js');
+      const {createMediaAssetStore} = await import('/alex/src/lib/mediaAssetStore.js');
+      const persistenceErrors = [];
+      const boardMediaAssets = createMediaAssetStore({ onPersistenceError: error => persistenceErrors.push(String(error)) });
       const {studentOfflineStorage,studentOfflineScope} = await import('/alex/src/lib/studentOfflineCache.js');
       const id='offline-reading-'+crypto.randomUUID(), key='reading-secret';
       const asset=await boardMediaAssets.importFile(id,new File([await (await fetch('/alex/scripts/fixtures/media/pages.pdf')).blob()],'lesson.pdf',{type:'application/pdf'}));
+      if (!asset.persisted) throw new Error('Fixture PDF was not persisted: ' + JSON.stringify(persistenceErrors));
+      const durableAsset = await boardMediaAssets.get(id, asset.assetId);
+      if (!durableAsset?.persisted || durableAsset.blob.size !== asset.size) throw new Error('Fixture PDF not readable from durable store');
       const pdf=await FabricImage.fromURL(MEDIA_PLACEHOLDER_SRC);
       pdf.set({boardObjectId:'pdf',mediaKind:'pdf',mediaAssetId:asset.assetId,mediaName:'lesson.pdf',pageNumber:1,pageCount:2,
         width:300,height:400,left:100,top:120,updatedAt:100,updatedBy:'teacher'});
@@ -76,22 +81,31 @@ try {
       const props=['boardObjectId','mediaKind','mediaAssetId','mediaName','pageNumber','pageCount','updatedAt','updatedBy'];
       const snapshot={version:2,background:'blank',canvas:{objects:[pdf.toObject(props),book.toObject(props),text.toObject(props)]}};
       await studentOfflineStorage.replace(await studentOfflineScope(id,key),{boardId:id,snapshot,revision:7,savedAt:1000});
-      pdf.dispose(); book.dispose(); text.dispose(); return {id,key};
+      pdf.dispose(); book.dispose(); text.dispose(); boardMediaAssets.dispose(); return {id,key,assetId:asset.assetId};
     });
+    stage = 'open cached board';
     await page.goto(`${base}/board/${record.id}?key=${record.key}`); await enter(page);
+    const cachedAsset = await page.evaluate(async ({id,assetId}) => { const {boardMediaAssets} = await import('/alex/src/lib/mediaAssetStore.js'); const r=await boardMediaAssets.get(id,assetId);return r ? {size:r.blob.size, persisted:r.persisted} : null; }, record);
+    diagnostics.push({engine,touch,cachedAsset});
+    assert.ok(cachedAsset?.persisted, 'PDF persists through navigation into the actual board');
     const initial=await saved(page,record);
     assert.equal(await page.locator('.toolbar-shell').count(),0);
     await clickDocument(page,'pdf',touch);
     await page.locator('.pdf-page-controls').waitFor();
+    stage = 'initial PDF red pixels';
+    await page.waitForFunction(() => { const e=window.object('pdf').getElement(); const p=e?.getContext?.('2d')?.getImageData(2,2,1,1).data; return p && p[0]>240 && p[1]<15 && p[2]<15; });
+    stage = 'PDF next button';
     await page.locator('.pdf-page-controls button').last().click();
     await page.waitForFunction(()=>window.object('pdf').pageNumber===2);
-    await page.waitForFunction(()=>window.object('pdf').getElement().width>1);
+    await page.waitForFunction(() => { const e=window.object('pdf').getElement(); const p=e?.getContext?.('2d')?.getImageData(2,2,1,1).data; return p && p[0]<15 && p[1]<15 && p[2]>240; });
     assert.equal(await page.locator('.pdf-page-controls button').last().isDisabled(),true);
+    stage = 'PDF slider';
     const slider=page.locator('.pdf-page-slider'); await slider.focus(); await page.keyboard.press('Home');
     await page.waitForFunction(()=>window.object('pdf').pageNumber===1);
     await page.keyboard.press('End'); await page.waitForFunction(()=>window.object('pdf').pageNumber===2);
     const pdfPixels=await page.evaluate(()=>{const o=window.object('pdf'),e=o.getElement();return {width:e.width,height:e.height,source:o.getSrc()};});
     assert.ok(pdfPixels.width>1&&pdfPixels.height>1,'PDF page two really decoded, not only a new number');
+    stage = 'notebook pages';
     await clickDocument(page,'book',touch);
     const next=page.locator('.notebook-nav-next button'),prev=page.locator('.notebook-nav-previous button');
     await next.click(); await page.waitForFunction(()=>window.object('book').notebookPageNumber===2);
@@ -111,6 +125,7 @@ try {
     assert.deepEqual(await saved(page,record),initial,'local reading leaves the entire archive and revision untouched');
     assert.equal(await page.evaluate(()=>window.c.isDrawingMode),false);
     await page.screenshot({path:`${out}/${engine}-${touch?'touch':'mouse'}.png`});
+    stage = 'reload';
     await page.reload(); await enter(page); await clickDocument(page,'book',touch);
     assert.equal(await page.evaluate(()=>window.object('book').notebookPageNumber),1);
     assert.equal(await page.evaluate(()=>window.object('pdf').pageNumber),1);
@@ -119,11 +134,11 @@ try {
       noBlankPageCreation:true,toolbarHidden:true,geometryProtected:true,archiveUnchanged:true,reload:true,transport:'intentionally offline'});
     await context.close(); page=null;
   }
-  assert.deepEqual(errors,[]); console.log(JSON.stringify({results,errors},null,2));
+  assert.deepEqual(errors,[]); console.log(JSON.stringify({results,errors,diagnostics},null,2));
 } catch(error) {
   if(page) { await page.screenshot({path:`${out}/${engine}-failure.png`}).catch(()=>{});
-    await writeFile(`${out}/${engine}-failure.json`,JSON.stringify({error:String(error),errors,details:await page.evaluate(()=>({text:document.body.innerText,data:{...document.documentElement.dataset},objects:window.c?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,page:o.pageNumber,nbpage:o.notebookPageNumber,evented:o.evented,selectable:o.selectable}))})).catch(()=>null)},null,2)); }
+    await writeFile(`${out}/${engine}-failure.json`,JSON.stringify({error:error.stack || String(error),stage,errors,diagnostics,details:await page.evaluate(()=>({text:document.body.innerText,data:{...document.documentElement.dataset},objects:window.c?.getObjects().map(o=>({id:o.boardObjectId,type:o.type,page:o.pageNumber,nbpage:o.notebookPageNumber,evented:o.evented,selectable:o.selectable}))})).catch(()=>null)},null,2)); }
   throw error;
 } finally {
-  await writeFile(`${out}/${engine}.json`,JSON.stringify({results,errors},null,2)); await browser.close(); server.kill();
+  await writeFile(`${out}/${engine}.json`,JSON.stringify({results,errors,diagnostics},null,2)); await browser.close(); server.kill();
 }
