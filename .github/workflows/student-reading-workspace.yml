@@ -5,12 +5,42 @@ on:
     paths: [.github/workflows/student-reading-workspace.yml]
 permissions:
   contents: read
+env:
+  VITE_NOTEBOOK_OPERATIONS_V1: "true"
 jobs:
   source:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.patch.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Apply the reviewed source patch on the isolated branch
+        id: patch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = feat/student-readonly-documents-20261003
+          cat .student-reading-update.{1,2,3,4}.b64 | base64 -d | gunzip > /tmp/reading.patch
+          echo '8754b6a4ad6a8b51f1bbd0131869f42802e2587795346776308f43b3e02b9d8a  /tmp/reading.patch' | sha256sum -c -
+          git apply --check /tmp/reading.patch
+          git apply /tmp/reading.patch
+          rm .student-reading-update.{1,2,3,4}.b64
+          npm ci --no-audit --no-fund
+          npm run test:student:reading
+          npm run test:notebook
+          npm run test:browser-authority
+          npm run build
+          git diff --check
+          git add src scripts package.json package-lock.json public/version.json .student-reading-update.*.b64
+          if git diff --cached --name-only | grep -q '^.github/'; then exit 1; fi
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'feat: read cached PDF and notebook pages without editing (1.43.4)'
+          git push origin HEAD:refs/heads/feat/student-readonly-documents-20261003
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - run: |
           git archive --format=tar.gz HEAD -o /tmp/student-reading-source.tar.gz
           git rev-parse HEAD > /tmp/student-reading-source.sha
@@ -18,4 +48,37 @@ jobs:
         with:
           name: student-reading-source
           path: /tmp/student-reading-source.*
+          retention-days: 7
+  browser:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            engine: chromium
+          - os: macos-latest
+            engine: webkit
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.source.outputs.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - run: node scripts/copy-pdf-support.mjs
+      - name: Real offline document selection and pagination
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: npm run test:student:reading:browser
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: student-reading-${{ matrix.engine }}
+          path: student-document-reading-results/
           retention-days: 7
