@@ -137,3 +137,79 @@ test('transparent and invisible objects are not captured',async()=>{
  const b=book(),p=new Path('M 120 150 L 280 150',{fill:null,stroke:'black',strokeWidth:3,opacity:0});
  assert.equal(await captureNotebookObject(b,p),null);p.opacity=1;p.visible=false;assert.equal(await captureNotebookObject(b,p),null);await b.dispose();p.dispose();
 });
+
+test('group shadow survives a true cut instead of being silently discarded',async()=>{
+ const {Shadow}=await import('fabric');
+ return compareCut(new Group([new Rect({left:70,top:150,width:300,height:100,fill:'blue',strokeWidth:0})],
+  {shadow:new Shadow({color:'red',offsetX:18,offsetY:15,blur:0})}),book(),'group shadow');
+});
+
+test('cutting a vector remnant again cannot resurrect the first removed region',async()=>{
+ const a=book({left:180,top:100,width:40}),b=book({left:80,top:100,width:40});
+ const p=new Path('M 20 150 L 380 150',{fill:null,stroke:'red',strokeWidth:8});
+ const first=await captureNotebookObject(a,p);assert.ok(first?.split);
+ const second=await captureNotebookObject(b,first.outside);assert.ok(second?.split);
+ unmasked(second.inside);unmasked(second.outside);
+ assert.ok(second.inside.width<=40.01);
+ const d=await pixels(second.outside,[[100,150],[200,150],[50,150],[300,150]]);
+ assert.equal(d[0][3],0);assert.equal(d[1][3],0);assert.ok(d[2][3]>240&&d[3][3]>240);
+ assert.equal(await captureNotebookObject(a,second.outside),null);
+ for(const o of [first.inside,first.outside,second.inside,second.outside,p])o.dispose();await a.dispose();await b.dispose();
+});
+
+test('cutting an image remnant again keeps previous pixel holes actually empty',async()=>{
+ const a=book({left:180,width:40}),b=book({left:80,width:40}),p=picture();
+ const first=await captureNotebookObject(a,p),second=await captureNotebookObject(b,first.outside);
+ assert.ok(second?.split);unmasked(second.inside);unmasked(second.outside);
+ const d=await pixels(second.outside,[[100,160],[200,160],[50,160],[300,160]]);
+ assert.equal(d[0][3],0);assert.equal(d[1][3],0);assert.ok(d[2][3]>240&&d[3][3]>240);
+ assert.equal(await captureNotebookObject(a,second.outside),null);
+ for(const o of [first.inside,first.outside,second.inside,second.outside,p])o.dispose();await a.dispose();await b.dispose();
+});
+
+test('oversized raster fragments reject before replacing or mutating the original',async()=>{
+ const b=book({left:100,top:100,width:50}),p=picture(18000,10);
+ const saved=JSON.stringify(p.toObject());
+ await assert.rejects(captureNotebookObject(b,p),/слишком большой/);
+ assert.equal(JSON.stringify(p.toObject()),saved);assert.equal(b.getPageObjects().length,0);
+ await b.dispose();p.dispose();
+});
+
+async function splitVerificationFixture() {
+ const {readFileSync}=await import('node:fs');
+ const {createBoundedCanvasVerifier}=await import('../src/lib/boundedCanvasVerifier.js');
+ const {createVerificationBudget}=await import('../src/lib/boundedVerificationDigest.js');
+ const source=readFileSync(new URL('../src/components/Board.jsx',import.meta.url),'utf8');
+ const begin=source.indexOf('const canVerifyCanvas = '),end=source.indexOf('\n    const getBoundedCanvasVerifier =',begin);
+ assert.ok(begin>=0&&end>begin);
+ const ref=current=>({current}),stroke={boardObjectId:'fresh-stroke',type:'path'},canvas={_objects:[stroke]};
+ const scope={canvas,canReadDocumentsRef:ref(false),boardReadyRef:ref(true),fabricCanvasRef:ref(canvas),revisionRef:ref(7),
+  applyingRemoteRef:ref(false),historyCommandBusyRef:ref(false),notebookMutationActiveRef:ref(false),pendingServerWritesRef:ref(0),
+  notebookControllerRef:ref({pendingCount:()=>0}),pendingLocalObjectMutationCountsRef:ref(new Map()),pendingLocalBackgroundMutationCountRef:ref(0),
+  localLockIdsRef:ref([]),remoteLocksRef:ref(new Map()),activePencilRef:ref(null),shapeDraftRef:ref(null),lineRef:ref(null),
+  touchGestureRef:ref(null),localSelectionTransactionRef:ref(null),textBeforeRef:ref(new Map()),liveDrawSendRef:ref(null),liveTransformSendRef:ref(null)};
+ const canCheck=new Function('scope',`with(scope){${source.slice(begin,end)};return canVerifyCanvas;}`)(scope);
+ let onRegistry=()=>{};const repairs=[];
+ const verifier=createBoundedCanvasVerifier({getCanvas:()=>canvas,getRegistry:()=>{onRegistry();return new Map([[stroke.boardObjectId,new Set([stroke])]]);},
+  getRevision:()=>7,getBackground:()=> 'blank',canCheck,placementMatches:()=>true,
+  apply:async(records,context)=>{if(!context.isCurrent())return false;repairs.push(records);canvas._objects=[];return true;}});
+ return {scope,canvas,canCheck,repairs,verifier,onRegistry:fn=>{onRegistry=fn;},
+  records:[{id:stroke.boardObjectId,object:null,zIndex:-1}],context:()=>({revision:7,background:'blank',isCurrent:()=>true,budget:createVerificationBudget()})};
+}
+
+test('fresh stroke awaiting notebook split is not a removable Canvas ghost',async()=>{
+ const f=await splitVerificationFixture();assert.equal(f.canCheck(),true);
+ f.scope.notebookMutationActiveRef.current=true;
+ assert.equal(await f.verifier.check(f.records,f.context()),false,'preparation precedes outbox/lease but already owns the visible stroke');
+ assert.equal(f.repairs.length,0);assert.equal(f.canvas._objects.length,1);
+ f.scope.notebookMutationActiveRef.current=false;
+ assert.equal(await f.verifier.check(f.records,f.context()),true,'ordinary genuine ghost repair is not disabled after preparation ends');
+ assert.equal(f.repairs.length,1);
+});
+
+test('in-flight Canvas repair rechecks notebook preparation before removing a new stroke',async()=>{
+ const f=await splitVerificationFixture();
+ f.onRegistry(()=>{f.scope.notebookMutationActiveRef.current=true;});
+ assert.equal(await f.verifier.check(f.records,f.context()),false);
+ assert.equal(f.repairs.length,0);assert.equal(f.canvas._objects.length,1);
+});

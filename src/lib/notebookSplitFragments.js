@@ -106,7 +106,8 @@ async function splitVector(source,page,matrix,masks,retainOutside){
 async function cut(source,page,inherited=[],retainOutside=false){
  if(source.visible===false||source.opacity<=0)return {inside:null,outside:null};
  const matrix=source.calcTransformMatrix(),masks=source.clipPath?[...inherited,{clip:source.clipPath,matrix}]:inherited;
- if(source.getObjects){
+ // A group-level shadow is a paint effect on the assembled group, not on each child.
+ if(source.getObjects && !source.shadow){
   const inside=[],outside=[];
   try{
    for(const child of source.getObjects()){
