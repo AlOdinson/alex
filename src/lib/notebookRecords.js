@@ -22,3 +22,31 @@ export function freezeSnapshotNotebookPages(snapshot) {
   snapshot?.canvas?.objects?.forEach(visit);
   return snapshot;
 }
+
+// A trusted internal lazy page slot is memoized and freezes its value at its
+// export boundary. Never certify shallow caller freezes or unknown accessors.
+const immutablePageReaders = new WeakSet();
+export function createLazyNotebookPages(pages, index, materialize) {
+  if (!Array.isArray(pages) || !Number.isSafeInteger(index) || index < 0 || typeof materialize !== 'function') return null;
+  const descriptors = Object.getOwnPropertyDescriptors(pages);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (key === 'length' || key === String(index)) continue;
+    const descriptor = descriptors[key];
+    if (descriptor.get ? !immutablePageReaders.has(descriptor.get) : !isImmutableNotebookRecord(descriptor.value)) return null;
+  }
+  let value;
+  const read = () => {
+    if (!value) {
+      const records = materialize();
+      if (!Array.isArray(records)) throw new TypeError('Notebook page must export an array');
+      value = freezeNotebookRecord(records);
+    }
+    return value;
+  };
+  immutablePageReaders.add(read);
+  descriptors[index] = { get: read, enumerable: true, configurable: false };
+  descriptors.length = { value: Math.max(pages.length, index + 1), writable: false, enumerable: false, configurable: false };
+  const next = Object.defineProperties([], descriptors);
+  Object.freeze(next); immutableRecords.add(next);
+  return next;
+}

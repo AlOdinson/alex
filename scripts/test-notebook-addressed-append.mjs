@@ -108,7 +108,7 @@ test('unchanged incoming preparation does not run the page reducer a second time
   Array.prototype.slice = function (...args) { if (this === base) copies++; return original.apply(this, args); };
   try {
     await applyPageDeltaToFabric(f.book, insert('single-prepare'));
-    assert.equal(copies, 1, 'same page was copied again after unchanged asynchronous preparation');
+    assert.equal(copies, 0, 'indexed incoming preparation must not copy the retained page array');
   } finally { Array.prototype.slice = original; await f.close(); }
 });
 

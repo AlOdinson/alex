@@ -1,3 +1,4 @@
+import { notebookPageState, notebookPageRecords, notebookPageSameLayoutChanges } from './notebookPageModel.js';
 import { notebookPageAppend } from './notebookPageDelta.js';
 import { util } from 'fabric';
 import { createObjectPatch } from './operationProtocol.js';
@@ -40,13 +41,16 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
   if (notebook._pageContentInvalid) notebook.syncPage({ invalidate: false });
   const guard = notebookPageWorkGuard(notebook), beforePages = notebook.notebookPages;
   const beforePageNumber = notebook.notebookPageNumber, page = target.notebookPageNumber;
-  const records = target.notebookPages[page - 1] ?? [];
-  const beforeRecords = beforePages[beforePageNumber - 1] ?? [];
+  const nextState = notebookPageState(target.notebookPages, page - 1);
+  const beforeState = notebookPageState(beforePages, beforePageNumber - 1);
   const pageChanged = page !== beforePageNumber;
-  const samePageRecords = !pageChanged && records === beforeRecords;
-  const append = !pageChanged && notebookPageAppend(beforeRecords, records);
-  let freshRecords = append ? [append.record] : [];
-  if (!samePageRecords && !append) {
+  const samePageRecords = !pageChanged && nextState === beforeState;
+  const append = !pageChanged && notebookPageAppend(beforeState, nextState);
+  const indexedChanges = !pageChanged && notebookPageSameLayoutChanges(beforeState, nextState);
+  const metadataOnly = Boolean(indexedChanges && indexedChanges.every(change => visuallyEqual(change.before, change.after)));
+  let records, beforeRecords, freshRecords = append ? [append.record] : [];
+  if (!samePageRecords && !append && !metadataOnly) {
+    records = notebookPageRecords(nextState); beforeRecords = notebookPageRecords(beforeState);
     const currentById = new Map(beforeRecords.map(record => [String(record.boardObjectId), record]));
     const wanted = new Set(records.map(record => String(record.boardObjectId)));
     if (wanted.size !== records.length || records.some(record => !record?.boardObjectId)) throw new TypeError('Duplicate or missing notebook child identity');
@@ -61,14 +65,18 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
     isCurrent: current,
     apply() {
       if (!current()) return false;
+      if (metadataOnly && indexedChanges.some(change => String(notebook._objects[change.index]?.boardObjectId)
+        !== String(change.after.boardObjectId))) return false;
       const frame = notebookFramePatch(notebook.toObject(['boardObjectId']), target);
-      const contentChanged = Boolean(append) || !samePageRecords && (pageChanged || prepared.length > 0 || records.length !== beforeRecords.length
+      const contentChanged = Boolean(append) || !samePageRecords && !metadataOnly && (pageChanged || prepared.length > 0 || records.length !== beforeRecords.length
         || records.some((record, index) => record.boardObjectId !== beforeRecords[index]?.boardObjectId));
       // Invalidate obsolete navigation/delta preparations, never new local input.
       if (contentChanged) retireNotebookPageWork(notebook);
       notebook.notebookPageNumber = page;
       if (append) {
-        notebook.applyPreparedPageDelta(records, prepared, target.notebookPages);
+        if (!notebook.appendPreparedPageObject(prepared[0], target.notebookPages)) {
+          notebook.applyPreparedPageDelta(notebookPageRecords(nextState), prepared, target.notebookPages);
+        }
       } else if (contentChanged) {
         notebook.applyPreparedPageDelta(records, prepared, target.notebookPages);
         // Rebase may reorder retained siblings without creating new objects.
@@ -79,7 +87,7 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
           if (notebook._objects[index] !== object) notebook.moveObjectTo(object, index);
         }
       } else notebook.notebookPages = target.notebookPages;
-      if (!samePageRecords && !append) {
+      if (!samePageRecords && !append && !metadataOnly) {
         const byId = new Map(records.map(record => [String(record.boardObjectId), record]));
         for (const child of notebook.getPageObjects()) {
           const record = byId.get(String(child.boardObjectId));
@@ -89,6 +97,12 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
             if (record.updatedBy != null) child.updatedBy = record.updatedBy;
           }
         }
+      }
+      if (metadataOnly) for (const change of indexedChanges) {
+        const child = notebook._objects[change.index], record = change.after;
+        notebook._pageRecords.set(child, record);
+        if (record.updatedAt != null) child.updatedAt = record.updatedAt;
+        if (record.updatedBy != null) child.updatedBy = record.updatedBy;
       }
       if (frame) {
         for (const key of frame.unset ?? []) delete notebook[key];

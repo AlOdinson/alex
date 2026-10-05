@@ -1,3 +1,4 @@
+import { notebookPageState, isNotebookPageIndex, installNotebookPageIndex } from './notebookPageModel.js';
 import { rememberNotebookPageAppend } from './notebookPageDelta.js';
 import { freezeNotebookRecord as freeze } from './notebookRecords.js';
 /**
@@ -85,8 +86,12 @@ function stamp(object, change, operation) {
 }
 
 function editPage(source) {
-  const items = source.slice();
-  const byId = new Map(items.map(child => [String(child.boardObjectId), child]));
+  let model = isNotebookPageIndex(source) ? source : null;
+  const items = model ? null : source.slice();
+  const byId = model ? { get: childId => model.read(childId), get size() { return model.length; } }
+    : new Map(items.map(child => [String(child.boardObjectId), child]));
+  const length = () => model ? model.length : items.length;
+  const indexOf = child => model ? model.rankOf(child.boardObjectId) : items.indexOf(child);
   const touched = new Set();
   function apply(change, operation) {
     const childId = String(change.object?.boardObjectId ?? change.id);
@@ -94,11 +99,13 @@ function editPage(source) {
     if (change.type === 'insert') {
       if (current) return false; // Ordered journal replay is idempotent by identity.
       const next = freeze(stamp(clone(change.object), change, operation));
-      const index = Number.isSafeInteger(change.zIndex) ? Math.min(items.length, change.zIndex) : items.length;
-      items.splice(index, 0, next); byId.set(childId, next);
+      const index = Number.isSafeInteger(change.zIndex) ? Math.min(length(), change.zIndex) : length();
+      if (model) model = model.insert(next, index);
+      else { items.splice(index, 0, next); byId.set(childId, next); }
     } else if (change.type === 'delete') {
       if (!current) return false;
-      items.splice(items.indexOf(current), 1); byId.delete(childId);
+      if (model) model = model.delete(childId);
+      else { items.splice(items.indexOf(current), 1); byId.delete(childId); }
     } else {
       if (!current) return false;
       const next = { ...current };
@@ -111,28 +118,34 @@ function editPage(source) {
       }
       if (!changed) return false;
       freeze(stamp(next, change, operation));
-      items[items.indexOf(current)] = next; byId.set(childId, next);
+      if (model) model = model.patch(next);
+      else { items[items.indexOf(current)] = next; byId.set(childId, next); }
     }
     touched.add(childId);
     return true;
   }
-  return { items, byId, touched, apply };
+  return { byId, touched, apply, indexOf, get length() { return length(); },
+    get state() { return model ?? items; },
+    install(pages, index) {
+      if (model) return installNotebookPageIndex(pages, index, model);
+      const next = pages.slice(); next[index] = freeze(items); return Object.freeze(next);
+    },
+  };
 }
 
 export function applyNotebookOperation(notebook, operation) {
   const empty = { changed: false, changedChildIds: [], pageNumber: operation?.pageNumber };
   if (!isNotebookOperation(operation) || !targetValid(notebook, operation)) return empty;
-  const beforePage = notebook.notebookPages[operation.pageNumber - 1] ?? [];
+  const beforePage = notebookPageState(notebook.notebookPages, operation.pageNumber - 1);
   const editor = editPage(beforePage);
   for (const change of operation.changes) editor.apply(change, operation);
   if (!editor.touched.size) return empty;
-  const pages = notebook.notebookPages.slice();
-  pages[operation.pageNumber - 1] = freeze(editor.items);
+  const pages = editor.install(notebook.notebookPages, operation.pageNumber - 1);
   const only = operation.changes[0];
   // Duplicate/unsafe old identities and structural changes cannot mint a proof.
   if (operation.changes.length === 1 && only.type === 'insert'
     && (only.zIndex == null || only.zIndex >= beforePage.length)
-    && editor.byId.size === editor.items.length) rememberNotebookPageAppend(beforePage, editor.items);
+    && editor.byId.size === editor.length) rememberNotebookPageAppend(beforePage, editor.state);
   notebook.notebookPages = Object.freeze(pages);
   stamp(notebook, {}, operation);
   return { changed: true, changedChildIds: [...editor.touched], pageNumber: operation.pageNumber };
@@ -171,7 +184,7 @@ export function evaluateNotebookOperation(notebook, operation, tombstones = {}, 
   const conflict = (childId, reason, fields) => skippedConflicts.push({ childId, reason, ...(fields?.length ? { fields } : {}) });
   if (!isNotebookOperation(operation)) { conflict(null, 'invalid_notebook_operation'); return result(); }
   if (!targetValid(notebook, operation)) { conflict(null, 'notebook_page_missing'); return result(); }
-  const editor = editPage(notebook.notebookPages[operation.pageNumber - 1] ?? []);
+  const editor = editPage(notebookPageState(notebook.notebookPages, operation.pageNumber - 1));
   const deleted = new Map(); // Per-action overlay, never enumerate old deletions.
   for (const change of operation.changes) {
     const childId = String(change.object?.boardObjectId ?? change.id);
@@ -187,10 +200,10 @@ export function evaluateNotebookOperation(notebook, operation, tombstones = {}, 
           conflict(childId, 'child_changed'); continue;
         }
       } else if (tombstone) { conflict(childId, 'child_deleted'); continue; }
-      clean.zIndex = Math.min(editor.items.length, change.zIndex ?? editor.items.length);
+      clean.zIndex = Math.min(editor.length, change.zIndex ?? editor.length);
     } else {
       if (!current) { conflict(childId, 'child_missing'); continue; }
-      if (own(change, 'ifZIndex') && editor.items.indexOf(current) !== change.ifZIndex) {
+      if (own(change, 'ifZIndex') && editor.indexOf(current) !== change.ifZIndex) {
         conflict(childId, 'child_order_changed'); continue;
       }
       if (change.type === 'delete') {
@@ -232,10 +245,10 @@ export function invertNotebookOperation(before, operation, context = {}) {
   if (!isNotebookOperation(operation) || !targetValid(before, operation)) return [];
   const after = context.afterState ?? { ...before };
   if (!context.afterState) applyNotebookOperation(after, operation);
-  const beforePage = before.notebookPages[operation.pageNumber - 1] ?? [];
-  const afterPage = after.notebookPages[operation.pageNumber - 1] ?? [];
-  const original = new Map(beforePage.map((child, index) => [String(child.boardObjectId), { child, index }]));
-  const final = new Map(afterPage.map((child, index) => [String(child.boardObjectId), { child, index }]));
+  const lookup = state => isNotebookPageIndex(state) ? { get: id => state.readRecord(id) }
+    : new Map(state.map((child, index) => [String(child.boardObjectId), { child, index }]));
+  const original = lookup(notebookPageState(before.notebookPages, operation.pageNumber - 1));
+  const final = lookup(notebookPageState(after.notebookPages, operation.pageNumber - 1));
   const touched = new Set(operation.changes.map(change => String(change.object?.boardObjectId ?? change.id)));
   const changes = [], restores = [];
   let atomicGroup = operation.atomicGroup;

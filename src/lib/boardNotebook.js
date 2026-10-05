@@ -1,3 +1,4 @@
+import { notebookPageState } from './notebookPageModel.js';
 import { notebookPageAppend } from './notebookPageDelta.js';
 import { beginNotebookCacheAppend, finishNotebookCacheAppend, rememberNotebookAppendCache, forgetNotebookAppendCache } from './notebookAppendCache.js';
 import { memoizeImmutableNotebookImage } from './notebookAssets.js';
@@ -102,8 +103,8 @@ export class BoardNotebook extends Group {
   // An addressed append shares every earlier record with the installed page.
   // No old-child scan, reorder, or serialization is needed at this boundary.
   appendPreparedPageObject(object, pages) {
-    const before = this.notebookPages[this.notebookPageNumber - 1];
-    const after = pages?.[this.notebookPageNumber - 1];
+    const before = notebookPageState(this.notebookPages, this.notebookPageNumber - 1);
+    const after = notebookPageState(pages, this.notebookPageNumber - 1);
     const delta = !this._pageContentInvalid && notebookPageAppend(before, after);
     if (!delta || this._objects.length !== delta.index
       || String(object?.boardObjectId) !== String(delta.record.boardObjectId)) return false;

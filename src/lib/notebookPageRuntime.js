@@ -1,3 +1,4 @@
+import { notebookPageState, notebookPageRecords, isNotebookPageIndex } from './notebookPageModel.js';
 import { freezeNotebookRecord } from './notebookRecords.js';
 import { notebookPageAppend } from './notebookPageDelta.js';
 import { util } from 'fabric';
@@ -64,7 +65,7 @@ export function applyPageDeltaToFabric(notebook, operation, options = {}) {
   const run = async () => {
     if (cancelled()) return { changed: false, cancelled: true };
     for (let attempt = 0; attempt < 3; attempt++) {
-      const before = modelFor(notebook), base = pageRecords(notebook, operation.pageNumber);
+      const before = modelFor(notebook), base = notebookPageState(notebook.notebookPages, operation.pageNumber - 1);
       const next = { ...before }, change = applyNotebookOperation(next, operation);
       if (!change.changed) return change;
       if (operation.pageNumber !== notebook.notebookPageNumber) {
@@ -74,12 +75,14 @@ export function applyPageDeltaToFabric(notebook, operation, options = {}) {
         return change;
       }
       const changedIds = new Set(change.changedChildIds);
-      const append = notebookPageAppend(base, pageRecords(next, operation.pageNumber));
-      const records = append ? [append.record]
-        : pageRecords(next, operation.pageNumber).filter(record => changedIds.has(String(record.boardObjectId)));
+      const nextPage = notebookPageState(next.notebookPages, operation.pageNumber - 1);
+      const append = notebookPageAppend(base, nextPage);
+      const records = append ? [append.record] : isNotebookPageIndex(nextPage)
+        ? [...changedIds].map(id => nextPage.read(id)).filter(Boolean)
+        : nextPage.filter(record => changedIds.has(String(record.boardObjectId)));
       const prepared = await util.enlivenObjects(records, options);
       if (cancelled()) { dispose(prepared); return { changed: false, cancelled: true }; }
-      const latest = modelFor(notebook), currentPage = pageRecords(latest, operation.pageNumber);
+      const latest = modelFor(notebook), currentPage = notebookPageState(latest.notebookPages, operation.pageNumber - 1);
       // Reuse validated preparation only if ALL page references and navigation
       // remain unchanged; another page's update must not be replaced by next.
       const unchanged = latest.notebookPages === before.notebookPages
@@ -94,13 +97,18 @@ export function applyPageDeltaToFabric(notebook, operation, options = {}) {
         return finalChange;
       }
       if (base !== currentPage) {
-        const oldById = new Map(base.map(record => [String(record.boardObjectId), record]));
-        const newById = new Map(currentPage.map(record => [String(record.boardObjectId), record]));
+        const lookup = state => isNotebookPageIndex(state) ? { get: id => state.read(id) }
+          : new Map(state.map(record => [String(record.boardObjectId), record]));
+        const oldById = lookup(base), newById = lookup(currentPage);
         // A new sibling doesn't invalidate prepared geometry. A concurrent edit
         // to the SAME child does: prepare the merged final child, not stale text.
         if ([...changedIds].some(id => oldById.get(id) !== newById.get(id))) { dispose(prepared); continue; }
       }
-      try { notebook.applyPreparedPageDelta(pageRecords(final, operation.pageNumber), prepared, final.notebookPages); }
+      try {
+        if (prepared.length !== 1 || !notebook.appendPreparedPageObject(prepared[0], final.notebookPages)) {
+          notebook.applyPreparedPageDelta(notebookPageRecords(notebookPageState(final.notebookPages, operation.pageNumber - 1)), prepared, final.notebookPages);
+        }
+      }
       catch (error) { dispose(prepared.filter(object => object.group !== notebook)); throw error; }
       if (operation.updatedAt != null) notebook.updatedAt = operation.updatedAt;
       if (operation.updatedBy != null) notebook.updatedBy = operation.updatedBy;

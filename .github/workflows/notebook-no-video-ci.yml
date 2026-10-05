@@ -22,6 +22,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: node --test scripts/test-notebook-hotpath-regressions.mjs scripts/test-notebook-audit-metrics.mjs scripts/test-notebook-audit-fixture.mjs scripts/test-notebook-projection-cost.mjs scripts/test-notebook-gesture-index.mjs scripts/test-notebook-contained-fast-path.mjs scripts/test-notebook-append-cache.mjs scripts/test-notebook-append-integration.mjs scripts/test-notebook-indexed-model.mjs scripts/test-notebook-indexed-semantics.mjs scripts/test-notebook-indexed-pipeline.mjs scripts/test-notebook-addressed-append.mjs scripts/test-notebook-projection-yield.mjs
       - run: node --test scripts/test-board-tombstone-index.mjs scripts/test-notebook-tombstone-cost.mjs scripts/test-board-tombstone-migration.mjs scripts/test-board-tombstone-storage-cost.mjs scripts/test-board-creation-storage.mjs
+      - run: node --test scripts/test-notebook-page-model.mjs scripts/test-notebook-page-model-integration.mjs
+      - run: node scripts/benchmark-notebook-page-model.mjs
       - run: node --test scripts/test-bounded*.mjs
       - run: node scripts/benchmark-notebook-indexed-model.mjs
       - run: node scripts/benchmark-notebook-tombstone-storage.mjs
@@ -55,6 +57,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - name: Page model, lazy export, browser storage and guarded undo
+        run: node scripts/test-notebook-page-model-browser.mjs
       - name: Deletion storage migration, resume, quota-independent commit cost and history
         run: node scripts/test-board-tombstone-browser.mjs
       - name: Schema-compatible recovery reader on previous drawing code
@@ -67,7 +71,7 @@ jobs:
           git restore --source="$candidate" -- src
       - name: Repeated focused input comparison against the last verified block
         run: |
-          baseline=52a65f38badf74215568540297e71ba3ce7b8b0c
+          baseline=0e0b476265fc306a525b0e73b8167c978dda4f8b
           candidate="$GITHUB_SHA"
           trap 'git restore --source="$candidate" -- src' EXIT
           for round in 1 2 3; do
@@ -109,4 +113,5 @@ jobs:
             notebook-drop-results/
             notebook-append-results/
             notebook-tombstone-results/
+            notebook-page-model-results/
           retention-days: 14
