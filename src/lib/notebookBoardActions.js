@@ -1,4 +1,4 @@
-import { captureNotebookObject, isBoardNotebook } from './boardNotebook.js';
+import { captureNotebookObject, prepareContainedNotebookStroke, isBoardNotebook } from './boardNotebook.js';
 import { util, FabricObject } from 'fabric';
 import { randomToken } from './ids.js';
 import { createConditionalDeleteOps, createConditionalRecordPatchOps } from './operationProtocol.js';
@@ -100,7 +100,9 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
     try {
       // Broad-phase bounds may intersect while all actual ink misses the page.
       // Determine real fragments before any controller/network/lease work.
-      prepared = await captureNotebookObject(notebook, object);
+      prepared = !published && !newText && !before.length
+        ? prepareContainedNotebookStroke(notebook, object, { pageNumber }) : null;
+      prepared ??= await captureNotebookObject(notebook, object);
       if (!current()) throw stale();
       if (!prepared) return false;
       const controller = await getController();
@@ -108,12 +110,14 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
       if (!await acquireLease(target)) throw new Error('Блокнот сейчас занят другим участником — штрих не сохранён, повторите действие');
       leaseAcquired = true;
       if (!current() || !ownsLease(target)) throw stale();
-      const sourceBefore = before.length ? before : getRecords([object]);
+      const sourceBefore = before.length ? before : (prepared.reusesSource ? [] : getRecords([object]));
       const sourceId = String(object.boardObjectId), actionId = randomToken(24), mutationId = randomToken(24);
       const historySource = newText && prepared.split ? getRecords([object]) : sourceBefore;
       const restoreSource = published && (!newText || prepared.split);
-      const inside = stamp(prepared.inside), outside = prepared.outside;
-      const childRecord = serialized(inside), childIndex = notebook.getPageObjects().length;
+      const inside = prepared.reusesSource ? prepared.inside : stamp(prepared.inside), outside = prepared.outside;
+      const childRecord = prepared.reusesSource
+        ? { ...prepared.record, updatedAt: Date.now(), updatedBy: clientId } : serialized(inside);
+      const childIndex = notebook.getPageObjects().length;
       let outsideRecords = [];
       if (outside) {
         outside.boardObjectId = sourceId; stamp(outside);
@@ -136,14 +140,23 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
       const historyAction = history(handle, inverse, { sourceId, newText, split: prepared.split, historySource });
       mutate(() => {
         if (canvas.getActiveObject?.() === object) canvas.discardActiveObject();
-        canvas.remove(object); notebook.addPageObject(inside);
+        // Remove the old identity from the board registry before reusing its Path.
+        canvas.remove(object);
+        if (prepared.reusesSource) {
+          inside.boardObjectId = childRecord.boardObjectId;
+          inside.set(prepared.placement);
+          inside.updatedAt = childRecord.updatedAt; inside.updatedBy = childRecord.updatedBy;
+        }
+        notebook.addPageObject(inside, prepared.reusesSource ? childRecord : null);
         notebook.updatedAt = ops[0].updatedAt; notebook.updatedBy = clientId;
         if (outside) { canvas.add(outside); canvas.moveObjectTo(outside, outsideRecords[0].zIndex); }
       });
       follow(handle, target, controller, historyAction); onChange([notebook, outside].filter(Boolean)); canvas.requestRenderAll(); return true;
     } finally {
       if (!enqueued) {
-        prepared?.inside?.dispose(); prepared?.outside?.dispose();
+        // A borrowed source is still the user's visible input on rejection.
+        if (!prepared?.reusesSource) prepared?.inside?.dispose();
+        prepared?.outside?.dispose();
         if (leaseAcquired && ownsLease(target)) releaseLease(target);
       }
     }

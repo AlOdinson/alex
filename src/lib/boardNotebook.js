@@ -57,7 +57,7 @@ export class BoardNotebook extends Group {
 
   getPageObjects() { return this.getObjects(); }
 
-  addPageObject(object) {
+  addPageObject(object, preparedRecord = null) {
     memoizeImmutableNotebookImage(object);
     if (!object.boardObjectId) object.boardObjectId = randomToken(14);
     // Group.add accepts world coordinates; preserve the prepared local placement.
@@ -65,6 +65,10 @@ export class BoardNotebook extends Group {
     this.add(inert(object));
     util.applyTransformToObject(object, matrix);
     object.setCoords();
+    if (preparedRecord?.boardObjectId === object.boardObjectId) {
+      // Prepared data belongs to this new child, not to a mutable live Path.
+      this._pageRecords.set(object, freezeRecord(structuredClone(preparedRecord)));
+    }
     this.syncPage({ invalidate: false });
     this.dirty = true;
     return object;
@@ -225,6 +229,36 @@ export function notebookObjectIntersection(notebook, object) {
   const w = notebook.width / 2, h = notebook.height / 2;
   const corners = [new Point(-w, -h), new Point(w, -h), new Point(w, h), new Point(-w, h)];
   return { intersects: polygonsOverlap(points, corners), contained: points.every((p) => p.x >= -w && p.x <= w && p.y >= -h && p.y <= h) };
+}
+
+const containedPlacementKeys = ['left', 'top', 'originX', 'originY', 'angle', 'scaleX', 'scaleY', 'skewX', 'skewY', 'flipX', 'flipY'];
+
+/** Prepare a fresh whole stroke without cloning/reviving its geometry. The live
+ * source is only borrowed here: caller must enqueue before changing its identity
+ * or group. Every clipped/published/effect-bearing object keeps the general path.
+ */
+export function prepareContainedNotebookStroke(notebook, object, {
+  published = false, pageNumber = notebook?.notebookPageNumber,
+} = {}) {
+  if (!isBoardNotebook(notebook) || published || pageNumber !== notebook.notebookPageNumber
+    || String(object?.type).toLowerCase() !== 'path' || object.group || object.clipPath || object.shadow
+    || object.visible === false || !(object.opacity > 0) || object.isEraserPath || object.pendingImage
+    || object.globalCompositeOperation && object.globalCompositeOperation !== 'source-over'
+    || object.fill && typeof object.fill !== 'string' || object.stroke && typeof object.stroke !== 'string') return null;
+  const world = object.calcTransformMatrix(), parent = notebook.calcTransformMatrix();
+  if (!world.every(Number.isFinite) || !parent.every(Number.isFinite)
+    || Math.abs(parent[0] * parent[3] - parent[1] * parent[2]) < 1e-12
+    || !notebookObjectIntersection(notebook, object).contained) return null;
+  const local = util.multiplyTransformMatrices(util.invertTransform(parent), world);
+  const placementObject = new FabricObject({ originX: 'center', originY: 'center' });
+  try {
+    util.applyTransformToObject(placementObject, local);
+    const placement = Object.fromEntries(containedPlacementKeys.map(key => [key, placementObject[key]]));
+    const rounded = placementObject.toObject();
+    const record = { ...object.toObject(childFields),
+      ...Object.fromEntries(containedPlacementKeys.map(key => [key, rounded[key]])), boardObjectId: randomToken(14) };
+    return { inside: object, outside: null, split: false, reusesSource: true, placement, record };
+  } finally { placementObject.dispose(); }
 }
 
 const containsCutMask = object => Boolean(object.clipPath || object.getObjects?.().some(containsCutMask));
