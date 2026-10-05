@@ -1,0 +1,45 @@
+name: Notebook no-video performance work
+on:
+  push:
+    branches: ['perf/notebook-no-video-20261005']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: notebook-no-video-${{ github.sha }}
+  cancel-in-progress: false
+env:
+  VITE_NOTEBOOK_OPERATIONS_V1: 'true'
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - run: npm run test:notebook
+      - run: npm run test:browser-authority
+      - run: npm run test:student:storage
+      - run: npm run test:screen-share
+      - run: npm run build
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false}
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - run: node scripts/benchmark-notebook-real-input.mjs --baseline --smoke
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-no-video-ink-${{ github.sha }}
+          path: notebook-audit-results/
+          retention-days: 14
