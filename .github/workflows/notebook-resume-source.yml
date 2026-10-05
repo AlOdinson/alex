@@ -7,24 +7,28 @@ permissions:
 jobs:
   source:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
           fetch-depth: 0
-          ref: 0838703bfa2c06a778b16ac91d5cb96aca886253
-      - name: Preserve source and unfinished test-only patch
+          ref: 1872b70d8d06a23d8a027da8ff3f7cfda06e69cf
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: npm ci --no-audit --no-fund
+      - name: Preserve pinned source and exact dependencies
         run: |
-          test "$(git rev-parse HEAD)" = 0838703bfa2c06a778b16ac91d5cb96aca886253
-          git bundle create /tmp/notebook-resume.bundle HEAD
-          git show origin/delivery/notebook-tombstones-20261005:.delivery/controller-locator.patch.b64 > /tmp/controller-locator.patch.b64
-          sha256sum /tmp/notebook-resume.bundle /tmp/controller-locator.patch.b64 > /tmp/SHA256SUMS
+          test "$(git rev-parse HEAD)" = 1872b70d8d06a23d8a027da8ff3f7cfda06e69cf
+          git diff --exit-code
+          git bundle create /tmp/notebook-resume-1872.bundle HEAD
+          tar -czf /tmp/notebook-locked-dependencies.tar.gz node_modules
+          sha256sum /tmp/notebook-resume-1872.bundle /tmp/notebook-locked-dependencies.tar.gz > /tmp/SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: notebook-exact-resume-source
+          name: notebook-exact-1872-source-and-dependencies
           path: |
-            /tmp/notebook-resume.bundle
-            /tmp/controller-locator.patch.b64
+            /tmp/notebook-resume-1872.bundle
+            /tmp/notebook-locked-dependencies.tar.gz
             /tmp/SHA256SUMS
           retention-days: 7
