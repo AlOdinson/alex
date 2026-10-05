@@ -1,0 +1,30 @@
+name: Export exact notebook continuation source
+on:
+  push:
+    branches: ['verify/notebook-resume-20261005']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: 0838703bfa2c06a778b16ac91d5cb96aca886253
+      - name: Preserve source and unfinished test-only patch
+        run: |
+          test "$(git rev-parse HEAD)" = 0838703bfa2c06a778b16ac91d5cb96aca886253
+          git bundle create /tmp/notebook-resume.bundle HEAD
+          git show origin/delivery/notebook-tombstones-20261005:.delivery/controller-locator.patch.b64 > /tmp/controller-locator.patch.b64
+          sha256sum /tmp/notebook-resume.bundle /tmp/controller-locator.patch.b64 > /tmp/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notebook-exact-resume-source
+          path: |
+            /tmp/notebook-resume.bundle
+            /tmp/controller-locator.patch.b64
+            /tmp/SHA256SUMS
+          retention-days: 7
