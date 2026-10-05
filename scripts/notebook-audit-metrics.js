@@ -2,6 +2,14 @@
 import { Path } from 'fabric';
 import { createBoardNotebook } from '../src/lib/boardNotebook.js';
 
+// Serializable polling predicate: slow module/hydration work can reveal the
+// real name gate after an arbitrary delay. Do not infer entry from a sleep.
+export function notebookAuditEntryState(doc = globalThis.document) {
+  if (doc.querySelector('.gate-card input')) return 'name';
+  const state = doc.documentElement.dataset;
+  return state.alexDurableEditState === 'ready' && state.alexDurableEditBlocked !== 'true' ? 'ready' : null;
+}
+
 export function makeAuditSnapshot({ boardObjects = 0, pages = 1, pageStrokes = 100, points = 40, visible = false } = {}) {
   const stroke = (id, x, y) => new Path(Array.from({ length: points }, (_, i) =>
     [i ? 'L' : 'M', x + i * .9, y + Math.sin(i * .4) * 3]),

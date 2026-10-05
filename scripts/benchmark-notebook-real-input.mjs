@@ -1,4 +1,4 @@
-import { instrumentNotebookControllerSource } from './notebook-audit-metrics.js';
+import { instrumentNotebookControllerSource, notebookAuditEntryState } from './notebook-audit-metrics.js';
 import { chromium, webkit } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
@@ -53,6 +53,7 @@ try {
       route.fulfill({ status: 200, contentType: 'text/javascript', body: controllerSource }));
     page.on('pageerror', error => errors.push({ scenario, error: error.message }));
     page.on('console', message => { if (['error', 'warning'].includes(message.type())) consoleMessages.push({ type: message.type(), text: message.text() }); });
+    let stage = 'fixture';
     try {
       await page.goto(base + 'scripts/board-media-fixture.html');
       const board = await page.evaluate(async scenario => {
@@ -64,11 +65,13 @@ try {
         return board;
       }, scenario);
       await page.goto(`${base}board/${board.boardId}?key=${board.ownerKey}`);
+      stage = 'entry';
       const gate = page.getByRole('textbox', { name: 'Ваше имя' });
-      await page.waitForTimeout(700);
+      await page.waitForFunction(notebookAuditEntryState, undefined, { timeout: 90000 });
       if (await gate.count()) { await gate.fill('Performance tester'); await page.getByRole('button', { name: 'Войти на доску', exact: true }).click(); }
       await page.waitForFunction(() => document.documentElement.dataset.alexDurableEditState === 'ready'
         && document.documentElement.dataset.alexDurableEditBlocked !== 'true', undefined, { timeout: 90000 });
+      stage = 'controller';
       await page.evaluate(async () => {
         let fiber = document.querySelector('.toolbar-shell');
         fiber = fiber?.[Object.keys(fiber).find(key => key.startsWith('__reactFiber'))];
@@ -104,6 +107,7 @@ try {
         const c = window.auditCanvas, b = window.auditBookNow().getBoundingRect(), r = c.upperCanvasEl.getBoundingClientRect(), v = c.viewportTransform;
         return { x: r.left + (b.left + 35) * v[0] + v[4], y: r.top + (b.top + b.height * .55) * v[3] + v[5], zoom: c.getZoom(), initial: window.auditBookNow()._objects.length };
       });
+      stage = 'input';
       for (let stroke = 0; stroke < 16; stroke++) {
         await page.evaluate(expected => window.auditMetrics.begin(expected), points.initial + stroke + 1);
         const x = points.x + (stroke % 4) * 100 * points.zoom, y = points.y + Math.floor(stroke / 4) * 12 * points.zoom;
@@ -131,6 +135,7 @@ try {
         }
       }
       await page.waitForFunction(() => window.auditMetrics.report().samples.every(s => s.pagePaintAt != null), undefined, { timeout: 30000 });
+      stage = 'confirmation';
       // Let the REAL outbox/authority finish; publish is never replaced by a stub.
       await page.waitForFunction(floor => window.auditRuntime.getRevision() >= floor,
         startRevision + 16, { timeout: 90000 });
@@ -149,6 +154,19 @@ try {
       results.push({ scenario, ...report });
       await page.screenshot({ path: `${output}/${engineName}-${index}.png` });
       console.log(JSON.stringify({ scenario, p50: report.p50, p95: report.p95, listReads: report.listReads, childRenders: report.childRenders }));
+    } catch (error) {
+      // Preserve startup failures too. Previously an early name/permission gate
+      // timeout left no screenshot or state and was indistinguishable from ink.
+      let state = null;
+      try { state = await page.evaluate(() => ({ body: document.body.innerText,
+        durable: document.documentElement.dataset.alexDurableEditState,
+        blocked: document.documentElement.dataset.alexDurableEditBlocked,
+        controllerReady: Boolean(window.__notebookAuditControllerRef?.current) })); } catch {}
+      await writeFile(`${output}/${engineName}-${index}-stage-failure.json`, JSON.stringify({
+        stage, scenario, error: error.stack ?? String(error), state, errors, consoleMessages: consoleMessages.slice(-20)
+      }, null, 2));
+      try { await page.screenshot({ path: `${output}/${engineName}-${index}-stage-failure.png` }); } catch {}
+      throw error;
     } finally { await context.close(); }
   }
   assert.deepEqual(errors, [], 'Production page errors during input');

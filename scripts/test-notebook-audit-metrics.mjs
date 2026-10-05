@@ -147,3 +147,27 @@ test('browser readiness and revision waits use synchronous predicates that reall
   assert.equal(/\.waitForFunction\(\s*async\b/.test(source), false,
     'Async wait predicate may resolve false once without polling the readiness boundary');
 });
+
+test('entry readiness observes a late name form or actual edit readiness instead of elapsed time', async () => {
+  const { notebookAuditEntryState } = await import('./notebook-audit-metrics.js');
+  assert.equal(typeof notebookAuditEntryState, 'function', 'missing state-based entry predicate');
+  const { getEnv } = await import('fabric/node');
+  const doc = getEnv().document.implementation.createHTMLDocument('late board entry');
+  assert.equal(notebookAuditEntryState(doc), null);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  doc.body.innerHTML = '<main class="gate-page"><section class="gate-card"><label>Ваше имя<input></label></section></main>';
+  assert.equal(notebookAuditEntryState(doc), 'name');
+  doc.body.innerHTML = ''; doc.documentElement.dataset.alexDurableEditState = 'loading';
+  assert.equal(notebookAuditEntryState(doc), null);
+  doc.documentElement.dataset.alexDurableEditState = 'ready'; doc.documentElement.dataset.alexDurableEditBlocked = 'true';
+  assert.equal(notebookAuditEntryState(doc), null);
+  doc.documentElement.dataset.alexDurableEditBlocked = 'false';
+  assert.equal(notebookAuditEntryState(doc), 'ready');
+});
+
+test('real input runner waits for the tested entry state rather than a one-shot 700ms form check', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./benchmark-notebook-real-input.mjs', import.meta.url), 'utf8');
+  assert.ok(source.includes('page.waitForFunction(notebookAuditEntryState'), 'state predicate is not wired into browser entry');
+  assert.equal(source.includes('waitForTimeout(700)'), false);
+});
