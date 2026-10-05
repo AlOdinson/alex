@@ -53,14 +53,24 @@ try {
         const appendRenders = oldRenders;
         const width = canvas.lowerCanvasEl.width, height = canvas.lowerCanvasEl.height;
         const actual = canvas.getContext().getImageData(0,0,width,height).data;
+        const cachePixels = () => book._cacheContext.getImageData(0,0,book._cacheCanvas.width,book._cacheCanvas.height).data;
+        const cacheBefore = cachePixels();
         book.dirty = true; canvas.renderAll();
         const expected = canvas.getContext().getImageData(0,0,width,height).data;
+        const cacheAfter = cachePixels();
+        let cacheDifferences = 0;
+        for (let i = 0; i < cacheBefore.length; i++) if (cacheBefore[i] !== cacheAfter[i]) cacheDifferences++;
+        const fullRenders = oldRenders - appendRenders;
+        book.dirty = true; canvas.renderAll();
+        const repeated = canvas.getContext().getImageData(0,0,width,height).data;
+        let fullRepeatDifferences = 0;
+        for (let i = 0; i < expected.length; i++) if (expected[i] !== repeated[i]) fullRepeatDifferences++;
         let differingChannels = 0, maxDifference = 0;
         for (let i = 0; i < actual.length; i++) if (actual[i] !== expected[i]) {
           differingChannels++; maxDifference = Math.max(maxDifference, Math.abs(actual[i]-expected[i]));
         }
-        results.push({ options, captured, appendRenders, fullRenders: oldRenders - appendRenders,
-          differingChannels, maxDifference, width, height });
+        results.push({ options, captured, appendRenders, fullRenders,
+          differingChannels, maxDifference, cacheDifferences, fullRepeatDifferences, width, height });
       } finally { await canvas.dispose(); }
     }
     return results;

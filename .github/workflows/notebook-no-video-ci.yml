@@ -71,6 +71,12 @@ jobs:
         run: npm run test:notebook:browser
       - name: PDF continuity regression
         run: npm run test:pdf:continuity
+      - name: Existing received-video compatibility without video changes
+        env:
+          WEBKIT_LOCAL_ICE: '1'
+        run: |
+          npm run test:notebook:video
+          cp /tmp/notebook-received-video.json notebook-append-results/${{ matrix.engine }}-received-video.json
       - if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -18,11 +18,13 @@ function ordinaryPageClip(book) {
 }
 function state(book) {
   if (!book.canvas || book.group || !book.ownCaching || !book._cacheCanvas || !book._cacheContext
-    || !ordinaryPageClip(book) || book.shadow) return null;
+    || !ordinaryPageClip(book) || book.shadow || typeof book._cacheContext.getTransform !== 'function') return null;
+  const transform = book._cacheContext.getTransform();
   const values = [book.width, book.height, ...book.calcTransformMatrix(), book.zoomX, book.zoomY,
     book.cacheTranslationX, book.cacheTranslationY, book._cacheCanvas.width, book._cacheCanvas.height,
-    book.canvas.getZoom(), book.canvas.getRetinaScaling(), book.backgroundColor, book.opacity];
-  if (!values.slice(0,16).every(Number.isFinite)) return null;
+    book.canvas.getZoom(), book.canvas.getRetinaScaling(),
+    transform.a, transform.b, transform.c, transform.d, transform.e, transform.f, book.backgroundColor, book.opacity];
+  if (!values.slice(0,22).every(Number.isFinite)) return null;
   return { values, canvas: book.canvas, surface: book._cacheCanvas, context: book._cacheContext,
     page: book.notebookPageNumber, count: book._objects.length };
 }
@@ -61,7 +63,9 @@ export function finishNotebookCacheAppend(book, child, previous) {
   const ctx = current.context, transformed = book._transformDone;
   ctx.save();
   try {
-    ctx.setTransform(book.zoomX, 0, 0, book.zoomY, book.cacheTranslationX, book.cacheTranslationY);
+    // Preserve the exact context matrix that Fabric established by translate +
+    // scale instead of reconstructing fractional values. The browser retains
+    // its native precision; begin/finish verify that this matrix is unchanged.
     ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
     book._transformDone = true;
     child.render(ctx);

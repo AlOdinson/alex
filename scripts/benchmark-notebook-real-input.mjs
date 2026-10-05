@@ -125,6 +125,8 @@ try {
         environment: { browser: navigator.userAgent, dpr: devicePixelRatio, cores: navigator.hardwareConcurrency } }));
       assert.equal(report.children, points.initial + 16);
       assert.equal(report.createdPaths, 16);
+      if (!process.argv.includes('--baseline')) assert.equal(report.childRenders, 16,
+        'Ready-page handwriting must paint only its 16 new strokes, not the earlier page geometry');
       assert.equal(report.samples.filter(s => s.pagePaintAt != null).length, 16);
       report.releaseToPagePaintMs = report.samples.map(s => s.pagePaintAt - s.releaseAt);
       const sorted = [...report.releaseToPagePaintMs].sort((a, b) => a - b);

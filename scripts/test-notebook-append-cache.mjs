@@ -85,3 +85,12 @@ test(`cached append is pixel-identical at density ${JSON.stringify(options)}`,as
   const actual=pixels(e.canvas);e.book.dirty=true;e.canvas.renderAll();assert.deepEqual(actual,pixels(e.canvas));
  }finally{await e.close();}
 });
+
+test('append retains the exact canonical cache transform instead of reconstructing its floating matrix',async()=>{
+ const e=await fixture({scale:1.4,zoom:.8,retina:2});
+ const context=e.book._cacheContext,original=context.setTransform;let transforms=0;
+ context.setTransform=function(...args){transforms++;return original.apply(this,args);};
+ try{await capture(e,fresh({strokeUniform:true}));assert.equal(e.oldRenders,0);
+  assert.equal(transforms,0,'reconstructing a fractional cache matrix changes WebKit edge pixels');
+ }finally{context.setTransform=original;await e.close();}
+});
