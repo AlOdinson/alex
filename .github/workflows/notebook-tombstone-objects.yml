@@ -1,0 +1,58 @@
+name: Stage exact addressed deletion source
+on:
+  push:
+    branches: ['delivery/notebook-tombstones-20261005']
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-tombstones-20261005'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Reconstruct and upload checksum-verified Git blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo = 'AlOdinson/alex'
+          base = '8ef82c062995dc2463fb8c84864c2bfe1b5bf210'
+          base_tree = 'ba209d6706c9e0a20e2b04eea574fc851a12b5bb'
+          expected = '313ad2a2a84aa51054594c91314a0722fbe8f150'
+          assert os.environ['GITHUB_REPOSITORY'] == repo
+          assert os.environ['GITHUB_REF'] == 'refs/heads/delivery/notebook-tombstones-20261005'
+          packed = b''.join(pathlib.Path('.delivery/tombstone.part'+str(i)).read_bytes() for i in range(3))
+          assert hashlib.sha256(packed).hexdigest() == '9af01e8205e63ce743c6a552f4407611bb8aef9fdb090c6338a96788ebecd9c3'
+          patch = pathlib.Path('/tmp/notebook-tombstones.patch')
+          patch.write_bytes(lzma.decompress(packed))
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          subprocess.run(['git', 'checkout', '--detach', base], check=True)
+          assert git('rev-parse', 'HEAD^{tree}') == base_tree
+          subprocess.run(['git', 'apply', '--check', '--index', '--unidiff-zero', str(patch)], check=True)
+          subprocess.run(['git', 'apply', '--index', '--unidiff-zero', str(patch)], check=True)
+          assert git('write-tree') == expected
+          forbidden = ['src/lib/boardScreenShare.js', 'src/lib/boardScreenShareCompositor.js', 'src/lib/screenShareFramePump.js', 'src/components/ScreenShare.jsx']
+          subprocess.run(['git', 'diff', '--cached', '--exit-code', '--', *forbidden], check=True)
+          assert not git('diff', '--cached', '--name-only', '--diff-filter=D')
+          paths = git('diff', '--cached', '--name-only', '--diff-filter=ACM').splitlines()
+          assert len(paths) == 19
+          entries = []
+          for name in paths:
+              content = pathlib.Path(name).read_bytes()
+              local_sha = git('hash-object', name)
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + '/git/blobs',
+                  data=json.dumps({'content': base64.b64encode(content).decode(), 'encoding': 'base64'}).encode(),
+                  method='POST', headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                      'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  blob = json.load(response)
+              assert blob['sha'] == local_sha, name
+              entries.append({'path': name, 'mode': git('ls-files','-s','--',name).split()[0], 'type': 'blob', 'sha': local_sha})
+          print('VERIFIED_LOCAL_TREE=' + expected)
+          print(json.dumps(entries))
+          print('Uploaded only immutable Git blobs. No tree creation, ref changes, merge, deployment or production-data access.')
+          PY
