@@ -63,10 +63,17 @@ try {
         while (fiber && fiber.type?.name !== 'BoardWorkspace') fiber = fiber.return;
         for (let hook = fiber?.memoizedState; hook; hook = hook.next) {
           const value = hook.memoizedState?.current;
-          if (value?.getObjects && value?.getZoom) { window.auditCanvas = value; break; }
+          if (value?.getObjects && value?.getZoom) window.auditCanvas = value;
+          if (value?.capture && value?.ensure) window.auditHandlers = value;
         }
         if (!window.auditCanvas) throw new Error('Production canvas not found');
       });
+      // This fixture measures a loaded lesson, not cold startup. Use the real
+      // notebook readiness boundary before the first timed native contact.
+      await page.waitForFunction(async () => {
+        window.auditController = await window.auditHandlers?.ensure();
+        return Boolean(window.auditController);
+      }, undefined, { timeout: 90000 });
       // Runtime edit permission can arrive before Fabric finishes page hydration.
       await page.waitForFunction(() => {
         window.auditBook = window.auditCanvas?._objects.find(o => o.boardObjectId === 'audit-notebook');
@@ -75,12 +82,13 @@ try {
       await page.evaluate(async () => {
         const { installNotebookAuditMetrics } = await import('/alex/scripts/notebook-audit-metrics.js');
         window.auditMetrics = installNotebookAuditMetrics(window.auditCanvas, window.auditBook);
+        window.auditBookNow = () => window.auditMetrics.getNotebook();
       });
       await page.getByRole('button', { name: 'Карандаш', exact: true }).click();
       const startRevision = await page.evaluate(async id => (await import('/alex/src/lib/browserBoardRuntimeRegistry.js')).getBoardRuntime(id).getRevision(), board.boardId);
       const points = await page.evaluate(() => {
-        const c = window.auditCanvas, b = window.auditBook.getBoundingRect(), r = c.upperCanvasEl.getBoundingClientRect(), v = c.viewportTransform;
-        return { x: r.left + (b.left + 35) * v[0] + v[4], y: r.top + (b.top + 400) * v[3] + v[5], zoom: c.getZoom(), initial: window.auditBook._objects.length };
+        const c = window.auditCanvas, b = window.auditBookNow().getBoundingRect(), r = c.upperCanvasEl.getBoundingClientRect(), v = c.viewportTransform;
+        return { x: r.left + (b.left + 35) * v[0] + v[4], y: r.top + (b.top + 400) * v[3] + v[5], zoom: c.getZoom(), initial: window.auditBookNow()._objects.length };
       });
       for (let stroke = 0; stroke < 16; stroke++) {
         await page.evaluate(expected => window.auditMetrics.begin(expected), points.initial + stroke + 1);
@@ -93,6 +101,8 @@ try {
         } catch (error) {
           const diagnostic = await page.evaluate(({ x, y }) => ({
             metrics: window.auditMetrics.report(), body: document.body.innerText,
+            pending: window.auditController?.pendingCount(),
+            modelChildren: window.auditController?.getState().snapshot.canvas.objects.find(o => o.boardObjectId === 'audit-notebook')?.notebookPages.at(-1)?.length,
             atContact: document.elementsFromPoint(x, y).slice(0, 6).map(e => ({ tag: e.tagName, class: e.className })),
             canvas: { drawing: window.auditCanvas.isDrawingMode, activeDrawing: window.auditCanvas._isCurrentlyDrawing,
               viewport: window.auditCanvas.viewportTransform, objects: window.auditCanvas._objects.map(o => ({
@@ -109,7 +119,7 @@ try {
         const runtime = (await import('/alex/src/lib/browserBoardRuntimeRegistry.js')).getBoardRuntime(id);
         return runtime.getRevision() >= floor;
       }, { id: board.boardId, floor: startRevision + 16 }, { timeout: 90000 });
-      const report = await page.evaluate(() => ({ ...window.auditMetrics.report(), children: window.auditBook._objects.length,
+      const report = await page.evaluate(() => ({ ...window.auditMetrics.report(), children: window.auditBookNow()?._objects.length,
         environment: { browser: navigator.userAgent, dpr: devicePixelRatio, cores: navigator.hardwareConcurrency } }));
       assert.equal(report.children, points.initial + 16);
       assert.equal(report.createdPaths, 16);
@@ -126,6 +136,6 @@ try {
 } finally {
   await writeFile(`${output}/${engineName}.json`, JSON.stringify({ source, commit: process.env.GITHUB_SHA || null,
     baseline: process.argv.includes('--baseline'), results, errors, consoleMessages, generatedAt: new Date().toISOString(),
-    limitations: ['No physical iPad/Pencil', 'after:render is not physical display presentation', 'Network delay not injected in this fixture', 'Counters add diagnostic overhead'] }, null, 2));
+    limitations: ['No physical iPad/Pencil', 'after:render is not physical display presentation', 'Loaded lesson; cold startup not measured', 'Network delay not injected in this fixture', 'Counters add diagnostic overhead'] }, null, 2));
   await browser?.close(); server.kill();
 }

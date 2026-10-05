@@ -16,7 +16,8 @@ export function makeAuditSnapshot({ boardObjects = 0, pages = 1, pageStrokes = 1
 
 export function installNotebookAuditMetrics(canvas, notebook) {
   const samples = [], longTasks = [], renders = [];
-  let active = null, listReads = 0, childRenders = 0, createdPaths = 0;
+  let active = null, listReads = 0, childRenders = 0, createdPaths = 0, current = notebook;
+  const notebookId = String(notebook.boardObjectId), replacements = [], createdIds = [];
   const restore = [], instrumented = new WeakSet();
   const originalGetObjects = canvas.getObjects;
   canvas.getObjects = function (...args) { listReads++; return originalGetObjects.apply(this, args); };
@@ -28,14 +29,31 @@ export function installNotebookAuditMetrics(canvas, notebook) {
     child.render = function (...args) { childRenders++; return original.apply(this, args); };
     restore.push(() => { child.render = original; });
   }
-  for (const child of notebook._objects) instrument(child);
-  const onAdded = ({ target }) => instrument(target);
-  notebook.on('object:added', onAdded);
-  restore.push(() => notebook.off('object:added', onAdded));
-  const created = () => { createdPaths++; if (active) active.pathCreatedAt = performance.now(); };
+  const watched = new WeakSet();
+  function watch(root) {
+    current = root;
+    if (watched.has(root)) return;
+    watched.add(root);
+    for (const child of root._objects) instrument(child);
+    const onAdded = ({ target }) => instrument(target);
+    root.on('object:added', onAdded);
+    restore.push(() => root.off('object:added', onAdded));
+  }
+  watch(notebook);
+  const added = ({ target }) => {
+    if (String(target?.boardObjectId) !== notebookId) return;
+    replacements.push({ at: performance.now(), children: target._objects?.length }); watch(target);
+  };
+  const removed = ({ target }) => { if (target === current) current = null; };
+  canvas.on('object:added', added); canvas.on('object:removed', removed);
+  restore.push(() => { canvas.off('object:added', added); canvas.off('object:removed', removed); });
+  const created = ({ path } = {}) => {
+    createdPaths++; createdIds.push(path?.boardObjectId ?? null);
+    if (active) active.pathCreatedAt = performance.now();
+  };
   const before = () => { renders.push(performance.now()); };
   const after = () => {
-    if (active && active.releaseAt != null && notebook._objects.length >= active.expectedChildren && active.pagePaintAt == null) {
+    if (active && active.releaseAt != null && current && current._objects.length >= active.expectedChildren && active.pagePaintAt == null) {
       active.pagePaintAt = performance.now();
       active.listReads = listReads - active.startListReads;
       active.childRenders = childRenders - active.startChildRenders;
@@ -64,8 +82,9 @@ export function installNotebookAuditMetrics(canvas, notebook) {
       samples.push(active);
     },
     painted: () => active?.pagePaintAt != null,
+    getNotebook: () => current,
     report() {
-      return { samples, longTasks, fullRenders: renders.length, listReads, childRenders, createdPaths,
+      return { samples, longTasks, fullRenders: renders.length, listReads, childRenders, createdPaths, replacements, createdIds,
         timingMeaning: 'Trusted Playwright input -> Fabric after:render with installed child; not a physical pen/display measurement',
         instrumentation: 'Counters on board list reads and page-child renders; timing includes their overhead' };
     },
