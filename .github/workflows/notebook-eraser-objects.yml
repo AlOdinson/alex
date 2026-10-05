@@ -1,0 +1,43 @@
+name: Stage exact notebook eraser source
+on:
+  push:
+    branches: ['delivery/notebook-eraser-20261006']
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-eraser-20261006'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Verify tested tree and upload immutable source blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo='AlOdinson/alex';base='ebf989968a0a4ee3a81fd3789654f5ab88bad4c1';expected='8efc0adfb05b4971020d7e9f1456e2feeb26f0df'
+          assert os.environ['GITHUB_REPOSITORY']==repo
+          assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-eraser-20261006'
+          packed=base64.b64decode(pathlib.Path('.delivery/eraser-update.b64').read_text(),validate=True)
+          assert hashlib.sha256(packed).hexdigest()=='f487620c88c7c8890da85212aceda3a45f1df40aa00ef5fe0634c11bbe1f0a04'
+          patch=pathlib.Path('/tmp/notebook-eraser.patch');patch.write_bytes(lzma.decompress(packed))
+          def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
+          subprocess.run(['git','checkout','--detach',base],check=True)
+          subprocess.run(['git','apply','--check','--index','--unidiff-zero',str(patch)],check=True)
+          subprocess.run(['git','apply','--index','--unidiff-zero',str(patch)],check=True)
+          assert git('write-tree')==expected
+          paths=git('diff','--cached','--name-only').splitlines()
+          allowed=['.github/workflows/notebook-no-video-ci.yml','docs/performance/notebook-eraser-20261006.md','scripts/notebook-eraser-fixture.js','scripts/notebook-ui-node-harness.mjs','scripts/test-notebook-eraser-browser.mjs','scripts/test-notebook-eraser-index.mjs','src/components/Board.jsx','src/lib/notebookBoardActions.js','src/lib/notebookChildIndex.js']
+          assert sorted(paths)==sorted(allowed)
+          for name in paths:
+              value=pathlib.Path(name).read_bytes()
+              request=urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),method='POST',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=30) as response:result=json.load(response)
+              assert result['sha']==git('hash-object',name)
+              print(name,result['sha'])
+          print('VERIFIED_LOCAL_TREE='+expected)
+          print('Immutable blobs only; no feature-ref, main, deployment or user-data writes.')
+          PY
