@@ -1,5 +1,6 @@
 /** Test-only instrumentation. Never imported by the production entry point. */
 import { Path } from 'fabric';
+import { createBoardNotebook } from '../src/lib/boardNotebook.js';
 
 export function makeAuditSnapshot({ boardObjects = 0, pages = 1, pageStrokes = 100, points = 40, visible = false } = {}) {
   const stroke = (id, x, y) => new Path(Array.from({ length: points }, (_, i) =>
@@ -7,10 +8,14 @@ export function makeAuditSnapshot({ boardObjects = 0, pages = 1, pageStrokes = 1
   { boardObjectId: id, objectKind: 'path', stroke: '#111827', strokeWidth: 3, fill: null }).toObject(['boardObjectId', 'objectKind']);
   const objects = Array.from({ length: boardObjects }, (_, i) => stroke(`board-${i}`,
     (visible ? 660 : 2000) + (i % 25) * 8, 100 + Math.floor(i / 25) * 3));
-  objects.push({ type: 'BoardNotebook', boardObjectId: 'audit-notebook', left: 70, top: 80,
+  const notebook = createBoardNotebook({ boardObjectId: 'audit-notebook', left: 70, top: 80,
     width: 520, height: 480, originX: 'left', originY: 'top', notebookPageNumber: pages,
     notebookPages: Array.from({ length: pages }, (_, p) => Array.from({ length: pageStrokes }, (_, i) =>
       stroke(`page-${p}-${i}`, -225 + (i % 5) * 70, -190 + Math.floor(i / 5) * 4))) });
+  // A saved lesson contains the production serializer's defaults too. A sparse
+  // test-only frame made confirmation unset scale/opacity and poisoned input.
+  objects.push(notebook.toObject(['boardObjectId']));
+  notebook.dispose();
   return { version: 2, background: 'blank', canvas: { objects } };
 }
 
