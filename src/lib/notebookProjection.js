@@ -12,9 +12,12 @@ const equal = (a, b) => {
   const ak = Object.keys(a).filter(k => a[k] !== undefined), bk = Object.keys(b).filter(k => b[k] !== undefined);
   return ak.length === bk.length && ak.every(k => Object.hasOwn(b, k) && equal(a[k], b[k]));
 };
-const visualRecord = value => {
-  const { updatedAt, updatedBy, ...visible } = value;
-  return visible;
+const visuallyEqual = (before, after) => {
+  if (Object.is(before, after)) return true;
+  if (!before || !after) return false;
+  const keys = value => Object.keys(value).filter(key => key !== 'updatedAt' && key !== 'updatedBy' && value[key] !== undefined);
+  const left = keys(before), right = keys(after);
+  return left.length === right.length && left.every(key => Object.hasOwn(after, key) && equal(before[key], after[key]));
 };
 export function notebookFramePatch(before, after) {
   return createObjectPatch(frameRecord(before), frameRecord(after));
@@ -38,13 +41,17 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
   const beforePageNumber = notebook.notebookPageNumber, page = target.notebookPageNumber;
   const records = target.notebookPages[page - 1] ?? [];
   const beforeRecords = beforePages[beforePageNumber - 1] ?? [];
-  const currentById = new Map(beforeRecords.map(record => [String(record.boardObjectId), record]));
-  const wanted = new Set(records.map(record => String(record.boardObjectId)));
-  if (wanted.size !== records.length || records.some(record => !record?.boardObjectId)) throw new TypeError('Duplicate or missing notebook child identity');
   const pageChanged = page !== beforePageNumber;
-  const freshRecords = records.filter(record => pageChanged
-    || !equal(visualRecord(currentById.get(String(record.boardObjectId)) ?? {}), visualRecord(record)));
-  const prepared = await util.enlivenObjects(freshRecords, { signal });
+  const samePageRecords = !pageChanged && records === beforeRecords;
+  let freshRecords = [];
+  if (!samePageRecords) {
+    const currentById = new Map(beforeRecords.map(record => [String(record.boardObjectId), record]));
+    const wanted = new Set(records.map(record => String(record.boardObjectId)));
+    if (wanted.size !== records.length || records.some(record => !record?.boardObjectId)) throw new TypeError('Duplicate or missing notebook child identity');
+    freshRecords = records.filter(record => pageChanged
+      || !visuallyEqual(currentById.get(String(record.boardObjectId)), record));
+  }
+  const prepared = freshRecords.length ? await util.enlivenObjects(freshRecords, { signal }) : [];
   let installed = false, disposed = false;
   const current = () => !installed && !disposed && !signal?.aborted && isCurrent() && guard()
     && notebook.notebookPages === beforePages && notebook.notebookPageNumber === beforePageNumber;
@@ -53,8 +60,8 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
     apply() {
       if (!current()) return false;
       const frame = notebookFramePatch(notebook.toObject(['boardObjectId']), target);
-      const contentChanged = pageChanged || prepared.length > 0 || records.length !== beforeRecords.length
-        || records.some((record, index) => record.boardObjectId !== beforeRecords[index]?.boardObjectId);
+      const contentChanged = !samePageRecords && (pageChanged || prepared.length > 0 || records.length !== beforeRecords.length
+        || records.some((record, index) => record.boardObjectId !== beforeRecords[index]?.boardObjectId));
       // Invalidate obsolete navigation/delta preparations, never new local input.
       if (contentChanged) retireNotebookPageWork(notebook);
       notebook.notebookPageNumber = page;
@@ -68,13 +75,15 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
           if (notebook._objects[index] !== object) notebook.moveObjectTo(object, index);
         }
       } else notebook.notebookPages = target.notebookPages;
-      const byId = new Map(records.map(record => [String(record.boardObjectId), record]));
-      for (const child of notebook.getPageObjects()) {
-        const record = byId.get(String(child.boardObjectId));
-        if (record) {
-          notebook._pageRecords.set(child, record);
-          if (record.updatedAt != null) child.updatedAt = record.updatedAt;
-          if (record.updatedBy != null) child.updatedBy = record.updatedBy;
+      if (!samePageRecords) {
+        const byId = new Map(records.map(record => [String(record.boardObjectId), record]));
+        for (const child of notebook.getPageObjects()) {
+          const record = byId.get(String(child.boardObjectId));
+          if (record) {
+            notebook._pageRecords.set(child, record);
+            if (record.updatedAt != null) child.updatedAt = record.updatedAt;
+            if (record.updatedBy != null) child.updatedBy = record.updatedBy;
+          }
         }
       }
       if (frame) {

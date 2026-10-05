@@ -1,4 +1,19 @@
 const gesturePages = new WeakMap();
+const canvasFrames = new WeakMap();
+const isNotebook = object => String(object?.type).toLowerCase() === 'boardnotebook';
+function notebookFrames(canvas) {
+  if (!canvas) return [];
+  // Test/read-only adapters without collection events cannot maintain a registry.
+  if (typeof canvas.on !== 'function') return (canvas.getObjects?.() ?? []).filter(isNotebook);
+  let frames = canvasFrames.get(canvas);
+  if (!frames) {
+    frames = new Set((canvas.getObjects?.() ?? []).filter(isNotebook));
+    canvas.on('object:added', ({ target }) => { if (isNotebook(target)) frames.add(target); });
+    canvas.on('object:removed', ({ target }) => { frames.delete(target); });
+    canvasFrames.set(canvas, frames);
+  }
+  return frames;
+}
 const frame = notebook => ({ notebook, pageNumber: notebook.notebookPageNumber,
   width: notebook.width, height: notebook.height, matrix: notebook.calcTransformMatrix().slice() });
 
@@ -7,8 +22,7 @@ const frame = notebook => ({ notebook, pageNumber: notebook.notebookPageNumber,
  * bindings never become part of a serialized stroke or retain deleted pages.
  */
 export function snapshotNotebookGesturePages(canvas) {
-  return new Map((canvas?.getObjects() ?? [])
-    .filter(object => String(object?.type).toLowerCase() === 'boardnotebook')
+  return new Map([...notebookFrames(canvas)]
     .map(notebook => [String(notebook.boardObjectId), frame(notebook)]));
 }
 export function bindNotebookGestureTarget(object, pages) {
