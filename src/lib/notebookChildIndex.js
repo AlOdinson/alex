@@ -31,7 +31,9 @@ const overlaps=(a,b)=>!a || a.left<=b.right&&a.right>=b.left&&a.top<=b.bottom&&a
 function keys(rect) {
   if (!rect) return null;
   const x0=Math.floor(rect.left/CELL),x1=Math.floor(rect.right/CELL),y0=Math.floor(rect.top/CELL),y1=Math.floor(rect.bottom/CELL);
-  if ((x1-x0+1)*(y1-y0+1)>MAX_CELLS) return null;
+  // Finite coordinates beyond safe integers do not advance with x++/y++.
+  // Keep such footprints in the bounded global set instead of enumerating cells.
+  if (![x0,x1,y0,y1].every(Number.isSafeInteger) || (x1-x0+1)*(y1-y0+1)>MAX_CELLS) return null;
   const result=[];for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++)result.push(`${x}:${y}`);
   return result;
 }

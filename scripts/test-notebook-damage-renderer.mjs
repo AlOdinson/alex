@@ -139,3 +139,18 @@ test('parent-scale changes invalidate spatial bounds until the next full cache b
  f.book.dirty=true;f.canvas.renderAll();assert.ok(currentNotebookChildIndex(f.book));
  }finally{await f.close();}
 });
+
+test('finite extreme child coordinates cannot trap the spatial grid in a non-advancing loop',async()=>{
+ const {spawnSync}=await import('node:child_process');
+ const moduleUrl=new URL('../src/lib/notebookChildIndex.js',import.meta.url).href;
+ const result=spawnSync(process.execPath,['--input-type=module','-e',`
+   import {createNotebookChildIndex} from ${JSON.stringify(moduleUrl)};
+   const object={type:'path',boardObjectId:'extreme',width:0,height:0,stroke:null,
+     calcOwnMatrix:()=>[1,0,0,1,Number.MAX_VALUE,0]};
+   const index=createNotebookChildIndex([object]);
+   if(index.size!==1||index.query({left:Number.MAX_VALUE,top:0,right:Number.MAX_VALUE,bottom:0}).length!==1)
+     throw new Error('Extreme footprint was dropped');
+ `],{timeout:1500,encoding:'utf8'});
+ assert.equal(result.error,undefined,`index must complete without looping: ${result.error?.code}`);
+ assert.equal(result.status,0,result.stderr);
+});

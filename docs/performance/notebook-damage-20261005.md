@@ -18,9 +18,10 @@ in original layer order. Text stays editable; image/vector records and condition
 undo semantics are unchanged. Real Board history is tested, not just a bare reducer.
 
 Direct rectangle clipping changed antialiasing on a few boundary pixels in strict
-regressions. Repair therefore uses a short-lived scratch surface covering complete
-candidate footprints, followed by an integer-pixel copy of only the damaged window.
-Resampled images require the canonical cache origin and use a larger scratch extent.
+regressions. Repair therefore uses a short-lived scratch surface with the exact canonical
+cache origin/extent, followed by an integer-pixel copy of only the damaged window.
+Only intersecting candidate geometry is drawn. Native browser pixel failures showed
+that shifting the origin can change vector as well as resampled-image rounding.
 Scratch is reserved against the SAME 32MiB notebook/64MiB board budgets and is freed
 synchronously; no getImageData/readback exists in production repair. Rendered child
 mask surfaces are released, rather than retained outside the budget. Reservation
@@ -36,7 +37,7 @@ quality setting or stored format changes in this block.
 Local red/green evidence: seven original damage/export tests failed, then passed;
 additional strict pixel, incomplete-delta, temporary-budget, mask-release, scale,
 and original shadow regressions were run before their corresponding fixes.
-Local final new/updated focused set: 26 tests, including 21 shared pixel scenarios.
+Local final new/updated focused set: 27 tests, including 21 shared pixel scenarios.
 Existing95 optimization/model tests,169 storage/bounded tests,254 notebook tests,
 authority/Pencil/sync/reading/media/storage/screen-share/connections and build pass.
 The old assertion requiring a full undo repaint was replaced with local-cost AND
@@ -44,6 +45,9 @@ exact-pixel assertions; pixel tolerances were not widened. One exploratory test 
 incorrectly included a native-browser entry without Playwright; the unit list was
 corrected, and native checks remain required. A verbose typed-array failure exhausted
 a diagnostic runner; compact zero-difference assertions preserve the same requirement.
+
+An additional review regression caught non-advancing grid loops at extreme finite
+coordinates; unsafe grid integers now take the global-footprint path.
 
 Native Chromium and macOS WebKit must pass the exact new21-case pixel gate, existing
 input/projection/storage/undo/PDF/video gates and build for the delivered commit.

@@ -41,13 +41,11 @@ export function finishNotebookDamage(book,ticket,pageState,releaseChildSurfaces 
   // complete candidate footprints into an ephemeral budgeted surface, then copy
   // integer pixels of the repair window. No pixel readback and no second full
   // persistent page cache. Large/unsupported repairs fall back safely.
-  // Resampled images require the canonical cache origin to avoid subpixel
-  // sampler-rounding differences. This larger temporary is still budgeted.
-  const nativeRasterOrigin=entries.some(e=>String(e.object.type).toLowerCase()==='image');
-  const left=nativeRasterOrigin?0:Math.min(x,...entries.map(e=>Math.floor(e.bounds.left*matrix.a+matrix.e)-2));
-  const top=nativeRasterOrigin?0:Math.min(y,...entries.map(e=>Math.floor(e.bounds.top*matrix.d+matrix.f)-2));
-  const right=nativeRasterOrigin?cache.surface.width:Math.max(x+width,...entries.map(e=>Math.ceil(e.bounds.right*matrix.a+matrix.e)+2));
-  const bottom=nativeRasterOrigin?cache.surface.height:Math.max(y+height,...entries.map(e=>Math.ceil(e.bounds.bottom*matrix.d+matrix.f)+2));
+  // Native browser rasterizers can round even vector coverage differently if
+  // an integer origin is subtracted from the floating transform. Keep the exact
+  // canonical surface origin/extent; only candidate geometry is painted and only
+  // damage pixels are copied. Budget refusal uses the full renderer instead.
+  const left=0,top=0,right=cache.surface.width,bottom=cache.surface.height;
   const sw=right-left,sh=bottom-top;
   const release=book._pageRenderCache?.reserveTemporary(book,sw*sh*4);
   if(!release)return false;
