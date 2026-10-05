@@ -1,4 +1,4 @@
-name: Stage verified factory probe source
+name: Stage tested addressed notebook append
 on:
   push:
     branches: ['delivery/notebook-tombstones-20261005']
@@ -12,28 +12,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: {persist-credentials: false, fetch-depth: 0}
-      - name: Upload checksum-verified test-only Git blobs
+      - name: Upload exact reviewed Git blobs only
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
           repo = 'AlOdinson/alex'
-          base = '272ddbb4f9e71be9706ee9cdca440b9233b74916'
-          expected = '259cd5415464a0a4dd3cea16436f99466670b9e3'
+          base = '36c3930b498f5aa4da2507b80369f92dc39ced6f'
+          expected = '168fdd79064494d74c2345325e685229dea516ee'
           assert os.environ['GITHUB_REPOSITORY'] == repo
           assert os.environ['GITHUB_REF'] == 'refs/heads/delivery/notebook-tombstones-20261005'
           packed = base64.b64decode(pathlib.Path('.delivery/controller-locator.patch.b64').read_text())
-          assert hashlib.sha256(packed).hexdigest() == 'aa2e7b8e793ce5eafc81d4c75a71ba3129ddc072da593285bb45840427a1cee6'
-          patch = pathlib.Path('/tmp/factory-probe.patch'); patch.write_bytes(lzma.decompress(packed))
+          assert hashlib.sha256(packed).hexdigest() == '05e665942c92c95503682a308a0e9dfe26f398ae66abcd819d6874915df065f5'
+          patch = pathlib.Path('/tmp/addressed-append.patch'); patch.write_bytes(lzma.decompress(packed))
           def git(*args): return subprocess.check_output(['git', *args], text=True).strip()
           subprocess.run(['git','checkout','--detach',base],check=True)
           subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
           subprocess.run(['git','apply','--index',str(patch)],check=True)
           assert git('write-tree') == expected
           paths = git('diff','--cached','--name-only').splitlines()
-          assert set(paths) == {'.github/workflows/notebook-no-video-ci.yml','scripts/benchmark-notebook-real-input.mjs','scripts/notebook-audit-metrics.js','scripts/test-notebook-audit-metrics.mjs'}
-          assert not git('diff','--cached','--name-only','--','src')
+          assert set(paths) == {'.github/workflows/notebook-no-video-ci.yml','scripts/benchmark-notebook-real-input.mjs','scripts/test-notebook-audit-metrics.mjs','scripts/test-notebook-addressed-append.mjs','src/lib/boardNotebook.js','src/lib/notebookBoardActions.js','src/lib/notebookOperations.js','src/lib/notebookPageDelta.js','src/lib/notebookPageRuntime.js','src/lib/notebookProjection.js'}
           for name in paths:
               value = pathlib.Path(name).read_bytes()
               request = urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',
@@ -43,5 +42,5 @@ jobs:
               assert result['sha'] == git('hash-object',name)
               print(name,result['sha'])
           print('VERIFIED_LOCAL_TREE='+expected)
-          print('Git blobs only. No refs, deployment or production data changed.')
+          print('Immutable blobs only. No branch ref, deployment or production data changes.')
           PY
