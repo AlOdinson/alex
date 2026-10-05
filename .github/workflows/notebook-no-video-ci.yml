@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
-      - run: node --test scripts/test-notebook-hotpath-regressions.mjs scripts/test-notebook-audit-metrics.mjs scripts/test-notebook-audit-fixture.mjs scripts/test-notebook-projection-cost.mjs scripts/test-notebook-gesture-index.mjs scripts/test-notebook-contained-fast-path.mjs
+      - run: node --test scripts/test-notebook-hotpath-regressions.mjs scripts/test-notebook-audit-metrics.mjs scripts/test-notebook-audit-fixture.mjs scripts/test-notebook-projection-cost.mjs scripts/test-notebook-gesture-index.mjs scripts/test-notebook-contained-fast-path.mjs scripts/test-notebook-append-cache.mjs scripts/test-notebook-append-integration.mjs
       - run: npm run test:pencil
       - run: npm run test:sync:ci
       - run: npm run test:student:reading
@@ -65,6 +65,8 @@ jobs:
           NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate node scripts/benchmark-notebook-real-input.mjs
           after=$?
           if [ "$before" -ne 0 ] || [ "$after" -ne 0 ]; then exit 1; fi
+      - name: Interior append pixels match canonical rendering
+        run: node scripts/test-notebook-append-browser.mjs
       - name: Existing notebook browser regressions
         run: npm run test:notebook:browser
       - name: PDF continuity regression
@@ -78,4 +80,5 @@ jobs:
             notebook-true-split-results/
             notebook-navigation-results/
             notebook-drop-results/
+            notebook-append-results/
           retention-days: 14

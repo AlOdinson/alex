@@ -1,3 +1,4 @@
+import { beginNotebookCacheAppend, finishNotebookCacheAppend, rememberNotebookAppendCache, forgetNotebookAppendCache } from './notebookAppendCache.js';
 import { memoizeImmutableNotebookImage } from './notebookAssets.js';
 import { navigateNotebookPage, retireNotebookPageWork } from './notebookPageRuntime.js';
 export { applyPageDeltaToFabric } from './notebookPageRuntime.js';
@@ -58,6 +59,7 @@ export class BoardNotebook extends Group {
   getPageObjects() { return this.getObjects(); }
 
   addPageObject(object, preparedRecord = null) {
+    const append = preparedRecord ? beginNotebookCacheAppend(this, object) : null;
     memoizeImmutableNotebookImage(object);
     if (!object.boardObjectId) object.boardObjectId = randomToken(14);
     // Group.add accepts world coordinates; preserve the prepared local placement.
@@ -70,7 +72,7 @@ export class BoardNotebook extends Group {
       this._pageRecords.set(object, freezeRecord(structuredClone(preparedRecord)));
     }
     this.syncPage({ invalidate: false });
-    this.dirty = true;
+    if (!finishNotebookCacheAppend(this, object, append)) this.dirty = true;
     return object;
   }
 
@@ -105,6 +107,9 @@ export class BoardNotebook extends Group {
       throw new Error('Notebook visible page differs from the delta baseline');
     }
     const retained = new Set(desired), removed = previous.filter(object => !retained.has(object));
+    const append = removed.length === 0 && prepared.length === 1 && desired.at(-1) === prepared[0]
+      && desired.length === previous.length + 1 && previous.every((object, index) => desired[index] === object)
+      ? beginNotebookCacheAppend(this, prepared[0]) : null;
     const matrices = prepared.map(object => object.calcOwnMatrix());
     if (removed.length) this.remove(...removed);
     if (prepared.length) this.add(...prepared.map(inert));
@@ -118,7 +123,8 @@ export class BoardNotebook extends Group {
       this._pageRecords.set(object, records[index]);
     });
     removed.forEach(object => { this._pageRecords.delete(object); object.dispose(); });
-    this.notebookPages = pages; this._pageContentInvalid = false; this.dirty = true;
+    this.notebookPages = pages; this._pageContentInvalid = false;
+    if (!finishNotebookCacheAppend(this, prepared[0], append)) this.dirty = true;
   }
 
   invalidatePageContent(child) {
@@ -164,6 +170,7 @@ export class BoardNotebook extends Group {
   }
 
   releasePageCache() {
+    forgetNotebookAppendCache(this);
     this._pageRenderCache?.release(this);
     this._pageRenderCache = null;
     releaseSurface(this);
@@ -182,6 +189,7 @@ export class BoardNotebook extends Group {
     if (wasDirty || previousZoomX !== this.zoomX || previousZoomY !== this.zoomY) this.getPageObjects().forEach(releaseChildSurfaces);
     cache?.acquire(this, { surfaces: [this._cacheCanvas, this.clipPath?._cacheCanvas].filter(Boolean),
       onEvict: () => {releaseSurface(this);releaseSurface(this.clipPath);this.dirty = true;} });
+    rememberNotebookAppendCache(this, options?.forClipping);
   }
 
   isNotebookCompositingIsolated() { return Boolean(this.ownCaching && this._cacheCanvas); }

@@ -72,3 +72,19 @@ for (const scale of [.5,1.4,2])test(`contained capture preserves world placement
  try{assert.equal(await e.actions.capture(e.book,e.source),true);assert.ok(e.source.calcTransformMatrix().every((v,i)=>Math.abs(v-before[i])<1e-7));}
  finally{await e.close();}
 });
+
+test('fast capture pixels match general capture for transparency, dash and uniform stroke under scaling',async()=>{
+ // Changing the transform origin or applying opacity twice breaks these pixels.
+ for(const scale of [.5,1,2]) for(const uniform of [false,true]) {
+  const a=setup({scaleX:scale,scaleY:scale}),b=setup({scaleX:scale,scaleY:scale});
+  for(const e of [a,b])e.source.set({stroke:'rgba(25,35,45,.6)',opacity:.7,strokeWidth:5,strokeUniform:uniform,strokeDashArray:[7,3],strokeLineCap:'round'});
+  try {
+   const general=await notebookApi.captureNotebookObject(b.book,b.source);assert.ok(general?.inside);
+   b.canvas.remove(b.source);b.book.addPageObject(general.inside);
+   await a.actions.capture(a.book,a.source);
+   a.canvas.renderAll();b.canvas.renderAll();
+   const pixels=c=>c.getContext().getImageData(0,0,800,700).data;
+   assert.deepEqual(pixels(a.canvas),pixels(b.canvas),`pixels differ at scale ${scale}, uniform=${uniform}`);
+  }finally{await a.close();await b.close();}
+ }
+});
