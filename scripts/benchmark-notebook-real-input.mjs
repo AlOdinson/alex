@@ -11,7 +11,7 @@ const source = JSON.parse(await readFile('package.json', 'utf8')).version;
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1', '--port', String(port), '--strictPort'],
   { stdio: 'ignore', env: { ...process.env, VITE_NOTEBOOK_OPERATIONS_V1: 'true' } });
 let browser;
-const results = [], errors = [];
+const results = [], errors = [], consoleMessages = [];
 const cases = process.argv.includes('--smoke') ? [
   { boardObjects: 0, pages: 1, pageStrokes: 100 },
   { boardObjects: 1000, pages: 6, pageStrokes: 300 },
@@ -40,6 +40,7 @@ try {
     const context = await browser.newContext({ viewport: { width: 1100, height: 850 }, deviceScaleFactor: 2 });
     const page = await context.newPage();
     page.on('pageerror', error => errors.push({ scenario, error: error.message }));
+    page.on('console', message => { if (['error', 'warning'].includes(message.type())) consoleMessages.push({ type: message.type(), text: message.text() }); });
     try {
       await page.goto(base + 'scripts/board-media-fixture.html');
       const board = await page.evaluate(async scenario => {
@@ -87,7 +88,21 @@ try {
         await page.mouse.move(x, y); await page.mouse.down();
         await page.mouse.move(x + 55 * points.zoom, y + 4 * points.zoom, { steps: 12 });
         await page.mouse.up();
-        await page.waitForFunction(() => window.auditMetrics.painted(), undefined, { timeout: 30000 });
+        try {
+          await page.waitForFunction(() => window.auditMetrics.painted(), undefined, { timeout: 30000 });
+        } catch (error) {
+          const diagnostic = await page.evaluate(({ x, y }) => ({
+            metrics: window.auditMetrics.report(), body: document.body.innerText,
+            atContact: document.elementsFromPoint(x, y).slice(0, 6).map(e => ({ tag: e.tagName, class: e.className })),
+            canvas: { drawing: window.auditCanvas.isDrawingMode, activeDrawing: window.auditCanvas._isCurrentlyDrawing,
+              viewport: window.auditCanvas.viewportTransform, objects: window.auditCanvas._objects.map(o => ({
+                id: o.boardObjectId, type: o.type, children: o._objects?.length, left: o.left, top: o.top })).slice(-5) },
+          }), { x, y });
+          console.error('INK DIAGNOSTIC', JSON.stringify({ scenario, points, stroke, diagnostic, consoleMessages, errors }));
+          await writeFile(`${output}/${engineName}-failure.json`, JSON.stringify({ diagnostic, consoleMessages, errors }, null, 2));
+          await page.screenshot({ path: `${output}/${engineName}-failure.png` });
+          throw error;
+        }
       }
       // Let the REAL outbox/authority finish; publish is never replaced by a stub.
       await page.waitForFunction(async ({ id, floor }) => {
@@ -110,7 +125,7 @@ try {
   assert.deepEqual(errors, [], 'Production page errors during input');
 } finally {
   await writeFile(`${output}/${engineName}.json`, JSON.stringify({ source, commit: process.env.GITHUB_SHA || null,
-    baseline: process.argv.includes('--baseline'), results, errors, generatedAt: new Date().toISOString(),
+    baseline: process.argv.includes('--baseline'), results, errors, consoleMessages, generatedAt: new Date().toISOString(),
     limitations: ['No physical iPad/Pencil', 'after:render is not physical display presentation', 'Network delay not injected in this fixture', 'Counters add diagnostic overhead'] }, null, 2));
   await browser?.close(); server.kill();
 }

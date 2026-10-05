@@ -20,11 +20,29 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
+      - name: New hot-path regressions when present
+        run: |
+          if [ -f scripts/test-notebook-hotpath-regressions.mjs ]; then
+            node --test scripts/test-notebook-hotpath-regressions.mjs
+          fi
       - run: npm run test:notebook
       - run: npm run test:browser-authority
       - run: npm run test:student:storage
       - run: npm run test:screen-share
       - run: npm run build
+      - name: Preserve exact source for local verification
+        if: always()
+        run: |
+          git archive --format=tar HEAD | gzip > /tmp/notebook-source.tar.gz
+          tar -czf /tmp/notebook-test-dependencies.tar.gz --exclude='node_modules/pdfjs-dist' --exclude='*.ttf' --exclude='*.otf' --exclude='*.woff' --exclude='*.woff2' node_modules
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: notebook-source-${{ github.sha }}
+          path: |
+            /tmp/notebook-source.tar.gz
+            /tmp/notebook-test-dependencies.tar.gz
+          retention-days: 7
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 20
