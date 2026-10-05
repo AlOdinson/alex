@@ -94,3 +94,16 @@ test('append retains the exact canonical cache transform instead of reconstructi
   assert.equal(transforms,0,'reconstructing a fractional cache matrix changes WebKit edge pixels');
  }finally{context.setTransform=original;await e.close();}
 });
+
+test('a failed append discards the damaged context and preserves canonical pixels and vector input',async()=>{
+ const e=await fixture(),oldSurface=e.book._cacheCanvas,stroke=fresh();
+ const render=stroke.render;let fail=true;
+ stroke.render=function(ctx,...args){
+  if(fail){fail=false;ctx.save();ctx.translate(20,10);ctx.save();ctx.translate(10,20);throw Error('interrupted vector paint');}
+  return render.call(this,ctx,...args);
+ };
+ try{await capture(e,stroke);assert.equal(e.book.getPageObjects().length,101);
+  assert.notStrictEqual(e.book._cacheCanvas,oldSurface,'exception retained an unbalanced drawing context');
+  const actual=pixels(e.canvas);e.book.releasePageCache();e.book.dirty=true;e.canvas.renderAll();assert.deepEqual(actual,pixels(e.canvas));
+ }finally{await e.close();}
+});

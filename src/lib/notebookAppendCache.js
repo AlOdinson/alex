@@ -73,8 +73,8 @@ export function finishNotebookCacheAppend(book, child, previous) {
     rememberNotebookAppendCache(book);
     return true;
   } catch {
-    // A partially drawn cache is never trusted. The next canonical render will
-    // rebuild it from the unchanged vector model before it is presented.
-    book.dirty = true; ready.delete(book); return false;
+    // A throw can leave nested save/transform state unbalanced. Discard the
+    // surface, not just its dirty flag, before rebuilding from vector records.
+    ready.delete(book); book.releasePageCache?.(); book.dirty = true; return false;
   } finally { book._transformDone = transformed; ctx.restore(); }
 }
