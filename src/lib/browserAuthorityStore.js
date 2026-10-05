@@ -1,7 +1,11 @@
 import { isAuthoritativeBoardOperation } from './operationProtocol.js';
 import { isNotebookOperation, notebookChildKey } from './notebookOperations.js';
+import { boardTombstoneDelta } from './boardTombstoneIndex.js';
 const DB_NAME = 'alex-board-authority';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
+const BOARD_TOMBSTONE_STORE = 'boardTombstones';
+const TOMBSTONE_MIGRATION_STORE = 'boardTombstoneMigrations';
+const TOMBSTONE_BACKUP_STORE = 'boardTombstoneBackups';
 const NOTEBOOK_OUTBOX_STORE = 'notebookOutbox';
 const SNAPSHOT_STORE = 'snapshots';
 const NOTEBOOK_TOMBSTONE_STORE = 'notebookTombstones';
@@ -95,6 +99,17 @@ function openDatabase() {
         tombstones.createIndex(BOARD_ID_INDEX, 'boardId');
       }
 
+      if (!db.objectStoreNames.contains(BOARD_TOMBSTONE_STORE)) {
+        const deleted = db.createObjectStore(BOARD_TOMBSTONE_STORE, { keyPath: ['boardId', 'objectId'] });
+        deleted.createIndex(BOARD_ID_INDEX, 'boardId');
+      }
+      if (!db.objectStoreNames.contains(TOMBSTONE_MIGRATION_STORE)) {
+        db.createObjectStore(TOMBSTONE_MIGRATION_STORE, { keyPath: 'boardId' });
+      }
+      if (!db.objectStoreNames.contains(TOMBSTONE_BACKUP_STORE)) {
+        db.createObjectStore(TOMBSTONE_BACKUP_STORE, { keyPath: 'boardId' });
+      }
+
       if (!db.objectStoreNames.contains(NOTEBOOK_OUTBOX_STORE)) {
         const pending = db.createObjectStore(NOTEBOOK_OUTBOX_STORE, { keyPath: 'sequence', autoIncrement: true });
         pending.createIndex('pendingAction', ['boardId', 'clientId', 'actionId'], { unique: true });
@@ -181,6 +196,7 @@ function deleteRecordsByBoardId(store, boardId) {
 }
 
 function normalizeBoardInput(input) {
+  assertTombstoneStorageReadable(input ?? {});
   if (input?.notebookVersion != null && ![0, 1].includes(input.notebookVersion)) {
     throw new Error('Unsupported notebook format version; update required');
   }
@@ -209,45 +225,123 @@ function normalizeBoardInput(input) {
   };
 }
 
-function applyCommitTombstones(source, commit) {
-  const tombstones = cloneValue(source ?? {});
-  const clientId = String(commit?.clientId ?? '');
-  const actionId = String(commit?.actionId ?? '');
-  const revision = Number(commit?.revision ?? 0);
-  for (const operation of Array.isArray(commit?.ops) ? commit.ops : []) {
-    if (operation?.type === 'delete' && operation.id) {
-      const id = String(operation.id);
-      tombstones[id] = {
-        clientId,
-        mutationId: String(operation.mutationId ?? actionId),
-        actionId,
-        revision,
-      };
-      continue;
-    }
-    if (operation?.type === 'upsert' && operation.object?.boardObjectId) {
-      delete tombstones[String(operation.object.boardObjectId)];
-    }
+function tombstoneStorageError(message, code = 'tombstone_migration_conflict') {
+  return Object.assign(new Error(message), { code });
+}
+function assertTombstoneStorageReadable(board) {
+  if (board.tombstoneStorageVersion != null && board.tombstoneStorageVersion !== 1) {
+    throw tombstoneStorageError('Update required for this deletion storage format', 'tombstone_update_required');
   }
-  return tombstones;
+}
+function legacyTombstones(board) {
+  const value = Object.hasOwn(board, 'tombstones') ? board.tombstones : {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw tombstoneStorageError('Invalid original tombstone table; migration stopped, do not clear site data');
+  }
+  return value;
+}
+async function readStoredTombstones(transaction, board) {
+  assertTombstoneStorageReadable(board);
+  if (board.tombstoneStorageVersion !== 1) return legacyTombstones(board);
+  const records = await requestResult(transaction.objectStore(BOARD_TOMBSTONE_STORE).index(BOARD_ID_INDEX).getAll(board.boardId));
+  return Object.fromEntries(records.map(row => [row.objectId, row.value]));
+}
+
+/** Upgrade only the addressed board, retaining the untouched original and a
+ * recovery copy until an atomic final switch. Commits cannot write a legacy row
+ * while this runs. Batches yield actual IDB transactions; no lesson/media/outbox
+ * rewrite and no automatic expiration of deletion history occur here.
+ */
+export async function migrateAuthorityBoardTombstones(boardId, { batchSize = 128, signal, onProgress } = {}) {
+  const key = String(boardId ?? '').trim();
+  if (!key) throw new Error('boardId is required');
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 1000) throw new TypeError('Migration batch size must be 1..1000');
+  const assertActive = () => { if (signal?.aborted) throw new DOMException('Migration interrupted; original data retained', 'AbortError'); };
+  assertActive();
+  const source = await withTransaction([BOARD_STORE, TOMBSTONE_MIGRATION_STORE, TOMBSTONE_BACKUP_STORE], 'readwrite', async tx => {
+    const board = await requestResult(tx.objectStore(BOARD_STORE).get(key));
+    if (!board) throw new Error('Authority board not found');
+    assertTombstoneStorageReadable(board);
+    if (board.tombstoneStorageVersion === 1) return null;
+    const table = legacyTombstones(board), signature = JSON.stringify(table), keys = Object.keys(table).sort();
+    const migrations = tx.objectStore(TOMBSTONE_MIGRATION_STORE), backups = tx.objectStore(TOMBSTONE_BACKUP_STORE);
+    const [progress, backup] = await Promise.all([requestResult(migrations.get(key)), requestResult(backups.get(key))]);
+    const sourceRevision = Number(board.revision ?? 0);
+    if (progress || backup) {
+      if (!progress || !backup || progress.sourceRevision !== sourceRevision || backup.sourceRevision !== sourceRevision
+        || progress.count !== keys.length || JSON.stringify(backup.tombstones) !== signature) {
+        throw tombstoneStorageError('Original data changed during migration; original table retained');
+      }
+    } else {
+      await requestResult(backups.add({ boardId: key, sourceRevision, tombstones: table, createdAt: Date.now() }));
+      await requestResult(migrations.add({ boardId: key, sourceRevision, count: keys.length, cursor: 0 }));
+    }
+    return { table, keys, signature, sourceRevision };
+  });
+  if (!source) return { migrated: false, storageVersion: 1 };
+  for (;;) {
+    assertActive();
+    const progress = await withTransaction([TOMBSTONE_MIGRATION_STORE, BOARD_TOMBSTONE_STORE], 'readwrite', async tx => {
+      const migrations = tx.objectStore(TOMBSTONE_MIGRATION_STORE), current = await requestResult(migrations.get(key));
+      if (!current) return null; // Another caller finished, or the board was deleted.
+      if (current.sourceRevision !== source.sourceRevision || current.count !== source.keys.length
+        || !Number.isSafeInteger(current.cursor) || current.cursor < 0 || current.cursor > current.count) {
+        throw tombstoneStorageError('Invalid migration progress; original table retained');
+      }
+      const end = Math.min(current.count, current.cursor + batchSize), target = tx.objectStore(BOARD_TOMBSTONE_STORE);
+      for (let i = current.cursor; i < end; i++) {
+        const objectId = source.keys[i];
+        await requestResult(target.put({ boardId: key, objectId, value: source.table[objectId] }));
+      }
+      if (end !== current.cursor) await requestResult(migrations.put({ ...current, cursor: end }));
+      return { copied: end, total: current.count };
+    });
+    if (!progress) break;
+    try { await onProgress?.(progress); } catch { /* Observers cannot corrupt saved migration progress. */ }
+    if (progress.copied === progress.total) break;
+  }
+  assertActive();
+  return withTransaction([BOARD_STORE, TOMBSTONE_MIGRATION_STORE, BOARD_TOMBSTONE_STORE], 'readwrite', async tx => {
+    const boards = tx.objectStore(BOARD_STORE), board = await requestResult(boards.get(key));
+    if (!board) throw new Error('Authority board not found');
+    assertTombstoneStorageReadable(board);
+    if (board.tombstoneStorageVersion === 1) return { migrated: false, storageVersion: 1 };
+    const migrations = tx.objectStore(TOMBSTONE_MIGRATION_STORE);
+    const progress = await requestResult(migrations.get(key));
+    const count = await requestResult(tx.objectStore(BOARD_TOMBSTONE_STORE).index(BOARD_ID_INDEX).count(key));
+    if (!progress || progress.cursor !== source.keys.length || progress.count !== source.keys.length
+      || progress.sourceRevision !== source.sourceRevision || Number(board.revision ?? 0) !== source.sourceRevision
+      || count !== source.keys.length || JSON.stringify(legacyTombstones(board)) !== source.signature) {
+      throw tombstoneStorageError('Incomplete or changed migration; original table retained');
+    }
+    const { tombstones, ...metadata } = board;
+    await requestResult(boards.put({ ...metadata, tombstoneStorageVersion: 1 }));
+    await requestResult(migrations.delete(key));
+    // Retain the original backup for recovery; it is NOT the new canonical table
+    // and may not be used to discard newer confirmed edits during rollback.
+    return { migrated: true, storageVersion: 1, copied: count };
+  });
 }
 
 async function readStoredSnapshot(transaction, board) {
   const record = await requestResult(transaction.objectStore(SNAPSHOT_STORE).get(board.boardId));
   if (!record || !Object.hasOwn(record, 'snapshot')) throw new Error('Authority baseline is missing; do not clear site data');
-  return { ...board, snapshot: record.snapshot };
+  return { ...board, snapshot: record.snapshot, tombstones: await readStoredTombstones(transaction, board) };
 }
 
 export async function createAuthorityBoard(input) {
   const board = normalizeBoardInput(input);
-  return withTransaction([BOARD_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE], 'readwrite', async (transaction) => {
-    const { snapshot, notebookTombstones, ...metadata } = board;
-    await requestResult(transaction.objectStore(BOARD_STORE).add(metadata));
+  return withTransaction([BOARD_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE, BOARD_TOMBSTONE_STORE], 'readwrite', async (transaction) => {
+    const { snapshot, notebookTombstones, tombstones, ...metadata } = board;
+    await requestResult(transaction.objectStore(BOARD_STORE).add({ ...metadata, tombstoneStorageVersion: 1 }));
     await requestResult(transaction.objectStore(SNAPSHOT_STORE).add({ boardId: board.boardId, snapshot }));
+    for (const [objectId, value] of Object.entries(tombstones)) {
+      await requestResult(transaction.objectStore(BOARD_TOMBSTONE_STORE).put({ boardId: board.boardId, objectId, value }));
+    }
     for (const [childKey, value] of Object.entries(notebookTombstones)) {
       await requestResult(transaction.objectStore(NOTEBOOK_TOMBSTONE_STORE).put({ boardId: board.boardId, childKey, value }));
     }
-    return cloneValue(board);
+    return { ...cloneValue(board), tombstoneStorageVersion: 1 };
   }, CREATE_TIMEOUT_MS);
 }
 
@@ -264,7 +358,7 @@ export async function getAuthorityBoardMetadata(boardId) {
 export async function getAuthorityBoard(boardId) {
   const key = String(boardId ?? '').trim();
   if (!key) return null;
-  return withTransaction([BOARD_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE], 'readonly', async transaction => {
+  return withTransaction([BOARD_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE, BOARD_TOMBSTONE_STORE], 'readonly', async transaction => {
     const board = await requestResult(transaction.objectStore(BOARD_STORE).get(key));
     if (!board) return null;
     const [full, deleted] = await Promise.all([
@@ -276,7 +370,7 @@ export async function getAuthorityBoard(boardId) {
 }
 
 export async function listAuthorityBoards() {
-  const result = await withTransaction([BOARD_STORE, SNAPSHOT_STORE], 'readonly', async (transaction) => {
+  const result = await withTransaction([BOARD_STORE, SNAPSHOT_STORE, BOARD_TOMBSTONE_STORE], 'readonly', async (transaction) => {
     const boards = await requestResult(transaction.objectStore(BOARD_STORE).getAll());
     const full = await Promise.all((Array.isArray(boards) ? boards : []).map(board => readStoredSnapshot(transaction, board)));
     return full
@@ -295,7 +389,7 @@ export async function listAuthorityBoards() {
 export async function updateAuthorityBoardMetadata(boardId, patch = {}) {
   const key = String(boardId ?? '').trim();
   if (!key) throw new Error('boardId is required');
-  return withTransaction([BOARD_STORE, SNAPSHOT_STORE], 'readwrite', async (transaction) => {
+  return withTransaction([BOARD_STORE, SNAPSHOT_STORE, BOARD_TOMBSTONE_STORE], 'readwrite', async (transaction) => {
     const boards = transaction.objectStore(BOARD_STORE);
     const board = await requestResult(boards.get(key));
     if (!board) throw new Error('Authority board not found');
@@ -322,7 +416,7 @@ export async function updateAuthorityBoardMetadata(boardId, patch = {}) {
 export async function deleteAuthorityBoard(boardId) {
   const key = String(boardId ?? '').trim();
   if (!key) return false;
-  const removed = await withTransaction([BOARD_STORE, COMMIT_STORE, ASSET_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE, NOTEBOOK_OUTBOX_STORE], 'readwrite', async (transaction) => {
+  const removed = await withTransaction([BOARD_STORE, COMMIT_STORE, ASSET_STORE, SNAPSHOT_STORE, NOTEBOOK_TOMBSTONE_STORE, NOTEBOOK_OUTBOX_STORE, BOARD_TOMBSTONE_STORE, TOMBSTONE_MIGRATION_STORE, TOMBSTONE_BACKUP_STORE], 'readwrite', async (transaction) => {
     const boards = transaction.objectStore(BOARD_STORE);
     const existing = await requestResult(boards.get(key));
     if (!existing) return false;
@@ -331,6 +425,9 @@ export async function deleteAuthorityBoard(boardId) {
       requestResult(transaction.objectStore(SNAPSHOT_STORE).delete(key)),
       deleteRecordsByBoardId(transaction.objectStore(NOTEBOOK_TOMBSTONE_STORE), key),
       deleteRecordsByBoardId(transaction.objectStore(NOTEBOOK_OUTBOX_STORE), key),
+      deleteRecordsByBoardId(transaction.objectStore(BOARD_TOMBSTONE_STORE), key),
+      requestResult(transaction.objectStore(TOMBSTONE_MIGRATION_STORE).delete(key)),
+      requestResult(transaction.objectStore(TOMBSTONE_BACKUP_STORE).delete(key)),
       deleteRecordsByBoardId(transaction.objectStore(COMMIT_STORE), key),
       deleteRecordsByBoardId(transaction.objectStore(ASSET_STORE), key),
     ]);
@@ -413,7 +510,7 @@ export async function persistAuthorityCommit(boardId, commit) {
   if (!actionId) throw new Error('actionId is required');
   const actionKey = `${key}:${actionId}`;
 
-  return withTransaction([BOARD_STORE, COMMIT_STORE, NOTEBOOK_TOMBSTONE_STORE], 'readwrite', async (transaction) => {
+  const save = () => withTransaction([BOARD_STORE, COMMIT_STORE, NOTEBOOK_TOMBSTONE_STORE, BOARD_TOMBSTONE_STORE], 'readwrite', async (transaction) => {
     const boards = transaction.objectStore(BOARD_STORE);
     const commits = transaction.objectStore(COMMIT_STORE);
     const existing = await requestResult(commits.get(actionKey));
@@ -426,6 +523,8 @@ export async function persistAuthorityCommit(boardId, commit) {
 
     const board = await requestResult(boards.get(key));
     if (!board) throw new Error('Authority board not found');
+    assertTombstoneStorageReadable(board);
+    if (board.tombstoneStorageVersion !== 1) throw tombstoneStorageError('Tombstone migration required', 'tombstone_migration_required');
 
     const expectedRevision = Number(board.revision ?? 0) + 1;
     const revision = Number(commit?.revision ?? 0);
@@ -449,7 +548,6 @@ export async function persistAuthorityCommit(boardId, commit) {
       ...board,
       revision,
       ...(childOps.length ? { notebookVersion: 1 } : {}),
-      tombstones: applyCommitTombstones(board.tombstones, record),
       updatedAt: Number(commit?.committedAt ?? Date.now()) || Date.now(),
     };
 
@@ -462,10 +560,20 @@ export async function persistAuthorityCommit(boardId, commit) {
       } }));
       else if (change.type === 'insert') await requestResult(deleted.delete([key, childKey]));
     }
+    const topDeleted = transaction.objectStore(BOARD_TOMBSTONE_STORE);
+    for (const change of boardTombstoneDelta(record.ops, record)) {
+      if (change.type === 'set') await requestResult(topDeleted.put({ boardId: key, objectId: change.id, value: change.value }));
+      else await requestResult(topDeleted.delete([key, change.id]));
+    }
     await requestResult(commits.add(record));
     await requestResult(boards.put(nextBoard));
     return { commit: cloneValue(record), duplicate: false };
   });
+  try { return await save(); } catch (error) {
+    if (error.code !== 'tombstone_migration_required') throw error;
+    await migrateAuthorityBoardTombstones(key);
+    return save();
+  }
 }
 
 export async function getAuthorityCommitsAfter(boardId, revision = 0, limit = 500) {
@@ -506,6 +614,7 @@ export async function saveAuthoritySnapshot(boardId, snapshot, revision) {
     const boards = transaction.objectStore(BOARD_STORE);
     const board = await requestResult(boards.get(key));
     if (!board) throw new Error('Authority board not found');
+    assertTombstoneStorageReadable(board);
     if (snapshotRevision > Number(board.revision ?? 0)) {
       throw new Error('Snapshot cannot be newer than the authoritative revision');
     }

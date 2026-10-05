@@ -80,6 +80,18 @@ try {
         window.auditController = await window.auditHandlers?.ensure();
         return Boolean(window.auditController);
       }, undefined, { timeout: 90000 });
+      // Follow the live React ref, not an initial controller that readiness or
+      // reconciliation may replace before the first timed stroke.
+      await page.evaluate(() => {
+        const element = document.querySelector('.toolbar-shell');
+        let fiber = element?.[Object.keys(element).find(key => key.startsWith('__reactFiber'))];
+        while (fiber && fiber.type?.name !== 'BoardWorkspace') fiber = fiber.return;
+        for (let hook = fiber?.memoizedState; hook; hook = hook.next) {
+          const ref = hook.memoizedState, value = ref?.current;
+          if (value?.enqueue && value?.ack && value?.pendingObjectIds && value?.getConfirmedState) window.auditControllerRef = ref;
+        }
+        if (!window.auditControllerRef) throw new Error('Live notebook controller reference not found');
+      });
       // Runtime edit permission can arrive before Fabric finishes page hydration.
       await page.waitForFunction(() => {
         window.auditBook = window.auditCanvas?._objects.find(o => o.boardObjectId === 'audit-notebook');
@@ -87,7 +99,7 @@ try {
       }, undefined, { timeout: 90000 });
       await page.evaluate(async () => {
         const { installNotebookAuditMetrics } = await import('/alex/scripts/notebook-audit-metrics.js');
-        window.auditMetrics = installNotebookAuditMetrics(window.auditCanvas, window.auditBook, { controller: window.auditController });
+        window.auditMetrics = installNotebookAuditMetrics(window.auditCanvas, window.auditBook, { controllerRef: window.auditControllerRef });
         window.auditBookNow = () => window.auditMetrics.getNotebook();
       });
       await page.getByRole('button', { name: 'Карандаш', exact: true }).click();
@@ -132,6 +144,7 @@ try {
         environment: { browser: navigator.userAgent, dpr: devicePixelRatio, cores: navigator.hardwareConcurrency } }));
       assert.equal(report.children, points.initial + 16);
       assert.equal(report.createdPaths, 16);
+      assert.ok(report.controllerStages.filter(x=>x.stage==='enqueue').length >= 16, 'Missing controller CPU samples');
       if (!process.argv.includes('--baseline') && !burst) assert.equal(report.childRenders, 16,
         'Ready-page handwriting must paint only its 16 new strokes, not the earlier page geometry');
       assert.equal(report.samples.filter(s => s.pagePaintAt != null).length, 16);

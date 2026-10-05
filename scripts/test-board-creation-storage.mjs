@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { isAuthoritativeBoardOperation } from '../src/lib/operationProtocol.js';
 import { isNotebookOperation, notebookChildKey } from '../src/lib/notebookOperations.js';
+import { boardTombstoneDelta } from '../src/lib/boardTombstoneIndex.js';
 
 const KEY = 'alex-board:owner-library:v2';
 let sequence = 0;
@@ -145,7 +146,7 @@ const storeSource = await readFile(new URL('../src/lib/browserAuthorityStore.js'
 // The store is now an ES module; evaluating its imports as a classic VM script
 // fails before any deadline assertion can exercise the storage code.
 const storeScript = storeSource
-  .replace(/^import \{[^}]+\} from ['"]\.\/(?:operationProtocol|notebookOperations)\.js['"];\r?\n/gm, '')
+  .replace(/^import \{[^}]+\} from ['"]\.\/(?:operationProtocol|notebookOperations|boardTombstoneIndex)\.js['"];\r?\n/gm, '')
   .replace(/^export /gm, '');
 async function drain() { for (let i = 0; i < 12; i += 1) await Promise.resolve(); }
 function storeFixture({ stalledOpen = false, throwTransaction = false } = {}) {
@@ -179,7 +180,7 @@ function storeFixture({ stalledOpen = false, throwTransaction = false } = {}) {
     setTimeout(fn, ms) { timers.set(++timerId, { fn, ms }); return timerId; },
     clearTimeout(id) { timers.delete(id); },
     structuredClone, Error, DOMException,
-    isAuthoritativeBoardOperation, isNotebookOperation, notebookChildKey,
+    isAuthoritativeBoardOperation, isNotebookOperation, notebookChildKey, boardTombstoneDelta,
   };
   const api = vm.runInNewContext(`${storeScript}\n;({createAuthorityBoard,listAuthorityBoards})`, context,
     { filename: 'browserAuthorityStore.fixture.js' });
@@ -241,7 +242,7 @@ test('normal create resolves after commit, clears timers, closes the database', 
   const outcome = observe(f.api.createAuthorityBoard(entry('x')));
   await drain(); f.addRequest.onsuccess(); await drain();
   assert.equal(outcome.status, 'pending', 'metadata alone must not finish a board create');
-  assert.deepEqual(f.state.storeNames, ['boards', 'snapshots', 'notebookTombstones']);
+  assert.deepEqual(f.state.storeNames, ['boards', 'snapshots', 'notebookTombstones', 'boardTombstones']);
   assert.equal(f.state.mode, 'readwrite');
   assert.deepEqual(f.state.writes.map(write => write.store), ['boards', 'snapshots']);
   assert.equal(Object.hasOwn(f.state.writes[0].value, 'snapshot'), false);

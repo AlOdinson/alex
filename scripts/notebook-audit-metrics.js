@@ -19,7 +19,7 @@ export function makeAuditSnapshot({ boardObjects = 0, pages = 1, pageStrokes = 1
   return { version: 2, background: 'blank', canvas: { objects } };
 }
 
-export function installNotebookAuditMetrics(canvas, notebook, { controller = null } = {}) {
+export function installNotebookAuditMetrics(canvas, notebook, { controller = null, controllerRef = null } = {}) {
   const samples = [], longTasks = [], renders = [], controllerStages = [];
   let active = null, listReads = 0, childRenders = 0, createdPaths = 0, current = notebook;
   const notebookId = String(notebook.boardObjectId), replacements = [], createdIds = [];
@@ -65,16 +65,37 @@ export function installNotebookAuditMetrics(canvas, notebook, { controller = nul
       sample.childRenders = childRenders - sample.startChildRenders;
     }
   };
-  for (const stage of ['enqueue', 'ack']) {
-    const original = controller?.[stage];
-    if (typeof original !== 'function') continue;
-    const wrapped = function(...args) {
-      const start = performance.now();
-      try { return original.apply(this, args); }
-      finally { controllerStages.push({ stage, start, durationMs: performance.now() - start }); }
-    };
-    controller[stage] = wrapped;
-    restore.push(() => { if (controller[stage] === wrapped) controller[stage] = original; });
+  const seenControllers = new WeakSet();
+  function watchController(value) {
+    if (!value || seenControllers.has(value)) return;
+    seenControllers.add(value);
+    for (const stage of ['enqueue', 'ack']) {
+      const original = value[stage];
+      if (typeof original !== 'function') continue;
+      const wrapped = function(...args) {
+        const start = performance.now();
+        try { return original.apply(this, args); }
+        finally { controllerStages.push({ stage, start, durationMs: performance.now() - start }); }
+      };
+      value[stage] = wrapped;
+      restore.push(() => { if (value[stage] === wrapped) value[stage] = original; });
+    }
+  }
+  watchController(controller);
+  if (controllerRef) {
+    const descriptor = Object.getOwnPropertyDescriptor(controllerRef, 'current');
+    if (!descriptor?.configurable || !descriptor.writable || !Object.hasOwn(descriptor, 'value')) {
+      throw new TypeError('CPU instrumentation requires a writable controller ref');
+    }
+    let value = controllerRef.current;
+    watchController(value);
+    const set = next => { value = next; watchController(next); };
+    Object.defineProperty(controllerRef, 'current', { configurable:true, enumerable:descriptor.enumerable, get:()=>value, set });
+    restore.push(() => {
+      if (Object.getOwnPropertyDescriptor(controllerRef, 'current')?.set === set) {
+        Object.defineProperty(controllerRef, 'current', { ...descriptor, value });
+      }
+    });
   }
   canvas.on('path:created', created); canvas.on('before:render', before); canvas.on('after:render', after);
   restore.push(() => { canvas.off('path:created', created); canvas.off('before:render', before); canvas.off('after:render', after); });

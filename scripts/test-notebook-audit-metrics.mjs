@@ -67,3 +67,21 @@ test('controller CPU instrumentation preserves values, thrown errors and disposa
  assert.ok(metrics.report().controllerStages.every(s=>s.durationMs>=0));metrics.dispose();
  assert.strictEqual(controller.enqueue,enqueue);assert.strictEqual(controller.ack,ack);
 });
+
+test('CPU instrumentation follows a replaced controller reference and restores its latest value', () => {
+ const notebook=book(),canvas=emitter({_objects:[notebook],upperCanvasEl:new EventTarget(),getObjects(){return [...this._objects];}});
+ const first={enqueue(x){return x;},ack(){return true;}}, second={enqueue(x){return x;},ack(){return false;}};
+ const ref={current:first},descriptor=Object.getOwnPropertyDescriptor(ref,'current'),enqueue=second.enqueue;
+ const metrics=installNotebookAuditMetrics(canvas,notebook,{controllerRef:ref});
+ first.enqueue('one'); ref.current=second; second.enqueue('two'); second.ack();
+ assert.deepEqual(metrics.report().controllerStages.map(s=>s.stage),['enqueue','enqueue','ack']);
+ metrics.dispose(); assert.strictEqual(ref.current,second); assert.strictEqual(second.enqueue,enqueue);
+ assert.deepEqual(Object.getOwnPropertyDescriptor(ref,'current'),{...descriptor,value:second});
+});
+
+test('CPU instrumentation can attach after a controller is created lazily', () => {
+ const notebook=book(),canvas=emitter({_objects:[notebook],upperCanvasEl:new EventTarget(),getObjects(){return [...this._objects];}});
+ const ref={current:null},metrics=installNotebookAuditMetrics(canvas,notebook,{controllerRef:ref});
+ ref.current={enqueue(){return 3;},ack(){return true;}};
+ assert.equal(ref.current.enqueue(),3);assert.equal(metrics.report().controllerStages.length,1);metrics.dispose();
+});

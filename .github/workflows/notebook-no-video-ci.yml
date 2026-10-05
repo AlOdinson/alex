@@ -21,8 +21,10 @@ jobs:
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
       - run: node --test scripts/test-notebook-hotpath-regressions.mjs scripts/test-notebook-audit-metrics.mjs scripts/test-notebook-audit-fixture.mjs scripts/test-notebook-projection-cost.mjs scripts/test-notebook-gesture-index.mjs scripts/test-notebook-contained-fast-path.mjs scripts/test-notebook-append-cache.mjs scripts/test-notebook-append-integration.mjs scripts/test-notebook-indexed-model.mjs scripts/test-notebook-indexed-semantics.mjs scripts/test-notebook-indexed-pipeline.mjs
+      - run: node --test scripts/test-board-tombstone-index.mjs scripts/test-notebook-tombstone-cost.mjs scripts/test-board-tombstone-migration.mjs scripts/test-board-tombstone-storage-cost.mjs scripts/test-board-creation-storage.mjs
       - run: node --test scripts/test-bounded*.mjs
       - run: node scripts/benchmark-notebook-indexed-model.mjs
+      - run: node scripts/benchmark-notebook-tombstone-storage.mjs
       - run: npm run test:pencil
       - run: npm run test:sync:ci
       - run: npm run test:student:reading
@@ -74,6 +76,16 @@ jobs:
         run: |
           NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate/full node scripts/benchmark-notebook-real-input.mjs
           NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate/burst node scripts/benchmark-notebook-real-input.mjs --focused --burst
+      - name: Deletion storage migration, resume, quota-independent commit cost and history
+        run: node scripts/test-board-tombstone-browser.mjs
+      - name: Schema-compatible recovery reader on previous drawing code
+        run: |
+          candidate="$GITHUB_SHA"
+          trap 'git restore --source="$candidate" -- src' EXIT
+          git restore --source=52a65f38badf74215568540297e71ba3ce7b8b0c -- src
+          git restore --source="$candidate" -- src/lib/browserAuthorityStore.js src/lib/boardTombstoneIndex.js
+          NOTEBOOK_TOMBSTONE_OUTPUT=notebook-tombstone-results/recovery-v4 node scripts/test-board-tombstone-browser.mjs
+          git restore --source="$candidate" -- src
       - name: Interior append pixels match canonical rendering
         run: node scripts/test-notebook-append-browser.mjs
       - name: Existing notebook browser regressions
@@ -96,4 +108,5 @@ jobs:
             notebook-navigation-results/
             notebook-drop-results/
             notebook-append-results/
+            notebook-tombstone-results/
           retention-days: 14

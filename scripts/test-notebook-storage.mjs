@@ -40,7 +40,7 @@ test('legacy schema migrates snapshot atomically, without losing existing board 
   assert.deepEqual(loaded.snapshot,snapshot);
   assert.equal(loaded.title,'Saved lesson');
   const current=await req(indexedDB.open('alex-board-authority'));
-  assert.equal(current.version,3, 'new schema separates immutable baseline and durable pending intents');
+  assert.equal(current.version,4, 'new schema also separates parent deletion rows from hot board metadata');
   assert.ok(current.objectStoreNames.contains('snapshots'));
   const read=current.transaction(['boards','snapshots'],'readonly');
   const metadata=await req(read.objectStore('boards').get('legacy'));

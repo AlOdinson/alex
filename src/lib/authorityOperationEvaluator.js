@@ -1,3 +1,4 @@
+import { createBoardTombstoneIndex, applyBoardTombstoneOperations, readBoardTombstone } from './boardTombstoneIndex.js';
 import { applyAuthorityOpsInPlace, forkAuthoritySnapshot } from './authoritySnapshot.js';
 import { evaluateNotebookOperation, updateNotebookTombstones, isSerializedNotebook, isNotebookPageNavigationAllowed } from './notebookOperations.js';
 
@@ -73,7 +74,7 @@ function cleanDelete(operation) {
 function evaluateUpsert(operation, tombstones, appliedOps, skipped) {
   const id = String(operation?.object?.boardObjectId ?? '');
   if (!id) return;
-  const tombstone = tombstones?.[id] ?? null;
+  const tombstone = readBoardTombstone(tombstones, id) ?? null;
   let ok = true;
   if (hasOwn(operation, 'ifDeletedBy')) {
     ok = Boolean(tombstone) && String(tombstone.clientId ?? '') === String(operation.ifDeletedBy ?? '');
@@ -237,7 +238,7 @@ export function evaluateAuthorityAction({
   // Each restart rejects a new group, so the number of passes is bounded.
   for (;;) {
     const staged = forkAuthoritySnapshot(snapshot, sourceOps);
-    const stagedTombstones = Object.assign(Object.create(null), tombstones);
+    let stagedTombstones = createBoardTombstoneIndex(tombstones);
     let stagedNotebookTombstones = notebookTombstones;
     const appliedOps = [], skippedConflicts = [...rejectedConflicts];
     let appliedBackground = ['grid', 'dots', 'blank'].includes(background) ? background : null;
@@ -277,12 +278,7 @@ export function evaluateAuthorityAction({
       appliedOps.push(...accepted);
       if (nextBackground != null) appliedBackground = nextBackground;
       applyAuthorityOpsInPlace(staged, accepted, nextBackground);
-      for (const acceptedOp of accepted) {
-        if (acceptedOp.type === 'delete') stagedTombstones[String(acceptedOp.id)] = {
-          clientId, actionId, mutationId: String(acceptedOp.mutationId ?? actionId),
-        };
-        else if (acceptedOp.type === 'upsert') delete stagedTombstones[String(acceptedOp.object.boardObjectId)];
-      }
+      stagedTombstones = applyBoardTombstoneOperations(stagedTombstones, accepted, context);
       stagedNotebookTombstones = updateNotebookTombstones(stagedNotebookTombstones, accepted, context);
     }
     if (!restart) return { changed: appliedOps.length > 0 || appliedBackground !== null,

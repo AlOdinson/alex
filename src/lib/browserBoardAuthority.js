@@ -1,3 +1,4 @@
+import { createBoardTombstoneIndex, applyBoardTombstoneOperations } from './boardTombstoneIndex.js';
 import { createIndexedBoardModel } from './indexedBoardModel.js';
 import { prepareIndexedNotebookAction, applyIndexedNotebookOps } from './notebookIndexedTransaction.js';
 import { assertNotebookCommitReadable } from './notebookProtocol.js';
@@ -43,25 +44,7 @@ function normalizePriorOutcome(outcome) {
 }
 
 function updateTombstones(source, commit) {
-  const tombstones = cloneValue(source ?? {});
-  const clientId = String(commit?.clientId ?? '');
-  const actionId = String(commit?.actionId ?? '');
-  const revision = safeRevision(commit?.revision);
-  for (const operation of Array.isArray(commit?.ops) ? commit.ops : []) {
-    if (operation?.type === 'delete' && operation.id) {
-      tombstones[String(operation.id)] = {
-        clientId,
-        mutationId: String(operation.mutationId ?? actionId),
-        actionId,
-        revision,
-      };
-      continue;
-    }
-    if (operation?.type === 'upsert' && operation.object?.boardObjectId) {
-      delete tombstones[String(operation.object.boardObjectId)];
-    }
-  }
-  return tombstones;
+  return applyBoardTombstoneOperations(source, commit.ops, commit);
 }
 
 async function loadContiguousJournal({ boardId, fromRevision, toRevision, loadCommitsAfter }) {
@@ -126,7 +109,7 @@ export async function openBrowserBoardAuthority({
   let currentSnapshot = applyAuthorityActions(board.snapshot, replay);
   if (enableNotebookOperations) currentSnapshot = createIndexedBoardModel(currentSnapshot).snapshot;
   let notebookRequirement = board.notebookVersion === 1 ? 1 : 0;
-  let currentTombstones = cloneValue(board.tombstones ?? {});
+  let currentTombstones = createBoardTombstoneIndex(board.tombstones ?? {});
   let currentNotebookTombstones = cloneValue(board.notebookTombstones ?? {});
 
   const authority = createTeacherAuthority({
@@ -245,7 +228,7 @@ export async function openBrowserBoardAuthority({
     },
     closeVerification() { verificationLane?.close(); },
     getTombstones() {
-      return cloneValue(currentTombstones);
+      return currentTombstones.serialize();
     },
     commitAction(action) {
       const task = commitQueue.then(() => commitOne(action));
