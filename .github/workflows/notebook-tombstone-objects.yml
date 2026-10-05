@@ -1,4 +1,4 @@
-name: Stage tested addressed notebook append
+name: Stage bounded projection yield
 on:
   push:
     branches: ['delivery/notebook-tombstones-20261005']
@@ -12,27 +12,27 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: {persist-credentials: false, fetch-depth: 0}
-      - name: Upload exact reviewed Git blobs only
+      - name: Upload checksum-verified reviewed blobs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
           repo = 'AlOdinson/alex'
-          base = '36c3930b498f5aa4da2507b80369f92dc39ced6f'
-          expected = '168fdd79064494d74c2345325e685229dea516ee'
+          base = 'fd27c0cc179eadade45eb90050fae617ff1e08df'
+          expected = '09b370e9dcacdb2c9b99d829843986264ef79fe2'
           assert os.environ['GITHUB_REPOSITORY'] == repo
           assert os.environ['GITHUB_REF'] == 'refs/heads/delivery/notebook-tombstones-20261005'
           packed = base64.b64decode(pathlib.Path('.delivery/controller-locator.patch.b64').read_text())
-          assert hashlib.sha256(packed).hexdigest() == '05e665942c92c95503682a308a0e9dfe26f398ae66abcd819d6874915df065f5'
-          patch = pathlib.Path('/tmp/addressed-append.patch'); patch.write_bytes(lzma.decompress(packed))
+          assert hashlib.sha256(packed).hexdigest() == 'f67f02f439b90186c85153765436c1bf64d7865fb1002d6d9c3e99c08a85748e'
+          patch = pathlib.Path('/tmp/projection-yield.patch'); patch.write_bytes(lzma.decompress(packed))
           def git(*args): return subprocess.check_output(['git', *args], text=True).strip()
           subprocess.run(['git','checkout','--detach',base],check=True)
           subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
           subprocess.run(['git','apply','--index',str(patch)],check=True)
           assert git('write-tree') == expected
           paths = git('diff','--cached','--name-only').splitlines()
-          assert set(paths) == {'.github/workflows/notebook-no-video-ci.yml','scripts/benchmark-notebook-real-input.mjs','scripts/test-notebook-audit-metrics.mjs','scripts/test-notebook-addressed-append.mjs','src/lib/boardNotebook.js','src/lib/notebookBoardActions.js','src/lib/notebookOperations.js','src/lib/notebookPageDelta.js','src/lib/notebookPageRuntime.js','src/lib/notebookProjection.js'}
+          assert set(paths) == {'.github/workflows/notebook-no-video-ci.yml','scripts/test-notebook-addressed-append.mjs','scripts/test-notebook-append-browser.mjs','scripts/test-notebook-projection-yield.mjs','src/lib/notebookBoardController.js'}
           for name in paths:
               value = pathlib.Path(name).read_bytes()
               request = urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',
@@ -42,5 +42,5 @@ jobs:
               assert result['sha'] == git('hash-object',name)
               print(name,result['sha'])
           print('VERIFIED_LOCAL_TREE='+expected)
-          print('Immutable blobs only. No branch ref, deployment or production data changes.')
+          print('Immutable blobs only; no refs, deployment or user data changes.')
           PY
