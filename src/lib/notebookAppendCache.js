@@ -2,6 +2,7 @@
 // Only a synchronously installed interior whole Path may append. Every unknown
 // mutation, density change, edge effect, missing cache or page turn falls back.
 import { util } from 'fabric';
+import { appendNotebookChildIndex } from './notebookChildIndex.js';
 const ready = new WeakMap();
 const solid = object => String(object?.type).toLowerCase() === 'path'
   && !object.clipPath && !object.shadow && !object.isEraserPath
@@ -37,6 +38,11 @@ export function rememberNotebookAppendCache(book, forClipping = false) {
   const next = !forClipping && !book.dirty ? state(book) : null;
   if (next) ready.set(book, next); else ready.delete(book);
 }
+export function beginNotebookCacheEdit(book) {
+  const previous = ready.get(book), current = !book.dirty ? state(book) : null;
+  return same(previous, current) && previous.count === current.count ? current : null;
+}
+export const isNotebookCacheEditCurrent = (book, previous) => same(previous, state(book));
 export function beginNotebookCacheAppend(book, child) {
   const previous = ready.get(book), current = !book.dirty && solid(child) ? state(book) : null;
   return same(previous, current) && previous.count === current.count ? current : null;
@@ -70,6 +76,7 @@ export function finishNotebookCacheAppend(book, child, previous) {
     book._transformDone = true;
     child.render(ctx);
     book.dirty = false;
+    appendNotebookChildIndex(book, child, previous.count);
     rememberNotebookAppendCache(book);
     return true;
   } catch {

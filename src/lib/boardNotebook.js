@@ -1,4 +1,6 @@
-import { notebookPageState } from './notebookPageModel.js';
+import { beginNotebookDamage, finishNotebookDamage } from './notebookDamageRenderer.js';
+import { currentNotebookChildIndex, rebuildNotebookChildIndex, forgetNotebookChildIndex } from './notebookChildIndex.js';
+import { notebookPageState, notebookPageChanges } from './notebookPageModel.js';
 import { notebookPageAppend } from './notebookPageDelta.js';
 import { beginNotebookCacheAppend, finishNotebookCacheAppend, rememberNotebookAppendCache, forgetNotebookAppendCache } from './notebookAppendCache.js';
 import { memoizeImmutableNotebookImage } from './notebookAssets.js';
@@ -56,6 +58,14 @@ export class BoardNotebook extends Group {
         },
       });
     }
+  }
+
+  // A clipped notebook must remain an isolated cached object, including when a
+  // child casts a shadow. Fabric Group's shadow heuristic otherwise disables the
+  // very cache its clip requires and reaches an invalid uncached clip context.
+  shouldCache() {
+    if (this.clipPath) { this.ownCaching = true; return true; }
+    return super.shouldCache();
   }
 
   getPageObjects() { return this.getObjects(); }
@@ -119,6 +129,60 @@ export class BoardNotebook extends Group {
     return true;
   }
 
+  // The diff comes from related immutable page indexes, not untrusted wire hints.
+  // Validate every addressed slot before altering any group membership.
+  applyAddressedPageChanges(changes, prepared, pages) {
+    const before = notebookPageState(this.notebookPages, this.notebookPageNumber - 1);
+    const after = notebookPageState(pages, this.notebookPageNumber - 1);
+    const proven = notebookPageChanges(before, after);
+    if (this._pageContentInvalid || before.length !== this._objects.length || !proven
+      || proven.length !== changes.length || proven.some((entry, i) => {
+        const claim = changes[i];
+        return !claim || entry.before !== claim.before || entry.after !== claim.after
+          || entry.beforeIndex !== claim.beforeIndex || entry.index !== claim.index;
+      })) return false;
+    const fresh = new Map(prepared.map(object => [String(object.boardObjectId), object]));
+    if (fresh.size !== prepared.length) return false;
+    const edits = [];
+    for (const change of changes) {
+      const old = change.before ? this._objects[change.beforeIndex] : null;
+      if (change.before && (!old || String(old.boardObjectId) !== String(change.before.boardObjectId)
+        || this._pageRecords.get(old) !== change.before)) return false;
+      const object = change.after ? fresh.get(String(change.after.boardObjectId)) ?? old : null;
+      if (change.after && (!object || String(object.boardObjectId) !== String(change.after.boardObjectId)
+        || object !== old && object.group)) return false;
+      edits.push({ ...change, old, object, matrix: object?.calcOwnMatrix() });
+    }
+    const index = currentNotebookChildIndex(this);
+    const damage = beginNotebookDamage(this, changes, prepared);
+    const removed = [];
+    // Dense Fabric slots still shift on structural insertion/removal. Addressed
+    // access avoids an ID scan, full page copies and re-preparing retained children.
+    for (const edit of [...edits].sort((a,b) => b.beforeIndex-a.beforeIndex)) if (edit.old) {
+      this._objects.splice(edit.beforeIndex, 1);
+      this._onObjectRemoved(edit.old); removed.push(edit.old);
+      index?.delete(edit.old.boardObjectId);
+    }
+    if (removed.length) this._onAfterObjectsChange('removed', removed);
+    const added = [];
+    for (const edit of [...edits].sort((a,b) => a.index-b.index)) if (edit.object) {
+      const object = inert(edit.object);
+      this._objects.splice(edit.index, 0, object); this._onObjectAdded(object);
+      util.applyTransformToObject(object, edit.matrix); object.setCoords();
+      this._pageRecords.set(object, edit.after);
+      if (edit.after.updatedAt != null) object.updatedAt = edit.after.updatedAt;
+      if (edit.after.updatedBy != null) object.updatedBy = edit.after.updatedBy;
+      index?.put(object); added.push(object);
+    }
+    if (added.length) this._onAfterObjectsChange('added', added);
+    for (const edit of edits) if (edit.old && edit.old !== edit.object) {
+      this._pageRecords.delete(edit.old); edit.old.dispose();
+    }
+    this.notebookPages = pages; this._pageContentInvalid = false;
+    if (!finishNotebookDamage(this, damage, after, releaseChildSurfaces)) this.dirty = true;
+    return true;
+  }
+
   applyPreparedPageDelta(records, prepared, pages) {
     if (prepared.length === 1 && pages?.[this.notebookPageNumber - 1] === records
       && this.appendPreparedPageObject(prepared[0], pages)) return;
@@ -151,6 +215,7 @@ export class BoardNotebook extends Group {
   }
 
   invalidatePageContent(child) {
+    forgetNotebookChildIndex(this);
     if (child) this._pageRecords.delete(child);
     else this._pageRecords = new WeakMap();
     this._pageContentInvalid = true;
@@ -193,6 +258,7 @@ export class BoardNotebook extends Group {
   }
 
   releasePageCache() {
+    forgetNotebookChildIndex(this);
     forgetNotebookAppendCache(this);
     this._pageRenderCache?.release(this);
     this._pageRenderCache = null;
@@ -209,7 +275,10 @@ export class BoardNotebook extends Group {
     super.renderCache(options);
     // Child masks were baked into the page. Keeping those bitmaps duplicates
     // page pixels and makes image-heavy pages grow without bound.
-    if (wasDirty || previousZoomX !== this.zoomX || previousZoomY !== this.zoomY) this.getPageObjects().forEach(releaseChildSurfaces);
+    if (wasDirty || previousZoomX !== this.zoomX || previousZoomY !== this.zoomY) {
+      this.getPageObjects().forEach(releaseChildSurfaces);
+      rebuildNotebookChildIndex(this);
+    }
     cache?.acquire(this, { surfaces: [this._cacheCanvas, this.clipPath?._cacheCanvas].filter(Boolean),
       onEvict: () => {releaseSurface(this);releaseSurface(this.clipPath);this.dirty = true;} });
     rememberNotebookAppendCache(this, options?.forClipping);

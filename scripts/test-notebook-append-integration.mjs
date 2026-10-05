@@ -19,7 +19,10 @@ test('actual Board capture, durable confirmation and projection keep the old pag
   assert.deepEqual(ui.book().notebookPages,authority.getSnapshot().canvas.objects[0].notebookPages);
   const undo=ui.history.at(-1).nextHistoryOps;
   await ui.scope.commitConditionalHistoryOps(undo,'undo-cache-stroke');await ui.flush();ui.canvas.renderAll();
-  assert.equal(ui.book().getPageObjects().length,100);assert.ok(oldRenders>=100,'undo must rebuild the changed canonical page');
+  assert.equal(ui.book().getPageObjects().length,100);assert.ok(oldRenders<100,'undo must not repaint every old child');
+  const undone=ui.canvas.getContext().getImageData(0,0,800,700).data;
+  ui.book().dirty=true;ui.canvas.renderAll();
+  assert.equal(Buffer.compare(Buffer.from(undone),Buffer.from(ui.canvas.getContext().getImageData(0,0,800,700).data)),0,'undo damage differs from full rendering');
   assert.equal(ui.errors.length,0);
  }finally{await ui.close();}
 });

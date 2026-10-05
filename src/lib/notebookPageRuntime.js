@@ -1,4 +1,4 @@
-import { notebookPageState, notebookPageRecords, isNotebookPageIndex } from './notebookPageModel.js';
+import { notebookPageState, notebookPageRecords, isNotebookPageIndex, notebookPageChanges } from './notebookPageModel.js';
 import { freezeNotebookRecord } from './notebookRecords.js';
 import { notebookPageAppend } from './notebookPageDelta.js';
 import { util } from 'fabric';
@@ -106,7 +106,10 @@ export function applyPageDeltaToFabric(notebook, operation, options = {}) {
       }
       try {
         if (prepared.length !== 1 || !notebook.appendPreparedPageObject(prepared[0], final.notebookPages)) {
-          notebook.applyPreparedPageDelta(notebookPageRecords(notebookPageState(final.notebookPages, operation.pageNumber - 1)), prepared, final.notebookPages);
+          const addressed = notebookPageChanges(currentPage, notebookPageState(final.notebookPages, operation.pageNumber - 1));
+          if (!addressed || !notebook.applyAddressedPageChanges(addressed, prepared, final.notebookPages)) {
+            notebook.applyPreparedPageDelta(notebookPageRecords(notebookPageState(final.notebookPages, operation.pageNumber - 1)), prepared, final.notebookPages);
+          }
         }
       }
       catch (error) { dispose(prepared.filter(object => object.group !== notebook)); throw error; }

@@ -171,3 +171,40 @@ export function notebookPageSameLayoutChanges(before, after) {
   }
   return visit(a.order, b.order) ? changes : null;
 }
+
+// Compare related persistent versions even when an insert/delete rotated their
+// AVL roots. Splitting aligns key ranges and preserves untouched subtree identity;
+// it does not materialize a page or retain a chain of earlier versions.
+export function notebookPageChanges(before, after) {
+  const a = trees.get(before), b = trees.get(after);
+  if (!a || !b || a.family !== b.family) return null;
+  const changed = new Set();
+  function split(root, key) {
+    if (!root) return [null, null, null];
+    if (root.key === key) return [root.left, root, root.right];
+    if (key < root.key) {
+      const [left, match, right] = split(root.left, key);
+      return [left, match, right === root.left ? root : node(root.key, root.value, right, root.right)];
+    }
+    const [left, match, right] = split(root.right, key);
+    return [left === root.right ? root : node(root.key, root.value, root.left, left), match, right];
+  }
+  function collect(root) {
+    if (!root) return;
+    changed.add(root.value.boardObjectId); collect(root.left); collect(root.right);
+  }
+  function visit(left, right) {
+    if (left === right) return;
+    if (!left) { collect(right); return; }
+    if (!right) { collect(left); return; }
+    const [lo, match, hi] = split(right, left.key);
+    if (left.value !== match?.value) {
+      changed.add(left.value.boardObjectId);
+      if (match) changed.add(match.value.boardObjectId);
+    }
+    visit(left.left, lo); visit(left.right, hi);
+  }
+  visit(a.order, b.order);
+  return [...changed].map(id => ({ before: before.read(id), after: after.read(id),
+    beforeIndex: before.rankOf(id), index: after.rankOf(id) }));
+}
