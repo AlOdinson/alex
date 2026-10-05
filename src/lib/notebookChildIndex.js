@@ -1,8 +1,10 @@
 import { util } from 'fabric';
+import { notebookPageState } from './notebookPageModel.js';
 // Ephemeral visible-page index. Nothing here is serialized into a lesson.
 // Large and unsupported footprints stay in a separate set, never millions of cells.
 const indexes = new WeakMap();
 const CELL = 64, MAX_CELLS = 256;
+const MAX_ERASER_CANDIDATES = 256;
 const knownTypes = new Set(['path','rect','circle','ellipse','triangle','line','polygon','polyline','text','itext','textbox','image']);
 export function notebookChildBounds(object, intendedParent = null) {
   if (!knownTypes.has(String(object?.type).toLowerCase()) || object.shadow
@@ -76,4 +78,49 @@ export const forgetNotebookChildIndex=book=>indexes.delete(book);
 export function currentNotebookChildIndex(book){const entry=indexes.get(book);return sameFrame(entry,book)?entry.index:null;}
 export function appendNotebookChildIndex(book,child,previousCount){
   const entry=indexes.get(book);if(sameFrame(entry,book)&&entry.index.size===previousCount)entry.index.put(child);else indexes.delete(book);
+}
+
+/** Broad phase only: the caller retains the existing containsPoint AND pixel
+ * transparency predicate. No opacity, selection, eraser or layer policy changes.
+ * A dirty/live page may not match its last rendered spatial index: fall back to
+ * the old live order until canonical drawing refreshes that index. Never rebuild
+ * the page or its raster just to answer a pointer sample.
+ */
+export function notebookEraserCandidates(book, scenePoint) {
+  const fallback = () => [...book.getPageObjects()].reverse();
+  if (book._pageContentInvalid || book.dirty) return fallback();
+  const index = currentNotebookChildIndex(book);
+  if (!index || index.size !== book._objects.length) return fallback();
+  const state = notebookPageState(book.notebookPages, book.notebookPageNumber - 1);
+  if (typeof state?.rankOf !== 'function' || state.length !== index.size) return fallback();
+  const frame = book.calcTransformMatrix(), viewport = book.canvas?.viewportTransform;
+  const invertible = matrix => matrix?.length === 6 && matrix.every(Number.isFinite)
+    && Number.isFinite(matrix[0] * matrix[3] - matrix[1] * matrix[2])
+    && matrix[0] * matrix[3] - matrix[1] * matrix[2] !== 0;
+  if (!invertible(frame) || !invertible(viewport)
+    || !Number.isFinite(scenePoint?.x) || !Number.isFinite(scenePoint?.y)) return fallback();
+  const inverseFrame = util.invertTransform(frame);
+  const local = util.transformPoint(scenePoint, inverseFrame);
+  const inverseScreen = util.multiplyTransformMatrices(inverseFrame, util.invertTransform(viewport));
+  // Fabric's pixel test samples a viewport tolerance square, with retina rounding.
+  // Transform its extent conservatively into notebook-local space. The extra
+  // pixel covers rounding; it does NOT expand the final exact-hit predicate.
+  const tolerance = Number(book.canvas.targetFindTolerance ?? 0);
+  if (!Number.isFinite(tolerance) || tolerance < 0) return fallback();
+  const pad = tolerance + 1;
+  const dx = pad * (Math.abs(inverseScreen[0]) + Math.abs(inverseScreen[2]));
+  const dy = pad * (Math.abs(inverseScreen[1]) + Math.abs(inverseScreen[3]));
+  const rect = { left: local.x - dx, top: local.y - dy, right: local.x + dx, bottom: local.y + dy };
+  if (!Object.values(rect).every(Number.isFinite)) return fallback();
+  const nearby = index.query(rect);
+  // In dense overlap a full live-order scan can stop at the first opaque child;
+  // ranking/sorting the entire page would add work instead of removing it.
+  // Fall back, never truncate the candidate list or silently miss lower ink.
+  if (nearby.length > MAX_ERASER_CANDIDATES) return fallback();
+  const candidates = nearby.map(({ object }) => ({ object, rank: state.rankOf(object.boardObjectId) }));
+  // Only validate addressed candidates. Unknown/duplicate legacy layouts already
+  // failed the index/state guards, and stale memberships must never erase a peer.
+  if (candidates.some(({object, rank}) => rank < 0 || book._objects[rank] !== object || object.group !== book)) return fallback();
+  candidates.sort((a, b) => b.rank - a.rank);
+  return candidates.map(({object}) => object);
 }

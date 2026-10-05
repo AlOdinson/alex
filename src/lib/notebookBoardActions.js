@@ -4,6 +4,8 @@ import { randomToken } from './ids.js';
 import { createConditionalDeleteOps, createConditionalRecordPatchOps } from './operationProtocol.js';
 import { prepareNotebookProjection } from './notebookProjection.js';
 import { readSnapshotRecord } from './indexedBoardModel.js';
+import { notebookPageState, notebookPageChanges } from './notebookPageModel.js';
+import { retireNotebookPageWork } from './notebookPageRuntime.js';
 
 const CHILD_FIELDS = ['id', 'shapeType', 'boardObjectId', 'objectKind', 'storagePath', 'isEraserPath', 'updatedAt', 'updatedBy'];
 const serialized = object => object.toObject(CHILD_FIELDS);
@@ -324,16 +326,69 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
       for (const notebook of notebooks) {
         const entry = entries.find(item => item.id === notebook.boardObjectId);
         if (entry.page !== notebook.notebookPageNumber) continue;
-        const children = notebook.getPageObjects().filter(child => entry.childIds.has(child.boardObjectId));
-        const byId = new Map(notebook.notebookPages[entry.page - 1].map(record => [String(record.boardObjectId), record]));
-        if (!children.length) continue;
-        ops.push(operation(notebook, entry.page, children.map(child => ({ type: 'delete', id: String(child.boardObjectId), ifObjectVersion: byId.get(String(child.boardObjectId)) }))));
-        affected.push({ notebook, children });
+        const state = !notebook._pageContentInvalid && notebookPageState(notebook.notebookPages, entry.page - 1);
+        let selected = null;
+        if (typeof state?.rankOf === 'function' && state.length === notebook._objects.length) {
+          const addressed = [...entry.childIds].filter(id => typeof id === 'string').map(id => {
+            const rank = state.rankOf(id);
+            return { child: rank < 0 ? null : notebook._objects[rank], record: state.read(id), rank, id };
+          }).filter(item => item.rank >= 0);
+          if (addressed.every(item => item.child?.boardObjectId === item.id
+            && notebook._pageRecords.get(item.child) === item.record)) {
+            selected = addressed.sort((a, b) => a.rank - b.rank);
+          }
+        }
+        // Retain canonical behavior for unowned/legacy or unsynchronized pages.
+        if (!selected) {
+          const children = notebook.getPageObjects().filter(child => entry.childIds.has(child.boardObjectId));
+          const byId = new Map(notebook.notebookPages[entry.page - 1].map(record => [String(record.boardObjectId), record]));
+          selected = children.map(child => ({ child, record: byId.get(String(child.boardObjectId)) }));
+        }
+        if (!selected.length) continue;
+        ops.push(operation(notebook, entry.page, selected.map(({ child, record }) => ({
+          type: 'delete', id: String(child.boardObjectId), ifObjectVersion: record,
+        }))));
+        affected.push({ notebook, children: selected.map(item => item.child), childIds: entry.childIds });
       }
       if (!ops.length) return false;
       const actionId = randomToken(24), handle = controller.enqueue({ actionId, ops: guardOps(ops, actionId) }); enqueued = true;
       const historyAction = history(handle);
-      mutate(() => affected.forEach(({ notebook, children }, index) => {
+      const view = controller.getState?.();
+      mutate(() => affected.forEach(({ notebook, children, childIds }, index) => {
+        if (view) {
+          // Only install the action's actual optimistic result, never assume a
+          // guarded delete succeeded. Cold imports can have unrelated indexes.
+          const target = readSnapshotRecord(view.snapshot, String(notebook.boardObjectId))?.object;
+          if (target?.notebookPageNumber !== notebook.notebookPageNumber || notebook._pageContentInvalid) return;
+          const changes = notebookPageChanges(
+            notebookPageState(notebook.notebookPages, notebook.notebookPageNumber - 1),
+            notebookPageState(target.notebookPages, target.notebookPageNumber - 1));
+          let installed = false;
+          if (changes && !changes.some(change => change.after || !childIds.has(change.before?.boardObjectId))) {
+            if (changes.length) {
+              retireNotebookPageWork(notebook);
+              installed = notebook.applyAddressedPageChanges(changes, [], target.notebookPages);
+            } else { notebook.notebookPages = target.notebookPages; installed = true; }
+          }
+          if (!installed) {
+            // Keep the original synchronous release behavior on an unshared
+            // imported layout, even when the caller's projection is deferred.
+            // Only retire children actually absent from the canonical result;
+            // rejected object-version guards must never erase visible ink.
+            const state = notebookPageState(target.notebookPages, target.notebookPageNumber - 1);
+            const hasChild = typeof state?.read === 'function'
+              ? id => Boolean(state.read(id))
+              : id => state.some(record => String(record.boardObjectId) === String(id));
+            const removed = children.filter(child => !hasChild(child.boardObjectId));
+            if (removed.length) {
+              notebook.remove(...removed); notebook.syncPage({ invalidate: false });
+              removed.forEach(child => child.dispose());
+            }
+          }
+          notebook.updatedAt = target.updatedAt; notebook.updatedBy = target.updatedBy;
+          return;
+        }
+        // Compatibility for an older controller without an addressed view.
         notebook.remove(...children); notebook.syncPage({ invalidate: false }); children.forEach(child => child.dispose());
         notebook.updatedAt = ops[index].updatedAt; notebook.updatedBy = clientId;
       }));

@@ -1,3 +1,4 @@
+import { notebookEraserCandidates } from '../lib/notebookChildIndex.js';
 import { readSnapshotRecord } from '../lib/indexedBoardModel.js';
 import { snapshotNotebookGesturePages, bindNotebookGestureTarget, consumeNotebookGesturePage } from '../lib/notebookGestureTarget.js';
 import { createNotebookCommitBridge } from '../lib/notebookCommitBridge.js';
@@ -10900,7 +10901,7 @@ function BoardWorkspace({
       );
       if (!target) return;
       if (isBoardNotebook(target)) {
-        const child = [...target.getPageObjects()].reverse().find(object => !object.isEraserPath
+        const child = notebookEraserCandidates(target, scenePoint).find(object => !object.isEraserPath
           && object.containsPoint(scenePoint) && !canvas.isTargetTransparent(object, viewportPoint.x, viewportPoint.y));
         if (child) {
           const entry = notebookEraserEntries.get(target.boardObjectId)

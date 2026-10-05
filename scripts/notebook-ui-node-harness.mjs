@@ -128,3 +128,6 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
   async close(){scope.boardReadyRef.current=false;scope.notebookControllerEpochRef.current++;scope.notebookControllerRef.current?.dispose();scope.notebookControllerRef.current=null;await realtime.disconnect();await canvas.dispose();},
  };
 }
+
+// Other regression harnesses use the actual production function bodies as well.
+export { globalFunction as boardFunction };
