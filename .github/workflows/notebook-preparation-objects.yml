@@ -7,7 +7,7 @@ permissions:
 jobs:
   stage:
     if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-preparation-20261006'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
