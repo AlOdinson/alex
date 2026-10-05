@@ -157,3 +157,33 @@ test('changed live content cannot use a previously prepared append proof', async
     child.dispose();
   } finally { await f.close(); }
 });
+
+test('proven local append pixels match canonical rendering with fractional scale and transparent ink', async () => {
+  const { createNotebookBoardActions } = await import('../src/lib/notebookBoardActions.js');
+  const { applyAuthorityOpsInPlace } = await import('../src/lib/authoritySnapshot.js');
+  const { Point, util } = await import('fabric');
+  const f = await fixture();
+  try {
+    f.book.set({ left: 20, top: 20, scaleX: .65, scaleY: .65, opacity: .45 });
+    f.canvas.setZoom(1.3); f.canvas.renderAll();
+    const snapshot = { version: 2, canvas: { objects: [f.book.toObject(fields)] } };
+    let installed = 0;
+    const append = f.book.appendPreparedPageObject;
+    f.book.appendPreparedPageObject = function (...args) { const result = append.apply(this, args); if (result) installed++; return result; };
+    const controller = { getState: () => ({ snapshot }), pendingObjectIds: () => new Set(['book']),
+      enqueue(input) { applyAuthorityOpsInPlace(snapshot, input.ops); return { actionId: input.actionId, inverseOps: [], settled: new Promise(() => {}) }; } };
+    const actions = createNotebookBoardActions({ getCanvas: () => f.canvas, getController: async () => controller,
+      clientId: 'test', acquireLease: async () => true, ownsLease: () => true, releaseLease() {}, recordAction() {},
+      getRecords: () => { throw new Error('contained append should not request full source records'); } });
+    const points = [[-40,22],[0,55],[45,32]].map(([x,y]) => util.transformPoint(new Point(x,y), f.book.calcTransformMatrix()));
+    const stroke = new Path([['M',points[0].x,points[0].y],['Q',points[1].x,points[1].y,points[2].x,points[2].y]], {
+      boardObjectId: 'source', stroke: 'rgba(70,30,20,.6)', opacity: .7, strokeWidth: 4, fill: null,
+      strokeUniform: true, strokeLineCap: 'round', strokeLineJoin: 'round', strokeDashArray: [7,3] });
+    f.canvas.add(stroke); assert.equal(await actions.capture(f.book, stroke), true); f.canvas.renderAll();
+    assert.equal(installed, 1);
+    const ctx = f.canvas.getContext(), width = f.canvas.lowerCanvasEl.width, height = f.canvas.lowerCanvasEl.height;
+    const actual = ctx.getImageData(0, 0, width, height).data;
+    f.book.dirty = true; f.canvas.renderAll();
+    assert.deepEqual(actual, ctx.getImageData(0, 0, width, height).data);
+  } finally { await f.close(); }
+});

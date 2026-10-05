@@ -24,8 +24,9 @@ try {
     const { StaticCanvas, Path, Rect, util, Point } = await import('/alex/node_modules/.vite/deps/fabric.js');
     const { BoardNotebook } = await import('/alex/src/lib/boardNotebook.js');
     const { createNotebookBoardActions } = await import('/alex/src/lib/notebookBoardActions.js');
+    const { applyAuthorityOpsInPlace } = await import('/alex/src/lib/authoritySnapshot.js');
     const results = [];
-    for (const options of [{}, { erased: true }, { scale: .65, zoom: 1.3, opacity: .45 }, { scale: 1.4, zoom: .8, masked: true }]) {
+    for (const addressed of [false, true]) for (const options of [{}, { erased: true }, { scale: .65, zoom: 1.3, opacity: .45 }, { scale: 1.4, zoom: .8, masked: true }]) {
       const canvas = new StaticCanvas(document.createElement('canvas'), { width: 800, height: 700, renderOnAddRemove: false });
       document.body.appendChild(canvas.lowerCanvasEl); canvas.setZoom(options.zoom ?? 1);
       const book = new BoardNotebook({ boardObjectId: 'book', left: 20, top: 20,
@@ -38,7 +39,23 @@ try {
       canvas.add(book); canvas.renderAll();
       let oldRenders = 0;
       for (const child of book.getPageObjects()) { const render = child.render; child.render = function (...args) { oldRenders++; return render.apply(this, args); }; }
-      const controller = { enqueue: () => ({ actionId: 'test', inverseOps: [], settled: new Promise(() => {}) }), pendingObjectIds: () => new Set(['book']) };
+      // Exercise both the compatibility path and the canonical append proof. The
+      // latter must install through the new address-only method, not silently
+      // fall back to the previously tested full-page synchronization.
+      const snapshot = { version: 2, canvas: { objects: [book.toObject(['boardObjectId'])] } };
+      let addressedInstalls = 0;
+      const append = book.appendPreparedPageObject;
+      book.appendPreparedPageObject = function (...args) {
+        const result = append.apply(this, args); if (result) addressedInstalls++; return result;
+      };
+      const controller = {
+        enqueue: input => {
+          if (addressed) applyAuthorityOpsInPlace(snapshot, input.ops);
+          return { actionId: input.actionId, inverseOps: [], settled: new Promise(() => {}) };
+        },
+        ...(addressed ? { getState: () => ({ snapshot, revision: 0 }) } : {}),
+        pendingObjectIds: () => new Set(['book'])
+      };
       const actions = createNotebookBoardActions({ getCanvas: () => canvas, getController: async () => controller,
         clientId: 'test', acquireLease: async () => true, ownsLease: () => true, releaseLease() {}, recordAction() {},
         getRecords: objects => objects.map(object => ({ object: object.toObject(['boardObjectId']), zIndex: 1 })) });
@@ -64,7 +81,7 @@ try {
         for (let i = 0; i < actual.length; i++) if (actual[i] !== expected[i]) {
           differingChannels++; maxDifference = Math.max(maxDifference, Math.abs(actual[i]-expected[i]));
         }
-        results.push({ options, captured, appendRenders, fullRenders,
+        results.push({ options, addressed, addressedInstalls, captured, appendRenders, fullRenders,
           differingChannels, maxDifference, fullRepeatDifferences, width, height });
       } finally { await canvas.dispose(); }
     }
@@ -75,6 +92,7 @@ try {
   await writeFile(`${output}/${engineName}.json`, JSON.stringify(report,null,2));
   for (const result of results) {
     assert.equal(result.captured, true); assert.equal(result.appendRenders, 0, JSON.stringify(result));
+    assert.equal(result.addressedInstalls, result.addressed ? 1 : 0, JSON.stringify(result));
     assert.ok(result.fullRenders >= 100); assert.equal(result.differingChannels, 0, JSON.stringify(result));
   }
   assert.deepEqual(errors, []); console.log(JSON.stringify(report));

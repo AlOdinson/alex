@@ -9,6 +9,8 @@ const shallowEqual = (a, b) => {
   const keys = Object.keys(a);
   return keys.length === Object.keys(b).length && keys.every(key => Object.is(a[key], b[key]));
 };
+const PROJECTION_SLICE_MS = 4;
+const yieldBrowserTask = () => new Promise(resolve => setTimeout(resolve, 0));
 const index = view => new Map((view?.snapshot?.canvas?.objects ?? []).map(object => [String(object.boardObjectId), object]));
 
 /**
@@ -31,6 +33,7 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
     if (disposed || suspended || scheduled || !dirty.size || paintError) return;
     scheduled = true;
     paintTask = paintTask.catch(() => {}).then(async () => {
+      let sliceStarted = performance.now();
       try {
         while (!disposed && !suspended && dirty.size) {
           const ids = new Set(dirty), ticket = generation, view = latest, reorders = new Set(reorderIds);
@@ -45,6 +48,13 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
           } catch (error) {
             ids.forEach(id => dirty.add(id));
             paintError = error; report(error); throw error;
+          }
+          // Yield only BETWEEN complete projections. A chain of already-resolved
+          // promises otherwise drains all corrections before native input can
+          // run. Never yield inside installation or drop a user's queued intent.
+          if (!disposed && !suspended && dirty.size && performance.now() - sliceStarted >= PROJECTION_SLICE_MS) {
+            await yieldBrowserTask();
+            sliceStarted = performance.now();
           }
         }
       } finally { scheduled = false; }
