@@ -7,6 +7,10 @@ const knownTypes = new Set(['path','rect','circle','ellipse','triangle','line','
 export function notebookChildBounds(object, intendedParent = null) {
   if (!knownTypes.has(String(object?.type).toLowerCase()) || object.shadow
     || object.globalCompositeOperation && !['source-over','destination-out'].includes(object.globalCompositeOperation)) return null;
+  // Rich character styles and text-on-path can paint beyond the ordinary text
+  // box (for example a per-character stroke wider than the object stroke).
+  if (['text','itext','textbox'].includes(String(object.type).toLowerCase())
+    && (object.path || Object.keys(object.styles ?? {}).length)) return null;
   const m = object.calcOwnMatrix();
   const w = Number(object.width), h = Number(object.height);
   if (![w,h,...m].every(Number.isFinite) || w<0 || h<0) return null;

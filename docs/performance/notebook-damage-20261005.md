@@ -58,3 +58,5 @@ Still outstanding: spatial-index integration into actual eraser hit-testing;
 fully bounded preparation/splitting worker; zoom/cache quality policy; main-board
 partial composition and remaining service/startup work; full-plan release review.
 The main board still uses its normal requestRenderAll and unchanged video compositor.
+
+Native correction: full canonical scratch coordinates resolved all 21 Chromium cases and 19/21 WebKit cases. For two remaining fractional-scale cases the next correction reproduces Fabric translate/scale calls instead of a numeric getTransform/setTransform round trip. Fresh native results remain required. Rich per-character text styles and text on a path have unknown extra footprints and deliberately use canonical painting; a real 200px character-stroke regression reproduced 100368 differing channels before this guard.

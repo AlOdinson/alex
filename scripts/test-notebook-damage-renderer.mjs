@@ -154,3 +154,16 @@ test('finite extreme child coordinates cannot trap the spatial grid in a non-adv
  assert.equal(result.error,undefined,`index must complete without looping: ${result.error?.code}`);
  assert.equal(result.status,0,result.stderr);
 });
+
+test('per-character stroke effects use canonical painting rather than an underestimated text footprint',async()=>{
+ const f=await fixture();try{
+  const text=new Textbox('X',{boardObjectId:'styled',left:0,top:0,width:30,fontSize:18,
+    styles:{0:{0:{stroke:'red',strokeWidth:200}}}});
+  const snapshot={...f.book.toObject(fields)};
+  applyNotebookOperation(snapshot,op([{type:'insert',object:text.toObject(fields)}]));text.dispose();
+  let work=await prepareNotebookProjection(f.book,snapshot);assert.equal(work.apply(),true);f.canvas.renderAll();f.reset();
+  await project(f,[{type:'patch',id:'styled',patch:{left:85}}]);f.canvas.renderAll();
+  const renders=f.renders();canonical(f);
+  assert.ok(renders>=180,'unknown character stroke footprint must use canonical fallback');
+ }finally{await f.close();}
+});

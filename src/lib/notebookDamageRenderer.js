@@ -53,7 +53,11 @@ export function finishNotebookDamage(book,ticket,pageState,releaseChildSurfaces 
   try{
     surface=util.createCanvasElement();surface.width=sw;surface.height=sh;ctx=surface.getContext('2d');
     if(!ctx)throw new Error('Temporary notebook repair context unavailable');
-    ctx.setTransform(matrix.a,matrix.b,matrix.c,matrix.d,matrix.e-left,matrix.f-top);
+    // Reproduce Fabric's original translate/scale calls. WebKit's numeric
+    // getTransform() round trip can lose native precision at fractional scale.
+    // Reading the matrix is useful for bounds/guards, not rebuilding the raster.
+    ctx.translate(book.cacheTranslationX,book.cacheTranslationY);
+    ctx.scale(book.zoomX,book.zoomY);
     ctx.globalAlpha=1;ctx.globalCompositeOperation='source-over';book._transformDone=true;
     book._renderBackground(ctx);for(const entry of entries)entry.object.render(ctx);
     if(!isNotebookCacheEditCurrent(book,cache))return false;

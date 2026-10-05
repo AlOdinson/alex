@@ -15,7 +15,7 @@ try{
  await page.goto(base+'scripts/board-media-fixture.html');
  const results=await page.evaluate(async()=>{const {runNotebookDamageCases}=await import('/alex/scripts/notebook-damage-fixture.js');return runNotebookDamageCases();});
  await writeFile(`${output}/${name}.json`,JSON.stringify({name,commit:process.env.GITHUB_SHA,results,errors},null,2));
- assert.equal(results.length,21);
+ assert.equal(results.length,22);
  for(const result of results){assert.equal(result.error,undefined,JSON.stringify(result));assert.equal(result.differingChannels,0,JSON.stringify(result));
   assert.ok(result.installs>=1,JSON.stringify(result));assert.ok(result.canonicalRenders>=175,JSON.stringify(result));
   if(result.fallback)assert.ok(result.localRenders>=175,JSON.stringify(result));else assert.ok(result.localRenders<result.canonicalRenders,JSON.stringify(result));

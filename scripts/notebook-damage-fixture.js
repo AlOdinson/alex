@@ -27,6 +27,7 @@ export async function runNotebookDamageCases() {
     {name:'masked-overlap',kind:'color',masked:true},
     {name:'stroke-uniform',kind:'uniform',scale:.8,zoom:1.15,masked:true},
     {name:'editable-text',kind:'text'},
+    {name:'styled-text-fallback',kind:'styled',fallback:true},
     {name:'image-move',kind:'image'},
     {name:'boundary-fallback',kind:'edge',fallback:true},
     {name:'shadow-fallback',kind:'shadow',fallback:true},
@@ -44,6 +45,7 @@ export async function runNotebookDamageCases() {
       objects.push(path('overlap',-14,-7,{opacity:.53,...(spec.masked?{clipPath:new Rect({width:18,height:25,originX:'center',originY:'center'})}:{})}));
       if(spec.erased)objects.push(path('eraser',-14,-5,{stroke:'black',strokeWidth:8,isEraserPath:true,globalCompositeOperation:'destination-out'}));
       if(spec.kind==='text')objects.push(new Textbox('hello',{boardObjectId:'text',left:-35,top:15,width:74,fontSize:19,fontStyle:'italic',fill:'#b56'}));
+      if(spec.kind==='styled')objects.push(new Textbox('X',{boardObjectId:'styled',left:0,top:0,width:30,fontSize:18,styles:{0:{0:{stroke:'red',strokeWidth:200}}}}));
       if(spec.kind==='image'){
         const source=util.createCanvasElement();source.width=30;source.height=25;
         const ctx=source.getContext('2d');ctx.fillStyle='#936';ctx.fillRect(0,0,20,20);ctx.fillStyle='rgba(20,180,40,.5)';ctx.fillRect(12,7,18,18);
@@ -69,6 +71,7 @@ export async function runNotebookDamageCases() {
         undo:[{type:'delete',id:'target'}],eraser:[{type:'delete',id:'eraser'}],
         uniform:[{type:'patch',id:'target',patch:{strokeUniform:true,strokeWidth:7,scaleX:.7,scaleY:1.3}}],
         text:[{type:'patch',id:'text',patch:{text:'bye',left:28}}],
+        styled:[{type:'patch',id:'styled',patch:{left:85}}],
         image:[{type:'patch',id:'image',patch:{left:34,scaleX:1.5}}],
         edge:[{type:'patch',id:'target',patch:{left:-260}}],
         shadow:[{type:'patch',id:'target',patch:{shadow:{color:'rgba(20,20,20,.5)',blur:6,offsetX:10,offsetY:3}}}],
