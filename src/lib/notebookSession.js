@@ -1,3 +1,4 @@
+import { createBoardTombstoneIndex, applyBoardTombstoneOperations } from './boardTombstoneIndex.js';
 import { createIndexedBoardModel, readSnapshotRecord } from './indexedBoardModel.js';
 import { prepareIndexedNotebookAction, applyIndexedNotebookOps } from './notebookIndexedTransaction.js';
 import { randomToken } from './ids.js';
@@ -33,20 +34,10 @@ function checkpoint(value) {
   // Full deep processing is permitted at this load/recovery boundary, not per ink.
   copy.snapshot.canvas.objects.filter(object => !Array.isArray(object.notebookPages)).forEach(object => freezeNotebookRecord(object));
   return { revision: copy.revision, snapshot: createIndexedBoardModel(seal(copy.snapshot)).snapshot,
-    tombstones: copy.tombstones ?? {}, notebookTombstones: copy.notebookTombstones ?? {} };
+    tombstones: createBoardTombstoneIndex(copy.tombstones ?? {}), notebookTombstones: copy.notebookTombstones ?? {} };
 }
 function boardTombstones(source, operations, context) {
-  let result = source;
-  const write = () => { if (result === source) result = { ...source }; };
-  for (const op of operations) {
-    if (op.type === 'delete') {
-      write(); result[String(op.id)] = { clientId: context.clientId, actionId: context.actionId,
-        mutationId: String(op.mutationId ?? context.actionId), revision: context.revision ?? 0 };
-    } else if (op.type === 'upsert' && Object.hasOwn(result, String(op.object.boardObjectId))) {
-      write(); delete result[String(op.object.boardObjectId)];
-    }
-  }
-  return result;
+  return applyBoardTombstoneOperations(source, operations, context);
 }
 function advance(model, operations, background, context) {
   let snapshot = applyIndexedNotebookOps(model.snapshot, operations, background);

@@ -1,3 +1,4 @@
+import { readBoardTombstone } from './boardTombstoneIndex.js';
 import { indexedBoardModelFor } from './indexedBoardModel.js';
 import { evaluateAuthorityAction } from './authorityOperationEvaluator.js';
 import { prepareAuthoritativeHistory } from './historyOperations.js';
@@ -20,7 +21,10 @@ function scopeFor(snapshot, operations) {
 }
 function selectedTombstones(source, keys) {
   const selected = Object.create(null);
-  for (const key of keys) if (Object.hasOwn(source ?? {}, key)) selected[key] = source[key];
+  for (const key of keys) {
+    const value = readBoardTombstone(source, key);
+    if (value !== undefined) selected[key] = value;
+  }
   return selected;
 }
 
