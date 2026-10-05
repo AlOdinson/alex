@@ -1,3 +1,4 @@
+import { queueNotebookWork } from '../lib/notebookWorkScheduler.js';
 import { notebookEraserCandidates } from '../lib/notebookChildIndex.js';
 import { readSnapshotRecord } from '../lib/indexedBoardModel.js';
 import { snapshotNotebookGesturePages, bindNotebookGestureTarget, consumeNotebookGesturePage } from '../lib/notebookGestureTarget.js';
@@ -8588,15 +8589,18 @@ function BoardWorkspace({
   // Serialize notebook mutations locally as well as at the shared authority. A page
   // flip cannot overtake a stroke that is still preparing its clipped fragments.
   const queueNotebookMutation = useCallback((work) => {
-    const next = notebookQueueRef.current.catch(() => undefined).then(async () => {
+    const canvas = fabricCanvasRef.current, epoch = notebookControllerEpochRef.current;
+    const current = () => canvas != null && canvas === fabricCanvasRef.current
+      && epoch === notebookControllerEpochRef.current;
+    const next = queueNotebookWork(notebookQueueRef.current, async () => {
       notebookMutationActiveRef.current = true;
       try { return await work(); }
       finally {
         notebookMutationActiveRef.current = false;
         const active = fabricCanvasRef.current?.getActiveObject();
-        if (active) acquireLocalSelectionLease(active);
+        if (active && current()) acquireLocalSelectionLease(active);
       }
-    });
+    }, current);
     notebookQueueRef.current = next;
     next.catch(error => { setSaveStatus(error.message); setSyncTone('error'); });
     return next;

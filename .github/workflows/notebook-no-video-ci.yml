@@ -24,6 +24,7 @@ jobs:
       - run: node --test scripts/test-board-tombstone-index.mjs scripts/test-notebook-tombstone-cost.mjs scripts/test-board-tombstone-migration.mjs scripts/test-board-tombstone-storage-cost.mjs scripts/test-board-creation-storage.mjs
       - run: node --test scripts/test-notebook-page-model.mjs scripts/test-notebook-page-model-integration.mjs
       - run: node --test scripts/test-notebook-damage-renderer.mjs scripts/test-notebook-damage-budget.mjs scripts/test-notebook-damage-pixels.mjs scripts/test-notebook-page-diff.mjs scripts/test-notebook-shadow-cache.mjs
+      - run: node --test scripts/test-notebook-work-scheduler.mjs scripts/test-notebook-bounded-preparation.mjs
       - run: node --test scripts/test-notebook-eraser-index.mjs
       - run: node scripts/benchmark-notebook-page-model.mjs
       - run: node --test scripts/test-bounded*.mjs
@@ -59,6 +60,8 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - name: Bounded preparation, input fairness, cancellation and atomic installation
+        run: node scripts/test-notebook-preparation-browser.mjs
       - name: Indexed notebook eraser and real pointer deletion, undo, redo and reload
         run: node scripts/test-notebook-eraser-browser.mjs
       - name: Exact local damage pixels, preserved text/images, compositing and undo
@@ -77,7 +80,7 @@ jobs:
           git restore --source="$candidate" -- src
       - name: Repeated focused input comparison against the last verified block
         run: |
-          baseline=ebf989968a0a4ee3a81fd3789654f5ab88bad4c1
+          baseline=e54e45ed4ab79cfbac8319ecfbd971c4ff449c64
           candidate="$GITHUB_SHA"
           trap 'git restore --source="$candidate" -- src' EXIT
           for round in 1 2 3; do
@@ -121,5 +124,6 @@ jobs:
             notebook-tombstone-results/
             notebook-page-model-results/
             notebook-damage-results/
+            notebook-preparation-results/
             notebook-eraser-results/
           retention-days: 14

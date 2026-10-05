@@ -1,3 +1,4 @@
+import { enlivenNotebookObjects } from './notebookObjectPreparation.js';
 import { beginNotebookDamage, finishNotebookDamage } from './notebookDamageRenderer.js';
 import { currentNotebookChildIndex, rebuildNotebookChildIndex, forgetNotebookChildIndex } from './notebookChildIndex.js';
 import { notebookPageState, notebookPageChanges } from './notebookPageModel.js';
@@ -295,11 +296,15 @@ export class BoardNotebook extends Group {
   static async fromObject(serialized, options = {}) {
     const { clipPath, shadow, ...frame } = serialized;
     const notebook = new BoardNotebook(frame);
-    if (shadow) notebook.shadow = (await util.enlivenObjectEnlivables({ shadow }, options)).shadow;
-    const objects = await util.enlivenObjects(notebook.notebookPages[notebook.notebookPageNumber - 1] || [], options);
-    notebook.replacePageObjects(objects, notebook.notebookPages[notebook.notebookPageNumber - 1]);
-    notebook.setCoords();
-    return notebook;
+    try {
+      if (shadow) notebook.shadow = (await util.enlivenObjectEnlivables({ shadow }, options)).shadow;
+      const records = notebook.notebookPages[notebook.notebookPageNumber - 1] || [];
+      const objects = await enlivenNotebookObjects(records, options);
+      try { notebook.replacePageObjects(objects, records); }
+      catch (error) { objects.filter(object => object.group !== notebook).forEach(object => object.dispose()); throw error; }
+      notebook.setCoords();
+      return notebook;
+    } catch (error) { notebook.dispose(); throw error; }
   }
 }
 classRegistry.setClass(BoardNotebook);

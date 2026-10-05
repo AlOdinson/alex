@@ -1,6 +1,7 @@
 import { notebookPageState, notebookPageRecords, notebookPageChanges } from './notebookPageModel.js';
 import { notebookPageAppend } from './notebookPageDelta.js';
-import { util } from 'fabric';
+import { enlivenNotebookObjects } from './notebookObjectPreparation.js';
+import { isNotebookWorkCancelled } from './notebookWorkScheduler.js';
 import { createObjectPatch } from './operationProtocol.js';
 import { notebookPageWorkGuard, retireNotebookPageWork } from './notebookPageRuntime.js';
 
@@ -59,10 +60,15 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
     freshRecords = records.filter(record => pageChanged
       || !visuallyEqual(currentById.get(String(record.boardObjectId)), record));
   }
-  const prepared = freshRecords.length ? await util.enlivenObjects(freshRecords, { signal }) : [];
   let installed = false, disposed = false;
   const current = () => !installed && !disposed && !signal?.aborted && isCurrent() && guard()
     && notebook.notebookPages === beforePages && notebook.notebookPageNumber === beforePageNumber;
+  let prepared;
+  try { prepared = await enlivenNotebookObjects(freshRecords, { signal }, current); }
+  catch (error) {
+    if (!isNotebookWorkCancelled(error)) throw error;
+    return { isCurrent: () => false, apply: () => false, dispose() {} };
+  }
   return {
     isCurrent: current,
     apply() {

@@ -1,7 +1,8 @@
 import { notebookPageState, notebookPageRecords, isNotebookPageIndex, notebookPageChanges } from './notebookPageModel.js';
 import { freezeNotebookRecord } from './notebookRecords.js';
 import { notebookPageAppend } from './notebookPageDelta.js';
-import { util } from 'fabric';
+import { enlivenNotebookObjects } from './notebookObjectPreparation.js';
+import { isNotebookWorkCancelled, queueNotebookWork } from './notebookWorkScheduler.js';
 import { applyNotebookOperation, isNotebookOperation } from './notebookOperations.js';
 
 const workspaces = new WeakMap();
@@ -40,7 +41,14 @@ export async function navigateNotebookPage(notebook, page, options = {}) {
   // Never attach stale page data merely to finish a slow navigation request.
   for (let attempt = 0; attempt < 3; attempt++) {
     const records = pageRecords(notebook, page);
-    const objects = await util.enlivenObjects(records, options);
+    const current = () => !state.disposed && ticket === state.viewEpoch && attachment === state.attachmentEpoch;
+    let objects;
+    try { objects = await enlivenNotebookObjects(records, options, () => current() && pageRecords(notebook, page) === records); }
+    catch (error) {
+      if (!isNotebookWorkCancelled(error)) throw error;
+      if (!current()) return false;
+      continue; // the target page changed, so retry against its new records
+    }
     if (state.disposed || ticket !== state.viewEpoch || attachment !== state.attachmentEpoch || options.signal?.aborted) {
       dispose(objects); return false;
     }
@@ -80,7 +88,12 @@ export function applyPageDeltaToFabric(notebook, operation, options = {}) {
       const records = append ? [append.record] : isNotebookPageIndex(nextPage)
         ? [...changedIds].map(id => nextPage.read(id)).filter(Boolean)
         : nextPage.filter(record => changedIds.has(String(record.boardObjectId)));
-      const prepared = await util.enlivenObjects(records, options);
+      let prepared;
+      try { prepared = await enlivenNotebookObjects(records, options, () => !cancelled()); }
+      catch (error) {
+        if (isNotebookWorkCancelled(error)) return { changed: false, cancelled: true };
+        throw error;
+      }
       if (cancelled()) { dispose(prepared); return { changed: false, cancelled: true }; }
       const latest = modelFor(notebook), currentPage = notebookPageState(latest.notebookPages, operation.pageNumber - 1);
       // Reuse validated preparation only if ALL page references and navigation
@@ -119,7 +132,8 @@ export function applyPageDeltaToFabric(notebook, operation, options = {}) {
     }
     throw Object.assign(new Error('Notebook page changed during preparation; retry from current state'), { code: 'notebook_page_changed' });
   };
-  const task = state.tail.then(run);
-  state.tail = task.catch(() => {}); // a failed image cannot permanently poison the queue
+  const task = queueNotebookWork(state.tail, run);
+  state.tail = task; // queueNotebookWork isolates failure while preserving the budget family
+  task.catch(() => {});
   return task;
 }
