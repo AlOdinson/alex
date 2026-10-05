@@ -1,3 +1,4 @@
+import { instrumentNotebookControllerSource } from './notebook-audit-metrics.js';
 import { chromium, webkit } from 'playwright-core';
 import { spawn } from 'node:child_process';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
@@ -45,6 +46,11 @@ try {
   for (const [index, scenario] of cases.entries()) {
     const context = await browser.newContext({ viewport: { width: 1100, height: 850 }, deviceScaleFactor: 2 });
     const page = await context.newPage();
+    // Same diagnostic wrapper on both revisions. The unmodified factory and its
+    // returned methods run exactly once; no editor behavior or persistence bypass.
+    const controllerSource = instrumentNotebookControllerSource(await readFile('src/lib/notebookBoardController.js', 'utf8'));
+    await page.route(/\/src\/lib\/notebookBoardController\.js(?:\?.*)?$/, route =>
+      route.fulfill({ status: 200, contentType: 'text/javascript', body: controllerSource }));
     page.on('pageerror', error => errors.push({ scenario, error: error.message }));
     page.on('console', message => { if (['error', 'warning'].includes(message.type())) consoleMessages.push({ type: message.type(), text: message.text() }); });
     try {
@@ -77,24 +83,10 @@ try {
       // This fixture measures a loaded lesson, not cold startup. Use the real
       // notebook readiness boundary before the first timed native contact.
       await page.waitForFunction(async () => {
-        const { findNotebookAuditControllerRef } = await import('/alex/scripts/notebook-audit-metrics.js');
-        // Re-resolve current handlers after readiness re-renders, not the object
-        // captured before their initialization. This is before timed input.
-        const element = document.querySelector('.toolbar-shell');
-        let fiber = element?.[Object.keys(element).find(key => key.startsWith('__reactFiber'))];
-        const visited = new Set();
-        while (fiber && !visited.has(fiber)) {
-          visited.add(fiber);
-          for (let hook = fiber.memoizedState; hook; hook = hook.next) {
-            const value = hook.memoizedState?.current;
-            if (value?.capture && value?.ensure) window.auditHandlers = value;
-          }
-          fiber = fiber.return;
-        }
-        const controller = await window.auditHandlers?.ensure();
-        const ref = findNotebookAuditControllerRef(document.querySelector('.toolbar-shell'), controller);
-        if (!ref) return false;
-        window.auditController = controller; window.auditControllerRef = ref;
+        await window.auditHandlers?.ensure();
+        const ref = window.__notebookAuditControllerRef;
+        if (!ref?.current) return false;
+        window.auditControllerRef = ref;
         return true;
       }, undefined, { timeout: 90000 });
       // Runtime edit permission can arrive before Fabric finishes page hydration.
@@ -126,8 +118,8 @@ try {
         } catch (error) {
           const diagnostic = await page.evaluate(({ x, y }) => ({
             metrics: window.auditMetrics.report(), body: document.body.innerText,
-            pending: window.auditController?.pendingCount(),
-            modelChildren: window.auditController?.getState().snapshot.canvas.objects.find(o => o.boardObjectId === 'audit-notebook')?.notebookPages.at(-1)?.length,
+            pending: window.auditControllerRef?.current?.pendingCount(),
+            modelChildren: window.auditControllerRef?.current?.getState().snapshot.canvas.objects.find(o => o.boardObjectId === 'audit-notebook')?.notebookPages.at(-1)?.length,
             atContact: document.elementsFromPoint(x, y).slice(0, 6).map(e => ({ tag: e.tagName, class: e.className })),
             canvas: { drawing: window.auditCanvas.isDrawingMode, activeDrawing: window.auditCanvas._isCurrentlyDrawing,
               viewport: window.auditCanvas.viewportTransform, objects: window.auditCanvas._objects.map(o => ({
@@ -147,6 +139,7 @@ try {
       }, { id: board.boardId, floor: startRevision + 16 }, { timeout: 90000 });
       const report = await page.evaluate(() => ({ ...window.auditMetrics.report(), children: window.auditBookNow()?._objects.length,
         environment: { browser: navigator.userAgent, dpr: devicePixelRatio, cores: navigator.hardwareConcurrency } }));
+      await writeFile(`${output}/${engineName}-${index}-diagnostic.json`, JSON.stringify({ scenario, ...report }, null, 2));
       assert.equal(report.children, points.initial + 16);
       assert.equal(report.createdPaths, 16);
       assert.ok(report.controllerStages.filter(x=>x.stage==='enqueue').length >= 16, 'Missing controller CPU samples');

@@ -149,3 +149,17 @@ export function installNotebookAuditMetrics(canvas, notebook, { controller = nul
     dispose() { observer?.disconnect(); restore.reverse().forEach(fn => fn()); },
   };
 }
+
+// Applied only by the Playwright response interceptor, never by production Vite.
+// Observe factory results instead of guessing which React ref owns live input.
+export function instrumentNotebookControllerSource(source) {
+  const declaration = 'export function createNotebookBoardController(';
+  if (source.split(declaration).length !== 2) throw new Error('Notebook controller factory not found uniquely');
+  return source.replace(declaration, 'function createNotebookBoardControllerForAudit(') + `
+export function createNotebookBoardController(...args) {
+  const result = Reflect.apply(createNotebookBoardControllerForAudit, this, args);
+  (globalThis.__notebookAuditControllerRef ??= { current: null }).current = result;
+  return result;
+}
+`;
+}

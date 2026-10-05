@@ -97,3 +97,44 @@ test('audit resolves the exact controller ref through current or alternate owner
  assert.equal(findNotebookAuditControllerRef(element,{enqueue(){},ack(){}}),null);
  assert.equal(findNotebookAuditControllerRef(element,null),null);
 });
+
+test('served-module probe observes the actual controller factory without changing results or calls', async () => {
+ const { instrumentNotebookControllerSource } = await import('./notebook-audit-metrics.js');
+ const source = 'let calls=0; export function createNotebookBoardController(value) { calls++; return { value, calls, enqueue(x){return x;} }; } export const unaffected=7;';
+ assert.equal(typeof instrumentNotebookControllerSource, 'function', 'factory probe is missing');
+ const patched = instrumentNotebookControllerSource(source);
+ const module = await import('data:text/javascript;base64,' + Buffer.from(patched).toString('base64'));
+ try {
+  const first = module.createNotebookBoardController('first'); assert.equal(first.calls,1);
+  assert.strictEqual(globalThis.__notebookAuditControllerRef.current, first);
+  const next = module.createNotebookBoardController('next'); assert.equal(next.calls,2); assert.equal(next.value,'next');
+  assert.strictEqual(globalThis.__notebookAuditControllerRef.current,next);
+  assert.equal(module.unaffected,7); assert.equal(next.enqueue(5),5);
+ } finally { delete globalThis.__notebookAuditControllerRef; }
+});
+
+test('served-module probe fails closed when the expected factory is absent', async () => {
+ const { instrumentNotebookControllerSource } = await import('./notebook-audit-metrics.js');
+ assert.equal(typeof instrumentNotebookControllerSource, 'function', 'factory probe is missing');
+ assert.throws(()=>instrumentNotebookControllerSource('export const wrong=1;'),/factory/);
+});
+
+test('factory probe attaches CPU metrics to the real controller used for notebook enqueue', async () => {
+ const { instrumentNotebookControllerSource } = await import('./notebook-audit-metrics.js');
+ const { readFile } = await import('node:fs/promises');
+ const url = new URL('../src/lib/notebookBoardController.js', import.meta.url);
+ const source = (await readFile(url, 'utf8')).replace(/from (['"])(\.\/[^'"]+)\1/g,
+  (_match, _quote, path) => `from '${new URL(path, url).href}'`);
+ const module = await import('data:text/javascript;base64,' + Buffer.from(instrumentNotebookControllerSource(source)).toString('base64'));
+ const controller = module.createNotebookBoardController({ confirmedState: { revision: 0, snapshot: { canvas: { objects: [
+  {type:'BoardNotebook',boardObjectId:'book',notebookPages:[[]],notebookPageNumber:1}
+ ] } } }, publish: () => new Promise(() => {}), paint: async () => true });
+ controller.pause('test'); const notebook=book(),canvas=emitter({_objects:[notebook],upperCanvasEl:new EventTarget(),getObjects(){return [...this._objects];}});
+ const metrics=installNotebookAuditMetrics(canvas,notebook,{controllerRef:globalThis.__notebookAuditControllerRef});
+ try {
+  controller.enqueue({type:'notebook',version:1,id:'book',pageNumber:1,changes:[{type:'insert',object:{type:'Path',boardObjectId:'actual-ink',path:[['M',0,0],['L',1,2]]}}]});
+  await controller.whenPainted();
+  assert.equal(metrics.report().controllerStages.filter(x=>x.stage==='enqueue').length,1);
+  assert.equal(controller.getState().snapshot.canvas.objects[0].notebookPages[0].length,1);
+ } finally { metrics.dispose(); controller.dispose(); delete globalThis.__notebookAuditControllerRef; }
+});

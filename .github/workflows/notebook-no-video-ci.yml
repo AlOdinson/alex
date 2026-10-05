@@ -55,6 +55,16 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - name: Deletion storage migration, resume, quota-independent commit cost and history
+        run: node scripts/test-board-tombstone-browser.mjs
+      - name: Schema-compatible recovery reader on previous drawing code
+        run: |
+          candidate="$GITHUB_SHA"
+          trap 'git restore --source="$candidate" -- src' EXIT
+          git restore --source=52a65f38badf74215568540297e71ba3ce7b8b0c -- src
+          git restore --source="$candidate" -- src/lib/browserAuthorityStore.js src/lib/boardTombstoneIndex.js
+          NOTEBOOK_TOMBSTONE_OUTPUT=notebook-tombstone-results/recovery-v4 node scripts/test-board-tombstone-browser.mjs
+          git restore --source="$candidate" -- src
       - name: Repeated focused input comparison against the last verified block
         run: |
           baseline=52a65f38badf74215568540297e71ba3ce7b8b0c
@@ -76,16 +86,6 @@ jobs:
         run: |
           NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate/full node scripts/benchmark-notebook-real-input.mjs
           NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate/burst node scripts/benchmark-notebook-real-input.mjs --focused --burst
-      - name: Deletion storage migration, resume, quota-independent commit cost and history
-        run: node scripts/test-board-tombstone-browser.mjs
-      - name: Schema-compatible recovery reader on previous drawing code
-        run: |
-          candidate="$GITHUB_SHA"
-          trap 'git restore --source="$candidate" -- src' EXIT
-          git restore --source=52a65f38badf74215568540297e71ba3ce7b8b0c -- src
-          git restore --source="$candidate" -- src/lib/browserAuthorityStore.js src/lib/boardTombstoneIndex.js
-          NOTEBOOK_TOMBSTONE_OUTPUT=notebook-tombstone-results/recovery-v4 node scripts/test-board-tombstone-browser.mjs
-          git restore --source="$candidate" -- src
       - name: Interior append pixels match canonical rendering
         run: node scripts/test-notebook-append-browser.mjs
       - name: Existing notebook browser regressions
