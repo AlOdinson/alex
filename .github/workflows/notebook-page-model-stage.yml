@@ -1,0 +1,47 @@
+name: Stage exact notebook page model
+on:
+  push:
+    branches: ['delivery/notebook-page-model-20261005']
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-page-model-20261005'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Upload checksum-verified immutable source blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo = 'AlOdinson/alex'
+          base = '0e0b476265fc306a525b0e73b8167c978dda4f8b'
+          expected = '87e2566bc9089f26b4fc351fbb09a10647c7e830'
+          assert os.environ['GITHUB_REPOSITORY'] == repo
+          assert os.environ['GITHUB_REF'] == 'refs/heads/delivery/notebook-page-model-20261005'
+          packed = pathlib.Path('.delivery/notebook-page-model.patch.xz').read_bytes()
+          assert hashlib.sha256(packed).hexdigest() == 'a992b3488ce4b81b6d74ab72456e85a5dcb1adb547697553919eff3b47075c45'
+          patch = pathlib.Path('/tmp/notebook-page-model.patch'); patch.write_bytes(lzma.decompress(packed))
+          def git(*args): return subprocess.check_output(['git', *args], text=True).strip()
+          subprocess.run(['git','checkout','--detach',base],check=True)
+          subprocess.run(['git','apply','--check','--index','--unidiff-zero',str(patch)],check=True)
+          subprocess.run(['git','apply','--index','--unidiff-zero',str(patch)],check=True)
+          assert git('write-tree') == expected
+          paths = git('diff','--cached','--name-only').splitlines()
+          allowed = ['.github/workflows/notebook-no-video-ci.yml','docs/performance/notebook-page-model-20261005.md','scripts/benchmark-notebook-page-model.mjs','scripts/test-notebook-addressed-append.mjs','scripts/test-notebook-page-model-browser.mjs','scripts/test-notebook-page-model-integration.mjs','scripts/test-notebook-page-model.mjs','src/lib/boardNotebook.js','src/lib/notebookOperations.js','src/lib/notebookPageDelta.js','src/lib/notebookPageModel.js','src/lib/notebookPageRuntime.js','src/lib/notebookProjection.js','src/lib/notebookRecords.js']
+          assert sorted(paths) == sorted(allowed)
+          for name in paths:
+              value = pathlib.Path(name).read_bytes()
+              request = urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',
+                  data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),method='POST',
+                  headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(request, timeout=30) as response: result=json.load(response)
+              assert result['sha'] == git('hash-object',name)
+              print(name,result['sha'])
+          print('VERIFIED_LOCAL_TREE='+expected)
+          print('Only immutable Git blobs uploaded. No refs, deployment or user data changed.')
+          PY
