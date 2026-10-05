@@ -46,3 +46,24 @@ test('diagnostic disposal restores wrapped functions and detaches listeners', ()
   assert.equal(metrics.report().childRenders, count);
   assert.equal(typeof original, 'function');
 });
+
+test('overlapping native strokes all get a paint sample rather than losing earlier releases',()=>{
+ const {canvas,notebook,metrics}=fixture();
+ metrics.begin(2);canvas.upperCanvasEl.dispatchEvent(new Event('mouseup'));
+ metrics.begin(3);canvas.upperCanvasEl.dispatchEvent(new Event('mouseup'));
+ notebook._objects.push(child(),child());canvas.fire('after:render');
+ assert.equal(metrics.report().samples.filter(s=>s.pagePaintAt!=null).length,2);metrics.dispose();
+});
+
+test('controller CPU instrumentation preserves values, thrown errors and disposal',()=>{
+ const notebook=book(),canvas=emitter({_objects:[notebook],upperCanvasEl:new EventTarget(),getObjects(){return [...this._objects];}});
+ const problem=new Error('original');
+ const controller={enqueue(value){return value;},ack(){throw problem;}};
+ const enqueue=controller.enqueue,ack=controller.ack;
+ const metrics=installNotebookAuditMetrics(canvas,notebook,{controller});
+ const input={ops:[]};assert.strictEqual(controller.enqueue(input),input);
+ assert.throws(()=>controller.ack(),error=>error===problem);
+ assert.deepEqual(metrics.report().controllerStages.map(s=>s.stage),['enqueue','ack']);
+ assert.ok(metrics.report().controllerStages.every(s=>s.durationMs>=0));metrics.dispose();
+ assert.strictEqual(controller.enqueue,enqueue);assert.strictEqual(controller.ack,ack);
+});

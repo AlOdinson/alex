@@ -19,8 +19,8 @@ export function makeAuditSnapshot({ boardObjects = 0, pages = 1, pageStrokes = 1
   return { version: 2, background: 'blank', canvas: { objects } };
 }
 
-export function installNotebookAuditMetrics(canvas, notebook) {
-  const samples = [], longTasks = [], renders = [];
+export function installNotebookAuditMetrics(canvas, notebook, { controller = null } = {}) {
+  const samples = [], longTasks = [], renders = [], controllerStages = [];
   let active = null, listReads = 0, childRenders = 0, createdPaths = 0, current = notebook;
   const notebookId = String(notebook.boardObjectId), replacements = [], createdIds = [];
   const restore = [], instrumented = new WeakSet();
@@ -58,12 +58,24 @@ export function installNotebookAuditMetrics(canvas, notebook) {
   };
   const before = () => { renders.push(performance.now()); };
   const after = () => {
-    if (active && active.releaseAt != null && current && current._objects.length >= active.expectedChildren && active.pagePaintAt == null) {
-      active.pagePaintAt = performance.now();
-      active.listReads = listReads - active.startListReads;
-      active.childRenders = childRenders - active.startChildRenders;
+    for (const sample of samples) if (sample.releaseAt != null && current
+      && current._objects.length >= sample.expectedChildren && sample.pagePaintAt == null) {
+      sample.pagePaintAt = performance.now();
+      sample.listReads = listReads - sample.startListReads;
+      sample.childRenders = childRenders - sample.startChildRenders;
     }
   };
+  for (const stage of ['enqueue', 'ack']) {
+    const original = controller?.[stage];
+    if (typeof original !== 'function') continue;
+    const wrapped = function(...args) {
+      const start = performance.now();
+      try { return original.apply(this, args); }
+      finally { controllerStages.push({ stage, start, durationMs: performance.now() - start }); }
+    };
+    controller[stage] = wrapped;
+    restore.push(() => { if (controller[stage] === wrapped) controller[stage] = original; });
+  }
   canvas.on('path:created', created); canvas.on('before:render', before); canvas.on('after:render', after);
   restore.push(() => { canvas.off('path:created', created); canvas.off('before:render', before); canvas.off('after:render', after); });
   const pointer = event => {
@@ -89,7 +101,7 @@ export function installNotebookAuditMetrics(canvas, notebook) {
     painted: () => active?.pagePaintAt != null,
     getNotebook: () => current,
     report() {
-      return { samples, longTasks, fullRenders: renders.length, listReads, childRenders, createdPaths, replacements, createdIds,
+      return { samples, longTasks, fullRenders: renders.length, listReads, childRenders, createdPaths, replacements, createdIds, controllerStages,
         timingMeaning: 'Trusted Playwright input -> Fabric after:render with installed child; not a physical pen/display measurement',
         instrumentation: 'Counters on board list reads and page-child renders; timing includes their overhead' };
     },

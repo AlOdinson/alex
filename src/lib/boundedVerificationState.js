@@ -1,3 +1,4 @@
+import { indexedBoardModelFor } from './indexedBoardModel.js';
 import { verificationDigest } from './boundedVerificationDigest.js';
 import { createNotebookVerificationCache, validNotebookVerificationRepair, applyNotebookVerificationRepair } from './notebookVerification.js';
 import { freezeSnapshotNotebookPages } from './notebookRecords.js';
@@ -24,8 +25,20 @@ export function createVerificationView({ getSnapshot, getRevision, notebookVersi
   let remaining = 0;
   const current = () => {
     const snapshot = getSnapshot();
-    if (!snapshot?.canvas?.objects) throw new Error('Verification state is unavailable');
-    return { snapshot, lookup: authoritySnapshotLookup(snapshot) };
+    if (!snapshot?.canvas) throw new Error('Verification state is unavailable');
+    const indexed = indexedBoardModelFor(snapshot);
+    if (indexed) return { snapshot, lookup: {
+      generation: 0, count: indexed.size,
+      readRecord: id => indexed.readRecord(id), at: index => indexed.at(index),
+      byId: { size: indexed.keyCount, keys: () => indexed.keys() },
+    } };
+    if (!snapshot.canvas.objects) throw new Error('Verification state is unavailable');
+    const lookup = authoritySnapshotLookup(snapshot);
+    return { snapshot, lookup: { ...lookup, count: lookup.objects.length,
+      at: index => lookup.objects[index],
+      readRecord: id => { const object = lookup.byId.get(id); return object
+        ? { object, zIndex: lookup.objects.indexOf(object) } : undefined; },
+    } };
   };
   return {
     digestVersion: () => notebookCache ? 2 : 1,
@@ -33,7 +46,7 @@ export function createVerificationView({ getSnapshot, getRevision, notebookVersi
       : verificationDigest(record, options).then(hash => ({ hash })),
     revision: () => Number(getRevision()),
     background: () => current().snapshot.background,
-    count: () => current().lookup.objects.length,
+    count: () => current().lookup.count,
     capture() {
       const { snapshot, lookup } = current();
       return { snapshot, revision: Number(getRevision()), generation: lookup.generation };
@@ -46,19 +59,19 @@ export function createVerificationView({ getSnapshot, getRevision, notebookVersi
     read(input) {
       const id = String(input);
       const { lookup } = current();
-      const object = lookup.byId.get(id) ?? null;
-      return { id, object, zIndex: object ? lookup.objects.indexOf(object) : -1 };
+      const record = lookup.readRecord(id);
+      return { id, object: record?.object ?? null, zIndex: record?.zIndex ?? -1 };
     },
     page(offset = 0, limit = 20) {
       const { lookup } = current();
       const start = Math.max(0, Math.floor(Number(offset) || 0));
-      const end = Math.min(lookup.objects.length, start + Math.max(0, Math.min(100, Number(limit) || 0)));
+      const end = Math.min(lookup.count, start + Math.max(0, Math.min(100, Number(limit) || 0)));
       const ids = [];
       for (let i = start; i < end; i++) {
-        const id = lookup.objects[i]?.boardObjectId;
+        const id = lookup.at(i)?.boardObjectId;
         if (typeof id === 'string' && id) ids.push(id);
       }
-      return { ids, next: end, done: end >= lookup.objects.length, total: lookup.objects.length };
+      return { ids, next: end, done: end >= lookup.count, total: lookup.count };
     },
     readOlder(limit, { fullSweep = false, reset = false } = {}) {
       const { lookup } = current();

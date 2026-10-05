@@ -1,10 +1,12 @@
+import { createIndexedBoardModel } from './indexedBoardModel.js';
+import { prepareIndexedNotebookAction, applyIndexedNotebookOps } from './notebookIndexedTransaction.js';
 import { assertNotebookCommitReadable } from './notebookProtocol.js';
 import { updateNotebookTombstones } from './notebookOperations.js';
 import { createVerificationView, isBoundedVerificationBoard } from './boundedVerificationState.js';
 import { createVerificationWorkLane } from './boundedVerificationProtocol.js';
 import { isConditionalHistoryOperation, prepareAuthoritativeHistory } from './historyOperations.js';
 import { createTeacherAuthority } from './teacherAuthority.js';
-import { applyAuthorityActions, applyAuthorityOpsInPlace } from './authoritySnapshot.js';
+import { applyAuthorityActions, applyAuthorityOpsInPlace, forkAuthoritySnapshot } from './authoritySnapshot.js';
 import { evaluateAuthorityAction } from './authorityOperationEvaluator.js';
 import {
   getAuthorityActionOutcome,
@@ -121,7 +123,8 @@ export async function openBrowserBoardAuthority({
     loadCommitsAfter,
   });
   replay.forEach(commit => assertNotebookCommitReadable(commit, enableNotebookOperations ? 1 : 0));
-  const currentSnapshot = applyAuthorityActions(board.snapshot, replay);
+  let currentSnapshot = applyAuthorityActions(board.snapshot, replay);
+  if (enableNotebookOperations) currentSnapshot = createIndexedBoardModel(currentSnapshot).snapshot;
   let notebookRequirement = board.notebookVersion === 1 ? 1 : 0;
   let currentTombstones = cloneValue(board.tombstones ?? {});
   let currentNotebookTombstones = cloneValue(board.notebookTombstones ?? {});
@@ -133,11 +136,14 @@ export async function openBrowserBoardAuthority({
       if (persisted?.duplicate) return persisted;
       const durableCommit = persisted?.commit ?? attemptedCommit;
       if (durableCommit.ops?.some(op => op?.type === 'notebook')) notebookRequirement = 1;
-      applyAuthorityOpsInPlace(
-        currentSnapshot,
-        durableCommit?.ops ?? [],
-        durableCommit?.background ?? null,
-      );
+      const ops = durableCommit?.ops ?? [], background = durableCommit?.background ?? null;
+      const scoped = enableNotebookOperations && applyIndexedNotebookOps(currentSnapshot, ops, background);
+      if (scoped) currentSnapshot = scoped;
+      else if (enableNotebookOperations) {
+        const next = forkAuthoritySnapshot(currentSnapshot, ops);
+        applyAuthorityOpsInPlace(next, ops, background);
+        currentSnapshot = createIndexedBoardModel(next).snapshot;
+      } else applyAuthorityOpsInPlace(currentSnapshot, ops, background);
       currentTombstones = updateTombstones(currentTombstones, durableCommit);
       currentNotebookTombstones = updateNotebookTombstones(currentNotebookTombstones, durableCommit.ops, durableCommit);
       return persisted ?? { commit: durableCommit, duplicate: false };
@@ -161,7 +167,7 @@ export async function openBrowserBoardAuthority({
     const prior = await loadActionOutcome(safeBoardId, actionId);
     if (prior) return normalizePriorOutcome(prior);
 
-    const evaluation = evaluateAuthorityAction({
+    const input = {
       snapshot: currentSnapshot,
       tombstones: currentTombstones,
       notebookTombstones: currentNotebookTombstones,
@@ -170,11 +176,13 @@ export async function openBrowserBoardAuthority({
       actionId,
       ops: action.ops,
       background: action.background,
-    });
+    };
 
     const history = (action.ops ?? []).some(isConditionalHistoryOperation);
+    const scoped = enableNotebookOperations && prepareIndexedNotebookAction(input, { history });
+    const evaluation = scoped?.evaluation ?? evaluateAuthorityAction(input);
     const historyResult = history
-      ? prepareAuthoritativeHistory(currentSnapshot, evaluation.appliedOps, evaluation.appliedBackground, action)
+      ? (scoped?.history ?? prepareAuthoritativeHistory(currentSnapshot, evaluation.appliedOps, evaluation.appliedBackground, action))
       : null;
     if (historyResult) evaluation.appliedOps = historyResult.appliedOps;
 

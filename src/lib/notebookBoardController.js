@@ -1,3 +1,4 @@
+import { changedSnapshotObjectIds, readSnapshotRecord } from './indexedBoardModel.js';
 import { createNotebookSession } from './notebookSession.js';
 import { operationObjectIds } from './operationProtocol.js';
 import { randomToken } from './ids.js';
@@ -19,7 +20,7 @@ const index = view => new Map((view?.snapshot?.canvas?.objects ?? []).map(object
 export function createNotebookBoardController({ confirmedState, paint, onError = () => {}, onPending = () => {},
   initialPendingActions = [], ...options } = {}) {
   if (typeof paint !== 'function') throw new TypeError('Notebook controller requires a projection callback');
-  let latest = confirmedState, previousIndex = index(confirmedState), generation = 0, notifications = 0;
+  let latest = confirmedState, generation = 0, notifications = 0;
   let disposed = false, scheduled = false, paintError = null, paintTask = Promise.resolve(), suspended = 0, mutedIds = null;
   const dirty = new Set(), pendingIds = new Map(), reorderIds = new Set();
   for (const action of initialPendingActions) pendingIds.set(String(action.actionId), operationObjectIds(action.ops));
@@ -54,10 +55,17 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
     if (disposed) return;
     notifications++;
     if (view.snapshot !== latest?.snapshot) {
-      const next = index(view);
-      for (const [id, object] of next) if (!mutedIds?.has(id) && !shallowEqual(previousIndex.get(id), object)) dirty.add(id);
-      for (const id of previousIndex.keys()) if (!mutedIds?.has(id) && !next.has(id)) dirty.add(id);
-      previousIndex = next; generation++;
+      const touched = changedSnapshotObjectIds(latest?.snapshot, view.snapshot);
+      if (touched) {
+        for (const id of touched) if (!mutedIds?.has(id) && !shallowEqual(
+          readSnapshotRecord(latest.snapshot, id)?.object, readSnapshotRecord(view.snapshot, id)?.object)) dirty.add(id);
+      } else {
+        // A new layout/checkpoint is the explicit full-diff boundary.
+        const previous = index(latest), next = index(view);
+        for (const [id, object] of next) if (!mutedIds?.has(id) && !shallowEqual(previous.get(id), object)) dirty.add(id);
+        for (const id of previous.keys()) if (!mutedIds?.has(id) && !next.has(id)) dirty.add(id);
+      }
+      generation++;
     }
     latest = view;
     if (!event.pendingCount) pendingIds.clear();
@@ -66,7 +74,6 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
   const session = createNotebookSession({ ...options, confirmedState, initialPendingActions,
     maxInFlight: options.maxInFlight ?? 1, onError: report, onChange: changed });
   latest = session.getState();
-  previousIndex = index(latest);
   // Restored intents have no returned handles in the constructor. Acknowledgement
   // callbacks remove their pending markers just like ordinary enqueue handles.
   function forget(id) { pendingIds.delete(String(id)); }

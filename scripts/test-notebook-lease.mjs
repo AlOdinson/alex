@@ -1,3 +1,4 @@
+import { readSnapshotRecord } from '../src/lib/indexedBoardModel.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -38,7 +39,7 @@ async function pendingLeaseFixture() {
   const canvas = { getActiveObject: () => null, requestRenderAll() {} };
   const controller = { getConfirmedState: () => ({ snapshot: { canvas: { objects: [book, other] } } }) };
   const replies = [], requests = [], ref = current => ({ current }), noop = () => {};
-  const scope = { useCallback: fn => fn, operationObjectIds, boardId: 'board', boardKey: 'key',
+  const scope = { readSnapshotRecord, useCallback: fn => fn, operationObjectIds, boardId: 'board', boardKey: 'key',
     clientIdRef: ref('teacher'), canEditRef: ref(true), applyingRemoteRef: ref(false), applyingHistoryRef: ref(false),
     fabricCanvasRef: ref(canvas), notebookControllerRef: ref(controller), selectionLeaseRef: ref({ generation: 0, ids: [], state: 'none', expiresAt: 0 }),
     selectionLeaseInteractionStateRef: ref(new Map()), localLockIdsRef: ref([]), remoteLocksRef: ref(new Map()),

@@ -1,3 +1,4 @@
+import { readSnapshotRecord } from '../src/lib/indexedBoardModel.js';
 /** Executes actual Board callback bodies with Fabric/Node-canvas and real authority.
  * No browser navigation, device emulation, video decoder, or claimed browser E2E.
  */
@@ -61,7 +62,7 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
  const canvas=new Canvas(null,{width:800,height:700,renderOnAddRemove:false});
  await canvas.loadFromJSON(authority.getSnapshot().canvas);
  const errors=[],statuses=[],savedCaches=[],history=[];
- const scope={
+ const scope={readSnapshotRecord,
   notebookRuntimeEnabled:true,disposed:false,canvas,clientId,boardId:`node-${clientId}-${randomToken(10)}`,boardKey:'key',isOwner:true,
   BACKGROUNDS:new Set(['blank','grid','dots']),HISTORY_LIMIT:1000,window:{setTimeout:()=>0,clearTimeout(){}},navigator:{onLine:true},console:{warn(){},error:error=>errors.push(error)},
   fabricCanvasRef:ref(canvas),boardReadyRef:ref(true),clientIdRef:ref(clientId),canEditRef:ref(true),canReadDocumentsRef:ref(false),studentDocumentReaderRef:ref(null),activeToolRef:ref('select'),

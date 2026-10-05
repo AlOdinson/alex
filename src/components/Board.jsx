@@ -1,3 +1,4 @@
+import { readSnapshotRecord } from '../lib/indexedBoardModel.js';
 import { snapshotNotebookGesturePages, bindNotebookGestureTarget, consumeNotebookGesturePage } from '../lib/notebookGestureTarget.js';
 import { createNotebookCommitBridge } from '../lib/notebookCommitBridge.js';
 import { createNotebookBoardController } from '../lib/notebookBoardController.js';
@@ -1203,10 +1204,10 @@ function affectedOperationIds(ops) { return operationObjectIds(ops); }
 
 function isNotebookControlledAction(ops, controller) {
   if (!controller) return false;
-  const notebooks = new Set(controller.getState().snapshot.canvas.objects.filter(isBoardNotebook).map(object => String(object.boardObjectId)));
+  const snapshot = controller.getState().snapshot;
   const pendingIds = controller.pendingObjectIds();
   return (ops ?? []).some(op => op?.type === 'notebook' || isBoardNotebook(op?.object))
-    || [...operationObjectIds(ops)].some(id => notebooks.has(id) || pendingIds.has(id));
+    || [...operationObjectIds(ops)].some(id => isBoardNotebook(readSnapshotRecord(snapshot, id)?.object) || pendingIds.has(id));
 }
 
 function finalVerificationOps(actions, results) {
@@ -5461,9 +5462,8 @@ function BoardWorkspace({
         },
         paint: async (view, { objectIds, reorderIds, isCurrent }) => {
           if (!current()) return false;
-          const records = new Map(view.snapshot.canvas.objects.map((object, zIndex) => [String(object.boardObjectId), { object, zIndex }]));
           const ops = [...objectIds].map(id => {
-            const record = records.get(id);
+            const record = readSnapshotRecord(view.snapshot, id);
             return record ? { type: 'upsert', ...record, preserveOrder: !reorderIds.has(id), reorder: reorderIds.has(id) }
               : { type: 'delete', id };
           });
@@ -8863,9 +8863,8 @@ function BoardWorkspace({
       const current = () => canEditRef.current && canvas === fabricCanvasRef.current
         && controller === notebookControllerRef.current;
       if (!current()) return false;
-      const confirmed = new Set((controller?.getConfirmedState().snapshot.canvas.objects ?? [])
-        .map(object => String(object.boardObjectId)));
-      const ids = [...operationObjectIds(ops)].filter(id => confirmed.has(id));
+      const confirmed = controller?.getConfirmedState().snapshot;
+      const ids = [...operationObjectIds(ops)].filter(id => readSnapshotRecord(confirmed, id));
       if (!ids.length) return true;
       const covers = lease => ids.every(id => lease.ids.includes(id));
       // A selection change may supersede a request while its reply is in flight.

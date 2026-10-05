@@ -20,7 +20,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
-      - run: node --test scripts/test-notebook-hotpath-regressions.mjs scripts/test-notebook-audit-metrics.mjs scripts/test-notebook-audit-fixture.mjs scripts/test-notebook-projection-cost.mjs scripts/test-notebook-gesture-index.mjs scripts/test-notebook-contained-fast-path.mjs scripts/test-notebook-append-cache.mjs scripts/test-notebook-append-integration.mjs
+      - run: node --test scripts/test-notebook-hotpath-regressions.mjs scripts/test-notebook-audit-metrics.mjs scripts/test-notebook-audit-fixture.mjs scripts/test-notebook-projection-cost.mjs scripts/test-notebook-gesture-index.mjs scripts/test-notebook-contained-fast-path.mjs scripts/test-notebook-append-cache.mjs scripts/test-notebook-append-integration.mjs scripts/test-notebook-indexed-model.mjs scripts/test-notebook-indexed-semantics.mjs scripts/test-notebook-indexed-pipeline.mjs
+      - run: node --test scripts/test-bounded*.mjs
+      - run: node scripts/benchmark-notebook-indexed-model.mjs
       - run: npm run test:pencil
       - run: npm run test:sync:ci
       - run: npm run test:student:reading
@@ -51,20 +53,27 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
       - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
-      - name: Compare identical input on baseline and candidate
+      - name: Repeated focused input comparison against the last verified block
         run: |
-          baseline=6ad2a404ce9ddc92d8682659d89c824576c5a276
-          files=(src/lib/authoritySnapshot.js src/lib/authorityOperationEvaluator.js src/lib/notebookSession.js src/lib/notebookBoardController.js src/lib/notebookProjection.js src/lib/notebookGestureTarget.js src/lib/boardNotebook.js src/lib/notebookBoardActions.js)
-          git restore --source="$baseline" -- "${files[@]}"
-          set +e
-          GITHUB_SHA="$baseline" NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/baseline node scripts/benchmark-notebook-real-input.mjs --baseline
-          before=$?
-          git restore --source="$GITHUB_SHA" -- "${files[@]}"
-          restored=$?
-          if [ "$restored" -ne 0 ]; then exit "$restored"; fi
-          NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate node scripts/benchmark-notebook-real-input.mjs
-          after=$?
-          if [ "$before" -ne 0 ] || [ "$after" -ne 0 ]; then exit 1; fi
+          baseline=52a65f38badf74215568540297e71ba3ce7b8b0c
+          candidate="$GITHUB_SHA"
+          trap 'git restore --source="$candidate" -- src' EXIT
+          for round in 1 2 3; do
+            order="baseline candidate"
+            if [ "$round" -eq 2 ]; then order="candidate baseline"; fi
+            for mode in $order; do
+              reference="$candidate"
+              flag=""
+              if [ "$mode" = baseline ]; then reference="$baseline"; flag="--baseline"; fi
+              git restore --source="$reference" -- src
+              GITHUB_SHA="$reference" NOTEBOOK_AUDIT_OUTPUT="notebook-audit-results/$mode/round-$round" node scripts/benchmark-notebook-real-input.mjs --focused $flag
+            done
+          done
+          git restore --source="$candidate" -- src
+      - name: Full workload and overlapping-input regressions
+        run: |
+          NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate/full node scripts/benchmark-notebook-real-input.mjs
+          NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate/burst node scripts/benchmark-notebook-real-input.mjs --focused --burst
       - name: Interior append pixels match canonical rendering
         run: node scripts/test-notebook-append-browser.mjs
       - name: Existing notebook browser regressions

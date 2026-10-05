@@ -12,7 +12,13 @@ const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host
   { stdio: 'ignore', env: { ...process.env, VITE_NOTEBOOK_OPERATIONS_V1: 'true' } });
 let browser;
 const results = [], errors = [], consoleMessages = [];
-const cases = process.argv.includes('--smoke') ? [
+const burst = process.argv.includes('--burst');
+const cases = process.argv.includes('--focused') ? [
+  { boardObjects: 0, pages: 1, pageStrokes: 100 },
+  { boardObjects: 5000, pages: 1, pageStrokes: 100 },
+  { boardObjects: 0, pages: 6, pageStrokes: 300 },
+  { boardObjects: 1000, pages: 6, pageStrokes: 300, visible: true, points: 200 },
+] : process.argv.includes('--smoke') ? [
   { boardObjects: 0, pages: 1, pageStrokes: 100 },
   { boardObjects: 1000, pages: 6, pageStrokes: 300 },
 ] : [
@@ -81,7 +87,7 @@ try {
       }, undefined, { timeout: 90000 });
       await page.evaluate(async () => {
         const { installNotebookAuditMetrics } = await import('/alex/scripts/notebook-audit-metrics.js');
-        window.auditMetrics = installNotebookAuditMetrics(window.auditCanvas, window.auditBook);
+        window.auditMetrics = installNotebookAuditMetrics(window.auditCanvas, window.auditBook, { controller: window.auditController });
         window.auditBookNow = () => window.auditMetrics.getNotebook();
       });
       await page.getByRole('button', { name: 'Карандаш', exact: true }).click();
@@ -99,7 +105,7 @@ try {
         await page.mouse.move(x + 55 * points.zoom, y + 4 * points.zoom, { steps: 12 });
         await page.mouse.up();
         try {
-          await page.waitForFunction(() => window.auditMetrics.painted(), undefined, { timeout: 30000 });
+          if (!burst) await page.waitForFunction(() => window.auditMetrics.painted(), undefined, { timeout: 30000 });
         } catch (error) {
           const diagnostic = await page.evaluate(({ x, y }) => ({
             metrics: window.auditMetrics.report(), body: document.body.innerText,
@@ -116,6 +122,7 @@ try {
           throw error;
         }
       }
+      await page.waitForFunction(() => window.auditMetrics.report().samples.every(s => s.pagePaintAt != null), undefined, { timeout: 30000 });
       // Let the REAL outbox/authority finish; publish is never replaced by a stub.
       await page.waitForFunction(async ({ id, floor }) => {
         const runtime = (await import('/alex/src/lib/browserBoardRuntimeRegistry.js')).getBoardRuntime(id);
@@ -125,7 +132,7 @@ try {
         environment: { browser: navigator.userAgent, dpr: devicePixelRatio, cores: navigator.hardwareConcurrency } }));
       assert.equal(report.children, points.initial + 16);
       assert.equal(report.createdPaths, 16);
-      if (!process.argv.includes('--baseline')) assert.equal(report.childRenders, 16,
+      if (!process.argv.includes('--baseline') && !burst) assert.equal(report.childRenders, 16,
         'Ready-page handwriting must paint only its 16 new strokes, not the earlier page geometry');
       assert.equal(report.samples.filter(s => s.pagePaintAt != null).length, 16);
       report.releaseToPagePaintMs = report.samples.map(s => s.pagePaintAt - s.releaseAt);
@@ -139,7 +146,7 @@ try {
   assert.deepEqual(errors, [], 'Production page errors during input');
 } finally {
   await writeFile(`${output}/${engineName}.json`, JSON.stringify({ source, commit: process.env.GITHUB_SHA || null,
-    baseline: process.argv.includes('--baseline'), results, errors, consoleMessages, generatedAt: new Date().toISOString(),
+    baseline: process.argv.includes('--baseline'), burst, results, errors, consoleMessages, generatedAt: new Date().toISOString(),
     limitations: ['No physical iPad/Pencil', 'after:render is not physical display presentation', 'Loaded lesson; cold startup not measured', 'Network delay not injected in this fixture', 'Counters add diagnostic overhead'] }, null, 2));
   await browser?.close(); server.kill();
 }

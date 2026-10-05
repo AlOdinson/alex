@@ -1,3 +1,4 @@
+import { readSnapshotRecord } from './indexedBoardModel.js';
 import { operationObjectIds } from './operationProtocol.js';
 
 /** The UI revision advances only after the contiguous confirmed model is painted.
@@ -25,9 +26,10 @@ export function createNotebookCommitBridge({ getController, getRevision, setRevi
       const eligible = [...pending].filter(([, entry]) => entry.revision <= confirmed.revision);
       if (eligible.length) {
         const ids = new Set(eligible.flatMap(([, entry]) => [...entry.ids]));
-        const records = new Map(confirmed.snapshot.canvas.objects.map((object, zIndex) => [String(object.boardObjectId), { object, zIndex }]));
-        remember([...ids].map(id => records.has(id)
-          ? { type: 'upsert', ...records.get(id), preserveOrder: true } : { type: 'delete', id }), confirmed.revision);
+        remember([...ids].map(id => {
+          const record = readSnapshotRecord(confirmed.snapshot, id);
+          return record ? { type: 'upsert', ...record, preserveOrder: true } : { type: 'delete', id };
+        }), confirmed.revision);
         eligible.forEach(([id]) => pending.delete(id));
       }
       if (confirmed.revision >= getRevision()) setRevision(confirmed.revision);

@@ -1,3 +1,5 @@
+import { createIndexedBoardModel, readSnapshotRecord } from './indexedBoardModel.js';
+import { prepareIndexedNotebookAction, applyIndexedNotebookOps } from './notebookIndexedTransaction.js';
 import { randomToken } from './ids.js';
 import { isAuthoritativeBoardOperation } from './operationProtocol.js';
 import { applyAuthorityOpsInPlace, forkAuthoritySnapshot } from './authoritySnapshot.js';
@@ -30,7 +32,7 @@ function checkpoint(value) {
   freezeSnapshotNotebookPages(copy.snapshot);
   // Full deep processing is permitted at this load/recovery boundary, not per ink.
   copy.snapshot.canvas.objects.filter(object => !Array.isArray(object.notebookPages)).forEach(object => freezeNotebookRecord(object));
-  return { revision: copy.revision, snapshot: seal(copy.snapshot),
+  return { revision: copy.revision, snapshot: createIndexedBoardModel(seal(copy.snapshot)).snapshot,
     tombstones: copy.tombstones ?? {}, notebookTombstones: copy.notebookTombstones ?? {} };
 }
 function boardTombstones(source, operations, context) {
@@ -47,10 +49,15 @@ function boardTombstones(source, operations, context) {
   return result;
 }
 function advance(model, operations, background, context) {
-  const snapshot = forkAuthoritySnapshot(model.snapshot, operations);
-  // Deterministic operation timestamps, as used by the authoritative model.
-  applyAuthorityOpsInPlace(snapshot, operations, background);
-  return { snapshot: seal(snapshot), revision: context.revision ?? model.revision,
+  let snapshot = applyIndexedNotebookOps(model.snapshot, operations, background);
+  if (!snapshot) {
+    // Explicit structural boundary: ordinary board insert/delete/reorder still
+    // uses the legacy reducer. Do not materialize arrays for a child-only edit.
+    snapshot = forkAuthoritySnapshot(model.snapshot, operations);
+    applyAuthorityOpsInPlace(snapshot, operations, background);
+    snapshot = createIndexedBoardModel(seal(snapshot)).snapshot;
+  }
+  return { snapshot, revision: context.revision ?? model.revision,
     tombstones: boardTombstones(model.tombstones, operations, context),
     notebookTombstones: updateNotebookTombstones(model.notebookTombstones, operations, context) };
 }
@@ -143,17 +150,19 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     return freezeNotebookRecord(action);
   }
   function preview(entry, model, makeInverse = false) {
-    const evaluation = evaluateAuthorityAction({ ...model, ops: entry.action.ops, background: entry.action.background,
-      notebookVersion: 1, clientId: entry.action.clientId, actionId: entry.action.actionId });
+    const input = { ...model, ops: entry.action.ops, background: entry.action.background,
+      notebookVersion: 1, clientId: entry.action.clientId, actionId: entry.action.actionId };
+    const scoped = prepareIndexedNotebookAction(input, { history: makeInverse });
+    const evaluation = scoped?.evaluation ?? evaluateAuthorityAction(input);
     entry.previewOps = evaluation.appliedOps;
     entry.previewBackground = evaluation.appliedBackground;
     // Uncertain outcomes after reconnect may already exist in a new snapshot.
     // Resend that SAME identity for deduplication, even if local preflight finds
     // child_exists/child_deleted. Only a genuinely missing parent blocks replay.
     const parents = new Set(entry.action.ops.filter(op => op.type === 'notebook').map(op => op.id));
-    entry.blocked = [...parents].some(id => !model.snapshot.canvas.objects.some(object => String(object.boardObjectId) === id));
-    if (makeInverse) entry.inverseOps = freezeNotebookRecord(prepareAuthoritativeHistory(model.snapshot,
-      evaluation.appliedOps, evaluation.appliedBackground, entry.action).historyInverseOps);
+    entry.blocked = [...parents].some(id => !readSnapshotRecord(model.snapshot, id));
+    if (makeInverse) entry.inverseOps = freezeNotebookRecord((scoped?.history ?? prepareAuthoritativeHistory(model.snapshot,
+      evaluation.appliedOps, evaluation.appliedBackground, entry.action)).historyInverseOps);
     return evaluation.changed ? advance(model, evaluation.appliedOps, evaluation.appliedBackground, entry.action) : model;
   }
   function rebuild() {
