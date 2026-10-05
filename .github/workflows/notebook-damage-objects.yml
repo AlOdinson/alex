@@ -1,4 +1,4 @@
-name: Stage canonical raster origin and safe grid
+name: Stage exact native transform and styled-text guards
 on:
   push:
     branches: ['delivery/notebook-damage-20261005']
@@ -18,20 +18,21 @@ jobs:
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
-          repo='AlOdinson/alex';base='1249ae963bd5ce004b4b0561cc4db078eb8f5675';expected='481ab0b8b06014fe02a2958796e83392ea00618c'
+          repo='AlOdinson/alex';base='3bdb1b02a3d540a8d92a35255a79811c277929a6';expected='0f95e802ac3cce56584d453e46a23cc7f8e00333'
           assert os.environ['GITHUB_REPOSITORY']==repo
           assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-damage-20261005'
-          packed=base64.b64decode(pathlib.Path('.delivery/fix-origin.b64').read_text(),validate=True)
-          assert hashlib.sha256(packed).hexdigest()=='e19b0e88048d0616042f07e779b12f07ca69c390b5efb3351dd686f290c31022'
-          patch=pathlib.Path('/tmp/notebook-origin.patch');patch.write_bytes(lzma.decompress(packed))
+          packed=base64.b64decode(pathlib.Path('.delivery/fix-transform.b64').read_text(),validate=True)
+          assert hashlib.sha256(packed).hexdigest()=='cee52a3d72a7a7b6217761be2dcd4bac5b0850bb4146dc06a7633c8d36701a1f'
+          patch=pathlib.Path('/tmp/notebook-transform.patch');patch.write_bytes(lzma.decompress(packed))
           def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
           subprocess.run(['git','checkout','--detach',base],check=True)
           subprocess.run(['git','apply','--check','--index','--unidiff-zero',str(patch)],check=True)
           subprocess.run(['git','apply','--index','--unidiff-zero',str(patch)],check=True)
           assert git('write-tree')==expected
-          paths=git('diff','--cached','--name-only').splitlines();assert len(paths)==4
+          paths=git('diff','--cached','--name-only').splitlines();assert len(paths)==7
           for name in paths:
-              assert name in ['src/lib/notebookChildIndex.js','src/lib/notebookDamageRenderer.js','scripts/test-notebook-damage-renderer.mjs','docs/performance/notebook-damage-20261005.md']
+              assert name.startswith(('src/lib/notebook','scripts/','docs/performance/'))
+              assert 'screen' not in name.lower()
               value=pathlib.Path(name).read_bytes()
               request=urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),method='POST',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
               with urllib.request.urlopen(request,timeout=30) as response:result=json.load(response)
