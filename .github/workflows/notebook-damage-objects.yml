@@ -1,4 +1,4 @@
-name: Stage exact notebook damage source
+name: Stage canonical raster origin and safe grid
 on:
   push:
     branches: ['delivery/notebook-damage-20261005']
@@ -12,37 +12,31 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: {persist-credentials: false, fetch-depth: 0}
-      - name: Verify patch and upload immutable blobs only
+      - name: Verify exact correction and upload immutable blobs only
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
-          repo='AlOdinson/alex'
-          base='1872b70d8d06a23d8a027da8ff3f7cfda06e69cf'
-          expected='2873bc0d17f407fc961b33bcaa894e03a59527c2'
+          repo='AlOdinson/alex';base='1249ae963bd5ce004b4b0561cc4db078eb8f5675';expected='481ab0b8b06014fe02a2958796e83392ea00618c'
           assert os.environ['GITHUB_REPOSITORY']==repo
           assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-damage-20261005'
-          encoded=''.join(pathlib.Path(f'.delivery/notebook-damage.{i}.b64').read_text() for i in (1,2,3))
-          packed=base64.b64decode(encoded,validate=True)
-          assert hashlib.sha256(packed).hexdigest()=='b5d47796be55f0654b0cd4dc950d9b470cb6bce6a6cd9e8a30d948c65a02021f'
-          patch=pathlib.Path('/tmp/notebook-damage.patch');patch.write_bytes(lzma.decompress(packed))
+          packed=base64.b64decode(pathlib.Path('.delivery/fix-origin.b64').read_text(),validate=True)
+          assert hashlib.sha256(packed).hexdigest()=='e19b0e88048d0616042f07e779b12f07ca69c390b5efb3351dd686f290c31022'
+          patch=pathlib.Path('/tmp/notebook-origin.patch');patch.write_bytes(lzma.decompress(packed))
           def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
           subprocess.run(['git','checkout','--detach',base],check=True)
           subprocess.run(['git','apply','--check','--index','--unidiff-zero',str(patch)],check=True)
           subprocess.run(['git','apply','--index','--unidiff-zero',str(patch)],check=True)
           assert git('write-tree')==expected
-          paths=git('diff','--cached','--name-only').splitlines();assert len(paths)==18
+          paths=git('diff','--cached','--name-only').splitlines();assert len(paths)==4
           for name in paths:
-              assert 'screenshare' not in name.lower() and 'screen-share' not in name.lower()
-              assert name.startswith(('src/lib/','scripts/','docs/performance/','.github/workflows/'))
+              assert name in ['src/lib/notebookChildIndex.js','src/lib/notebookDamageRenderer.js','scripts/test-notebook-damage-renderer.mjs','docs/performance/notebook-damage-20261005.md']
               value=pathlib.Path(name).read_bytes()
-              request=urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',
-                  data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),method='POST',
-                  headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              request=urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),method='POST',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
               with urllib.request.urlopen(request,timeout=30) as response:result=json.load(response)
               assert result['sha']==git('hash-object',name)
               print(name,result['sha'])
           print('VERIFIED_LOCAL_TREE='+expected)
-          print('Immutable blobs only. No refs, main, release or user data changed.')
+          print('Immutable blobs only; no branch, release or user-data changes.')
           PY
