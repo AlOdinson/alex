@@ -88,11 +88,13 @@ try {
       const startRevision = await page.evaluate(async id => (await import('/alex/src/lib/browserBoardRuntimeRegistry.js')).getBoardRuntime(id).getRevision(), board.boardId);
       const points = await page.evaluate(() => {
         const c = window.auditCanvas, b = window.auditBookNow().getBoundingRect(), r = c.upperCanvasEl.getBoundingClientRect(), v = c.viewportTransform;
-        return { x: r.left + (b.left + 35) * v[0] + v[4], y: r.top + (b.top + 400) * v[3] + v[5], zoom: c.getZoom(), initial: window.auditBookNow()._objects.length };
+        return { x: r.left + (b.left + 35) * v[0] + v[4], y: r.top + (b.top + b.height * .55) * v[3] + v[5], zoom: c.getZoom(), initial: window.auditBookNow()._objects.length };
       });
       for (let stroke = 0; stroke < 16; stroke++) {
         await page.evaluate(expected => window.auditMetrics.begin(expected), points.initial + stroke + 1);
         const x = points.x + (stroke % 4) * 100 * points.zoom, y = points.y + Math.floor(stroke / 4) * 12 * points.zoom;
+        assert.ok(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === window.auditCanvas.upperCanvasEl, { x, y }),
+          `Stroke ${stroke} starts on a control, not on the drawing canvas`);
         await page.mouse.move(x, y); await page.mouse.down();
         await page.mouse.move(x + 55 * points.zoom, y + 4 * points.zoom, { steps: 12 });
         await page.mouse.up();

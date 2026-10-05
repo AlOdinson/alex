@@ -20,7 +20,11 @@ jobs:
       - uses: actions/setup-node@v4
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
-      - run: node --test scripts/test-notebook-hotpath-regressions.mjs scripts/test-notebook-audit-metrics.mjs scripts/test-notebook-audit-fixture.mjs
+      - run: node --test scripts/test-notebook-hotpath-regressions.mjs scripts/test-notebook-audit-metrics.mjs scripts/test-notebook-audit-fixture.mjs scripts/test-notebook-projection-cost.mjs scripts/test-notebook-gesture-index.mjs scripts/test-notebook-contained-fast-path.mjs
+      - run: npm run test:pencil
+      - run: npm run test:sync:ci
+      - run: npm run test:student:reading
+      - run: npm run test:media
       - run: npm run test:notebook
       - run: npm run test:browser-authority
       - run: npm run test:student:storage
@@ -29,7 +33,15 @@ jobs:
         run: git diff --exit-code 6ad2a404ce9ddc92d8682659d89c824576c5a276 HEAD -- src/lib/boardScreenShare.js src/lib/boardScreenShareCompositor.js src/lib/screenShareFramePump.js src/components/ScreenShare.jsx
       - run: npm run build
   browser:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, engine: chromium}
+          - {os: macos-latest, engine: webkit}
+    runs-on: ${{ matrix.os }}
+    env:
+      VERIFICATION_BROWSER: ${{ matrix.engine }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -38,24 +50,32 @@ jobs:
         with: {node-version: 22}
       - run: npm ci --no-audit --no-fund
       - run: npm install --no-save --no-package-lock playwright-core@1.62.1
-      - run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
       - name: Compare identical input on baseline and candidate
         run: |
           baseline=6ad2a404ce9ddc92d8682659d89c824576c5a276
-          files=(src/lib/authoritySnapshot.js src/lib/authorityOperationEvaluator.js src/lib/notebookSession.js src/lib/notebookBoardController.js)
+          files=(src/lib/authoritySnapshot.js src/lib/authorityOperationEvaluator.js src/lib/notebookSession.js src/lib/notebookBoardController.js src/lib/notebookProjection.js src/lib/notebookGestureTarget.js src/lib/boardNotebook.js src/lib/notebookBoardActions.js)
           git restore --source="$baseline" -- "${files[@]}"
           set +e
-          GITHUB_SHA="$baseline" NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/baseline node scripts/benchmark-notebook-real-input.mjs --baseline --smoke
+          GITHUB_SHA="$baseline" NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/baseline node scripts/benchmark-notebook-real-input.mjs --baseline
           before=$?
           git restore --source="$GITHUB_SHA" -- "${files[@]}"
           restored=$?
           if [ "$restored" -ne 0 ]; then exit "$restored"; fi
-          NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate node scripts/benchmark-notebook-real-input.mjs --smoke
+          NOTEBOOK_AUDIT_OUTPUT=notebook-audit-results/candidate node scripts/benchmark-notebook-real-input.mjs
           after=$?
           if [ "$before" -ne 0 ] || [ "$after" -ne 0 ]; then exit 1; fi
+      - name: Existing notebook browser regressions
+        run: npm run test:notebook:browser
+      - name: PDF continuity regression
+        run: npm run test:pdf:continuity
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: notebook-no-video-ink-${{ github.sha }}
-          path: notebook-audit-results/
+          name: notebook-no-video-ink-${{ matrix.engine }}-${{ github.sha }}
+          path: |
+            notebook-audit-results/
+            notebook-true-split-results/
+            notebook-navigation-results/
+            notebook-drop-results/
           retention-days: 14
