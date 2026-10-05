@@ -1,0 +1,62 @@
+name: Stage exact notebook indexed source objects
+on:
+  push:
+    branches: ['delivery/notebook-indexed-20261005']
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-indexed-20261005'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Verify patch and upload exact source tree without changing any branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo = 'AlOdinson/alex'
+          base = '52a65f38badf74215568540297e71ba3ce7b8b0c'
+          base_tree = 'a46d0d2f9f8b7aa2802545d9144b4eded12c0c32'
+          expected = 'ba209d6706c9e0a20e2b04eea574fc851a12b5bb'
+          assert os.environ['GITHUB_REPOSITORY'] == repo
+          assert os.environ['GITHUB_REF'] == 'refs/heads/delivery/notebook-indexed-20261005'
+          packed = pathlib.Path('.delivery/notebook-indexed.patch.xz').read_bytes()
+          assert hashlib.sha256(packed).hexdigest() == '7411d6359f7307f08230235c93363cf9819f41e7d766d584a1efc542a273b52c'
+          patch = pathlib.Path('/tmp/notebook-indexed.patch')
+          patch.write_bytes(lzma.decompress(packed))
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          subprocess.run(['git', 'checkout', '--detach', base], check=True)
+          assert git('rev-parse', 'HEAD^{tree}') == base_tree
+          subprocess.run(['git', 'apply', '--check', '--index', '--unidiff-zero', str(patch)], check=True)
+          subprocess.run(['git', 'apply', '--index', '--unidiff-zero', str(patch)], check=True)
+          assert git('write-tree') == expected
+          forbidden = ['src/lib/boardScreenShare.js', 'src/lib/boardScreenShareCompositor.js', 'src/lib/screenShareFramePump.js', 'src/components/ScreenShare.jsx']
+          subprocess.run(['git', 'diff', '--cached', '--exit-code', '--', *forbidden], check=True)
+          assert not git('diff', '--cached', '--name-only', '--diff-filter=D')
+          paths = git('diff', '--cached', '--name-only', '--diff-filter=ACM').splitlines()
+          assert len(paths) == 19
+          def post(endpoint, data):
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + '/git/' + endpoint,
+                  data=json.dumps(data).encode(), method='POST', headers={
+                      'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                      'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          entries = []
+          for name in paths:
+              content = pathlib.Path(name).read_bytes()
+              local_sha = git('hash-object', name)
+              blob = post('blobs', {'content': base64.b64encode(content).decode(), 'encoding': 'base64'})
+              assert blob['sha'] == local_sha, name
+              mode = git('ls-files', '-s', '--', name).split()[0]
+              entries.append({'path': name, 'mode': mode, 'type': 'blob', 'sha': local_sha})
+          tree = post('trees', {'base_tree': base_tree, 'tree': entries})
+          assert tree['sha'] == expected
+          print('VERIFIED_SOURCE_TREE=' + tree['sha'])
+          print('No refs, pull requests, deployments or production data were modified by this job.')
+          PY
