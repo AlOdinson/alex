@@ -65,8 +65,13 @@ try {
           if (value?.getObjects && value?.getZoom) { window.auditCanvas = value; break; }
         }
         if (!window.auditCanvas) throw new Error('Production canvas not found');
-        window.auditBook = window.auditCanvas.getObjects().find(o => o.boardObjectId === 'audit-notebook');
-        if (!window.auditBook) throw new Error('Seeded notebook not found');
+      });
+      // Runtime edit permission can arrive before Fabric finishes page hydration.
+      await page.waitForFunction(() => {
+        window.auditBook = window.auditCanvas?._objects.find(o => o.boardObjectId === 'audit-notebook');
+        return Boolean(window.auditBook);
+      }, undefined, { timeout: 90000 });
+      await page.evaluate(async () => {
         const { installNotebookAuditMetrics } = await import('/alex/scripts/notebook-audit-metrics.js');
         window.auditMetrics = installNotebookAuditMetrics(window.auditCanvas, window.auditBook);
       });
