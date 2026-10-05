@@ -85,3 +85,15 @@ test('CPU instrumentation can attach after a controller is created lazily', () =
  ref.current={enqueue(){return 3;},ack(){return true;}};
  assert.equal(ref.current.enqueue(),3);assert.equal(metrics.report().controllerStages.length,1);metrics.dispose();
 });
+
+test('audit resolves the exact controller ref through current or alternate owner fibers', async () => {
+ const { findNotebookAuditControllerRef } = await import('./notebook-audit-metrics.js');
+ const controller={enqueue(){},ack(){}},ref={current:controller},other={current:{enqueue(){},ack(){}}};
+ const owner={type:{name:'MemoizedOwner'},memoizedState:{memoizedState:other,next:null},return:null};
+ owner.alternate={memoizedState:{memoizedState:ref,next:null},return:null};
+ const element={__reactFiberFixture:{memoizedState:null,return:owner}};
+ assert.strictEqual(findNotebookAuditControllerRef(element,controller),ref);
+ assert.equal(findNotebookAuditControllerRef(element,other.current),other);
+ assert.equal(findNotebookAuditControllerRef(element,{enqueue(){},ack(){}}),null);
+ assert.equal(findNotebookAuditControllerRef(element,null),null);
+});

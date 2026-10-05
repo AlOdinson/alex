@@ -19,6 +19,26 @@ export function makeAuditSnapshot({ boardObjects = 0, pages = 1, pageStrokes = 1
   return { version: 2, background: 'blank', canvas: { objects } };
 }
 
+// Test-only owner lookup: the host node may retain an alternate fiber and a
+// component function name is not a stable identity. Match the ensured instance
+// synchronously, before a later readiness task can retire it.
+export function findNotebookAuditControllerRef(element, controller) {
+  if (!element || !controller) return null;
+  const root = element[Object.keys(element).find(key => key.startsWith('__reactFiber'))];
+  const visited = new Set(), pending = root ? [root] : [];
+  while (pending.length) {
+    const fiber = pending.pop();
+    if (!fiber || visited.has(fiber)) continue;
+    visited.add(fiber);
+    for (let hook = fiber.memoizedState; hook; hook = hook.next) {
+      const ref = hook.memoizedState;
+      if (ref && Object.hasOwn(ref, 'current') && ref.current === controller) return ref;
+    }
+    pending.push(fiber.return, fiber.alternate);
+  }
+  return null;
+}
+
 export function installNotebookAuditMetrics(canvas, notebook, { controller = null, controllerRef = null } = {}) {
   const samples = [], longTasks = [], renders = [], controllerStages = [];
   let active = null, listReads = 0, childRenders = 0, createdPaths = 0, current = notebook;

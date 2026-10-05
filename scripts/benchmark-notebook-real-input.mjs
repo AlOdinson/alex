@@ -77,21 +77,26 @@ try {
       // This fixture measures a loaded lesson, not cold startup. Use the real
       // notebook readiness boundary before the first timed native contact.
       await page.waitForFunction(async () => {
-        window.auditController = await window.auditHandlers?.ensure();
-        return Boolean(window.auditController);
-      }, undefined, { timeout: 90000 });
-      // Follow the live React ref, not an initial controller that readiness or
-      // reconciliation may replace before the first timed stroke.
-      await page.evaluate(() => {
+        const { findNotebookAuditControllerRef } = await import('/alex/scripts/notebook-audit-metrics.js');
+        // Re-resolve current handlers after readiness re-renders, not the object
+        // captured before their initialization. This is before timed input.
         const element = document.querySelector('.toolbar-shell');
         let fiber = element?.[Object.keys(element).find(key => key.startsWith('__reactFiber'))];
-        while (fiber && fiber.type?.name !== 'BoardWorkspace') fiber = fiber.return;
-        for (let hook = fiber?.memoizedState; hook; hook = hook.next) {
-          const ref = hook.memoizedState, value = ref?.current;
-          if (value?.enqueue && value?.ack && value?.pendingObjectIds && value?.getConfirmedState) window.auditControllerRef = ref;
+        const visited = new Set();
+        while (fiber && !visited.has(fiber)) {
+          visited.add(fiber);
+          for (let hook = fiber.memoizedState; hook; hook = hook.next) {
+            const value = hook.memoizedState?.current;
+            if (value?.capture && value?.ensure) window.auditHandlers = value;
+          }
+          fiber = fiber.return;
         }
-        if (!window.auditControllerRef) throw new Error('Live notebook controller reference not found');
-      });
+        const controller = await window.auditHandlers?.ensure();
+        const ref = findNotebookAuditControllerRef(document.querySelector('.toolbar-shell'), controller);
+        if (!ref) return false;
+        window.auditController = controller; window.auditControllerRef = ref;
+        return true;
+      }, undefined, { timeout: 90000 });
       // Runtime edit permission can arrive before Fabric finishes page hydration.
       await page.waitForFunction(() => {
         window.auditBook = window.auditCanvas?._objects.find(o => o.boardObjectId === 'audit-notebook');
