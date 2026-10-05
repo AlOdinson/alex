@@ -138,3 +138,12 @@ test('factory probe attaches CPU metrics to the real controller used for noteboo
   assert.equal(controller.getState().snapshot.canvas.objects[0].notebookPages[0].length,1);
  } finally { metrics.dispose(); controller.dispose(); delete globalThis.__notebookAuditControllerRef; }
 });
+
+test('browser readiness and revision waits use synchronous predicates that really poll', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./benchmark-notebook-real-input.mjs', import.meta.url), 'utf8');
+  // Playwright's poller treats a returned Promise as truthy before it resolves.
+  // Async setup belongs in page.evaluate; waitForFunction must check ready state.
+  assert.equal(/\.waitForFunction\(\s*async\b/.test(source), false,
+    'Async wait predicate may resolve false once without polling the readiness boundary');
+});

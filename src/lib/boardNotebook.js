@@ -1,3 +1,4 @@
+import { notebookPageAppend } from './notebookPageDelta.js';
 import { beginNotebookCacheAppend, finishNotebookCacheAppend, rememberNotebookAppendCache, forgetNotebookAppendCache } from './notebookAppendCache.js';
 import { memoizeImmutableNotebookImage } from './notebookAssets.js';
 import { navigateNotebookPage, retireNotebookPageWork } from './notebookPageRuntime.js';
@@ -98,7 +99,28 @@ export class BoardNotebook extends Group {
     previous.forEach(object => object.dispose());
   }
 
+  // An addressed append shares every earlier record with the installed page.
+  // No old-child scan, reorder, or serialization is needed at this boundary.
+  appendPreparedPageObject(object, pages) {
+    const before = this.notebookPages[this.notebookPageNumber - 1];
+    const after = pages?.[this.notebookPageNumber - 1];
+    const delta = !this._pageContentInvalid && notebookPageAppend(before, after);
+    if (!delta || this._objects.length !== delta.index
+      || String(object?.boardObjectId) !== String(delta.record.boardObjectId)) return false;
+    const append = beginNotebookCacheAppend(this, object), matrix = object.calcOwnMatrix();
+    memoizeImmutableNotebookImage(object);
+    this.add(inert(object)); util.applyTransformToObject(object, matrix); object.setCoords();
+    this._pageRecords.set(object, delta.record);
+    if (delta.record.updatedAt != null) object.updatedAt = delta.record.updatedAt;
+    if (delta.record.updatedBy != null) object.updatedBy = delta.record.updatedBy;
+    this.notebookPages = pages; this._pageContentInvalid = false;
+    if (!finishNotebookCacheAppend(this, object, append)) this.dirty = true;
+    return true;
+  }
+
   applyPreparedPageDelta(records, prepared, pages) {
+    if (prepared.length === 1 && pages?.[this.notebookPageNumber - 1] === records
+      && this.appendPreparedPageObject(prepared[0], pages)) return;
     const previous = this.getPageObjects();
     const byId = new Map(previous.map(object => [String(object.boardObjectId), object]));
     const fresh = new Map(prepared.map(object => [String(object.boardObjectId), object]));

@@ -1,4 +1,5 @@
 import { freezeNotebookRecord } from './notebookRecords.js';
+import { notebookPageAppend } from './notebookPageDelta.js';
 import { util } from 'fabric';
 import { applyNotebookOperation, isNotebookOperation } from './notebookOperations.js';
 
@@ -73,11 +74,18 @@ export function applyPageDeltaToFabric(notebook, operation, options = {}) {
         return change;
       }
       const changedIds = new Set(change.changedChildIds);
-      const records = pageRecords(next, operation.pageNumber).filter(record => changedIds.has(String(record.boardObjectId)));
+      const append = notebookPageAppend(base, pageRecords(next, operation.pageNumber));
+      const records = append ? [append.record]
+        : pageRecords(next, operation.pageNumber).filter(record => changedIds.has(String(record.boardObjectId)));
       const prepared = await util.enlivenObjects(records, options);
       if (cancelled()) { dispose(prepared); return { changed: false, cancelled: true }; }
       const latest = modelFor(notebook), currentPage = pageRecords(latest, operation.pageNumber);
-      const final = { ...latest }, finalChange = applyNotebookOperation(final, operation);
+      // Reuse validated preparation only if ALL page references and navigation
+      // remain unchanged; another page's update must not be replaced by next.
+      const unchanged = latest.notebookPages === before.notebookPages
+        && latest.notebookPageNumber === before.notebookPageNumber;
+      const final = unchanged ? next : { ...latest };
+      const finalChange = unchanged ? change : applyNotebookOperation(final, operation);
       if (!finalChange.changed) { dispose(prepared); return finalChange; }
       if (operation.pageNumber !== notebook.notebookPageNumber) {
         dispose(prepared); notebook.notebookPages = final.notebookPages;

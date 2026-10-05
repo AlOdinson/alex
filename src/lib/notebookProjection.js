@@ -1,3 +1,4 @@
+import { notebookPageAppend } from './notebookPageDelta.js';
 import { util } from 'fabric';
 import { createObjectPatch } from './operationProtocol.js';
 import { notebookPageWorkGuard, retireNotebookPageWork } from './notebookPageRuntime.js';
@@ -43,8 +44,9 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
   const beforeRecords = beforePages[beforePageNumber - 1] ?? [];
   const pageChanged = page !== beforePageNumber;
   const samePageRecords = !pageChanged && records === beforeRecords;
-  let freshRecords = [];
-  if (!samePageRecords) {
+  const append = !pageChanged && notebookPageAppend(beforeRecords, records);
+  let freshRecords = append ? [append.record] : [];
+  if (!samePageRecords && !append) {
     const currentById = new Map(beforeRecords.map(record => [String(record.boardObjectId), record]));
     const wanted = new Set(records.map(record => String(record.boardObjectId)));
     if (wanted.size !== records.length || records.some(record => !record?.boardObjectId)) throw new TypeError('Duplicate or missing notebook child identity');
@@ -60,12 +62,14 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
     apply() {
       if (!current()) return false;
       const frame = notebookFramePatch(notebook.toObject(['boardObjectId']), target);
-      const contentChanged = !samePageRecords && (pageChanged || prepared.length > 0 || records.length !== beforeRecords.length
+      const contentChanged = Boolean(append) || !samePageRecords && (pageChanged || prepared.length > 0 || records.length !== beforeRecords.length
         || records.some((record, index) => record.boardObjectId !== beforeRecords[index]?.boardObjectId));
       // Invalidate obsolete navigation/delta preparations, never new local input.
       if (contentChanged) retireNotebookPageWork(notebook);
       notebook.notebookPageNumber = page;
-      if (contentChanged) {
+      if (append) {
+        notebook.applyPreparedPageDelta(records, prepared, target.notebookPages);
+      } else if (contentChanged) {
         notebook.applyPreparedPageDelta(records, prepared, target.notebookPages);
         // Rebase may reorder retained siblings without creating new objects.
         const desired = new Map(records.map((record, index) => [String(record.boardObjectId), index]));
@@ -75,7 +79,7 @@ export async function prepareNotebookProjection(notebook, target, { isCurrent = 
           if (notebook._objects[index] !== object) notebook.moveObjectTo(object, index);
         }
       } else notebook.notebookPages = target.notebookPages;
-      if (!samePageRecords) {
+      if (!samePageRecords && !append) {
         const byId = new Map(records.map(record => [String(record.boardObjectId), record]));
         for (const child of notebook.getPageObjects()) {
           const record = byId.get(String(child.boardObjectId));

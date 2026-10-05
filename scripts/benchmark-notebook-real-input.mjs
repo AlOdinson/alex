@@ -82,13 +82,9 @@ try {
       });
       // This fixture measures a loaded lesson, not cold startup. Use the real
       // notebook readiness boundary before the first timed native contact.
-      await page.waitForFunction(async () => {
-        await window.auditHandlers?.ensure();
-        const ref = window.__notebookAuditControllerRef;
-        if (!ref?.current) return false;
-        window.auditControllerRef = ref;
-        return true;
-      }, undefined, { timeout: 90000 });
+      await page.evaluate(async () => { await window.auditHandlers?.ensure(); });
+      await page.waitForFunction(() => Boolean(window.__notebookAuditControllerRef?.current), undefined, { timeout: 90000 });
+      await page.evaluate(() => { window.auditControllerRef = window.__notebookAuditControllerRef; });
       // Runtime edit permission can arrive before Fabric finishes page hydration.
       await page.waitForFunction(() => {
         window.auditBook = window.auditCanvas?._objects.find(o => o.boardObjectId === 'audit-notebook');
@@ -100,7 +96,10 @@ try {
         window.auditBookNow = () => window.auditMetrics.getNotebook();
       });
       await page.getByRole('button', { name: 'Карандаш', exact: true }).click();
-      const startRevision = await page.evaluate(async id => (await import('/alex/src/lib/browserBoardRuntimeRegistry.js')).getBoardRuntime(id).getRevision(), board.boardId);
+      const startRevision = await page.evaluate(async id => {
+        window.auditRuntime = (await import('/alex/src/lib/browserBoardRuntimeRegistry.js')).getBoardRuntime(id);
+        return window.auditRuntime.getRevision();
+      }, board.boardId);
       const points = await page.evaluate(() => {
         const c = window.auditCanvas, b = window.auditBookNow().getBoundingRect(), r = c.upperCanvasEl.getBoundingClientRect(), v = c.viewportTransform;
         return { x: r.left + (b.left + 35) * v[0] + v[4], y: r.top + (b.top + b.height * .55) * v[3] + v[5], zoom: c.getZoom(), initial: window.auditBookNow()._objects.length };
@@ -133,10 +132,8 @@ try {
       }
       await page.waitForFunction(() => window.auditMetrics.report().samples.every(s => s.pagePaintAt != null), undefined, { timeout: 30000 });
       // Let the REAL outbox/authority finish; publish is never replaced by a stub.
-      await page.waitForFunction(async ({ id, floor }) => {
-        const runtime = (await import('/alex/src/lib/browserBoardRuntimeRegistry.js')).getBoardRuntime(id);
-        return runtime.getRevision() >= floor;
-      }, { id: board.boardId, floor: startRevision + 16 }, { timeout: 90000 });
+      await page.waitForFunction(floor => window.auditRuntime.getRevision() >= floor,
+        startRevision + 16, { timeout: 90000 });
       const report = await page.evaluate(() => ({ ...window.auditMetrics.report(), children: window.auditBookNow()?._objects.length,
         environment: { browser: navigator.userAgent, dpr: devicePixelRatio, cores: navigator.hardwareConcurrency } }));
       await writeFile(`${output}/${engineName}-${index}-diagnostic.json`, JSON.stringify({ scenario, ...report }, null, 2));

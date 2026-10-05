@@ -3,6 +3,7 @@ import { util, FabricObject } from 'fabric';
 import { randomToken } from './ids.js';
 import { createConditionalDeleteOps, createConditionalRecordPatchOps } from './operationProtocol.js';
 import { prepareNotebookProjection } from './notebookProjection.js';
+import { readSnapshotRecord } from './indexedBoardModel.js';
 
 const CHILD_FIELDS = ['id', 'shapeType', 'boardObjectId', 'objectKind', 'storagePath', 'isEraserPath', 'updatedAt', 'updatedBy'];
 const serialized = object => object.toObject(CHILD_FIELDS);
@@ -138,6 +139,9 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
             ifDeletedBy: clientId, ifDeletedMutationId: mutationId }))) : createConditionalDeleteOps(outsideRecords)),
       ], actionId);
       const historyAction = history(handle, inverse, { sourceId, newText, split: prepared.split, historySource });
+      // Only the reducer may prove that all previous children are unchanged.
+      const canonicalPages = prepared.reusesSource && controller.getState
+        ? readSnapshotRecord(controller.getState().snapshot, String(notebook.boardObjectId))?.object.notebookPages : null;
       mutate(() => {
         if (canvas.getActiveObject?.() === object) canvas.discardActiveObject();
         // Remove the old identity from the board registry before reusing its Path.
@@ -147,7 +151,9 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
           inside.set(prepared.placement);
           inside.updatedAt = childRecord.updatedAt; inside.updatedBy = childRecord.updatedBy;
         }
-        notebook.addPageObject(inside, prepared.reusesSource ? childRecord : null);
+        if (!canonicalPages || !notebook.appendPreparedPageObject(inside, canonicalPages)) {
+          notebook.addPageObject(inside, prepared.reusesSource ? childRecord : null);
+        }
         notebook.updatedAt = ops[0].updatedAt; notebook.updatedBy = clientId;
         if (outside) { canvas.add(outside); canvas.moveObjectTo(outside, outsideRecords[0].zIndex); }
       });

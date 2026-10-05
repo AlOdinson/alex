@@ -1,3 +1,4 @@
+import { rememberNotebookPageAppend } from './notebookPageDelta.js';
 import { freezeNotebookRecord as freeze } from './notebookRecords.js';
 /**
  * Versioned, copy-on-write notebook child operations. No Fabric/React dependency.
@@ -121,11 +122,17 @@ function editPage(source) {
 export function applyNotebookOperation(notebook, operation) {
   const empty = { changed: false, changedChildIds: [], pageNumber: operation?.pageNumber };
   if (!isNotebookOperation(operation) || !targetValid(notebook, operation)) return empty;
-  const editor = editPage(notebook.notebookPages[operation.pageNumber - 1] ?? []);
+  const beforePage = notebook.notebookPages[operation.pageNumber - 1] ?? [];
+  const editor = editPage(beforePage);
   for (const change of operation.changes) editor.apply(change, operation);
   if (!editor.touched.size) return empty;
   const pages = notebook.notebookPages.slice();
   pages[operation.pageNumber - 1] = freeze(editor.items);
+  const only = operation.changes[0];
+  // Duplicate/unsafe old identities and structural changes cannot mint a proof.
+  if (operation.changes.length === 1 && only.type === 'insert'
+    && (only.zIndex == null || only.zIndex >= beforePage.length)
+    && editor.byId.size === editor.items.length) rememberNotebookPageAppend(beforePage, editor.items);
   notebook.notebookPages = Object.freeze(pages);
   stamp(notebook, {}, operation);
   return { changed: true, changedChildIds: [...editor.touched], pageNumber: operation.pageNumber };
