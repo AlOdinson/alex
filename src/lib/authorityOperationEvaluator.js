@@ -1,4 +1,4 @@
-import { applyAuthorityOpsInPlace } from './authoritySnapshot.js';
+import { applyAuthorityOpsInPlace, forkAuthoritySnapshot } from './authoritySnapshot.js';
 import { evaluateNotebookOperation, updateNotebookTombstones, isSerializedNotebook, isNotebookPageNavigationAllowed } from './notebookOperations.js';
 
 function cloneValue(value) {
@@ -236,9 +236,7 @@ export function evaluateAuthorityAction({
   // This also preserves original order for interleaved groups and dependent ops.
   // Each restart rejects a new group, so the number of passes is bounded.
   for (;;) {
-    const staged = { ...snapshot, canvas: { ...snapshot?.canvas,
-      objects: (snapshot?.canvas?.objects ?? []).map(object => ({ ...object })),
-    } };
+    const staged = forkAuthoritySnapshot(snapshot, sourceOps);
     const stagedTombstones = Object.assign(Object.create(null), tombstones);
     let stagedNotebookTombstones = notebookTombstones;
     const appliedOps = [], skippedConflicts = [...rejectedConflicts];

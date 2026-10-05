@@ -19,7 +19,7 @@ const index = view => new Map((view?.snapshot?.canvas?.objects ?? []).map(object
 export function createNotebookBoardController({ confirmedState, paint, onError = () => {}, onPending = () => {},
   initialPendingActions = [], ...options } = {}) {
   if (typeof paint !== 'function') throw new TypeError('Notebook controller requires a projection callback');
-  let latest = confirmedState, previousIndex = index(confirmedState), generation = 0;
+  let latest = confirmedState, previousIndex = index(confirmedState), generation = 0, notifications = 0;
   let disposed = false, scheduled = false, paintError = null, paintTask = Promise.resolve(), suspended = 0, mutedIds = null;
   const dirty = new Set(), pendingIds = new Map(), reorderIds = new Set();
   for (const action of initialPendingActions) pendingIds.set(String(action.actionId), operationObjectIds(action.ops));
@@ -52,6 +52,7 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
   }
   function changed(view, event) {
     if (disposed) return;
+    notifications++;
     if (view.snapshot !== latest?.snapshot) {
       const next = index(view);
       for (const [id, object] of next) if (!mutedIds?.has(id) && !shallowEqual(previousIndex.get(id), object)) dirty.add(id);
@@ -93,8 +94,13 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
     ack(result, { paint: project = true } = {}) {
       let accepted;
       mutedIds = project ? null : operationObjectIds(result.ops ?? result.appliedOps);
-      try { if (project) markOperations(result.ops ?? result.appliedOps); accepted = session.ack(result); }
-      finally { mutedIds = null; }
+      const before = notifications;
+      try {
+        accepted = session.ack(result);
+        // A verified duplicate emits nothing; do not dirty an already-painted
+        // page. A newly accepted result still projects even without a model diff.
+        if (project && notifications !== before) { markOperations(result.ops ?? result.appliedOps); schedulePaint(); }
+      } finally { mutedIds = null; }
       // A future out-of-order acknowledgement is still pending in the session.
       if (result.revision <= session.getConfirmedState().revision || result.changed === false) forget(result.actionId);
       return accepted;

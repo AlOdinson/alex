@@ -1,6 +1,6 @@
 import { randomToken } from './ids.js';
 import { isAuthoritativeBoardOperation } from './operationProtocol.js';
-import { applyAuthorityOpsInPlace } from './authoritySnapshot.js';
+import { applyAuthorityOpsInPlace, forkAuthoritySnapshot } from './authoritySnapshot.js';
 import { evaluateAuthorityAction } from './authorityOperationEvaluator.js';
 import { prepareAuthoritativeHistory } from './historyOperations.js';
 import { updateNotebookTombstones } from './notebookOperations.js';
@@ -18,8 +18,6 @@ const deferred = () => {
   return { promise, resolve, reject };
 };
 const safeRevision = value => Number.isSafeInteger(value) && value >= 0;
-const fork = snapshot => ({ ...snapshot, canvas: { ...snapshot.canvas,
-  objects: snapshot.canvas.objects.map(object => ({ ...object })) } });
 function seal(snapshot) {
   snapshot.canvas.objects.forEach(Object.freeze);
   Object.freeze(snapshot.canvas.objects); Object.freeze(snapshot.canvas); return Object.freeze(snapshot);
@@ -49,7 +47,7 @@ function boardTombstones(source, operations, context) {
   return result;
 }
 function advance(model, operations, background, context) {
-  const snapshot = fork(model.snapshot);
+  const snapshot = forkAuthoritySnapshot(model.snapshot, operations);
   // Deterministic operation timestamps, as used by the authoritative model.
   applyAuthorityOpsInPlace(snapshot, operations, background);
   return { snapshot: seal(snapshot), revision: context.revision ?? model.revision,
@@ -86,6 +84,25 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
   let pending = [], bytes = 0, active = 0, generation = 0, paused = null, disposed = false, scheduled = false;
   let saveTail = Promise.resolve(), storageFailure = null;
   const byId = new Map(), commits = new Map(), flushWaiters = new Set(), cleanup = new Map();
+  // Realtime onCommit and publish() can acknowledge the same commit. Remember a
+  // bounded recent window so a safe duplicate cannot rebase every pending stroke.
+  // Unknown older results retain the recovery path; never drop a restored intent.
+  const recentCommits = new Map();
+  let recentCommitBytes = 0;
+  const committedPayload = result => ({ actionId: String(result.actionId), clientId: String(result.clientId ?? ''),
+    ops: result.ops ?? result.appliedOps ?? [], background: result.background ?? result.appliedBackground ?? null });
+  function rememberCommit(result) {
+    const payload = committedPayload(result);
+    const size = new TextEncoder().encode(JSON.stringify(payload)).byteLength;
+    if (size > maxPendingBytes) return;
+    const previous = recentCommits.get(result.revision);
+    if (previous) { recentCommitBytes -= previous.bytes; recentCommits.delete(result.revision); }
+    while (recentCommits.size && (recentCommitBytes + size > maxPendingBytes || recentCommits.size >= maxPending * 2)) {
+      const oldest = recentCommits.keys().next().value;
+      recentCommitBytes -= recentCommits.get(oldest).bytes; recentCommits.delete(oldest);
+    }
+    recentCommits.set(result.revision, { payload, bytes: size }); recentCommitBytes += size;
+  }
 
   function report(error) { try { onError(error); } catch { /* observer must not break the edit queue */ } }
   function view(model) { return Object.freeze({ snapshot: model.snapshot, revision: model.revision }); }
@@ -235,7 +252,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
         && equivalent(entry.previewOps, result.ops ?? result.appliedOps ?? [])
         && equivalent(entry.previewBackground, result.background ?? result.appliedBackground ?? null);
       confirmed = advance(confirmed, result.ops ?? result.appliedOps ?? [], result.background ?? result.appliedBackground ?? null, result);
-      removeEntry(entry, result); if (!matchesPreview) mustRebuild = true;
+      removeEntry(entry, result); rememberCommit(result); if (!matchesPreview) mustRebuild = true;
     }
     if (!pending.length) optimistic = confirmed;
     else if (mustRebuild) rebuild();
@@ -252,6 +269,13 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
       if (result.accepted === false || result.rejectedObjectIds?.length
         || result.skippedConflicts?.length && !entry.action.history) return reject(result);
       removeEntry(entry, clone(result)); rebuild(); notify('ack', result.actionId); schedule(); return true;
+    }
+    const recent = recentCommits.get(result.revision);
+    if (recent) {
+      if (!equivalent(recent.payload, committedPayload(result))) {
+        throw errorWith('Conflicting notebook revision', 'notebook_revision_conflict');
+      }
+      if (!entry) return true;
     }
     const copy = freezeNotebookRecord(clone({ ...result, ops: operations }));
     if (entry) entry.status = 'acknowledged';
@@ -316,7 +340,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     const retained = exportPending(); disposed = true; generation++;
     const error = errorWith('Notebook session disposed; pending intents retained', 'notebook_disposed');
     for (const entry of pending) { entry.settled.reject(error); if (!entry.saved) entry.durable.reject(error); }
-    settleFlush(); pending = []; byId.clear(); commits.clear(); bytes = 0; return retained;
+    settleFlush(); pending = []; byId.clear(); commits.clear(); recentCommits.clear(); recentCommitBytes = 0; bytes = 0; return retained;
   }
   try { for (const input of initialPendingActions) enqueue(input, true); }
   catch (error) { dispose(); throw error; }

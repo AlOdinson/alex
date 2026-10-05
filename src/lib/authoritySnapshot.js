@@ -1,6 +1,6 @@
 import { freezeSnapshotNotebookPages, freezeNotebookRecord } from './notebookRecords.js';
 import { applyNotebookOperation } from './notebookOperations.js';
-import { applySerializedObjectPatch } from './operationProtocol.js';
+import { applySerializedObjectPatch, operationObjectIds } from './operationProtocol.js';
 
 const EMPTY_SNAPSHOT = { version: 2, background: 'grid', canvas: { objects: [] } };
 
@@ -226,4 +226,16 @@ export function applyAuthorityActions(sourceSnapshot, actions) {
     applyMutable(snapshot, action?.ops ?? [], action?.background ?? null, action?.committedAt ?? null);
   }
   return snapshot;
+}
+/** Fork the legacy array boundary without copying unrelated object records.
+ * Reducer upsert/patch/notebook operations already replace their own records.
+ * Transform is the one in-place writer, so only its targets need writable heads.
+ * This deliberately retains the array copy until the indexed-model rollout.
+ */
+export function forkAuthoritySnapshot(snapshot, operations = []) {
+  const source = snapshot?.canvas?.objects ?? [];
+  const transforms = operationObjectIds(operations.filter(op => op?.type === 'transform'));
+  return { ...snapshot, canvas: { ...snapshot?.canvas, objects: transforms.size
+    ? source.map(object => transforms.has(String(object.boardObjectId)) ? { ...object } : object)
+    : source.slice() } };
 }
