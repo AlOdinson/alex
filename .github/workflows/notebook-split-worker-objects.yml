@@ -1,0 +1,59 @@
+name: Stage exact notebook split worker source
+on:
+  push:
+    branches: ['delivery/notebook-split-worker-20261006']
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-split-worker-20261006'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Verify exact worker tree and upload immutable blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo='AlOdinson/alex'
+          base='273255cad804e487024cf3a493e6563d20a1e818'
+          expected='8d809bd9dbf0df1f5f1d2a21478bfcd7809a6c1c'
+          assert os.environ['GITHUB_REPOSITORY']==repo
+          assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-split-worker-20261006'
+          packed=base64.b64decode(pathlib.Path('.delivery/notebook-split-worker.patch.xz.b64').read_text(), validate=True)
+          assert hashlib.sha256(packed).hexdigest()=='80636443ae0667a906c6dd9e16ef0011583ff21dad43e45e245969c5348de915'
+          patch=pathlib.Path('/tmp/notebook-split-worker.patch')
+          patch.write_bytes(lzma.decompress(packed))
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          subprocess.run(['git','checkout','--detach',base],check=True)
+          subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
+          subprocess.run(['git','apply','--index',str(patch)],check=True)
+          assert git('write-tree')==expected
+          allowed={
+            '.github/workflows/notebook-no-video-ci.yml',
+            'scripts/test-notebook-split-worker-browser.mjs',
+            'scripts/test-notebook-split-worker-build.mjs',
+            'scripts/test-notebook-split-worker.mjs',
+            'src/lib/notebookSplitFragments.js',
+            'src/lib/notebookSplitGeometryCore.js',
+            'src/lib/notebookSplitWorker.js',
+            'src/lib/notebookSplitWorkerClient.js',
+          }
+          paths=git('diff','--cached','--name-only').splitlines()
+          assert set(paths)==allowed and len(paths)==8
+          for name in paths:
+              value=pathlib.Path(name).read_bytes()
+              request=urllib.request.Request(
+                'https://api.github.com/repos/'+repo+'/git/blobs',
+                data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),
+                method='POST',
+                headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=30) as response: result=json.load(response)
+              assert result['sha']==git('hash-object',name)
+              print(name,result['sha'])
+          print('VERIFIED_LOCAL_TREE='+expected)
+          print('Immutable blobs only; no feature ref, main, deployment, migration or user-data writes.')
+          PY
