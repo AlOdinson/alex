@@ -26,6 +26,7 @@ jobs:
       - run: node --test scripts/test-notebook-damage-renderer.mjs scripts/test-notebook-damage-budget.mjs scripts/test-notebook-damage-pixels.mjs scripts/test-notebook-page-diff.mjs scripts/test-notebook-shadow-cache.mjs
       - run: node --test scripts/test-notebook-work-scheduler.mjs scripts/test-notebook-bounded-preparation.mjs
       - run: node --test scripts/test-notebook-eraser-index.mjs scripts/test-notebook-split-worker.mjs scripts/test-notebook-split-safety.mjs scripts/test-notebook-split-geometry-equivalence.mjs scripts/test-notebook-split-thread.mjs scripts/test-notebook-worker-raster-tiles.mjs
+      - run: node --test scripts/test-notebook-cooperative-recovery.mjs
       - run: node scripts/benchmark-notebook-page-model.mjs
       - run: node --test scripts/test-bounded*.mjs
       - run: node scripts/benchmark-notebook-indexed-model.mjs
@@ -66,6 +67,8 @@ jobs:
           node --test scripts/test-notebook-split-worker-build.mjs
       - name: Vector split geometry runs outside the browser main thread
         run: node scripts/test-notebook-split-worker-browser.mjs
+      - name: Cooperative recovery, pending input, acknowledgement bursts and real UI history
+        run: node scripts/test-notebook-recovery-browser.mjs
       - name: Bounded preparation, input fairness, cancellation and atomic installation
         run: node scripts/test-notebook-preparation-browser.mjs
       - name: Indexed notebook eraser and real pointer deletion, undo, redo and reload
@@ -131,6 +134,7 @@ jobs:
             notebook-page-model-results/
             notebook-damage-results/
             notebook-preparation-results/
+            notebook-recovery-results/
             notebook-eraser-results/
             notebook-split-worker-results/
           retention-days: 14

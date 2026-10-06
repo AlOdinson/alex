@@ -24,7 +24,7 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
   if (typeof paint !== 'function') throw new TypeError('Notebook controller requires a projection callback');
   let latest = confirmedState, generation = 0, notifications = 0;
   let disposed = false, scheduled = false, paintError = null, paintTask = Promise.resolve(), suspended = 0, mutedIds = null;
-  const dirty = new Set(), pendingIds = new Map(), reorderIds = new Set();
+  const dirty = new Set(), pendingIds = new Map(), reorderIds = new Set(), recoveryMutedIds = new Set();
   for (const action of initialPendingActions) pendingIds.set(String(action.actionId), operationObjectIds(action.ops));
   const report = error => { try { onError(error); } catch { /* observer */ } };
   const emitPending = event => { try { onPending(event); } catch (error) { report(error); } };
@@ -64,24 +64,27 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
   function changed(view, event) {
     if (disposed) return;
     notifications++;
+    const excluded = (event.reason === 'recovered' || event.reason === 'recovery-progress') ? new Set([...(mutedIds ?? []), ...recoveryMutedIds]) : mutedIds;
+    if (event.reason === 'recovered') recoveryMutedIds.clear();
     if (view.snapshot !== latest?.snapshot) {
       const touched = changedSnapshotObjectIds(latest?.snapshot, view.snapshot);
       if (touched) {
-        for (const id of touched) if (!mutedIds?.has(id) && !shallowEqual(
+        for (const id of touched) if (!excluded?.has(id) && !shallowEqual(
           readSnapshotRecord(latest.snapshot, id)?.object, readSnapshotRecord(view.snapshot, id)?.object)) dirty.add(id);
       } else {
         // A new layout/checkpoint is the explicit full-diff boundary.
         const previous = index(latest), next = index(view);
-        for (const [id, object] of next) if (!mutedIds?.has(id) && !shallowEqual(previous.get(id), object)) dirty.add(id);
-        for (const id of previous.keys()) if (!mutedIds?.has(id) && !next.has(id)) dirty.add(id);
+        for (const [id, object] of next) if (!excluded?.has(id) && !shallowEqual(previous.get(id), object)) dirty.add(id);
+        for (const id of previous.keys()) if (!excluded?.has(id) && !next.has(id)) dirty.add(id);
       }
       generation++;
     }
     latest = view;
+    event.settledActionIds?.forEach(id => pendingIds.delete(String(id)));
     if (!event.pendingCount) pendingIds.clear();
     emitPending(event); schedulePaint();
   }
-  const session = createNotebookSession({ ...options, confirmedState, initialPendingActions,
+  const session = createNotebookSession({ cooperativeRecovery: true, ...options, confirmedState, initialPendingActions,
     maxInFlight: options.maxInFlight ?? 1, onError: report, onChange: changed });
   latest = session.getState();
   // Restored intents have no returned handles in the constructor. Acknowledgement
@@ -95,6 +98,7 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
     const action = input?.type ? { ops: [input] } : input;
     const actionId = String(action?.actionId || randomToken(24));
     pendingIds.set(actionId, operationObjectIds(action?.ops));
+    operationObjectIds(action?.ops).forEach(id => recoveryMutedIds.delete(id));
     try {
       markOperations(action?.ops);
       const handle = session.enqueue({ ...action, actionId });
@@ -103,7 +107,7 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
     } catch (error) { forget(actionId); throw error; }
   }
   async function whenPainted() {
-    do { await paintTask; } while (scheduled);
+    do { await session.whenReconciled(); await paintTask; } while (scheduled || session.isRecovering());
     if (paintError) throw paintError;
   }
   return {
@@ -116,13 +120,22 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
         accepted = session.ack(result);
         // A verified duplicate emits nothing; do not dirty an already-painted
         // page. A newly accepted result still projects even without a model diff.
-        if (project && notifications !== before) { markOperations(result.ops ?? result.appliedOps); schedulePaint(); }
+        if (session.isRecovering()) {
+          for (const id of operationObjectIds(result.ops ?? result.appliedOps)) {
+            if (project) recoveryMutedIds.delete(id); else recoveryMutedIds.add(id);
+          }
+          for (const op of result.ops ?? result.appliedOps ?? []) {
+            if (project && (op.reorder || op.restore)) operationObjectIds([op]).forEach(id => reorderIds.add(id));
+          }
+        } else if (project && notifications !== before) { markOperations(result.ops ?? result.appliedOps); schedulePaint(); }
       } finally { mutedIds = null; }
       // A future out-of-order acknowledgement is still pending in the session.
       if (result.revision <= session.getConfirmedState().revision || result.changed === false) forget(result.actionId);
       return accepted;
     },
-    rebase: value => session.rebase(value),
+    rebase(value) { recoveryMutedIds.clear(); return session.rebase(value); },
+    async rebaseAsync(value) { recoveryMutedIds.clear(); const accepted = session.rebase(value); await session.whenReconciled(); return accepted; },
+    whenReconciled: () => session.whenReconciled(),
     suspendProjection() { suspended++; generation++; },
     resumeProjection() { suspended = Math.max(0, suspended - 1); schedulePaint(); },
     pause: reason => session.pause(reason),
@@ -135,6 +148,6 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
     getState: () => session.getState(),
     getConfirmedState: () => session.getConfirmedState(),
     exportPending: () => session.exportPending(),
-    dispose() { disposed = true; generation++; dirty.clear(); pendingIds.clear(); return session.dispose(); },
+    dispose() { disposed = true; generation++; dirty.clear(); pendingIds.clear(); recoveryMutedIds.clear(); return session.dispose(); },
   };
 }

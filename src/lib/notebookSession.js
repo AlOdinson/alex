@@ -1,3 +1,4 @@
+import { createNotebookWorkSlice } from './notebookWorkScheduler.js';
 import { createBoardTombstoneIndex, applyBoardTombstoneOperations } from './boardTombstoneIndex.js';
 import { createIndexedBoardModel, readSnapshotRecord } from './indexedBoardModel.js';
 import { prepareIndexedNotebookAction, applyIndexedNotebookOps } from './notebookIndexedTransaction.js';
@@ -63,7 +64,11 @@ function equivalent(a, b) {
  * Ordered local notebook intents. Preview never waits for transport. Confirmed
  * state and pending state are separate; a rejection rebases, never restores an
  * old whole-notebook copy. The outbox must save before publishing and is cleared
- * only after an authoritative outcome. No timers, retries or background scans.
+ * only after an authoritative outcome. No polling or scheduled snapshots.
+ * Opted-in large recoveries retain a coherent previous optimistic view while
+ * rebuilding in task-sized slices; consumers await whenReconciled before using
+ * the recovered model as a snapshot/paint barrier. Small synchronous paths stay
+ * immediate, and direct legacy session callers opt in explicitly.
  *
  * confirmedState: {snapshot,revision,tombstones?,notebookTombstones?}
  * publish(action): Promise<Commit | NoopOutcome> (must deduplicate by actionId)
@@ -72,7 +77,7 @@ function equivalent(a, b) {
  */
 export function createNotebookSession({ confirmedState, publish, onChange = () => {}, onError = () => {},
   clientId = 'local', outbox = null, initialPendingActions = [], canEdit = () => true,
-  maxPending = 512, maxPendingBytes = 8 * 1024 * 1024, maxInFlight = 8 } = {}) {
+  maxPending = 512, maxPendingBytes = 8 * 1024 * 1024, maxInFlight = 8, cooperativeRecovery = false } = {}) {
   if (typeof publish !== 'function') throw new TypeError('Notebook session publish callback is required');
   for (const number of [maxPending, maxPendingBytes, maxInFlight]) {
     if (!Number.isSafeInteger(number) || number < 1) throw new TypeError('Notebook queue limits must be positive integers');
@@ -81,7 +86,8 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
   let confirmed = checkpoint(confirmedState), optimistic = confirmed;
   let pending = [], bytes = 0, active = 0, generation = 0, paused = null, disposed = false, scheduled = false;
   let saveTail = Promise.resolve(), storageFailure = null;
-  const byId = new Map(), commits = new Map(), flushWaiters = new Set(), cleanup = new Map();
+  let recovery = null, recoveryVersion = 0, recoveryError = null;
+  const byId = new Map(), commits = new Map(), flushWaiters = new Set(), cleanup = new Map(), settledIds = new Set();
   // Realtime onCommit and publish() can acknowledge the same commit. Remember a
   // bounded recent window so a safe duplicate cannot rebase every pending stroke.
   // Unknown older results retain the recovery path; never drop a restored intent.
@@ -106,21 +112,22 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
   function view(model) { return Object.freeze({ snapshot: model.snapshot, revision: model.revision }); }
   function flushFailure() {
     return disposed ? errorWith('Notebook session disposed', 'notebook_disposed') : paused
-      ?? pending.find(entry => entry.error)?.error
-      ?? (pending.some(entry => entry.blocked) ? errorWith('Notebook action blocked: target missing or lease lost', 'notebook_action_blocked') : null);
+      ?? recoveryError ?? pending.find(entry => entry.error)?.error
+      ?? (!recovery && pending.some(entry => entry.blocked) ? errorWith('Notebook action blocked: target missing or lease lost', 'notebook_action_blocked') : null);
   }
   function settleFlush() {
     const failure = flushFailure();
-    if (failure || !pending.length && !cleanup.size) {
+    if (failure || !recovery && !pending.length && !cleanup.size) {
       for (const waiter of flushWaiters) failure ? waiter.reject(failure) : waiter.resolve(view(confirmed));
       flushWaiters.clear();
     }
   }
   function notify(reason, actionId = null) {
     if (disposed) return;
+    const settledActionIds = [...settledIds]; settledIds.clear();
     try { onChange(view(optimistic), { reason, actionId, pendingCount: pending.length, pendingBytes: bytes,
       unsavedCount: pending.filter(entry => !entry.saved).length,
-      blockedCount: pending.filter(entry => entry.blocked).length, needsSync: commits.size > 0 }); }
+      blockedCount: pending.filter(entry => entry.blocked).length, needsSync: commits.size > 0, recovering: Boolean(recovery), settledActionIds }); }
     catch (error) { report(error); }
     settleFlush();
   }
@@ -156,9 +163,84 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
       evaluation.appliedOps, evaluation.appliedBackground, entry.action)).historyInverseOps);
     return evaluation.changed ? advance(model, evaluation.appliedOps, evaluation.appliedBackground, entry.action) : model;
   }
-  function rebuild() {
-    optimistic = confirmed;
-    for (const entry of pending) optimistic = preview(entry, optimistic);
+  function finishRecovery() {
+    const previous = recovery;
+    recovery = null;
+    recoveryVersion++;
+    previous?.ready.resolve(view(optimistic));
+  }
+  function rebuild(forceAsync = false) {
+    recoveryVersion++;
+    recoveryError = null;
+    if (!pending.length && !commits.has(confirmed.revision + 1)) { optimistic = confirmed; finishRecovery(); return; }
+    // Preserve the original synchronous contract for callers not opting in and
+    // for short queues. Do not expose a partly replayed snapshot for large ones.
+    if (!cooperativeRecovery || !forceAsync && pending.length <= 32 && !recovery) {
+      let next = confirmed;
+      for (const entry of pending) next = preview(entry, next);
+      optimistic = next;
+      return;
+    }
+    if (recovery) return; // invalidate its draft; retain one runner and observer
+    const job = { ready: deferred() };
+    recovery = job;
+    Promise.resolve().then(async () => {
+      const slice = createNotebookWorkSlice();
+      try {
+        while (!disposed && recovery === job) {
+          // A missing revision may unlock hundreds of buffered commits at once.
+          // Commit only complete operations, yielding before the next one. The
+          // old optimistic view remains visible until the pending replay below.
+          while (commits.has(confirmed.revision + 1)) {
+            const pause = slice.beforeWork();
+            if (pause) await pause;
+            if (disposed || recovery !== job) return;
+            if (commits.has(confirmed.revision + 1)) advanceNextCommit();
+          }
+          const version = recoveryVersion, source = confirmed, entries = pending;
+          const updates = [];
+          let next = source;
+          for (let i = 0; i < entries.length; i++) {
+            const pause = slice.beforeWork();
+            if (pause) await pause;
+            if (disposed || recovery !== job) return;
+            if (version !== recoveryVersion || source !== confirmed || entries !== pending) break;
+            // preview mutates metadata: keep it PRIVATE until the draft commits.
+            // New enqueues append to this same array and are replayed at its tail.
+            const entry = entries[i], prepared = { action: entry.action };
+            next = preview(prepared, next);
+            updates.push([entry, prepared]);
+          }
+          if (version !== recoveryVersion || source !== confirmed || entries !== pending) continue;
+          for (const [entry, prepared] of updates) {
+            entry.previewOps = prepared.previewOps;
+            entry.previewBackground = prepared.previewBackground;
+            entry.blocked = prepared.blocked;
+          }
+          optimistic = next;
+          if (commits.has(confirmed.revision + 1)) {
+            // This is a complete coherent prefix, not a partial replay. Commit
+            // arrivals are buffered while replaying so a busy peer cannot cause
+            // repeated abandonment of the same prefix on every message.
+            notify('recovery-progress');
+            continue;
+          }
+          finishRecovery();
+          notify('recovered'); schedule();
+          return;
+        }
+      } catch (error) {
+        if (!disposed && recovery === job) {
+          recovery = null; recoveryError = error; paused = error;
+          job.ready.reject(error); report(error); notify('recovery-error');
+        }
+      } finally { slice.reset(); }
+    });
+  }
+  function whenReconciled() {
+    if (disposed) return Promise.reject(errorWith('Notebook session disposed', 'notebook_disposed'));
+    if (recoveryError) return Promise.reject(recoveryError);
+    return recovery ? recovery.ready.promise.then(whenReconciled) : Promise.resolve(view(optimistic));
   }
   function forgetDurable(entry) {
     if (!outbox) return;
@@ -173,7 +255,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
   }
   function removeEntry(entry, outcome) {
     if (!entry || !byId.has(entry.action.actionId)) return;
-    byId.delete(entry.action.actionId); pending = pending.filter(item => item !== entry); bytes -= entry.bytes;
+    byId.delete(entry.action.actionId); settledIds.add(entry.action.actionId); pending = pending.filter(item => item !== entry); bytes -= entry.bytes;
     entry.settled.resolve(outcome); forgetDurable(entry);
   }
   function markFailure(entry, error, kind) {
@@ -196,7 +278,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     }, error => { entry.saving = false; markFailure(entry, error, 'storage'); });
   }
   function pump() {
-    if (disposed || paused) { settleFlush(); return; }
+    if (disposed || paused || recovery || recoveryError) { settleFlush(); return; }
     for (const entry of pending) {
       if (active >= maxInFlight) break;
       if (entry.status === 'sending' || entry.status === 'acknowledged') continue;
@@ -242,20 +324,29 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     if (restoring) entry.durable.resolve(); else persist(entry);
     notify('enqueue', action.actionId); schedule(); return entry.handle;
   }
+  function advanceNextCommit() {
+    const result = commits.get(confirmed.revision + 1);
+    const entry = byId.get(result.actionId);
+    const matchesPreview = pending[0] === entry && entry && !entry.blocked
+      && equivalent(entry.previewOps, result.ops ?? result.appliedOps ?? [])
+      && equivalent(entry.previewBackground, result.background ?? result.appliedBackground ?? null);
+    const next = advance(confirmed, result.ops ?? result.appliedOps ?? [], result.background ?? result.appliedBackground ?? null, result);
+    // Never discard a received revision before its atomic application succeeds.
+    confirmed = next; commits.delete(result.revision);
+    removeEntry(entry, result); rememberCommit(result);
+    return !matchesPreview;
+  }
   function drainCommits() {
+    if (recovery) return; // its runner owns draining and the next replay boundary
+    if (cooperativeRecovery && commits.size > 32 && commits.has(confirmed.revision + 1)) {
+      rebuild(true); return;
+    }
     let mustRebuild = false;
     while (commits.has(confirmed.revision + 1)) {
-      const result = commits.get(confirmed.revision + 1);
-      commits.delete(result.revision);
-      const entry = byId.get(result.actionId);
-      const matchesPreview = pending[0] === entry && entry && !entry.blocked
-        && equivalent(entry.previewOps, result.ops ?? result.appliedOps ?? [])
-        && equivalent(entry.previewBackground, result.background ?? result.appliedBackground ?? null);
-      confirmed = advance(confirmed, result.ops ?? result.appliedOps ?? [], result.background ?? result.appliedBackground ?? null, result);
-      removeEntry(entry, result); rememberCommit(result); if (!matchesPreview) mustRebuild = true;
+      if (advanceNextCommit()) mustRebuild = true;
     }
-    if (!pending.length) optimistic = confirmed;
-    else if (mustRebuild) rebuild();
+    if (!pending.length) { optimistic = confirmed; finishRecovery(); }
+    else if (mustRebuild || recovery) rebuild();
   }
   function ack(result) {
     if (disposed) return false;
@@ -330,7 +421,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     rebuild(); notify('resume'); schedule();
   }
   function flush() {
-    if (!pending.length && !cleanup.size && !disposed) return Promise.resolve(view(confirmed));
+    if (!pending.length && !cleanup.size && !disposed && !recovery && !recoveryError) return Promise.resolve(view(confirmed));
     const failure = flushFailure(); if (failure) return Promise.reject(failure);
     const waiter = deferred(); flushWaiters.add(waiter); schedule(); return waiter.promise;
   }
@@ -339,12 +430,14 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     if (disposed) return [];
     const retained = exportPending(); disposed = true; generation++;
     const error = errorWith('Notebook session disposed; pending intents retained', 'notebook_disposed');
+    recovery?.ready.reject(error); recovery = null; recoveryVersion++;
     for (const entry of pending) { entry.settled.reject(error); if (!entry.saved) entry.durable.reject(error); }
-    settleFlush(); pending = []; byId.clear(); commits.clear(); recentCommits.clear(); recentCommitBytes = 0; bytes = 0; return retained;
+    settleFlush(); pending = []; byId.clear(); settledIds.clear(); commits.clear(); recentCommits.clear(); recentCommitBytes = 0; bytes = 0; return retained;
   }
   try { for (const input of initialPendingActions) enqueue(input, true); }
   catch (error) { dispose(); throw error; }
   return { enqueue: input => enqueue(input), ack, reject, rebase, pause, resume, flush, dispose, exportPending,
+    whenReconciled, isRecovering: () => Boolean(recovery),
     pendingCount: () => pending.length, pendingBytes: () => bytes, getState: () => view(optimistic),
     getConfirmedState: () => view(confirmed) };
 }

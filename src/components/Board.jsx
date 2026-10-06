@@ -4991,8 +4991,8 @@ function BoardWorkspace({
             const checkpoint = realtimeRef.current?.getNotebookCheckpoint?.();
             if (checkpoint && checkpoint.revision >= Number(revision)) {
               confirmedSnapshot = checkpoint.snapshot; revision = checkpoint.revision;
-              controller.rebase(checkpoint);
-            } else controller.rebase({ snapshot, revision: Number(revision) });
+              await controller.rebaseAsync(checkpoint);
+            } else await controller.rebaseAsync({ snapshot, revision: Number(revision) });
             snapshot = controller.getState().snapshot;
           }
           const sanitizedSnapshot = applyOpsToSnapshot(snapshot, []);
@@ -5431,7 +5431,9 @@ function BoardWorkspace({
         if (!boardReadyRef.current || canvas !== fabricCanvasRef.current
           || realtime !== realtimeRef.current || existing !== notebookControllerRef.current) return null;
         const checkpoint = realtime.getNotebookCheckpoint?.();
-        if (checkpoint) existing.rebase(checkpoint);
+        if (checkpoint) await existing.rebaseAsync(checkpoint);
+        if (!boardReadyRef.current || canvas !== fabricCanvasRef.current
+          || realtime !== realtimeRef.current || existing !== notebookControllerRef.current) return null;
         existing.resume();
       }
       return existing;
