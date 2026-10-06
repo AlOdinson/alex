@@ -27,11 +27,14 @@ jobs:
           git apply --check --index /tmp/candidate.patch
           git apply --index /tmp/candidate.patch
           test "$(git write-tree)" = "$EXPECTED_TREE"
+
+          # GitHub Actions' token cannot push a commit that modifies a workflow file.
+          # Keep the full tree check above, then stage the 16 non-workflow files.
+          git restore --source="$BASE" --staged --worktree .github/workflows/notebook-no-video-ci.yml
           git config user.name "AlOdinson"
           git config user.email "mail.alik.kamaletdinov@gmail.com"
           git commit -m "perf: finish notebook hotpath and cold-start cleanup"
-          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
           test "$(git rev-parse HEAD^)" = "$BASE"
           git push origin HEAD:refs/heads/delivery/notebook-final-candidate-20261007
-          echo "CANDIDATE_SHA=$(git rev-parse HEAD)"
-          echo "CANDIDATE_TREE=$(git rev-parse HEAD^{tree})"
+          echo "STAGED_SHA=$(git rev-parse HEAD)"
+          echo "STAGED_TREE=$(git rev-parse HEAD^{tree})"
