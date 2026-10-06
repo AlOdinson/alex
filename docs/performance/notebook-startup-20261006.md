@@ -89,6 +89,19 @@ the two explicit entry points and retains both post-load reconciliation assertio
 This avoids extending the unsafe window; it is not a claim of solving every old
 full-scene refresh race, and that caller still needs a dedicated input contract.
 
+## Initial edit admission
+
+Connection readiness can precede scene hydration. Three actual Board expression/
+callback regressions failed before the final readiness fence: toolbar capability,
+runtime readiness and a remote edit-mode update all admitted editing before a
+scene existed. Editing now requires BOTH runtime readiness and completed initial
+scene installation. Pan/view permissions are not upgraded; no local action is
+pretended to be accepted and later discarded during initial loading. The initial
+load completion explicitly releases the fence. Existing session recovery remains
+editable and is not re-gated by this one-time initial state. The native first-load
+probe also verifies drawing is disabled at its pre-completion task, then draws,
+flushes and reloads the first actual post-load stroke.
+
 ## Explicit limitations and decisions
 
 - Cold authority/session checkpoint cloning, immutable index construction, initial

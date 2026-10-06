@@ -29,7 +29,7 @@ try{
 export async function loadBoardCanvasJson(canvas, source, options) {
  const probe={sourceObjects:source?.objects?.length??0,complete:false,taskBeforeComplete:false};
  (globalThis.__startupProbes??=[]).push(probe);globalThis.__startupCanvas=canvas;
- setTimeout(()=>{probe.taskBeforeComplete=!probe.complete;probe.objectsAtTask=canvas._objects.length;},0);
+ setTimeout(()=>{probe.taskBeforeComplete=!probe.complete;probe.objectsAtTask=canvas._objects.length;probe.drawingEnabledBeforeReady=Boolean(canvas.isDrawingMode);},0);
  const result=await startupOriginalLoad(canvas,source,options);probe.complete=true;probe.installed=canvas._objects.length;return result;
 }
 `;
@@ -58,6 +58,7 @@ export async function loadBoardCanvasJson(canvas, source, options) {
   return{...p,livePageChildren:b._objects.length,pageNumber:b.notebookPageNumber,pages:b.notebookPages.length};
  });
  assert.equal(report.startup.taskBeforeComplete,true);assert.equal(report.startup.installed,1201);
+ assert.equal(report.startup.drawingEnabledBeforeReady,false,'editing enabled before cold scene installation');
  assert.equal(report.startup.livePageChildren,100);assert.equal(report.startup.pages,6);assert.equal(report.startup.pageNumber,6);
  report.maintenance=await page.evaluate(()=>{
   const c=globalThis.__startupCanvas,old=c.getObjects;let reads=0;c.getObjects=function(...args){reads++;return old.apply(this,args);};

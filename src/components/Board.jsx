@@ -2070,6 +2070,9 @@ function BoardWorkspace({
 
   const [permission, setPermission] = useState(initialAccess.permission);
   const [runtimeReady, setRuntimeReady] = useState(false);
+  // Connection readiness can precede the initial scene. Do not accept edits into
+  // an empty/suppressed canvas that its pending hydration is about to replace.
+  const [sceneReady, setSceneReady] = useState(false);
   const [guestMode, setGuestModeState] = useState(initialAccess.guestMode);
   const [tool, setToolState] = useState(initialAccess.permission === 'view' ? 'select' : 'pencil');
   const [color, setColorState] = useState(DEFAULT_DRAWING_STYLES.pencil.color);
@@ -2120,7 +2123,7 @@ function BoardWorkspace({
   }, [boardId, boardKey]);
 
   const isOwner = permission === 'owner';
-  const canEdit = (permission === 'owner' || permission === 'edit') && runtimeReady;
+  const canEdit = (permission === 'owner' || permission === 'edit') && runtimeReady && sceneReady;
   const canReadDocuments = !isOwner && !canEdit;
   const getInitialScreenShareBoardLayout = useCallback(() => {
     const canvas = fabricCanvasRef.current;
@@ -6801,7 +6804,7 @@ function BoardWorkspace({
     }
     setPermission(mode);
     if (mode !== 'edit') cancelCreationDraftRef.current?.('permission-change');
-    canEditRef.current = mode === 'edit' && runtimeReadyRef.current;
+    canEditRef.current = mode === 'edit' && runtimeReadyRef.current && boardReadyRef.current;
     activeToolRef.current = canEditRef.current ? 'pencil' : 'select';
     if (mode === 'edit') activateDrawingStyle('pencil');
     setToolState(activeToolRef.current);
@@ -9654,6 +9657,7 @@ function BoardWorkspace({
       if (disposed) return;
 
       boardReadyRef.current = true;
+      setSceneReady(true);
       reconcileBoardScreenShare();
       await authoritativeSnapshotGate.flush();
       syncFromServer(false);
@@ -14633,7 +14637,7 @@ function BoardWorkspace({
       runtimeReadyRef.current = ready;
       if (ready) viewedSnapshotRef.current = true;
       // Revoke commands immediately, not only after React's next paint.
-      canEditRef.current = ready && (permission === 'owner' || permission === 'edit');
+      canEditRef.current = ready && boardReadyRef.current && (permission === 'owner' || permission === 'edit');
       canReadDocumentsRef.current = permission !== 'owner' && !canEditRef.current;
       const canvas = fabricCanvasRef.current;
       if (canvas && !canEditRef.current) {
