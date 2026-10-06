@@ -1,0 +1,43 @@
+name: Stage exact final workflow blob
+on:
+  push:
+    branches: ['delivery/notebook-final-hotpaths-20261006']
+permissions:
+  contents: write
+jobs:
+  blob:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {fetch-depth: 0}
+      - name: Upload exact tested workflow blob only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BASE=142f2afa53b13567f2b0de756915dbca3121d2da
+          EXPECTED_TREE=e54b698b273925643b3576c11bf36b004d4fc5cd
+          EXPECTED_BLOB=431f4419da9cf71f48092bd2ee87a4214cb94312
+          git show "$GITHUB_SHA:.delivery/notebook-final-hotpaths.patch.xz.b64" > /tmp/candidate.b64
+          test "$(sha256sum /tmp/candidate.b64 | awk '{print $1}')" = 56bf18167a6ea921d3ef84166e3754bff0add1200ebd1e72c92458e6a4357eb2
+          base64 -d /tmp/candidate.b64 | xz -d > /tmp/candidate.patch
+          test "$(sha256sum /tmp/candidate.patch | awk '{print $1}')" = e230e03491e1cfcadd9b19e44490b9d313eca37fc7dcaaeb86bb604305b59c73
+          git checkout --detach "$BASE"
+          git apply --check --index /tmp/candidate.patch
+          git apply --index /tmp/candidate.patch
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          test "$(git hash-object .github/workflows/notebook-no-video-ci.yml)" = "$EXPECTED_BLOB"
+          python3 - <<'PY'
+          import base64,json,os,pathlib,urllib.request
+          repo='AlOdinson/alex'
+          data=base64.b64encode(pathlib.Path('.github/workflows/notebook-no-video-ci.yml').read_bytes()).decode()
+          req=urllib.request.Request(
+            f'https://api.github.com/repos/{repo}/git/blobs',
+            data=json.dumps({'content':data,'encoding':'base64'}).encode(),
+            method='POST',
+            headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+          with urllib.request.urlopen(req,timeout=30) as r: result=json.load(r)
+          assert result['sha']=='431f4419da9cf71f48092bd2ee87a4214cb94312', result
+          print('WORKFLOW_BLOB_SHA='+result['sha'])
+          PY
