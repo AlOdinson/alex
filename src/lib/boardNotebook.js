@@ -1,3 +1,4 @@
+import { notebookViewportCacheFor } from './notebookViewportCache.js';
 import { createNotebookSplitScope, checkNotebookSplit } from './notebookSplitCancellation.js';
 import { enlivenNotebookObjects } from './notebookObjectPreparation.js';
 import { beginNotebookDamage, finishNotebookDamage } from './notebookDamageRenderer.js';
@@ -259,7 +260,27 @@ export class BoardNotebook extends Group {
     return structuredClone(this.toObject(propertiesToInclude));
   }
 
+  render(ctx) {
+    const previous = this._notebookRenderContext;
+    this._notebookRenderContext = ctx;
+    this._notebookRenderDepth = (this._notebookRenderDepth || 0) + 1;
+    try { return super.render(ctx); }
+    finally {
+      this._notebookRenderContext = previous;
+      if (!--this._notebookRenderDepth && this._releaseCacheAfterDraw) {
+        this._releaseCacheAfterDraw = false; this._evictPageCache();
+      }
+    }
+  }
+
+  _evictPageCache() {
+    this._notebookViewportCache?.forget(this);
+    forgetNotebookAppendCache(this);
+    releaseSurface(this); releaseSurface(this.clipPath); this.dirty = true;
+  }
+
   releasePageCache() {
+    this._notebookViewportCache?.forget(this);
     forgetNotebookChildIndex(this);
     forgetNotebookAppendCache(this);
     this._pageRenderCache?.release(this);
@@ -272,18 +293,38 @@ export class BoardNotebook extends Group {
     const cache = notebookRenderCacheFor(this.canvas);
     if (this._pageRenderCache !== cache) this.releasePageCache();
     this._pageRenderCache = cache;
+    const normal = this._notebookRenderContext && this._notebookRenderContext === this.canvas?.getContext();
+    const viewport = this._notebookViewportCache = notebookViewportCacheFor(this.canvas);
+    if (normal && !options?.forClipping && viewport?.reuse(this)) {
+      // Do not enable append/damage at an interpolated viewport density. A real
+      // content change still uses the canonical renderer immediately.
+      forgetNotebookAppendCache(this); cache?.acquire(this); return;
+    }
     const wasDirty = this.dirty || !this._cacheCanvas;
     const previousZoomX = this.zoomX, previousZoomY = this.zoomY;
     super.renderCache(options);
-    // Child masks were baked into the page. Keeping those bitmaps duplicates
-    // page pixels and makes image-heavy pages grow without bound.
     if (wasDirty || previousZoomX !== this.zoomX || previousZoomY !== this.zoomY) {
       this.getPageObjects().forEach(releaseChildSurfaces);
-      rebuildNotebookChildIndex(this);
     }
-    cache?.acquire(this, { surfaces: [this._cacheCanvas, this.clipPath?._cacheCanvas].filter(Boolean),
-      onEvict: () => {releaseSurface(this);releaseSurface(this.clipPath);this.dirty = true;} });
-    rememberNotebookAppendCache(this, options?.forClipping);
+    // Bounds are page-local. Viewport density alone does not change the index.
+    if (wasDirty || !currentNotebookChildIndex(this)) rebuildNotebookChildIndex(this);
+    // The page already contains the rectangular clip. Fabric creates a fresh
+    // clip layer on the next canonical render, so retaining this doubles memory.
+    releaseSurface(this.clipPath);
+    cache?.acquire(this, { surfaces: [this._cacheCanvas].filter(Boolean),
+      isVisible: () => this.canvas && !this.isNotVisible() && (!this.canvas.skipOffscreen || this.isOnScreen()),
+      onEvict: () => {
+        // Fabric consumes the cache immediately after renderCache returns.
+        // A refused admission must not erase it before drawCacheOnCanvas.
+        if (this._notebookRenderDepth) this._releaseCacheAfterDraw = true;
+        else this._evictPageCache();
+      } });
+    if (this._releaseCacheAfterDraw) { viewport?.forget(this); forgetNotebookAppendCache(this); }
+    else {
+      rememberNotebookAppendCache(this, options?.forClipping);
+      if (normal && !options?.forClipping) viewport?.remember(this);
+      else viewport?.forget(this); // export and compositor always stay exact
+    }
   }
 
   isNotebookCompositingIsolated() { return Boolean(this.ownCaching && this._cacheCanvas); }

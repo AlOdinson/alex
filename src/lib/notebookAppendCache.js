@@ -8,7 +8,7 @@ const solid = object => String(object?.type).toLowerCase() === 'path'
   && !object.clipPath && !object.shadow && !object.isEraserPath
   && (!object.globalCompositeOperation || object.globalCompositeOperation === 'source-over')
   && (!object.fill || typeof object.fill === 'string') && (!object.stroke || typeof object.stroke === 'string');
-function ordinaryPageClip(book) {
+export function ordinaryPageClip(book) {
   const clip = book.clipPath;
   return String(clip?.type).toLowerCase() === 'rect' && !clip.clipPath && !clip.inverted && !clip.absolutePositioned
     && clip.width === book.width && clip.height === book.height

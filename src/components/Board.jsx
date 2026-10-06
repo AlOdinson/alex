@@ -4138,6 +4138,7 @@ function BoardWorkspace({
       canvas.getWidth() / 2 - Number(sceneX) * nextZoom,
       canvas.getHeight() / 2 - Number(sceneY) * nextZoom,
     ]);
+    canvas.fire('notebook:viewport-changed');
     setZoom(nextZoom);
     updateBackgroundTransform();
     canvas.requestRenderAll();
@@ -4199,6 +4200,7 @@ function BoardWorkspace({
         activeCanvas.getWidth() / 2 - appliedCenterX * appliedZoom,
         activeCanvas.getHeight() / 2 - appliedCenterY * appliedZoom,
       ]);
+      activeCanvas.fire('notebook:viewport-changed');
       if (settled || now - Number(state.lastUiAt || 0) >= 90) {
         state.lastUiAt = now;
         setZoom(appliedZoom);
@@ -7151,6 +7153,7 @@ function BoardWorkspace({
     if (!canvas) return;
     const nextZoom = clamp(canvas.getZoom() * factor, MIN_ZOOM, MAX_ZOOM);
     canvas.zoomToPoint(new Point(canvas.getWidth() / 2, canvas.getHeight() / 2), nextZoom);
+    canvas.fire('notebook:viewport-changed');
     setZoom(nextZoom);
     updateBackgroundTransform();
     sendTeacherViewThrottled();
@@ -7161,6 +7164,7 @@ function BoardWorkspace({
     if (!canvas) return;
     // Keep the same scene point under the centre of the screen. Only the scale changes.
     canvas.zoomToPoint(new Point(canvas.getWidth() / 2, canvas.getHeight() / 2), 1);
+    canvas.fire('notebook:viewport-changed');
     setZoom(1);
     updateBackgroundTransform();
     sendTeacherViewThrottled();
@@ -12392,6 +12396,7 @@ function BoardWorkspace({
       );
       const point = event.viewportPoint ?? canvas.getViewportPoint(event.e);
       canvas.zoomToPoint(point, nextZoom);
+      canvas.fire('notebook:viewport-changed');
       setZoom(nextZoom);
       updateBackgroundTransform();
       sendTeacherViewThrottled();
@@ -14010,6 +14015,7 @@ function BoardWorkspace({
         metrics.midpoint.y - gesture.scenePoint.y * nextZoom,
       ];
       canvas.setViewportTransform(nextViewport);
+      canvas.fire('notebook:viewport-changed');
       // Capture-phase touch gestures bypass Fabric mouse:move. Publish the
       // midpoint through the same throttled presence channel, in scene space.
       const cursorScenePoint = util.transformPoint(metrics.midpoint, util.invertTransform(nextViewport));
