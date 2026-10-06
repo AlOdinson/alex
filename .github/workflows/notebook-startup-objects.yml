@@ -1,4 +1,4 @@
-name: Stage exact notebook startup source
+name: Stage isolated notebook cold startup source
 on:
   push:
     branches: ['delivery/notebook-startup-20261006']
@@ -12,20 +12,20 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: {persist-credentials: false, fetch-depth: 0}
-      - name: Verify exact tested tree and upload immutable source blobs only
+      - name: Verify isolated cold-load tree and upload immutable source blobs only
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
           repo='AlOdinson/alex'
-          base='257973daf99249948928daee3267154484924d86'
-          expected='3169902651dc7b9750ce242629869a38c22e236a'
+          base='efbc1c22fadacbc02dc4da99f04f4aede4decdad'
+          expected='c852fe6b16619034cf2a2e31218cbd31ca881e73'
           assert os.environ['GITHUB_REPOSITORY']==repo
           assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-startup-20261006'
-          packed=pathlib.Path('.delivery/notebook-startup.patch.xz').read_bytes()
-          assert hashlib.sha256(packed).hexdigest()=='385235ecaf6f237e5e1d1ac7e4bd4c34279283e2f68d4b2ee6b22ef5768ba2bd'
-          patch=pathlib.Path('/tmp/notebook-startup.patch')
+          packed=pathlib.Path('.delivery/notebook-startup-isolation.patch.xz').read_bytes()
+          assert hashlib.sha256(packed).hexdigest()=='54825a7c5cadc202a9dc35b539855e5843b3dc2023b83f2b19aabf95e079a2a2'
+          patch=pathlib.Path('/tmp/notebook-startup-isolation.patch')
           patch.write_bytes(lzma.decompress(packed))
           def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
           subprocess.run(['git','checkout','--detach',base],check=True)
@@ -35,16 +35,13 @@ jobs:
           allowed={
             '.github/workflows/notebook-no-video-ci.yml',
             'docs/performance/notebook-startup-20261006.md',
-            'scripts/board-startup-fixture.js',
-            'scripts/notebook-ui-node-harness.mjs',
-            'scripts/test-board-startup-browser.mjs',
             'scripts/test-board-startup-preparation.mjs',
-            'scripts/test-board-transient-maintenance.mjs',
+            'scripts/test-board-startup-recovery-boundary.mjs',
+            'scripts/test-screen-viewer-delivery.mjs',
             'src/components/Board.jsx',
-            'src/lib/boardLoadPreparation.js',
           }
           paths=git('diff','--cached','--name-only').splitlines()
-          assert set(paths)==allowed and len(paths)==9
+          assert set(paths)==allowed and len(paths)==6
           for name in paths:
               value=pathlib.Path(name).read_bytes()
               request=urllib.request.Request(
