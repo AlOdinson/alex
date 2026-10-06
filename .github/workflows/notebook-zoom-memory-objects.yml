@@ -1,0 +1,55 @@
+name: Stage exact notebook zoom memory source
+on:
+  push:
+    branches: ['delivery/notebook-zoom-memory-20261006']
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-zoom-memory-20261006'
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Verify exact tested tree and upload immutable blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64,hashlib,json,lzma,os,pathlib,subprocess,urllib.request
+          repo='AlOdinson/alex'
+          base='fd79dab4371dd52937f507277e7ad2a15596671f'
+          target='92d4928e25e5d2d45da53bb1d10ef7c84b95aec4'
+          assert os.environ['GITHUB_REPOSITORY']==repo
+          assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-zoom-memory-20261006'
+          packed=pathlib.Path('.delivery/notebook-zoom-memory.patch.xz').read_bytes()
+          assert hashlib.sha256(packed).hexdigest()=='4bbab2919a095471ac41838a924549b08cf99bb6c0164abbe2a3154e2efcfbbf'
+          patch=pathlib.Path(os.environ['RUNNER_TEMP'])/'notebook-zoom-memory.patch'
+          patch.write_bytes(lzma.decompress(packed))
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          subprocess.run(['git','checkout','--detach',base],check=True)
+          subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
+          subprocess.run(['git','apply','--index',str(patch)],check=True)
+          assert git('write-tree')==target
+          allowed={'.github/workflows/notebook-no-video-ci.yml','docs/performance/notebook-zoom-memory-20261006.md','scripts/notebook-zoom-fixture.js','scripts/test-notebook-zoom-browser.mjs','scripts/test-notebook-zoom-cache.mjs','scripts/test-notebook-zoom-pixels.mjs','scripts/test-touch-gesture-cursor.mjs','src/components/Board.jsx','src/lib/boardNotebook.js','src/lib/notebookAppendCache.js','src/lib/notebookRenderCache.js','src/lib/notebookViewportCache.js'}
+          paths=git('diff','--cached','--name-only').splitlines()
+          assert set(paths)==allowed and len(paths)==12
+          manifest=[]
+          for name in paths:
+              value=pathlib.Path(name).read_bytes()
+              request=urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),method='POST',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=30) as response: result=json.load(response)
+              assert result['sha']==git('hash-object',name)
+              manifest.append({'path':name,'mode':'100644','type':'blob','sha':result['sha']})
+              print(name,result['sha'])
+          output=pathlib.Path(os.environ['RUNNER_TEMP'])/'notebook-zoom-manifest.json'
+          output.write_text(json.dumps({'base':base,'tree':target,'files':manifest},indent=2))
+          print('VERIFIED_LOCAL_TREE='+target)
+          print('Immutable blobs only: no feature refs, main, deployments, databases or lesson writes.')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notebook-zoom-source-manifest
+          path: ${{ runner.temp }}/notebook-zoom-manifest.json
+          retention-days: 7
