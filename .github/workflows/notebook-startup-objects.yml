@@ -1,0 +1,60 @@
+name: Stage exact notebook startup source
+on:
+  push:
+    branches: ['delivery/notebook-startup-20261006']
+permissions:
+  contents: write
+jobs:
+  stage:
+    if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-startup-20261006'
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Verify exact tested tree and upload immutable source blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo='AlOdinson/alex'
+          base='257973daf99249948928daee3267154484924d86'
+          expected='3169902651dc7b9750ce242629869a38c22e236a'
+          assert os.environ['GITHUB_REPOSITORY']==repo
+          assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-startup-20261006'
+          packed=pathlib.Path('.delivery/notebook-startup.patch.xz').read_bytes()
+          assert hashlib.sha256(packed).hexdigest()=='385235ecaf6f237e5e1d1ac7e4bd4c34279283e2f68d4b2ee6b22ef5768ba2bd'
+          patch=pathlib.Path('/tmp/notebook-startup.patch')
+          patch.write_bytes(lzma.decompress(packed))
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          subprocess.run(['git','checkout','--detach',base],check=True)
+          subprocess.run(['git','apply','--check','--unidiff-zero','--index',str(patch)],check=True)
+          subprocess.run(['git','apply','--unidiff-zero','--index',str(patch)],check=True)
+          assert git('write-tree')==expected
+          allowed={
+            '.github/workflows/notebook-no-video-ci.yml',
+            'docs/performance/notebook-startup-20261006.md',
+            'scripts/board-startup-fixture.js',
+            'scripts/notebook-ui-node-harness.mjs',
+            'scripts/test-board-startup-browser.mjs',
+            'scripts/test-board-startup-preparation.mjs',
+            'scripts/test-board-transient-maintenance.mjs',
+            'src/components/Board.jsx',
+            'src/lib/boardLoadPreparation.js',
+          }
+          paths=git('diff','--cached','--name-only').splitlines()
+          assert set(paths)==allowed and len(paths)==9
+          for name in paths:
+              value=pathlib.Path(name).read_bytes()
+              request=urllib.request.Request(
+                'https://api.github.com/repos/'+repo+'/git/blobs',
+                data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),
+                method='POST',
+                headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=30) as response: result=json.load(response)
+              assert result['sha']==git('hash-object',name)
+              print(name,result['sha'])
+          print('VERIFIED_LOCAL_TREE='+expected)
+          print('Immutable blobs only: no feature ref, main, deployment, migration or lesson writes.')
+          PY
