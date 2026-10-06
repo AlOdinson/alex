@@ -1,0 +1,72 @@
+name: Stage exact notebook pending restore source
+on:
+  push:
+    branches: ['delivery/notebook-pending-restore-20261006']
+permissions:
+  contents: write
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Verify tested source and create candidate commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo='AlOdinson/alex'
+          base='4f8539d0a67fbf6eac7c98e2cb6fb1991a0c082c'
+          base_tree='b7e7cf2989a6018c0779a343748f95963016acb1'
+          expected_tree='14a0d9dfa77a6ebd0a3fe54553cef800ad2bc680'
+          patch_text=pathlib.Path('.delivery/notebook-pending-restore.patch.xz.b64').read_bytes()
+          assert hashlib.sha256(patch_text).hexdigest()=='948753f99e5d9faab9f50c2671fb66c587eaf057d6abebce8fea3fcb20fca16a'
+          packed=base64.b64decode(patch_text,validate=True)
+          patch_bytes=lzma.decompress(packed)
+          assert hashlib.sha256(patch_bytes).hexdigest()=='79fcda395108437d258a93aef37e0c30b93aa2460f567456707e8ea1f2bc0aa0'
+          patch=pathlib.Path('/tmp/notebook-pending-restore.patch'); patch.write_bytes(patch_bytes)
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          subprocess.run(['git','checkout','--detach',base],check=True)
+          subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
+          subprocess.run(['git','apply','--index',str(patch)],check=True)
+          assert git('write-tree')==expected_tree
+          allowed={
+            '.github/workflows/notebook-no-video-ci.yml',
+            'docs/performance/notebook-initial-pending-20261006.md',
+            'scripts/test-board-initial-pending-restore.mjs',
+            'scripts/test-board-startup-browser.mjs',
+            'scripts/test-notebook-initial-pending-preparation.mjs',
+            'src/components/Board.jsx',
+            'src/lib/notebookBoardController.js',
+            'src/lib/notebookSession.js',
+          }
+          paths=git('diff','--cached','--name-only').splitlines()
+          assert set(paths)==allowed and len(paths)==8, paths
+          rows=[]
+          for name in paths:
+              value=pathlib.Path(name).read_bytes()
+              req=urllib.request.Request(
+                'https://api.github.com/repos/'+repo+'/git/blobs',
+                data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),
+                method='POST',
+                headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(req,timeout=30) as response: result=json.load(response)
+              assert result['sha']==git('hash-object',name)
+              rows.append({'path':name,'mode':'100644','type':'blob','sha':result['sha']})
+          def api(path,payload):
+              req=urllib.request.Request(
+                'https://api.github.com/repos/'+repo+path,
+                data=json.dumps(payload).encode(),method='POST',
+                headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(req,timeout=30) as response:return json.load(response)
+          tree=api('/git/trees',{'base_tree':base_tree,'tree':rows})
+          assert tree['sha']==expected_tree
+          commit=api('/git/commits',{
+            'message':'perf: restore durable notebook intents cooperatively at cold startup',
+            'tree':expected_tree,'parents':[base]})
+          print('VERIFIED_TREE='+expected_tree)
+          print('CANDIDATE_COMMIT='+commit['sha'])
+          print('No feature ref, main, deployment, schema or user-data writes performed by staging.')
+          PY
