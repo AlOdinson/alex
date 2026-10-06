@@ -1,9 +1,9 @@
-name: Stage exact notebook split worker source
+name: Stage reviewed notebook worker source
 on:
   push:
     branches: ['delivery/notebook-split-worker-20261006']
 permissions:
-  contents: read
+  contents: write
 jobs:
   stage:
     if: github.repository == 'AlOdinson/alex' && github.ref == 'refs/heads/delivery/notebook-split-worker-20261006'
@@ -12,25 +12,40 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: {persist-credentials: false, fetch-depth: 0}
-      - name: Verify and export exact pending patch without changing product refs
+      - name: Verify reviewed tree and upload immutable source blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
-          import base64, hashlib, lzma, pathlib, subprocess
-          packed=base64.b64decode(pathlib.Path('.delivery/notebook-split-worker.patch.xz.b64').read_text(),validate=True)
-          assert hashlib.sha256(packed).hexdigest()=='80636443ae0667a906c6dd9e16ef0011583ff21dad43e45e245969c5348de915'
-          patch=pathlib.Path('/tmp/notebook-split-worker.patch');patch.write_bytes(lzma.decompress(packed))
-          subprocess.run(['git','checkout','--detach','273255cad804e487024cf3a493e6563d20a1e818'],check=True)
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo='AlOdinson/alex';base='273255cad804e487024cf3a493e6563d20a1e818'
+          expected='fb637d24894bd43913b51c47f99b32f70560f961'
+          assert os.environ['GITHUB_REPOSITORY']==repo
+          assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-split-worker-20261006'
+          packed=b''.join(pathlib.Path(f'.delivery/reviewed-worker.part{i}').read_bytes() for i in range(1,4))
+          assert hashlib.sha256(packed).hexdigest()=='302dc5cb7e257a537f648206742dd26fd5c6ff2a7704c1c30b5ff027603bd307'
+          patch=pathlib.Path('/tmp/reviewed-worker.patch');patch.write_bytes(lzma.decompress(packed))
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          subprocess.run(['git','checkout','--detach',base],check=True)
           subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
           subprocess.run(['git','apply','--index',str(patch)],check=True)
-          tree=subprocess.check_output(['git','write-tree'],text=True).strip()
-          assert tree=='8d809bd9dbf0df1f5f1d2a21478bfcd7809a6c1c'
-          pathlib.Path('/tmp/worker-tree.txt').write_text(tree+'\n')
-          print('Verified exact pending source; no branch updates, deployment or data changes.')
+          assert git('write-tree')==expected
+          allowed={'.github/workflows/notebook-no-video-ci.yml','docs/performance/notebook-split-worker-20261006.md','scripts/fixtures/notebook-node-split-worker.mjs','scripts/fixtures/notebook-split-geometry-273255ca.js','scripts/test-notebook-split-geometry-equivalence.mjs','scripts/test-notebook-split-safety.mjs','scripts/test-notebook-split-thread.mjs','scripts/test-notebook-split-worker-browser.mjs','scripts/test-notebook-split-worker-build.mjs','scripts/test-notebook-split-worker.mjs','scripts/test-notebook-worker-raster-tiles.mjs','src/lib/boardNotebook.js','src/lib/notebookBoardActions.js','src/lib/notebookPageRuntime.js','src/lib/notebookRasterBounds.js','src/lib/notebookSplitCancellation.js','src/lib/notebookSplitFragments.js','src/lib/notebookSplitGeometry.js','src/lib/notebookSplitGeometryCore.js','src/lib/notebookSplitWorker.js','src/lib/notebookSplitWorkerClient.js','src/lib/notebookVectorCommands.js'}
+          paths=git('diff','--cached','--name-only').splitlines();assert set(paths)==allowed and len(paths)==22
+          manifest={}
+          for name in paths:
+              value=pathlib.Path(name).read_bytes()
+              request=urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),method='POST',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=30) as response: result=json.load(response)
+              assert result['sha']==git('hash-object',name)
+              manifest[name]=result['sha'];print(name,result['sha'])
+          pathlib.Path('/tmp/reviewed-worker-manifest.json').write_text(json.dumps({'tree':expected,'files':manifest},indent=2))
+          print('Immutable blobs only; no branch refs, main, deployment or user data changed.')
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: notebook-pending-worker-source
+          name: notebook-reviewed-worker-source
           path: |
-            /tmp/notebook-split-worker.patch
-            /tmp/worker-tree.txt
-          retention-days: 7
+            /tmp/reviewed-worker.patch
+            /tmp/reviewed-worker-manifest.json
+          retention-days: 14
