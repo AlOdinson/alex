@@ -1,0 +1,94 @@
+diff --git a/docs/performance/notebook-checkpoint-20261006.md b/docs/performance/notebook-checkpoint-20261006.md
+index 889cba4..4dd336c 100644
+--- a/docs/performance/notebook-checkpoint-20261006.md
++++ b/docs/performance/notebook-checkpoint-20261006.md
+@@ -50,7 +50,9 @@ close/runtime replacement, and a final-await handoff regression (also verified
+ RED by temporarily removing its fence). Helper tests cover external mutation,
+ canonical contents, private certification, cancellation, cycles, bounded busy
+ fallback, independent sessions, guarded operations/deletions/inverses and duplicate
+-or missing IDs. Twelve targeted tests pass, plus startup/recovery42 and notebook254.
++or missing IDs. The original twelve target tests and startup/recovery42 passed; the final
++compatibility regression below raises the target count to thirteen. Notebook254
++and all25 selected commands pass on that final source.
+ 
+ All25 selected local verify/connection/menu/build commands pass. One extra known
+ legacy test:capacity-cleanup still expects a direct duplicate_board_v8 RPC in the
+@@ -81,3 +83,15 @@ the final SHA before claiming Chromium/WebKit success. Existing native gates sta
+   default external preparation preserves the original native-copy isolation.
+ - Author self-review only. Independent whole-branch review, long two-user lessons
+   and physical iPad/Apple Pencil acceptance remain outstanding.
++
++## Compatible older reader regression
++
++The schema-compatible recovery gate intentionally uses older drawing/record code
++with the new storage adapter. Self-review reproduced a named-import failure in
++that exact combination before integration. The deletion index now relies only on
++the older stable record exports. Cold preparation already certifies its values
++in slices, so this does not add a second deep traversal on the new path. A direct
++non-prepared caller retains an indivisible clone/freeze of each small deletion
++record. The new regression imports the actual index against pinned 52a65f38 record
++utilities and checks preserved values and nested isolation. Thirteen target tests
++now pass; this keeps the existing browser recovery gate unchanged.
+diff --git a/scripts/test-notebook-checkpoint-preparation.mjs b/scripts/test-notebook-checkpoint-preparation.mjs
+index 3154fb0..67d0f99 100644
+--- a/scripts/test-notebook-checkpoint-preparation.mjs
++++ b/scripts/test-notebook-checkpoint-preparation.mjs
+@@ -1,5 +1,10 @@
+ import test from 'node:test';
+ import assert from 'node:assert/strict';
++import fs from 'node:fs/promises';
++import os from 'node:os';
++import path from 'node:path';
++import { execFileSync } from 'node:child_process';
++import { pathToFileURL } from 'node:url';
+ import { createNotebookSession } from '../src/lib/notebookSession.js';
+ import { createNotebookBoardController } from '../src/lib/notebookBoardController.js';
+ import { indexedBoardModelFor } from '../src/lib/indexedBoardModel.js';
+@@ -183,3 +188,25 @@ test('duplicate, missing and selection IDs preserve the original indexed layout
+     assert.deepEqual(structuredClone(a.getState()), structuredClone(b.getState()));
+   } finally { a.dispose(); b.dispose(); }
+ });
++
++
++test('storage recovery index loads with the pinned previous renderer record utilities', async () => {
++  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'notebook-previous-reader-'));
++  try {
++    const previousRecords = execFileSync('git', ['show', '52a65f38badf74215568540297e71ba3ce7b8b0c:src/lib/notebookRecords.js'], { cwd: new URL('..', import.meta.url) });
++    await fs.writeFile(path.join(dir, 'package.json'), '{"type":"module"}');
++    await fs.writeFile(path.join(dir, 'notebookRecords.js'), previousRecords);
++    await fs.copyFile(new URL('../src/lib/boardTombstoneIndex.js', import.meta.url), path.join(dir, 'boardTombstoneIndex.js'));
++    const indexApi = await import(pathToFileURL(path.join(dir, 'boardTombstoneIndex.js')).href);
++    const source = { old: { revision: 5, nested: { retained: true } } };
++    const index = indexApi.createBoardTombstoneIndex(source);
++    assert.deepEqual(index.serialize(), source);
++    const it = indexApi.createBoardTombstoneIndexSteps(source);
++    let step; do { step = it.next(); } while (!step.done);
++    assert.deepEqual(step.value.serialize(), source);
++    source.old.nested.retained = false;
++    assert.equal(index.get('old').nested.retained, true);
++    assert.equal(step.value.get('old').nested.retained, true);
++    assert.ok(Object.isFrozen(step.value.get('old').nested));
++  } finally { await fs.rm(dir, { recursive: true, force: true }); }
++});
+diff --git a/src/lib/boardTombstoneIndex.js b/src/lib/boardTombstoneIndex.js
+index 13895fa..ce78f95 100644
+--- a/src/lib/boardTombstoneIndex.js
++++ b/src/lib/boardTombstoneIndex.js
+@@ -1,4 +1,4 @@
+-import { freezeNotebookRecord, freezeNotebookRecordSteps, isImmutableNotebookRecord } from './notebookRecords.js';
++import { freezeNotebookRecord, isImmutableNotebookRecord } from './notebookRecords.js';
+ 
+ // Persistent AVL map: adding one deletion copies a logarithmic tree path, not
+ // all prior deletions. No growing prototype/overlay chain; old previews remain
+@@ -112,7 +112,10 @@ export function* createBoardTombstoneIndexSteps(records = {}) {
+     if (!Object.hasOwn(records, key)) continue;
+     const input = records[key];
+     const value = isImmutableNotebookRecord(input) ? input : structuredClone(input);
+-    yield* freezeNotebookRecordSteps(value);
++    // Cold checkpoint preparation has already frozen these values in slices.
++    // Keep the storage reader compatible with the pinned older record module;
++    // direct, non-prepared callers retain the original per-record freeze.
++    freezeNotebookRecord(value);
+     root = put(root, key, value);
+     yield;
+   }
