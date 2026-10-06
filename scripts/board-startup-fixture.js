@@ -12,7 +12,7 @@ const errorOf=task=>task.then(()=>null,error=>error);
 
 export async function runBoardStartupCases() {
  const results=[];
- const run=async(name,work)=>{try{results.push({name,...await work()});}catch(error){results.push({name,error:error.stack??error.message});}};
+ const run=async(name,work)=>{try{results.push({name,...await work()});}catch(error){results.push({name,error:`${error.message}\n${error.stack??''}`,diagnostics:error.diagnostics});}};
  await run('bounded real constructors and coherent old scene',async()=>{
   const c=make();c.add(new Rect({width:1,height:1,boardObjectId:'old'}));c.cancelRequestedRender();let count=0,atInput=null,oldAtInput;
   class NativeStartupProbe extends Rect {static type='NativeStartupProbe';static fromObject(value,options){
@@ -67,11 +67,16 @@ export async function runBoardStartupCases() {
   }finally{await c.dispose();}
  });
  await run('background overlay clip and object pixels match canonical',async()=>{
-  const a=make(),b=make();const source={objects:[rect('one'),{...rect('two'),left:16,fill:'rgba(20,80,90,.5)'}],
+  const a=make(),b=make();let rendersA=0,rendersB=0;a.on('after:render',()=>rendersA++);b.on('after:render',()=>rendersB++);const source={objects:[rect('one'),{...rect('two'),left:16,fill:'rgba(20,80,90,.5)'}],
    background:'rgb(245,245,245)',overlay:'rgba(160,30,20,.1)',clipPath:{type:'Rect',left:5,top:5,width:100,height:100,fill:'black'}};
   try{await a.loadFromJSON(source);await loadBoardCanvasJson(b,source);a.renderAll();b.renderAll();const x=pixels(a),y=pixels(b);let mismatch=0;
    for(let i=0;i<x.length;i++)if(x[i]!==y[i])mismatch++;
-   requireValue(mismatch===0,`pixel mismatch ${mismatch}`);return{pixelMismatch:mismatch};
+   if(mismatch){
+    const differences=[];let maxDelta=0;for(let i=0;i<x.length;i++)if(x[i]!==y[i]){maxDelta=Math.max(maxDelta,Math.abs(x[i]-y[i]));if(differences.length<16)differences.push({x:Math.floor(i/4)%a.width,y:Math.floor(i/4/a.width),channel:i%4,a:x[i],b:y[i]});}
+    const diagnostics={mismatch,maxDelta,differences,rendersA,rendersB,sameSerialization:same(a.toObject(),b.toObject()),aPng:a.lowerCanvasEl.toDataURL(),bPng:b.lowerCanvasEl.toDataURL()};
+    a.renderAll();b.renderAll();const x2=pixels(a),y2=pixels(b);diagnostics.secondRenderMismatch=Array.from(x2).reduce((n,v,i)=>n+(v!==y2[i]),0);
+    throw Object.assign(Error(`pixel mismatch ${mismatch}`),{diagnostics});
+   }return{pixelMismatch:mismatch};
   }finally{await a.dispose();await b.dispose();}
  });
  await run('old notebook hidden pages remain serialized',async()=>{
