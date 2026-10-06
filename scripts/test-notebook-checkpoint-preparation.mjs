@@ -8,7 +8,7 @@ import { pathToFileURL } from 'node:url';
 import { createNotebookSession } from '../src/lib/notebookSession.js';
 import { createNotebookBoardController } from '../src/lib/notebookBoardController.js';
 import { indexedBoardModelFor } from '../src/lib/indexedBoardModel.js';
-import { callback } from './notebook-ui-node-harness.mjs';
+import { callback, authorityFixture } from './notebook-ui-node-harness.mjs';
 const api = await import('../src/lib/notebookCheckpoint.js').catch(error => {
   if (error.code === 'ERR_MODULE_NOT_FOUND' && error.message.includes('notebookCheckpoint.js')) return {};
   throw error;
@@ -25,13 +25,16 @@ const seed = (count = 1200) => ({ revision: 7, snapshot: { version: 2, backgroun
 ] } }, tombstones: Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`deleted-${i}`, { revision: i, actionId: `a-${i}` }])),
 notebookTombstones: { book: { '1': { gone: { revision: 6 } } } }, acknowledgedActionIds: ['settled'] });
 const prepare = (...args) => { assert.equal(typeof api.prepareNotebookCheckpoint, 'function', 'bounded checkpoint preparation missing'); return api.prepareNotebookCheckpoint(...args); };
-function acquisition(source, { duringRead = () => {}, revision = () => source.revision } = {}) {
-  let reads = 0;
+function acquisition(source, { duringRead = () => {}, revision = () => source.revision, internalSource = false, mutableSource = false, isOwner = true } = {}) {
+  let reads = 0, sourceReads = 0, mutableReads = 0;
   const runtime = { whenRuntimeReady: async () => {}, flushPending: async () => {}, getNotebookVersion: () => 1,
-    getRevision: revision, getNotebookCheckpoint: () => { reads++; duringRead(reads); return structuredClone(source); } };
+    getRevision: revision,
+    ...(internalSource ? { getNotebookCheckpointSource: () => { sourceReads++; duringRead(sourceReads); return source; } } : {}),
+    ...(mutableSource ? { getNotebookCheckpointMutableSource: () => { mutableReads++; duringRead(mutableReads); return source; } } : {}),
+    getNotebookCheckpoint: () => { reads++; duringRead(reads); return structuredClone(source); } };
   const scope = { notebookRuntimeEnabled: true, boardReadyRef: ref(true), fabricCanvasRef: ref({}), realtimeRef: ref(runtime),
     notebookControllerRef: ref(null), notebookControllerInitRef: ref(null), notebookControllerEpochRef: ref(0),
-    clientIdRef: ref('teacher'), canEditRef: ref(true), boardId: 'board', pendingServerWritesRef: ref(0),
+    clientIdRef: ref(isOwner ? 'teacher' : 'student'), canEditRef: ref(true), isOwner, boardId: 'board', pendingServerWritesRef: ref(0),
     notebookGapRevisionRef: ref(null), notebookHandlersRef: ref({}),
     createNotebookBoardController, createNotebookOutbox: () => ({ list: async () => [], save: async () => {}, remove: async () => {} }),
     readStableNotebookCheckpoint: (...args) => { assert.equal(typeof api.readStableNotebookCheckpoint, 'function'); return api.readStableNotebookCheckpoint(...args); },
@@ -39,9 +42,40 @@ function acquisition(source, { duringRead = () => {}, revision = () => source.re
     setPendingCount() {}, setSaveStatus() {}, setSyncTone() {}, syncFromServer() {},
   };
   scope.ensureNotebookController = callback('ensureNotebookController', scope);
-  return { scope, get reads() { return reads; } };
+  return { scope, get reads() { return reads; }, get sourceReads() { return sourceReads; }, get mutableReads() { return mutableReads; } };
 }
 
+
+
+test('authority internal checkpoint source remains a safe immutable version after later commit', async () => {
+  const sourceBook=seed(0).snapshot.canvas.objects[0];
+  const {authority}=await authorityFixture([structuredClone(sourceBook)]);
+  const source=authority.getNotebookCheckpointSource();
+  const token=await prepare(source,{takeOwnership:true});
+  const before=structuredClone(token.snapshot);
+  await authority.commitAction({actionId:'after-source',clientId:'teacher',baseRevision:0,ops:[{type:'notebook',version:1,id:'book',pageNumber:6,changes:[{type:'insert',ifAbsent:true,object:{type:'Rect',boardObjectId:'later',width:2}}]}]});
+  assert.deepEqual(structuredClone(token.snapshot),before,'later authority commit mutated the borrowed checkpoint version');
+  assert.equal(authority.getRevision(),1);
+});
+
+test('actual Board prefers internal teacher checkpoint source over public whole-board clone', async () => {
+  const source=seed(40), h=acquisition(source,{internalSource:true});
+  const c=await h.scope.ensureNotebookController();
+  try {assert.ok(h.sourceReads>=1);assert.equal(h.reads,0,'stable teacher cold start invoked public whole-board clone');assert.equal(c.getConfirmedState().revision,7);}
+  finally {c.dispose();}
+});
+
+
+
+test('actual Board student cold start uses mutable replica source without the public whole-board clone', async () => {
+  const source=seed(1200), h=acquisition(source,{mutableSource:true,isOwner:false});
+  const c=await h.scope.ensureNotebookController();
+  try {
+    assert.ok(h.mutableReads>=1,'student cold start did not read the internal replica source');
+    assert.equal(h.reads,0,'stable student cold start invoked public whole-board clone');
+    assert.equal(c.getConfirmedState().revision,7);
+  } finally {c.dispose();}
+});
 test('actual Board cold controller yields during model preparation, not only before fetching it', async () => {
   let taskBeforeInstall = false, h;
   h = acquisition(seed(), { duringRead: () => setTimeout(() => { taskBeforeInstall = h.scope.notebookControllerRef.current === null; }, 0) });
@@ -209,4 +243,26 @@ test('storage recovery index loads with the pinned previous renderer record util
     assert.equal(step.value.get('old').nested.retained, true);
     assert.ok(Object.isFrozen(step.value.get('old').nested));
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
+});
+
+
+test('mutable replica checkpoint is cloned cooperatively and retried after an interleaved revision', async () => {
+  const source = seed(1200); let reads = 0, ticked = false;
+  const original = globalThis.structuredClone; let whole = 0;
+  globalThis.structuredClone = value => {
+    if (Array.isArray(value?.snapshot?.canvas?.objects) && value.snapshot.canvas.objects.length >= 1200) whole++;
+    return original(value);
+  };
+  setTimeout(() => { ticked = true; source.snapshot.canvas.objects.push({ type: 'Rect', boardObjectId: 'replica-arrived', width: 2 }); source.revision = 8; }, 0);
+  try {
+    const token = await api.readStableNotebookCheckpoint({
+      readCheckpoint: () => { reads++; return source; }, readRevision: () => source.revision,
+      takeOwnership: false, cooperativeClone: true,
+    });
+    assert.equal(ticked, true, 'replica clone did not yield to the interleaved commit');
+    assert.ok(reads >= 2, 'stale mutable replica draft was not retried');
+    assert.equal(whole, 0, 'mutable replica path used one monolithic whole-checkpoint structuredClone');
+    assert.equal(token.revision, 8); assert.equal(token.snapshot.canvas.objects.at(-1).boardObjectId, 'replica-arrived');
+    assert.equal(Object.isFrozen(source.snapshot.canvas.objects[0]), false, 'cooperative clone froze the live replica');
+  } finally { globalThis.structuredClone = original; }
 });

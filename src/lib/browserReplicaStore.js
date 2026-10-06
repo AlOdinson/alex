@@ -86,6 +86,16 @@ export function getReplicaRevision(boardId) {
   return safeRevision(replicas.get(key)?.revision);
 }
 
+// Internal cold-start source. The snapshot is intentionally the live replica;
+// callers must clone it behind a revision fence before retaining it.
+export function getReplicaCheckpointSource(boardId) {
+  const key = boardKey(boardId);
+  if (!key) return null;
+  const state = replicas.get(key);
+  if (!state) return null;
+  return { snapshot: state.snapshot, revision: state.revision };
+}
+
 export function getReplicaState(boardId) {
   const key = boardKey(boardId);
   if (!key) return null;

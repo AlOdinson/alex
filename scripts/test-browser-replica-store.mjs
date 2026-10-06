@@ -7,6 +7,7 @@ const {
   clearReplicaState,
   getReplicaChangesAfter,
   getReplicaState,
+  getReplicaCheckpointSource,
   installReplicaSnapshot,
 } = replicaStore;
 
@@ -101,4 +102,27 @@ test('revision lookup and one contiguous commit do not clone the whole replica s
     globalThis.structuredClone = originalStructuredClone;
     clearReplicaState('board-hot-path');
   }
+});
+
+test('internal replica checkpoint source avoids a whole-board clone and stays revision-fenced', () => {
+  clearReplicaState('board-source');
+  const large = { version: 2, background: 'grid', canvas: { objects: Array.from({ length: 1200 }, (_, i) => ({
+    type: 'rect', boardObjectId: `source-${i}`, left: i,
+  })) } };
+  installReplicaSnapshot('board-source', large, 9);
+  const original = globalThis.structuredClone; let whole = 0;
+  globalThis.structuredClone = value => {
+    if (Array.isArray(value?.canvas?.objects) && value.canvas.objects.length >= 1200) whole++;
+    return original(value);
+  };
+  try {
+    assert.equal(typeof getReplicaCheckpointSource, 'function', 'internal replica checkpoint source missing');
+    const source = getReplicaCheckpointSource('board-source');
+    assert.equal(whole, 0, 'internal source cloned the whole replica');
+    assert.equal(source.revision, 9); assert.equal(source.snapshot.canvas.objects.length, 1200);
+    applyReplicaCommit('board-source', { actionId: 'source-10', revision: 10,
+      ops: [{ type: 'upsert', object: { type: 'rect', boardObjectId: 'after-source', left: 2 } }] });
+    assert.equal(source.revision, 9, 'source descriptor revision changed after capture');
+    assert.equal(source.snapshot.canvas.objects.at(-1).boardObjectId, 'after-source', 'test requires the raw source to be mutable behind a revision fence');
+  } finally { globalThis.structuredClone = original; clearReplicaState('board-source'); }
 });

@@ -204,3 +204,16 @@ test('teacher publication checks media compatibility before persisting its actio
   createSignaling:()=>({send:async()=>{},handle(){}}),createNetwork:()=>({close(){}})});
  try{await assert.rejects(runtime.commitTeacherAction({ops:[{type:'patch',id:'pdf',patch:{pageNumber:2}}]}),/обновить/);assert.equal(persisted,0);}finally{runtime.close();}
 });
+
+test('teacher runtime exposes an internal notebook checkpoint source without invoking public snapshot clone', async()=>{
+ const internal={snapshot:{version:2,canvas:{objects:[]}},revision:5,tombstones:{},notebookTombstones:{}};
+ let publicReads=0;
+ const runtime=await createTeacherBoardRuntime({boardId:'board-source',clientId:'teacher-source',sendScreenShareSignal:async()=>{},enableNotebookOperations:true,
+  openAuthority:async()=>({getRevision:()=>5,getSnapshot:()=>{publicReads++;return structuredClone(internal.snapshot);},getNotebookCheckpointSource:()=>internal,
+   getCommitsAfter:async()=>[],compactSnapshot:async()=>5,commitAction:async action=>({...action,revision:6})}),
+  createHub:()=>({addPeer:()=>()=>{},removePeer(){},handleMessage:async()=>{},broadcastCommit:async()=>{}}),
+  createSignaling:({onSignal})=>({send:async()=>{},handle:onSignal}),createNetwork:()=>({handleSignal:async()=>{},close(){}}),
+  createLockAuthority:()=>({})});
+ try {assert.equal(typeof runtime.getNotebookCheckpointSource,'function');assert.equal(runtime.getNotebookCheckpointSource(),internal);assert.equal(publicReads,0);}
+ finally{runtime.close();}
+});

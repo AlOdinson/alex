@@ -8,15 +8,18 @@ const ref=current=>({current});
 function fixture() {
  const canvas=new StaticCanvas(null,{width:100,height:100,renderOnAddRemove:false}), events=[];
  const scope={canvas,Date:{now:()=>500000},clientIdRef:ref('local'),fabricCanvasRef:ref(canvas),
-   transientCanvasObjectsRef:ref(new Set()),objectRegistryRef:ref(new Map()),selectionTransactionRegistryRef:ref(new Map()),creationSessionRegistryRef:ref(new Map()),
+   transientCanvasObjectsRef:ref(new Set()),pendingImageCanvasObjectsRef:ref(new Set()),objectRegistryRef:ref(new Map()),selectionTransactionRegistryRef:ref(new Map()),creationSessionRegistryRef:ref(new Map()),
    remoteLocksRef:ref(new Map()),remoteTransformSessionsRef:ref(new Map()),remoteSelectionTransactionsRef:ref(new Map()),remoteDeletedObjectIdsRef:ref(new Map()),
    authoritativeSelectionTransactionsRef:ref(new Map()),authoritativeObjectStatesRef:ref(new Map()),remotePreviewChunksRef:ref(new Map()),remoteDrawSessionsRef:ref(new Map()),
    realtimeRef:ref({resumeVerification(){}}),setRemoteLocks(){},applyObjectInteractivityToObjects(){},registeredObjectsById:()=>[],
    setRemoteCursors(fn){scope.cursors=fn(scope.cursors);},cursors:[],removeRegisteredSelectionTransactionObjects:()=>[],
-   scheduleTargetedReconciliation:ids=>events.push(ids),syncFromServer(){},removeTransientDrawPreviewsBySession:()=>[],normalizeRealtimeBaseRevision:x=>x,
+   scheduleTargetedReconciliation:ids=>events.push(ids),syncFromServer(){},normalizeRealtimeBaseRevision:x=>x,
    applySharpRenderingPolicy(){} };
  scope.creationSessionRegistryKey=boardFunction('creationSessionRegistryKey',scope);
+ scope.removeTransientDrawPreviewsBySession=boardFunction('removeTransientDrawPreviewsBySession',scope);
  const register=callback('registerCanvasObject',scope),unregister=callback('unregisterCanvasObject',scope);
+ scope.registeredObjectsByCreationSession=callback('registeredObjectsByCreationSession',scope);
+ scope.removeRegisteredObjectsByCreationSession=callback('removeRegisteredObjectsByCreationSession',scope);
  scope.registerCanvasObject=register;
  canvas.on('object:added',({target})=>register(target));canvas.on('object:removed',({target})=>unregister(target));
  const cleanup=boardInterval('lockCleanupInterval',scope);
@@ -57,4 +60,14 @@ test('registry updates retain only live transient membership across finalization
   a.transientSelectionProxy=false;cleanup();assert.equal(scope.transientCanvasObjectsRef.current.size,0);
   a.transientPreview=true;rebuild();assert.equal(scope.transientCanvasObjectsRef.current.size,1);
  } finally {await canvas.dispose();}
+});
+
+test('stale remote draw session cleanup uses creation-session registry without scene scan', async()=>{
+ const {canvas,scope,cleanup}=fixture();
+ const preview=object('remote-preview',{transientPreview:true,creationClientId:'remote',creationSessionId:'draw-1',previewReceivedAt:100000});
+ canvas.add(preview);
+ scope.remoteDrawSessionsRef.current.set('remote:draw-1',{objectId:'remote-preview',receivedAt:100000});
+ let reads=0;const all=canvas.getObjects.bind(canvas);canvas.getObjects=(...args)=>{reads++;return all(...args);};
+ try {cleanup();assert.equal(reads,0,'stale session cleanup must not enumerate the permanent scene');assert.equal(preview.canvas,undefined);}
+ finally {await canvas.dispose();}
 });

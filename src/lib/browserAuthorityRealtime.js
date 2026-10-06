@@ -684,6 +684,8 @@ export function connectBoardRealtime(options = {}, dependencies = {}) {
   return {
     ...core,
     getNotebookVersion: () => session.getNotebookVersion?.() ?? 0,
+    getNotebookCheckpointSource: () => session.getNotebookCheckpointSource?.() ?? null,
+    getNotebookCheckpointMutableSource: () => session.getNotebookCheckpointMutableSource?.() ?? null,
     getNotebookCheckpoint: () => session.getNotebookCheckpoint?.() ?? null,
     whenRuntimeReady: () => session.whenRuntimeReady?.(),
     recoverConnections() {

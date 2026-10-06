@@ -17,6 +17,46 @@ function seal(snapshot) {
   Object.freeze(snapshot.canvas.objects); Object.freeze(snapshot.canvas); return Object.freeze(snapshot);
 }
 
+const unsupportedClone = Symbol('unsupported-notebook-checkpoint-clone');
+function cloneShell(value) {
+  if (Array.isArray(value)) return new Array(value.length);
+  const proto = Object.getPrototypeOf(value);
+  if (proto === Object.prototype || proto === null) return Object.create(proto);
+  if (value instanceof Date) return new Date(value.getTime());
+  if (value instanceof RegExp) return new RegExp(value.source, value.flags);
+  return unsupportedClone;
+}
+function* cloneCheckpointSteps(value, seen = new Map()) {
+  if (!value || typeof value !== 'object') return value;
+  if (seen.has(value)) return seen.get(value);
+  const target = cloneShell(value);
+  if (target === unsupportedClone) return unsupportedClone;
+  seen.set(value, target);
+  for (const key of Object.keys(value)) {
+    yield;
+    const child = yield* cloneCheckpointSteps(value[key], seen);
+    if (child === unsupportedClone) return unsupportedClone;
+    target[key] = child;
+  }
+  return target;
+}
+async function cloneCheckpointCooperatively(value, check, slice) {
+  const steps = cloneCheckpointSteps(value);
+  for (;;) {
+    const pause = slice.beforeWork(); if (pause) await pause;
+    check();
+    for (let i = 0; i < 128; i++) {
+      const step = steps.next();
+      if (step.done) {
+        check();
+        // Preserve exact structured-clone behavior for an unexpected non-JSON
+        // value without making the ordinary serialized board path monolithic.
+        return step.value === unsupportedClone ? structuredClone(value) : step.value;
+      }
+    }
+  }
+}
+
 // Synchronous compatibility path for existing callers and live rebase. Native
 // structuredClone remains the snapshot-at-call boundary for external mutable data.
 export function notebookCheckpoint(value) {
@@ -52,7 +92,7 @@ function* prepareSteps(copy) {
  * takeOwnership is reserved for a freshly isolated runtime checkpoint returned
  * exclusively to the cold Board loader; it avoids a second complete clone.
  */
-export async function prepareNotebookCheckpoint(value, { signal, isCurrent = () => true, takeOwnership = false } = {}) {
+export async function prepareNotebookCheckpoint(value, { signal, isCurrent = () => true, takeOwnership = false, cooperativeClone = false } = {}) {
   const check = () => {
     if (signal?.aborted) throw signal.reason ?? new DOMException('Checkpoint preparation aborted', 'AbortError');
     if (!isCurrent()) throw notebookWorkCancelled();
@@ -60,8 +100,12 @@ export async function prepareNotebookCheckpoint(value, { signal, isCurrent = () 
   check();
   if (prepared.has(value)) return value;
   validate(value);
-  const copy = takeOwnership ? value : structuredClone(value);
-  const steps = prepareSteps(copy), slice = createNotebookWorkSlice();
+  const slice = createNotebookWorkSlice();
+  const copy = takeOwnership ? value : cooperativeClone
+    ? await cloneCheckpointCooperatively(value, check, slice)
+    : structuredClone(value);
+  validate(copy);
+  const steps = prepareSteps(copy);
   try {
     for (;;) {
       const pause = slice.beforeWork(); if (pause) await pause;
@@ -80,13 +124,13 @@ export async function prepareNotebookCheckpoint(value, { signal, isCurrent = () 
  * session boundary instead. Board MUST recheck revision immediately after await
  * and before construction, closing the final microtask handoff window.
  */
-export async function readStableNotebookCheckpoint({ readCheckpoint, readRevision, isCurrent = () => true, signal } = {}) {
+export async function readStableNotebookCheckpoint({ readCheckpoint, readRevision, isCurrent = () => true, signal, takeOwnership = true, cooperativeClone = false } = {}) {
   if (typeof readCheckpoint !== 'function') throw new TypeError('Checkpoint reader is required');
   for (let attempt = 0; attempt < 3; attempt++) {
     if (!isCurrent()) throw notebookWorkCancelled();
     const source = readCheckpoint();
     if (!source) throw new Error('Подтверждённое состояние блокнота ещё не загружено');
-    const token = await prepareNotebookCheckpoint(source, { takeOwnership: true, isCurrent, signal });
+    const token = await prepareNotebookCheckpoint(source, { takeOwnership, cooperativeClone, isCurrent, signal });
     if (!isCurrent()) throw notebookWorkCancelled();
     const revision = readRevision?.();
     if (!safeRevision(revision) || revision === token.revision) return token;

@@ -112,6 +112,7 @@ export async function createTeacherBoardRuntime({
     ensureMediaAsset(assetId) { return hub.ensureMediaAsset(assetId); },
     requestMediaAsset(assetId, options) { return hub.requestMediaAsset(assetId, options); },
     getNotebookVersion() { return authority.getNotebookVersion?.() ?? 0; },
+    getNotebookCheckpointSource() { return authority.getNotebookCheckpointSource?.() ?? null; },
     getNotebookCheckpoint() {
       return { snapshot: authority.getSnapshot(), revision: authority.getRevision(),
         tombstones: authority.getTombstones?.() ?? {}, notebookTombstones: authority.getNotebookTombstones?.() ?? {} };

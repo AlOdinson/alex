@@ -215,6 +215,13 @@ export async function openBrowserBoardAuthority({
     getNotebookVersion() { return enableNotebookOperations ? 1 : 0; },
     getNotebookRequirement() { return notebookRequirement; },
     getNotebookTombstones() { return cloneValue(currentNotebookTombstones); },
+    // Internal cold-start source. The indexed snapshot and persistent tombstone
+    // index are authority-owned versions; commits replace them rather than mutate
+    // prior versions. Callers must revision-fence this reference before install.
+    getNotebookCheckpointSource() {
+      return { snapshot: currentSnapshot, revision: authority.getRevision(), tombstones: currentTombstones,
+        notebookTombstones: currentNotebookTombstones };
+    },
     getRevision() {
       return authority.getRevision();
     },

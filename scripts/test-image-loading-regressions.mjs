@@ -45,7 +45,7 @@ function hydrationFixture(change) {
  const canvas={objects:[placeholder],getObjects(){return this.objects;},remove(o){this.objects=this.objects.filter(x=>x!==o);},add(o){this.objects.push(o);},moveObjectTo(){},requestRenderAll(){}};
  const fiber={current:canvas}; let unblock;
  const loaded=new Promise(resolve=>{unblock=resolve;}); const edits=new Set();
- const args={pendingImageRetryInFlightRef:{current:false}, fabricCanvasRef:fiber, getLocalMutationIds:()=>edits,
+ const args={pendingImageRetryInFlightRef:{current:false}, pendingImageCanvasObjectsRef:{current:new Set([placeholder])}, objectRegistryRef:{current:new Map([['image',new Set([placeholder])]])}, fabricCanvasRef:fiber, getLocalMutationIds:()=>edits,
   preloadSerializedImages:()=>loaded, enlivenImageAwareObjects:async()=>{await loaded;return [{boardObjectId:'image',setCoords(){},dispose(){}}];},
   boardObjectsById:(c,id)=>c.getObjects().filter(o=>o.boardObjectId===id), applyingRemoteRef:{current:false},
   serializedObjectCacheRef:{current:new WeakMap()},clamp:(x)=>x,applyObjectInteractivity(){}};

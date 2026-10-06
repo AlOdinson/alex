@@ -1,6 +1,6 @@
 import { readStableNotebookCheckpoint } from '../lib/notebookCheckpoint.js';
 import { loadBoardCanvasJson, cancelBoardCanvasLoad } from '../lib/boardLoadPreparation.js';
-import { queueNotebookWork } from '../lib/notebookWorkScheduler.js';
+import { createNotebookWorkSlice, queueNotebookWork } from '../lib/notebookWorkScheduler.js';
 import { notebookEraserCandidates } from '../lib/notebookChildIndex.js';
 import { readSnapshotRecord } from '../lib/indexedBoardModel.js';
 import { snapshotNotebookGesturePages, bindNotebookGestureTarget, consumeNotebookGesturePage } from '../lib/notebookGestureTarget.js';
@@ -376,6 +376,17 @@ function boardObjectsByCreationSession(canvas, clientId, sessionId) {
 function creationSessionRegistryKey(clientId, sessionId) {
   if (!sessionId) return '';
   return `${String(clientId ?? '')}:${String(sessionId)}`;
+}
+
+function notebookTransientCleanupCandidates(affectedIds, completedTransactions, objectRegistry, transactionRegistry) {
+  const candidates = new Set();
+  for (const id of affectedIds ?? []) {
+    for (const object of objectRegistry?.get?.(String(id)) ?? []) candidates.add(object);
+  }
+  for (const transactionId of completedTransactions ?? []) {
+    for (const object of transactionRegistry?.get?.(String(transactionId)) ?? []) candidates.add(object);
+  }
+  return candidates;
 }
 
 function removeBoardObjectsByCreationSession(canvas, clientId, sessionId, keep = null) {
@@ -1868,6 +1879,7 @@ function BoardWorkspace({
   const authoritativeApplyQueueRef = useRef(Promise.resolve());
   const applyRemoteOpsRef = useRef(null);
   const pendingImageRetryInFlightRef = useRef(false);
+  const pendingImageCanvasObjectsRef = useRef(new Set());
   const remoteTransformApplyQueueRef = useRef(Promise.resolve());
   const selectionMemberControlsRef = useRef(new Map());
   const selectionUiTouchedRef = useRef(new Set());
@@ -2355,6 +2367,8 @@ function BoardWorkspace({
     applySharpRenderingPolicy(object);
     if (object?.transientPreview || object?.transientSelectionProxy) transientCanvasObjectsRef.current.add(object);
     else transientCanvasObjectsRef.current.delete(object);
+    if (object?.pendingImage && object?.pendingImageSerialized) pendingImageCanvasObjectsRef.current.add(object);
+    else pendingImageCanvasObjectsRef.current.delete(object);
     const selectionTransactionId = String(object?.selectionTransactionId ?? '');
     if (selectionTransactionId) {
       const transactionBucket = selectionTransactionRegistryRef.current.get(selectionTransactionId)
@@ -2381,6 +2395,7 @@ function BoardWorkspace({
 
   const unregisterCanvasObject = useCallback((object) => {
     transientCanvasObjectsRef.current.delete(object);
+    pendingImageCanvasObjectsRef.current.delete(object);
     const selectionTransactionId = String(object?.selectionTransactionId ?? '');
     if (selectionTransactionId) {
       const transactionBucket = selectionTransactionRegistryRef.current.get(selectionTransactionId);
@@ -2410,6 +2425,7 @@ function BoardWorkspace({
   const rebuildObjectRegistry = useCallback(() => {
     const canvas = fabricCanvasRef.current;
     transientCanvasObjectsRef.current.clear();
+    pendingImageCanvasObjectsRef.current.clear();
     objectRegistryRef.current = new Map();
     creationSessionRegistryRef.current = new Map();
     selectionTransactionRegistryRef.current = new Map();
@@ -4909,12 +4925,13 @@ function BoardWorkspace({
     if (pendingImageRetryInFlightRef.current) return;
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
-    const pending = canvas.getObjects().filter((object) => (
-      object?.pendingImage
-      && object?.pendingImageSerialized
-      && object?.boardObjectId
-      && Number(object.pendingImageRetryAt ?? 0) <= Date.now()
-    ));
+    const pending = [...pendingImageCanvasObjectsRef.current].filter((object) => {
+      if (object?.canvas !== canvas || !object?.pendingImage || !object?.pendingImageSerialized) {
+        pendingImageCanvasObjectsRef.current.delete(object);
+        return false;
+      }
+      return object.boardObjectId && Number(object.pendingImageRetryAt ?? 0) <= Date.now();
+    });
     if (!pending.length) return;
 
     pendingImageRetryInFlightRef.current = true;
@@ -4934,7 +4951,8 @@ function BoardWorkspace({
             // eslint-disable-next-line no-await-in-loop
             const [revived] = await enlivenImageAwareObjects([structuredClone(serialized)]);
             if (!revived) continue;
-            const current = boardObjectsById(canvas, objectId).find((object) => object.pendingImage);
+            const current = [...(objectRegistryRef.current.get(objectId) ?? [])]
+              .find((object) => object?.canvas === canvas && object.pendingImage);
             if (fabricCanvasRef.current !== canvas || current !== placeholder
               || current.pendingImageSerialized !== serialized
               || current.updatedAt !== expectedVersion || serialized.src !== expectedSource
@@ -4958,7 +4976,7 @@ function BoardWorkspace({
               revived.setCoords?.();
             } finally { applyingRemoteRef.current = wasApplyingRemote; }
           } catch {
-            if (fabricCanvasRef.current !== canvas || !canvas.getObjects().includes(placeholder)) continue;
+            if (fabricCanvasRef.current !== canvas || placeholder.canvas !== canvas) continue;
             const attempts = Math.min(5, Number(placeholder.pendingImageAttempts ?? 0) + 1);
             placeholder.pendingImageAttempts = attempts;
             placeholder.pendingImageRetryAt = Date.now() + Math.min(30_000, 1_000 * (2 ** attempts));
@@ -5475,8 +5493,11 @@ function BoardWorkspace({
       let checkpoint;
       try {
         checkpoint = await readStableNotebookCheckpoint({
-          readCheckpoint: () => realtime.getNotebookCheckpoint?.(),
+          readCheckpoint: () => isOwner
+            ? (realtime.getNotebookCheckpointSource?.() ?? realtime.getNotebookCheckpoint?.())
+            : (realtime.getNotebookCheckpointMutableSource?.() ?? realtime.getNotebookCheckpoint?.()),
           readRevision: () => realtime.getRevision?.(), isCurrent: current,
+          takeOwnership: isOwner, cooperativeClone: !isOwner,
         });
       } catch (error) { if (!current()) return null; throw error; }
       if (!current()) return null;
@@ -6395,7 +6416,14 @@ function BoardWorkspace({
           const beforeCleanup = applyingRemoteRef.current;
           applyingRemoteRef.current = true;
           try {
-            for (const object of canvas.getObjects()) {
+            const cleanupCandidates = notebookTransientCleanupCandidates(
+              affectedIds,
+              completedTransactions,
+              objectRegistryRef.current,
+              selectionTransactionRegistryRef.current,
+            );
+            for (const object of cleanupCandidates) {
+              if (object?.canvas !== canvas) continue;
               const transient = object.transientPreview || object.transientSelectionProxy || object.transientTransformFallback;
               if (transient && (affectedIds.has(String(object.boardObjectId))
                 || completedTransactions.has(String(object.selectionTransactionId ?? '')))) canvas.remove(object);
@@ -9239,7 +9267,7 @@ function BoardWorkspace({
       rebuild: rebuildTransformSpatialIndex,
       updateObjects: updateTransformSpatialObjects,
       addObject(object) {
-        indexTransformSpatialObject(object, Math.max(0, canvas.getObjects().length - 1));
+        indexTransformSpatialObject(object, Math.max(0, (canvas._objects?.length ?? 1) - 1));
         transformSpatialIndex.ready = true;
       },
       removeObject(object) {
@@ -9607,18 +9635,36 @@ function BoardWorkspace({
         await loadInitialCanvasJsonProgressively(canvas, snapshot.canvas);
         if (disposed || canvas !== fabricCanvasRef.current) return;
         reconcileBoardScreenShare();
-        const serializedById = new Map((snapshot.canvas.objects ?? [])
-          .filter((object) => object?.boardObjectId)
-          .map((object) => [String(object.boardObjectId), object]));
-        canvas.getObjects().forEach((object) => {
-          const serialized = object.pendingImageSerialized
-            ?? serializedById.get(String(object.boardObjectId ?? ''));
-          if (serialized) serializedObjectCacheRef.current.set(object, serialized);
-        });
-        rebuildObjectRegistry();
-        penTransformSpatialApiRef.current?.rebuild?.();
+        // object:added/object:removed already maintain the object/transient/spatial
+        // registries while the bounded loader installs the scene. Seed only the
+        // serialized cache and interactivity here, in cooperative chunks, instead
+        // of rescanning the complete canvas three more times.
+        const installedObjects = Array.isArray(canvas._objects) ? canvas._objects : [];
+        const sourceObjects = Array.isArray(snapshot.canvas.objects) ? snapshot.canvas.objects : [];
+        const seedSlice = createNotebookWorkSlice();
+        let serializedById = null, interactivityBatch = [];
+        try {
+          for (let index = 0; index < installedObjects.length; index++) {
+            const pause = seedSlice.beforeWork(); if (pause) await pause;
+            if (disposed || canvas !== fabricCanvasRef.current) return;
+            const object = installedObjects[index];
+            let serialized = object.pendingImageSerialized ?? sourceObjects[index] ?? null;
+            if (serialized && object?.boardObjectId
+              && String(serialized.boardObjectId ?? '') !== String(object.boardObjectId)) {
+              serializedById ??= new Map(sourceObjects.filter(record => record?.boardObjectId)
+                .map(record => [String(record.boardObjectId), record]));
+              serialized = serializedById.get(String(object.boardObjectId)) ?? null;
+            }
+            if (serialized) serializedObjectCacheRef.current.set(object, serialized);
+            interactivityBatch.push(object);
+            if (interactivityBatch.length >= 32) {
+              applyObjectInteractivityToObjects(interactivityBatch, { render: false });
+              interactivityBatch = [];
+            }
+          }
+          if (interactivityBatch.length) applyObjectInteractivityToObjects(interactivityBatch, { render: false });
+        } finally { seedSlice.reset(); }
         revisionRef.current = Number(confirmedRevision ?? 0);
-        applyObjectInteractivity();
         configureBrushAndMode();
         updateBackgroundTransform();
         canvas.requestRenderAll();
@@ -10183,7 +10229,12 @@ function BoardWorkspace({
         if (age > 90000) {
           const [remoteClientId, ...sessionParts] = sessionKey.split(':');
           const sessionId = sessionParts.join(':');
-          if (removeTransientDrawPreviewsBySession(canvas, remoteClientId, sessionId).length) {
+          if (removeRegisteredObjectsByCreationSession(
+            remoteClientId,
+            sessionId,
+            null,
+            { transientOnly: true },
+          ).length) {
             removedTransient = true;
           }
           remoteDrawSessionsRef.current.delete(sessionKey);
@@ -14567,6 +14618,7 @@ function BoardWorkspace({
       localDeletionCompositorRef.current = null;
       objectRegistryRef.current.clear();
       transientCanvasObjectsRef.current.clear();
+      pendingImageCanvasObjectsRef.current.clear();
       creationSessionRegistryRef.current.clear();
       selectionTransactionRegistryRef.current.clear();
       serializedObjectCacheRef.current = new WeakMap();

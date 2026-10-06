@@ -8,6 +8,7 @@ import {
   getReplicaVerificationView,
   applyReplicaVerificationRecords,
   getReplicaRevision as getDefaultReplicaRevision,
+  getReplicaCheckpointSource as getDefaultReplicaCheckpointSource,
   getReplicaState as getDefaultReplicaState,
   installReplicaSnapshot as installDefaultReplicaSnapshot,
 } from './browserReplicaStore.js';
@@ -63,6 +64,7 @@ export function createBrowserBoardSession({
   createStudentRuntime = createDefaultStudentRuntime,
   registerRuntime = registerDefaultBoardRuntime,
   getReplica = getDefaultReplicaState,
+  getReplicaCheckpointSource = getDefaultReplicaCheckpointSource,
   getReplicaRevision = null,
   applyReplicaCommit = applyDefaultReplicaCommit,
   installReplicaSnapshot = installDefaultReplicaSnapshot,
@@ -649,6 +651,11 @@ export function createBrowserBoardSession({
     getVerificationStats() { return verifier?.stats?.() ?? { enabled: false }; },
     getRuntime() { return runtime; },
     getNotebookVersion() { return runtime?.getNotebookVersion?.() ?? 0; },
+    getNotebookCheckpointSource() { return runtime?.getNotebookCheckpointSource?.() ?? null; },
+    getNotebookCheckpointMutableSource() {
+      if (isOwner || runtime?.getNotebookVersion?.() !== 1) return null;
+      return getReplicaCheckpointSource(safeBoardId);
+    },
     getNotebookCheckpoint() {
       if (runtime?.getNotebookCheckpoint) return runtime.getNotebookCheckpoint();
       if (!isOwner && runtime?.getNotebookVersion?.() === 1) {

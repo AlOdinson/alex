@@ -117,3 +117,25 @@ test('shared browser fixtures pass against real Node/Fabric as well',async()=>{
  const results=await runBoardStartupCases();assert.equal(results.length,7);
  for(const result of results)assert.equal(result.error,undefined,JSON.stringify(result));
 });
+
+test('initial painter does not run legacy full-scene rebuild passes after bounded hydration', async()=>{
+ const fs=await import('node:fs');
+ const board=fs.readFileSync(new URL('../src/components/Board.jsx',import.meta.url),'utf8');
+ const start=board.indexOf('async function paintInitialSnapshot');
+ const end=board.indexOf('const authoritativeSnapshotGate',start);
+ assert.ok(start>=0&&end>start);
+ const body=board.slice(start,end);
+ assert.doesNotMatch(body,/canvas\.getObjects\(\)/,'initial painter rescans the entire scene');
+ assert.doesNotMatch(body,/rebuildObjectRegistry\(\)/,'initial painter performs a second registry pass');
+ assert.doesNotMatch(body,/penTransformSpatialApiRef\.current\?\.rebuild/,'initial painter performs a third spatial pass');
+ assert.doesNotMatch(body,/\bapplyObjectInteractivity\(\)/,'initial painter performs a fourth interactivity pass');
+});
+
+test('initial object-added spatial indexing does not copy the whole canvas array per object', async()=>{
+ const fs=await import('node:fs');
+ const board=fs.readFileSync(new URL('../src/components/Board.jsx',import.meta.url),'utf8');
+ const start=board.indexOf('penTransformSpatialApiRef.current = {');
+ const end=board.indexOf('};',start)+2;
+ const body=board.slice(start,end);
+ assert.doesNotMatch(body,/addObject\(object\)[\s\S]*canvas\.getObjects\(\)/,'each object-added event copies the whole canvas array');
+});

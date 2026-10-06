@@ -75,14 +75,14 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
   authoritativeObjectStatesRef:ref(new Map()),authoritativeSelectionTransactionsRef:ref(new Map()),authoritativeBackgroundStateRef:ref({revision:0,background:'blank'}),
   remoteSelectionTransactionsRef:ref(new Map()),remoteDrawSessionsRef:ref(new Map()),remoteTransformSessionsRef:ref(new Map()),remotePreviewTokensRef:ref(new Map()),remotePreviewPendingRef:ref({records:new Map()}),remoteDeletedObjectIdsRef:ref(new Map()),
   pendingLocalObjectMutationCountsRef:ref(new Map()),pendingServerWritesRef:ref(0),pendingLocalBackgroundMutationCountRef:ref(0),rebasingPendingActionsRef:ref(false),
-  syncRequestedRef:ref(false),syncForceRef:ref(false),pencilDiagnosticsRef:ref(null),deferredTransformFlushRef:ref(null),deferredTransformEntries:new Map(),deferredTransformTimer:null,deferredTransformFlushPromise:null,penTransformSpatialApiRef:ref(null),serializedObjectCacheRef:ref(new WeakMap()),objectRegistryRef:ref(new Map()),
+  syncRequestedRef:ref(false),syncForceRef:ref(false),pencilDiagnosticsRef:ref(null),deferredTransformFlushRef:ref(null),deferredTransformEntries:new Map(),deferredTransformTimer:null,deferredTransformFlushPromise:null,penTransformSpatialApiRef:ref(null),serializedObjectCacheRef:ref(new WeakMap()),objectRegistryRef:ref(new Map()),transientCanvasObjectsRef:ref(new Set()),pendingImageCanvasObjectsRef:ref(new Set()),selectionTransactionRegistryRef:ref(new Map()),creationSessionRegistryRef:ref(new Map()),
   viewingArchiveRef:ref(false),transientStatusTimerRef:ref(null),backgroundRef:ref('blank'),
   ActiveSelection,util,NOTEBOOK_FIELDS,MEDIA_OBJECT_FIELDS,stageNotebookVisualOperations,prepareNotebookProjection,isBoardNotebook,notebookObjectIntersection,isBoardMedia,
   snapshotNotebookGesturePages,bindNotebookGestureTarget,consumeNotebookGesturePage,operationObjectIds,affectedOperationIds:operationObjectIds,applySerializedObjectPatch,applyNotebookOperation,createNotebookBoardController,createNotebookOutbox,randomToken,
   serializeObject:serialized,serializedCharSize:value=>JSON.stringify(value).length,splitDurableOperations:ops=>[ops],
   clamp:(value,min,max)=>Math.min(max,Math.max(min,value)),
-  registeredObjectsById:id=>canvas.getObjects().filter(object=>String(object.boardObjectId)===String(id)),
-  removeRegisteredObjectsById:id=>canvas.remove(...canvas.getObjects().filter(object=>String(object.boardObjectId)===String(id))),
+  registeredObjectsById:id=>[...(scope.objectRegistryRef.current.get(String(id))??[])].filter(object=>object.canvas===canvas),
+  removeRegisteredObjectsById:id=>canvas.remove(...[...(scope.objectRegistryRef.current.get(String(id))??[])].filter(object=>object.canvas===canvas)),
   deduplicateRegisteredObjectIds:()=>{},rebuildObjectRegistry:()=>{},deduplicateBoardObjects:()=>{},
   preloadSerializedImages:async()=>{},enlivenImageAwareObjects:records=>util.enlivenObjects(records),
   createPendingImagePlaceholder:()=>{throw Error('unexpected missing fixture image');},
@@ -104,6 +104,7 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
  scope.applySharpRenderingPolicy=globalFunction('applySharpRenderingPolicy',scope);
  scope.createLightweightTransformOp=globalFunction('createLightweightTransformOp',scope);
  scope.isNotebookControlledAction=globalFunction('isNotebookControlledAction',scope);
+ scope.notebookTransientCleanupCandidates=globalFunction('notebookTransientCleanupCandidates',scope);
  scope.transformOperationEntries=globalFunction('transformOperationEntries',scope);
  for(const name of ['recordAction','rememberAuthoritativeOps','sendDurableOps','sendLightweightTransforms','sendRecordUpserts','addImageFiles','replayPendingActionsLocally','ensureNotebookController','applyRemoteOps','applyAuthoritativeSnapshot','queueNotebookMutation','notebookForObject'])scope[name]=callback(name,scope);
  scope.notebookCommitBridgeRef.current=createNotebookCommitBridge({getController:()=>scope.notebookControllerRef.current,getRevision:()=>scope.revisionRef.current,setRevision:value=>scope.revisionRef.current=value,remember:scope.rememberAuthoritativeOps});
@@ -117,6 +118,18 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
  scope.commitAddedObject=globalFunction('commitAddedObject',scope);
  scope.recordForJustAddedObject=globalFunction('recordForJustAddedObject',scope);
  scope.markObject=callback('markObject',scope);
+ const registryAdd=(object)=>{
+  if(object?.transientPreview||object?.transientSelectionProxy)scope.transientCanvasObjectsRef.current.add(object);else scope.transientCanvasObjectsRef.current.delete(object);
+  if(object?.pendingImage&&object?.pendingImageSerialized)scope.pendingImageCanvasObjectsRef.current.add(object);else scope.pendingImageCanvasObjectsRef.current.delete(object);
+  if(object?.boardObjectId){const key=String(object.boardObjectId),bucket=scope.objectRegistryRef.current.get(key)??new Set();bucket.add(object);scope.objectRegistryRef.current.set(key,bucket);}
+  if(object?.selectionTransactionId){const key=String(object.selectionTransactionId),bucket=scope.selectionTransactionRegistryRef.current.get(key)??new Set();bucket.add(object);scope.selectionTransactionRegistryRef.current.set(key,bucket);}
+ };
+ const registryRemove=(object)=>{
+  scope.transientCanvasObjectsRef.current.delete(object);scope.pendingImageCanvasObjectsRef.current.delete(object);
+  if(object?.boardObjectId){const key=String(object.boardObjectId),bucket=scope.objectRegistryRef.current.get(key);bucket?.delete(object);if(bucket&&!bucket.size)scope.objectRegistryRef.current.delete(key);}
+  if(object?.selectionTransactionId){const key=String(object.selectionTransactionId),bucket=scope.selectionTransactionRegistryRef.current.get(key);bucket?.delete(object);if(bucket&&!bucket.size)scope.selectionTransactionRegistryRef.current.delete(key);}
+ };
+ canvas.getObjects().forEach(registryAdd);canvas.on('object:added',({target})=>registryAdd(target));canvas.on('object:removed',({target})=>registryRemove(target));
  const commit=onCommit(scope);
  const realtime=createBrowserAuthorityRealtimeCore({clientId,permission:'owner',session:{whenRuntimeReady:async()=>{},getRevision:()=>authority.getRevision(),sendOps:async(ops,{actionId})=>{
   await beforeCommit({ops,actionId,clientId});const result=await authority.commitAction({ops,actionId,clientId,baseRevision:authority.getRevision()});await deliver(result,clientId);return result;
