@@ -62,6 +62,19 @@ RPC in an unchanged delegating adapter; it fails on the exact base as well. No t
 is disabled. Existing large-bundle/dynamic-import warnings remain. A local Chromium
 CLI probe did not finish in this environment; no local browser success is claimed.
 
+## Native pixel oracle investigation
+
+The first WebKit gate failed at 20 one-unit color channels while serialized scenes
+were identical. Diagnostics proved the CANONICAL first render changed on its next
+render; the candidate did not change. Further canonical-to-canonical and
+canonical-to-candidate controls were both exactly equal. Failure artifacts are
+retained. No product color, geometry, image quality or tolerance was changed.
+The oracle now verifies consecutive stable canonical frames, then compares the
+candidate's FIRST frame to that reference with zero tolerance and asserts equal
+serialized scene properties. This changes the reference preparation, not the
+candidate's rendering or the equality threshold. Chromium passed the original
+startup gate; final native results still must be read for the delivered commit.
+
 ## Explicit limitations and decisions
 
 - Cold authority/session checkpoint cloning, immutable index construction, initial

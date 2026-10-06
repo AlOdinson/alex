@@ -67,27 +67,23 @@ export async function runBoardStartupCases() {
   }finally{await c.dispose();}
  });
  await run('background overlay clip and object pixels match canonical',async()=>{
-  const a=make(),b=make();let rendersA=0,rendersB=0;a.on('after:render',()=>rendersA++);b.on('after:render',()=>rendersB++);const source={objects:[rect('one'),{...rect('two'),left:16,fill:'rgba(20,80,90,.5)'}],
+  const a=make(),b=make();let candidateRenders=0;b.on('after:render',()=>candidateRenders++);
+  const source={objects:[rect('one'),{...rect('two'),left:16,fill:'rgba(20,80,90,.5)'}],
    background:'rgb(245,245,245)',overlay:'rgba(160,30,20,.1)',clipPath:{type:'Rect',left:5,top:5,width:100,height:100,fill:'black'}};
-  try{await a.loadFromJSON(source);await loadBoardCanvasJson(b,source);a.renderAll();b.renderAll();const x=pixels(a),y=pixels(b);let mismatch=0;
-   for(let i=0;i<x.length;i++)if(x[i]!==y[i])mismatch++;
-   if(mismatch){
-    const differences=[];let maxDelta=0;for(let i=0;i<x.length;i++)if(x[i]!==y[i]){maxDelta=Math.max(maxDelta,Math.abs(x[i]-y[i]));if(differences.length<16)differences.push({x:Math.floor(i/4)%a.width,y:Math.floor(i/4/a.width),channel:i%4,a:x[i],b:y[i]});}
-    const diagnostics={mismatch,maxDelta,differences,rendersA,rendersB,sameSerialization:same(a.toObject(),b.toObject()),aPng:a.lowerCanvasEl.toDataURL(),bPng:b.lowerCanvasEl.toDataURL()};
-    a.renderAll();b.renderAll();const x2=pixels(a),y2=pixels(b);diagnostics.secondRenderMismatch=Array.from(x2).reduce((n,v,i)=>n+(v!==y2[i]),0);
-    const countDiff=(u,v)=>Array.from(u).reduce((n,value,i)=>n+(value!==v[i]),0);
-    diagnostics.canonicalRepeatDifference=countDiff(x,x2);diagnostics.candidateRepeatDifference=countDiff(y,y2);
-    diagnostics.controls=[];
-    for(const frequent of [false,true]){
-     const create=()=>{const el=a.lowerCanvasEl.ownerDocument.createElement('canvas');if(frequent)el.getContext('2d',{willReadFrequently:true});return new StaticCanvas(el,{width:180,height:150,enableRetinaScaling:false,renderOnAddRemove:true});};
-     const c=create(),d=create(),e=create();
-     try{await c.loadFromJSON(source);await d.loadFromJSON(source);await loadBoardCanvasJson(e,source);c.renderAll();d.renderAll();e.renderAll();const pc=pixels(c),pd=pixels(d),pe=pixels(e);
-      diagnostics.controls.push({frequent,canonicalPair:countDiff(pc,pd),canonicalToCandidate:countDiff(pd,pe),originalToCanonical:countDiff(x,pc),originalCandidateToCanonical:countDiff(y,pc)});
-     }finally{await c.dispose();await d.dispose();await e.dispose();}
-    }
-
-    throw Object.assign(Error(`pixel mismatch ${mismatch}`),{diagnostics});
-   }return{pixelMismatch:mismatch};
+  const diff=(x,y)=>Array.from(x).reduce((n,value,i)=>n+(value!==y[i]),0);
+  try{
+   await a.loadFromJSON(source);a.renderAll();const canonicalFirst=pixels(a);
+   // Native WebKit's first canonical frame itself differed from its subsequent
+   // frames by 20 one-unit channels; candidate and further canonical loads did
+   // not. Stabilize ONLY the reference and assert that it actually is stable.
+   // Candidate is still compared on its FIRST frame, with zero pixel tolerance.
+   a.renderAll();const canonical=pixels(a);a.renderAll();const stable=pixels(a);
+   const referenceStability=diff(canonical,stable);requireValue(referenceStability===0,`unstable canonical reference: ${referenceStability}`);
+   await loadBoardCanvasJson(b,source);b.renderAll();const actual=pixels(b),mismatch=diff(stable,actual);
+   requireValue(candidateRenders===1,`candidate was pre-rendered ${candidateRenders} times`);
+   requireValue(same(a.toObject(),b.toObject()),'scene properties differ from canonical');
+   requireValue(mismatch===0,`pixel mismatch ${mismatch}`);
+   return{pixelMismatch:mismatch,canonicalFirstFrameChange:diff(canonicalFirst,canonical),referenceStability,candidateRenders};
   }finally{await a.dispose();await b.dispose();}
  });
  await run('old notebook hidden pages remain serialized',async()=>{
