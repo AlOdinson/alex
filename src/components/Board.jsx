@@ -1,3 +1,4 @@
+import { loadBoardCanvasJson, cancelBoardCanvasLoad } from '../lib/boardLoadPreparation.js';
 import { queueNotebookWork } from '../lib/notebookWorkScheduler.js';
 import { notebookEraserCandidates } from '../lib/notebookChildIndex.js';
 import { readSnapshotRecord } from '../lib/indexedBoardModel.js';
@@ -1365,32 +1366,10 @@ function serializedImagePayload(serialized) {
 }
 
 async function loadCanvasJsonProgressively(canvas, canvasJson) {
-  const source = canvasJson && typeof canvasJson === 'object'
-    ? canvasJson
-    : { objects: [] };
-  const sourceObjects = Array.isArray(source.objects) ? source.objects : [];
-  const pendingImages = [];
-  const immediateObjects = [];
-
-  sourceObjects.forEach((serialized, zIndex) => {
-    const imagePayload = serializedImagePayload(serialized);
-    if (imagePayload) pendingImages.push({ serialized: imagePayload, zIndex });
-    else immediateObjects.push(serialized);
+  return loadBoardCanvasJson(canvas, canvasJson, {
+    imagePayload: serializedImagePayload,
+    createPlaceholder: createPendingImagePlaceholder,
   });
-
-  await canvas.loadFromJSON({ ...source, objects: immediateObjects });
-
-  // Do not make the whole board wait for a slow image host. Every picture gets a
-  // correctly positioned placeholder and then hydrates independently in the background.
-  pendingImages.forEach(({ serialized, zIndex }) => {
-    const placeholder = createPendingImagePlaceholder(serialized);
-    canvas.add(placeholder);
-    if (typeof canvas.moveObjectTo === 'function') {
-      canvas.moveObjectTo(placeholder, clamp(zIndex, 0, canvas.getObjects().length - 1));
-    }
-  });
-
-  return pendingImages.length;
 }
 
 function touchMetrics(touches, element) {
@@ -1900,6 +1879,7 @@ function BoardWorkspace({
   const mobileTextEditorRef = useRef(null);
   const objectEraserPointerRef = useRef(null);
   const objectRegistryRef = useRef(new Map());
+  const transientCanvasObjectsRef = useRef(new Set());
   const creationSessionRegistryRef = useRef(new Map());
   const selectionTransactionRegistryRef = useRef(new Map());
   const objectEraserRenderFrameRef = useRef(null);
@@ -2338,6 +2318,8 @@ function BoardWorkspace({
 
   const registerCanvasObject = useCallback((object) => {
     applySharpRenderingPolicy(object);
+    if (object?.transientPreview || object?.transientSelectionProxy) transientCanvasObjectsRef.current.add(object);
+    else transientCanvasObjectsRef.current.delete(object);
     const selectionTransactionId = String(object?.selectionTransactionId ?? '');
     if (selectionTransactionId) {
       const transactionBucket = selectionTransactionRegistryRef.current.get(selectionTransactionId)
@@ -2363,6 +2345,7 @@ function BoardWorkspace({
   }, []);
 
   const unregisterCanvasObject = useCallback((object) => {
+    transientCanvasObjectsRef.current.delete(object);
     const selectionTransactionId = String(object?.selectionTransactionId ?? '');
     if (selectionTransactionId) {
       const transactionBucket = selectionTransactionRegistryRef.current.get(selectionTransactionId);
@@ -2391,6 +2374,7 @@ function BoardWorkspace({
 
   const rebuildObjectRegistry = useCallback(() => {
     const canvas = fabricCanvasRef.current;
+    transientCanvasObjectsRef.current.clear();
     objectRegistryRef.current = new Map();
     creationSessionRegistryRef.current = new Map();
     selectionTransactionRegistryRef.current = new Map();
@@ -9547,6 +9531,7 @@ function BoardWorkspace({
       applyingRemoteRef.current = true;
       try {
         await loadCanvasJsonProgressively(canvas, snapshot.canvas);
+        if (disposed || canvas !== fabricCanvasRef.current) return;
         reconcileBoardScreenShare();
         const serializedById = new Map((snapshot.canvas.objects ?? [])
           .filter((object) => object?.boardObjectId)
@@ -10045,7 +10030,10 @@ function BoardWorkspace({
           expiredLockIds.flatMap((objectId) => registeredObjectsById(objectId)),
         );
       }
-      setRemoteCursors((current) => current.filter((cursor) => now - Number(cursor.receivedAt ?? 0) < 12000));
+      setRemoteCursors((current) => {
+        const next = current.filter((cursor) => now - Number(cursor.receivedAt ?? 0) < 12000);
+        return next.length === current.length ? current : next;
+      });
       for (const [sessionKey, session] of remoteTransformSessionsRef.current) {
         if (now - Number(session.receivedAt ?? 0) > 15000) {
           const versionedIds = (session.objectIds ?? []).filter((objectId) => (
@@ -10126,7 +10114,14 @@ function BoardWorkspace({
           remoteDrawSessionsRef.current.delete(sessionKey);
         }
       }
-      for (const object of [...canvas.getObjects()]) {
+      // Event-maintained membership: work scales with active/recent previews,
+      // not all the permanent strokes accumulated over the lesson. Finalized
+      // objects with flags changed in place are retired at most once here.
+      for (const object of [...transientCanvasObjectsRef.current]) {
+        if (object.canvas !== canvas || (!object.transientPreview && !object.transientSelectionProxy)) {
+          transientCanvasObjectsRef.current.delete(object);
+          continue;
+        }
         const previewAge = now - Number(object.previewReceivedAt ?? now);
         const staleAwaitingCommitPreview = object.transientPreview
           && object.transientAwaitingCommit
@@ -14308,6 +14303,7 @@ function BoardWorkspace({
 
     return () => {
       disposed = true;
+      cancelBoardCanvasLoad(canvas);
       studentDocumentReader.dispose();
       if (studentDocumentReaderRef.current === studentDocumentReader) studentDocumentReaderRef.current = null;
       authoritativeSnapshotGate.close();
@@ -14495,6 +14491,7 @@ function BoardWorkspace({
       canvas.off('before:render', drawBoardBackgroundOnCanvas);
       localDeletionCompositorRef.current = null;
       objectRegistryRef.current.clear();
+      transientCanvasObjectsRef.current.clear();
       creationSessionRegistryRef.current.clear();
       selectionTransactionRegistryRef.current.clear();
       serializedObjectCacheRef.current = new WeakMap();

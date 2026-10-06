@@ -132,3 +132,11 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
 
 // Other regression harnesses use the actual production function bodies as well.
 export { globalFunction as boardFunction };
+
+export function boardInterval(name, scope) {
+ const node=nodes.find(node=>node.type==='VariableDeclarator'&&node.id?.name===name
+   &&node.init?.callee?.property?.name==='setInterval');
+ const expression=node?.init?.arguments?.[0];
+ if(!expression)throw new Error(`Missing Board interval ${name}`);
+ return new Function('scope',`with(scope){return (${source.slice(expression.start,expression.end)});}`)(scope);
+}

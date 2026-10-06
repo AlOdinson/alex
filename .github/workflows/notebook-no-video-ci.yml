@@ -28,6 +28,7 @@ jobs:
       - run: node --test scripts/test-notebook-eraser-index.mjs scripts/test-notebook-split-worker.mjs scripts/test-notebook-split-safety.mjs scripts/test-notebook-split-geometry-equivalence.mjs scripts/test-notebook-split-thread.mjs scripts/test-notebook-worker-raster-tiles.mjs
       - run: node --test scripts/test-notebook-cooperative-recovery.mjs
       - run: node --test scripts/test-notebook-zoom-cache.mjs scripts/test-notebook-zoom-pixels.mjs
+      - run: node --test scripts/test-board-startup-preparation.mjs scripts/test-board-transient-maintenance.mjs
       - run: node scripts/benchmark-notebook-page-model.mjs
       - run: node --test scripts/test-bounded*.mjs
       - run: node scripts/benchmark-notebook-indexed-model.mjs
@@ -68,6 +69,8 @@ jobs:
           node --test scripts/test-notebook-split-worker-build.mjs
       - name: Vector split geometry runs outside the browser main thread
         run: node scripts/test-notebook-split-worker-browser.mjs
+      - name: Bounded scene startup, transient maintenance and first real stroke
+        run: node scripts/test-board-startup-browser.mjs
       - name: Notebook viewport quality, memory lifetime and real wheel input
         run: node scripts/test-notebook-zoom-browser.mjs
       - name: Cooperative recovery, pending input, acknowledgement bursts and real UI history
@@ -139,6 +142,7 @@ jobs:
             notebook-preparation-results/
             notebook-recovery-results/
             notebook-zoom-results/
+            board-startup-results/
             notebook-eraser-results/
             notebook-split-worker-results/
           retention-days: 14
