@@ -1,0 +1,30 @@
+name: Pinned notebook checkpoint continuation source
+on:
+  push:
+    branches: ['delivery/notebook-checkpoint-20261006']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: c06bb415f71c27c0a508003978643cf74cff362c
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Export exact source only
+        run: |
+          test "$(git rev-parse HEAD)" = c06bb415f71c27c0a508003978643cf74cff362c
+          mkdir -p /tmp/notebook-checkpoint-source
+          git branch checkpoint-source HEAD
+          git bundle create /tmp/notebook-checkpoint-source/source.bundle checkpoint-source
+          git rev-parse HEAD HEAD^{tree} > /tmp/notebook-checkpoint-source/source-identity.txt
+          cd /tmp/notebook-checkpoint-source
+          sha256sum source.bundle > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notebook-checkpoint-source-c06bb415
+          path: /tmp/notebook-checkpoint-source/
+          retention-days: 7
