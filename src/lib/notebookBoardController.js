@@ -2,6 +2,7 @@ import { changedSnapshotObjectIds, readSnapshotRecord } from './indexedBoardMode
 import { createNotebookSession } from './notebookSession.js';
 import { operationObjectIds } from './operationProtocol.js';
 import { randomToken } from './ids.js';
+import { createNotebookWorkSlice, notebookWorkCancelled } from './notebookWorkScheduler.js';
 
 const shallowEqual = (a, b) => {
   if (a === b) return true;
@@ -94,6 +95,27 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
     operationObjectIds(ops).forEach(id => dirty.add(id));
     for (const op of ops ?? []) if (op.reorder || op.restore) operationObjectIds([op]).forEach(id => reorderIds.add(id));
   }
+  async function restoreInitialPendingActions(inputs, { signal, isCurrent = () => true } = {}) {
+    if (!Array.isArray(inputs)) throw new TypeError('Notebook restored actions must be an array');
+    if (!inputs.length) return whenPainted();
+    if (session.pendingCount() || pendingIds.size) throw new Error('Notebook controller initial restore requires an empty controller');
+    const staged = new Map(), slice = createNotebookWorkSlice();
+    const check = () => {
+      if (signal?.aborted) throw signal.reason ?? notebookWorkCancelled();
+      if (!isCurrent()) throw notebookWorkCancelled();
+    };
+    try {
+      for (const action of inputs) {
+        const pause = slice.beforeWork(); if (pause) await pause;
+        check(); staged.set(String(action.actionId), operationObjectIds(action.ops));
+      }
+      await session.restorePendingActions(inputs, { signal, isCurrent });
+      check();
+      for (const [id, ids] of staged) pendingIds.set(id, ids);
+      await whenPainted();
+      return session.getState();
+    } finally { slice.reset(); }
+  }
   function enqueue(input) {
     const action = input?.type ? { ops: [input] } : input;
     const actionId = String(action?.actionId || randomToken(24));
@@ -112,6 +134,7 @@ export function createNotebookBoardController({ confirmedState, paint, onError =
   }
   return {
     enqueue,
+    restoreInitialPendingActions,
     ack(result, { paint: project = true } = {}) {
       let accepted;
       mutedIds = project ? null : operationObjectIds(result.ops ?? result.appliedOps);

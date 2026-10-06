@@ -1,5 +1,5 @@
 import { notebookCheckpoint as checkpoint } from './notebookCheckpoint.js';
-import { createNotebookWorkSlice } from './notebookWorkScheduler.js';
+import { createNotebookWorkSlice, notebookWorkCancelled } from './notebookWorkScheduler.js';
 import { applyBoardTombstoneOperations } from './boardTombstoneIndex.js';
 import { createIndexedBoardModel, readSnapshotRecord } from './indexedBoardModel.js';
 import { prepareIndexedNotebookAction, applyIndexedNotebookOps } from './notebookIndexedTransaction.js';
@@ -77,7 +77,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
   let confirmed = checkpoint(confirmedState), optimistic = confirmed;
   let pending = [], bytes = 0, active = 0, generation = 0, paused = null, disposed = false, scheduled = false;
   let saveTail = Promise.resolve(), storageFailure = null;
-  let recovery = null, recoveryVersion = 0, recoveryError = null;
+  let recovery = null, recoveryVersion = 0, recoveryError = null, initialRestore = false;
   const byId = new Map(), commits = new Map(), flushWaiters = new Set(), cleanup = new Map(), settledIds = new Set();
   // Realtime onCommit and publish() can acknowledge the same commit. Remember a
   // bounded recent window so a safe duplicate cannot rebase every pending stroke.
@@ -108,7 +108,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
   }
   function settleFlush() {
     const failure = flushFailure();
-    if (failure || !recovery && !pending.length && !cleanup.size) {
+    if (failure || !initialRestore && !recovery && !pending.length && !cleanup.size) {
       for (const waiter of flushWaiters) failure ? waiter.reject(failure) : waiter.resolve(view(confirmed));
       flushWaiters.clear();
     }
@@ -269,7 +269,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     }, error => { entry.saving = false; markFailure(entry, error, 'storage'); });
   }
   function pump() {
-    if (disposed || paused || recovery || recoveryError) { settleFlush(); return; }
+    if (disposed || paused || recovery || recoveryError || initialRestore) { settleFlush(); return; }
     for (const entry of pending) {
       if (active >= maxInFlight) break;
       if (entry.status === 'sending' || entry.status === 'acknowledged') continue;
@@ -295,8 +295,9 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     scheduled = true;
     queueMicrotask(() => { scheduled = false; pump(); });
   }
-  function enqueue(input, restoring = false) {
+  function enqueue(input, restoring = false, quiet = false) {
     assertOpen();
+    if (!restoring && initialRestore) throw errorWith('Notebook initial restore in progress', 'notebook_restore_in_progress');
     const action = normalize(input), existing = byId.get(action.actionId);
     if (existing) {
       if (!equivalent(existing.action, action)) throw errorWith('Notebook action identity reused with different content', 'notebook_identity_collision');
@@ -313,7 +314,8 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
       durable: entry.durable.promise, settled: entry.settled.promise });
     pending.push(entry); byId.set(action.actionId, entry); bytes += size; optimistic = next;
     if (restoring) entry.durable.resolve(); else persist(entry);
-    notify('enqueue', action.actionId); schedule(); return entry.handle;
+    if (!quiet) { notify('enqueue', action.actionId); schedule(); }
+    return entry.handle;
   }
   function advanceNextCommit() {
     const result = commits.get(confirmed.revision + 1);
@@ -411,8 +413,44 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
     }
     rebuild(); notify('resume'); schedule();
   }
+  async function restorePendingActions(inputs, { signal, isCurrent = () => true } = {}) {
+    assertOpen();
+    if (!Array.isArray(inputs)) throw new TypeError('Notebook restored actions must be an array');
+    if (!inputs.length) return view(optimistic);
+    if (initialRestore || pending.length || recovery || active) {
+      throw errorWith('Notebook initial restore requires an idle empty session', 'notebook_restore_busy');
+    }
+    const check = () => {
+      if (signal?.aborted) throw signal.reason ?? notebookWorkCancelled();
+      if (!isCurrent()) throw notebookWorkCancelled();
+    };
+    const slice = createNotebookWorkSlice(), restored = [];
+    initialRestore = true;
+    try {
+      for (const input of inputs) {
+        const pause = slice.beforeWork(); if (pause) await pause;
+        check();
+        const before = pending.length;
+        const handle = enqueue(input, true, true);
+        if (pending.length > before) restored.push(byId.get(handle.actionId));
+      }
+      check();
+      notify('restore'); schedule();
+      return view(optimistic);
+    } catch (error) {
+      const restoredSet = new Set(restored.filter(Boolean));
+      for (const entry of restoredSet) {
+        byId.delete(entry.action.actionId); bytes -= entry.bytes;
+        entry.settled.reject(error);
+      }
+      pending = pending.filter(entry => !restoredSet.has(entry));
+      optimistic = confirmed;
+      throw error;
+    } finally { initialRestore = false; slice.reset(); }
+  }
+
   function flush() {
-    if (!pending.length && !cleanup.size && !disposed && !recovery && !recoveryError) return Promise.resolve(view(confirmed));
+    if (!initialRestore && !pending.length && !cleanup.size && !disposed && !recovery && !recoveryError) return Promise.resolve(view(confirmed));
     const failure = flushFailure(); if (failure) return Promise.reject(failure);
     const waiter = deferred(); flushWaiters.add(waiter); schedule(); return waiter.promise;
   }
@@ -427,7 +465,7 @@ export function createNotebookSession({ confirmedState, publish, onChange = () =
   }
   try { for (const input of initialPendingActions) enqueue(input, true); }
   catch (error) { dispose(); throw error; }
-  return { enqueue: input => enqueue(input), ack, reject, rebase, pause, resume, flush, dispose, exportPending,
+  return { enqueue: input => enqueue(input), restorePendingActions, ack, reject, rebase, pause, resume, flush, dispose, exportPending,
     whenReconciled, isRecovering: () => Boolean(recovery),
     pendingCount: () => pending.length, pendingBytes: () => bytes, getState: () => view(optimistic),
     getConfirmedState: () => view(confirmed) };

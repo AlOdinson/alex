@@ -5489,7 +5489,7 @@ function BoardWorkspace({
         if (!checkpoint) throw new Error('Подтверждённое состояние блокнота ещё не загружено');
       }
       const controller = createNotebookBoardController({ confirmedState: checkpoint,
-        clientId: clientIdRef.current, outbox, initialPendingActions, maxInFlight: 1,
+        clientId: clientIdRef.current, outbox, initialPendingActions: [], maxInFlight: 1,
         canEdit: () => current() && canEditRef.current && realtime.getNotebookVersion?.() === 1,
         publish: async action => {
           if (!current()) throw new Error('Доска закрыта; неподтверждённые действия сохранены');
@@ -5524,6 +5524,30 @@ function BoardWorkspace({
         },
         onError: error => { if (current()) { setSaveStatus(error.message); setSyncTone('error'); } },
       });
+      try {
+        await controller.restoreInitialPendingActions(initialPendingActions, { isCurrent: current });
+        if (!current()) { controller.dispose(); return null; }
+        // Durable restore can span browser tasks. Catch revisions that arrived
+        // while the controller was still private, then close the final await
+        // handoff with the same synchronous compatibility fence used above.
+        let runtimeRevision = realtime.getRevision?.();
+        if (Number.isSafeInteger(runtimeRevision) && runtimeRevision !== controller.getConfirmedState().revision) {
+          const latestCheckpoint = realtime.getNotebookCheckpoint?.();
+          if (!latestCheckpoint) throw new Error('Подтверждённое состояние блокнота ещё не загружено');
+          await controller.rebaseAsync(latestCheckpoint);
+          if (!current()) { controller.dispose(); return null; }
+          runtimeRevision = realtime.getRevision?.();
+          if (Number.isSafeInteger(runtimeRevision) && runtimeRevision !== controller.getConfirmedState().revision) {
+            const handoffCheckpoint = realtime.getNotebookCheckpoint?.();
+            if (!handoffCheckpoint) throw new Error('Подтверждённое состояние блокнота ещё не загружено');
+            controller.rebase(handoffCheckpoint);
+          }
+        }
+      } catch (error) {
+        controller.dispose();
+        if (!current()) return null;
+        throw error;
+      }
       if (!current()) { controller.dispose(); return null; }
       notebookControllerRef.current = controller;
       return controller;

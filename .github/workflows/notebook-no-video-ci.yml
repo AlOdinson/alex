@@ -29,6 +29,7 @@ jobs:
       - run: node --test scripts/test-notebook-cooperative-recovery.mjs
       - run: node --test scripts/test-notebook-zoom-cache.mjs scripts/test-notebook-zoom-pixels.mjs
       - run: node --test scripts/test-notebook-checkpoint-preparation.mjs
+      - run: node --test scripts/test-notebook-initial-pending-preparation.mjs scripts/test-board-initial-pending-restore.mjs
       - run: node --test scripts/test-board-startup-preparation.mjs scripts/test-board-transient-maintenance.mjs scripts/test-board-startup-recovery-boundary.mjs scripts/test-board-startup-edit-readiness.mjs
       - run: node scripts/benchmark-notebook-page-model.mjs
       - run: node --test scripts/test-bounded*.mjs

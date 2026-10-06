@@ -49,16 +49,40 @@ export async function prepareNotebookCheckpoint(source, options) {
 `;
   await route.fulfill({response,body,contentType:'text/javascript'});
  });
+ await page.route(/\/src\/lib\/notebookBoardController\.js(?:\?.*)?$/,async route=>{
+  const response=await route.fetch();let body=await response.text();
+  assert.ok(body.includes('export function createNotebookBoardController('),'controller observation anchor missing');
+  body=body.replace('export function createNotebookBoardController(','export function startupOriginalNotebookBoardController(')+`
+export function createNotebookBoardController(options) {
+ const controller=startupOriginalNotebookBoardController(options);
+ const restore=controller.restoreInitialPendingActions?.bind(controller);
+ if(restore) controller.restoreInitialPendingActions=async(inputs,restoreOptions)=>{
+  const probe={count:inputs?.length??0,complete:false,taskBeforeComplete:false,pendingAtTask:null};
+  (globalThis.__pendingRestoreProbes??=[]).push(probe);
+  setTimeout(()=>{probe.taskBeforeComplete=!probe.complete;probe.pendingAtTask=controller.pendingCount();},0);
+  const result=await restore(inputs,restoreOptions);probe.complete=true;probe.pendingAfter=controller.pendingCount();return result;
+ };
+ return controller;
+}
+`;
+  await route.fulfill({response,body,contentType:'text/javascript'});
+ });
  await page.addInitScript(()=>{
   const original=window.setInterval;window.__startupMaintenance=[];
   window.setInterval=function(work,ms,...args){if(ms===1500&&typeof work==='function'&&work.toString().includes('staleDrawPreviewIds'))window.__startupMaintenance.push(work);return original.call(this,work,ms,...args);};
  });
  const board=await page.evaluate(async()=>{
   const {createBoard}=await import('/alex/src/lib/boardRepository.js');
-  const {saveAuthoritySnapshot}=await import('/alex/src/lib/browserAuthorityStore.js');
+  const {saveAuthoritySnapshot,createNotebookOutbox}=await import('/alex/src/lib/browserAuthorityStore.js');
   const {makeAuditSnapshot}=await import('/alex/scripts/notebook-audit-metrics.js');
   const board=await createBoard('Cold startup regression');
-  await saveAuthoritySnapshot(board.boardId,makeAuditSnapshot({boardObjects:1200,pages:6,pageStrokes:100,points:6}),0);return board;
+  await saveAuthoritySnapshot(board.boardId,makeAuditSnapshot({boardObjects:1200,pages:6,pageStrokes:100,points:6}),0);
+  const clientId='startup-pending-client';sessionStorage.setItem(`alex:notebook-actor:v1:${board.boardId}`,clientId);
+  const outbox=createNotebookOutbox({boardId:board.boardId,clientId});
+  for(let i=0;i<96;i++)await outbox.save({actionId:`startup-pending-${i}`,clientId,baseRevision:0,ops:[{
+   type:'notebook',version:1,id:'audit-notebook',pageNumber:1,changes:[{type:'insert',ifAbsent:true,object:{type:'Rect',boardObjectId:`startup-pending-child-${i}`,left:-180+(i%16)*4,top:-180+Math.floor(i/16)*4,width:2,height:2,fill:'black'}}]
+  }]});
+  return board;
  });
  const url=`${base}board/${board.boardId}?key=${board.ownerKey}`;
  await page.goto(url);await page.waitForFunction(notebookAuditEntryState,undefined,{timeout:90000});
@@ -97,9 +121,14 @@ export async function prepareNotebookCheckpoint(source, options) {
  report.checkpointPreparation=await page.evaluate(()=>globalThis.__checkpointPreparationProbes);
  assert.ok(report.checkpointPreparation?.some(p=>p.complete&&p.taskBeforeComplete&&p.takeOwnership),
   'first real stroke did not use bounded, owned checkpoint preparation');
+ report.pendingRestore=await page.evaluate(()=>globalThis.__pendingRestoreProbes);
+ const pendingProbe=report.pendingRestore?.find(p=>p.count===96);
+ assert.ok(pendingProbe?.complete&&pendingProbe.taskBeforeComplete,
+  `cold outbox restore did not admit a task: ${JSON.stringify(report.pendingRestore)}`);
+ assert.ok((pendingProbe.pendingAtTask??96)<96,'cold outbox restore completed every durable action before the task boundary');
  await page.reload();await page.waitForFunction(()=>globalThis.__startupCanvas?._objects.find(o=>o.boardObjectId==='audit-notebook')?._objects.length===101,undefined,{timeout:90000});
  report.firstStroke={childrenAfterReload:101,retained:true};
  assert.deepEqual(report.errors,[]);await page.screenshot({path:`${output}/${name}-loaded.png`});
- console.log(`${name}: 7 startup cases, real 1201-object lesson load, maintenance, bounded checkpoint preparation, first stroke and reload passed`);
+ console.log(`${name}: 7 startup cases, real 1201-object lesson load, maintenance, bounded checkpoint + 96-action outbox restore, first stroke and reload passed`);
 }catch(error){report.failure=error.stack??error.message;try{report.uiText=await page?.locator('body').innerText();await page?.screenshot({path:`${output}/${name}-failure.png`});}catch{}throw error;}
 finally{await writeFile(`${output}/${name}.json`,JSON.stringify(report,null,2));await browser?.close();server.kill();}
