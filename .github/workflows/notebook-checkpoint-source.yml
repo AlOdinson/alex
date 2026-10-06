@@ -19,16 +19,19 @@ jobs:
           import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
           repo='AlOdinson/alex'
           base='c06bb415f71c27c0a508003978643cf74cff362c'
-          expected='ff7aae02e2af78df88aea4f2ee96ea2077476d29'
+          expected='b7e7cf2989a6018c0779a343748f95963016acb1'
           assert os.environ['GITHUB_REPOSITORY']==repo
           assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-checkpoint-20261006'
           packed=base64.b64decode(pathlib.Path('.delivery/notebook-checkpoint.patch.xz.b64').read_text(),validate=True)
           assert hashlib.sha256(packed).hexdigest()=='27633af0f4189b07c57cb53aa7220a365d880d6d674092d1bdb491e840747b5a'
           patch=pathlib.Path('/tmp/notebook-checkpoint.patch');patch.write_bytes(lzma.decompress(packed))
+          fix=pathlib.Path('/tmp/notebook-checkpoint-compat.patch');fix.write_bytes(pathlib.Path('.delivery/notebook-checkpoint-compat.patch').read_bytes())
+          assert hashlib.sha256(fix.read_bytes()).hexdigest()=='2becd91b09c49057352b365826f6f9425c10c6d653df19ff508eb01f37d1b3bb'
           def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
           subprocess.run(['git','checkout','--detach',base],check=True)
-          subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
-          subprocess.run(['git','apply','--index',str(patch)],check=True)
+          for item in (patch,fix):
+              subprocess.run(['git','apply','--check','--index',str(item)],check=True)
+              subprocess.run(['git','apply','--index',str(item)],check=True)
           assert git('write-tree')==expected
           allowed={'.github/workflows/notebook-no-video-ci.yml','docs/performance/notebook-checkpoint-20261006.md','scripts/notebook-ui-node-harness.mjs','scripts/test-board-startup-browser.mjs','scripts/test-notebook-checkpoint-preparation.mjs','src/components/Board.jsx','src/lib/boardTombstoneIndex.js','src/lib/indexedBoardModel.js','src/lib/notebookCheckpoint.js','src/lib/notebookRecords.js','src/lib/notebookSession.js'}
           paths=git('diff','--cached','--name-only').splitlines();assert set(paths)==allowed and len(paths)==11
@@ -40,6 +43,7 @@ jobs:
               assert result['sha']==git('hash-object',name)
               rows.append({'path':name,'mode':'100644','type':'blob','sha':result['sha']})
           pathlib.Path('/tmp/checkpoint-tree.json').write_text(json.dumps(rows,indent=2))
+          patch.write_bytes(subprocess.check_output(['git','diff','--cached','--binary',base]))
           print('VERIFIED_SOURCE_TREE='+expected)
           print('Immutable source blobs only; no product refs, main, deployments or user-data writes.')
           PY
