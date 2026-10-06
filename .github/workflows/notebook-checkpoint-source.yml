@@ -1,30 +1,52 @@
-name: Pinned notebook checkpoint continuation source
+name: Stage exact cold checkpoint source
 on:
   push:
     branches: ['delivery/notebook-checkpoint-20261006']
 permissions:
-  contents: read
+  contents: write
 jobs:
-  source:
+  stage:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: c06bb415f71c27c0a508003978643cf74cff362c
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Export exact source only
+        with: {persist-credentials: false, fetch-depth: 0}
+      - name: Verify tested source and upload immutable blobs only
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test "$(git rev-parse HEAD)" = c06bb415f71c27c0a508003978643cf74cff362c
-          mkdir -p /tmp/notebook-checkpoint-source
-          git branch checkpoint-source HEAD
-          git bundle create /tmp/notebook-checkpoint-source/source.bundle checkpoint-source
-          git rev-parse HEAD HEAD^{tree} > /tmp/notebook-checkpoint-source/source-identity.txt
-          cd /tmp/notebook-checkpoint-source
-          sha256sum source.bundle > SHA256SUMS
+          python3 - <<'PY'
+          import base64, hashlib, json, lzma, os, pathlib, subprocess, urllib.request
+          repo='AlOdinson/alex'
+          base='c06bb415f71c27c0a508003978643cf74cff362c'
+          expected='ff7aae02e2af78df88aea4f2ee96ea2077476d29'
+          assert os.environ['GITHUB_REPOSITORY']==repo
+          assert os.environ['GITHUB_REF']=='refs/heads/delivery/notebook-checkpoint-20261006'
+          packed=base64.b64decode(pathlib.Path('.delivery/notebook-checkpoint.patch.xz.b64').read_text(),validate=True)
+          assert hashlib.sha256(packed).hexdigest()=='27633af0f4189b07c57cb53aa7220a365d880d6d674092d1bdb491e840747b5a'
+          patch=pathlib.Path('/tmp/notebook-checkpoint.patch');patch.write_bytes(lzma.decompress(packed))
+          def git(*args):return subprocess.check_output(['git',*args],text=True).strip()
+          subprocess.run(['git','checkout','--detach',base],check=True)
+          subprocess.run(['git','apply','--check','--index',str(patch)],check=True)
+          subprocess.run(['git','apply','--index',str(patch)],check=True)
+          assert git('write-tree')==expected
+          allowed={'.github/workflows/notebook-no-video-ci.yml','docs/performance/notebook-checkpoint-20261006.md','scripts/notebook-ui-node-harness.mjs','scripts/test-board-startup-browser.mjs','scripts/test-notebook-checkpoint-preparation.mjs','src/components/Board.jsx','src/lib/boardTombstoneIndex.js','src/lib/indexedBoardModel.js','src/lib/notebookCheckpoint.js','src/lib/notebookRecords.js','src/lib/notebookSession.js'}
+          paths=git('diff','--cached','--name-only').splitlines();assert set(paths)==allowed and len(paths)==11
+          rows=[]
+          for name in paths:
+              value=pathlib.Path(name).read_bytes()
+              request=urllib.request.Request('https://api.github.com/repos/'+repo+'/git/blobs',data=json.dumps({'content':base64.b64encode(value).decode(),'encoding':'base64'}).encode(),method='POST',headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json'})
+              with urllib.request.urlopen(request,timeout=30) as response:result=json.load(response)
+              assert result['sha']==git('hash-object',name)
+              rows.append({'path':name,'mode':'100644','type':'blob','sha':result['sha']})
+          pathlib.Path('/tmp/checkpoint-tree.json').write_text(json.dumps(rows,indent=2))
+          print('VERIFIED_SOURCE_TREE='+expected)
+          print('Immutable source blobs only; no product refs, main, deployments or user-data writes.')
+          PY
       - uses: actions/upload-artifact@v4
         with:
-          name: notebook-checkpoint-source-c06bb415
-          path: /tmp/notebook-checkpoint-source/
+          name: tested-checkpoint-patch-and-tree
+          path: |
+            /tmp/notebook-checkpoint.patch
+            /tmp/checkpoint-tree.json
           retention-days: 7
