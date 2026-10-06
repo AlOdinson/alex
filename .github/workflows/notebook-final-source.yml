@@ -1,0 +1,30 @@
+name: Export final hotpaths source
+on:
+  push:
+    branches: ['delivery/notebook-final-hotpaths-20261006']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: 142f2afa53b13567f2b0de756915dbca3121d2da
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Export exact source
+        run: |
+          test "$(git rev-parse HEAD)" = 142f2afa53b13567f2b0de756915dbca3121d2da
+          mkdir -p /tmp/notebook-final-source
+          git branch exact-source HEAD
+          git bundle create /tmp/notebook-final-source/source.bundle exact-source
+          git rev-parse HEAD HEAD^{tree} > /tmp/notebook-final-source/source-identity.txt
+          cd /tmp/notebook-final-source
+          sha256sum source.bundle > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notebook-final-source-142f2afa
+          path: /tmp/notebook-final-source/
+          retention-days: 7
