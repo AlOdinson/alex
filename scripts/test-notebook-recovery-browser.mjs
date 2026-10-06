@@ -62,14 +62,22 @@ export function createNotebookWorkSlice() {
       if (value?.capture && value?.ensure) window.recoveryHandlers = value;
     }
     if (!window.recoveryCanvas || !window.recoveryHandlers) throw Error('Production Board not found');
+    window.recoveryBook = () => window.recoveryCanvas._objects.find(o => o.boardObjectId === 'audit-notebook');
+  });
+  // Durable-edit readiness precedes Board's complete initial canvas load. The
+  // real ensure callback may legitimately return null at that boundary. Retry
+  // acquisition, not the test operation, until the actual controller is ready.
+  await page.waitForFunction(async () => {
     await window.recoveryHandlers.ensure();
+    return !!window.recoveryBook() && !!window.__notebookAuditControllerRef?.current;
+  }, undefined, { timeout: 90000 });
+  await page.evaluate(async () => {
     const c = window.__notebookAuditControllerRef.current; c.pause('test backlog');
     const handles = Array.from({ length: 128 }, (_, i) => c.enqueue({ actionId: `backlog-${i}`, ops: [{
       type: 'notebook', version: 1, id: 'audit-notebook', pageNumber: 1, changes: [{ type: 'insert', ifAbsent: true,
         object: { type: 'Rect', boardObjectId: `backlog-child-${i}`, left: -200 + i % 16 * 4, top: -180 + Math.floor(i / 16) * 4, width: 2, height: 2, fill: 'black' } }],
     }] }));
     await Promise.all(handles.map(h => h.durable)); await c.whenPainted();
-    window.recoveryBook = () => window.recoveryCanvas._objects.find(o => o.boardObjectId === 'audit-notebook');
   });
   await page.getByRole('button', { name: 'Карандаш', exact: true }).click();
   const point = await page.evaluate(() => {
