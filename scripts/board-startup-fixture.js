@@ -75,6 +75,17 @@ export async function runBoardStartupCases() {
     const differences=[];let maxDelta=0;for(let i=0;i<x.length;i++)if(x[i]!==y[i]){maxDelta=Math.max(maxDelta,Math.abs(x[i]-y[i]));if(differences.length<16)differences.push({x:Math.floor(i/4)%a.width,y:Math.floor(i/4/a.width),channel:i%4,a:x[i],b:y[i]});}
     const diagnostics={mismatch,maxDelta,differences,rendersA,rendersB,sameSerialization:same(a.toObject(),b.toObject()),aPng:a.lowerCanvasEl.toDataURL(),bPng:b.lowerCanvasEl.toDataURL()};
     a.renderAll();b.renderAll();const x2=pixels(a),y2=pixels(b);diagnostics.secondRenderMismatch=Array.from(x2).reduce((n,v,i)=>n+(v!==y2[i]),0);
+    const countDiff=(u,v)=>Array.from(u).reduce((n,value,i)=>n+(value!==v[i]),0);
+    diagnostics.canonicalRepeatDifference=countDiff(x,x2);diagnostics.candidateRepeatDifference=countDiff(y,y2);
+    diagnostics.controls=[];
+    for(const frequent of [false,true]){
+     const create=()=>{const el=a.lowerCanvasEl.ownerDocument.createElement('canvas');if(frequent)el.getContext('2d',{willReadFrequently:true});return new StaticCanvas(el,{width:180,height:150,enableRetinaScaling:false,renderOnAddRemove:true});};
+     const c=create(),d=create(),e=create();
+     try{await c.loadFromJSON(source);await d.loadFromJSON(source);await loadBoardCanvasJson(e,source);c.renderAll();d.renderAll();e.renderAll();const pc=pixels(c),pd=pixels(d),pe=pixels(e);
+      diagnostics.controls.push({frequent,canonicalPair:countDiff(pc,pd),canonicalToCandidate:countDiff(pd,pe),originalToCanonical:countDiff(x,pc),originalCandidateToCanonical:countDiff(y,pc)});
+     }finally{await c.dispose();await d.dispose();await e.dispose();}
+    }
+
     throw Object.assign(Error(`pixel mismatch ${mismatch}`),{diagnostics});
    }return{pixelMismatch:mismatch};
   }finally{await a.dispose();await b.dispose();}
