@@ -1,0 +1,37 @@
+name: Stage exact notebook final candidate
+on:
+  push:
+    branches: ['delivery/notebook-final-hotpaths-20261006']
+permissions:
+  contents: write
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Apply checksum-verified candidate and push staging ref
+        run: |
+          set -euo pipefail
+          BASE=142f2afa53b13567f2b0de756915dbca3121d2da
+          EXPECTED_TREE=e54b698b273925643b3576c11bf36b004d4fc5cd
+          PATCH_B64_SHA=56bf18167a6ea921d3ef84166e3754bff0add1200ebd1e72c92458e6a4357eb2
+          PATCH_SHA=e230e03491e1cfcadd9b19e44490b9d313eca37fc7dcaaeb86bb604305b59c73
+          git show "$GITHUB_SHA:.delivery/notebook-final-hotpaths.patch.xz.b64" > /tmp/candidate.b64
+          test "$(sha256sum /tmp/candidate.b64 | awk '{print $1}')" = "$PATCH_B64_SHA"
+          base64 -d /tmp/candidate.b64 | xz -d > /tmp/candidate.patch
+          test "$(sha256sum /tmp/candidate.patch | awk '{print $1}')" = "$PATCH_SHA"
+          git checkout --detach "$BASE"
+          git apply --check --index /tmp/candidate.patch
+          git apply --index /tmp/candidate.patch
+          test "$(git write-tree)" = "$EXPECTED_TREE"
+          git config user.name "AlOdinson"
+          git config user.email "mail.alik.kamaletdinov@gmail.com"
+          git commit -m "perf: finish notebook hotpath and cold-start cleanup"
+          test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_TREE"
+          test "$(git rev-parse HEAD^)" = "$BASE"
+          git push origin HEAD:refs/heads/delivery/notebook-final-candidate-20261007
+          echo "CANDIDATE_SHA=$(git rev-parse HEAD)"
+          echo "CANDIDATE_TREE=$(git rev-parse HEAD^{tree})"
