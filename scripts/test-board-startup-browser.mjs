@@ -8,7 +8,7 @@ const port=5284,base=`http://127.0.0.1:${port}/alex/`,output='board-startup-resu
 const server=spawn(process.execPath,['node_modules/vite/bin/vite.js','--host','127.0.0.1','--port',String(port),'--strictPort'],
  {stdio:'ignore',env:{...process.env,VITE_NOTEBOOK_OPERATIONS_V1:'true'}});
 let browser,page;const report={name,commit:process.env.GITHUB_SHA,results:[],errors:[],limitations:[
- 'Cold model clone/indexing and final native installation remain indivisible. Not a physical Pencil latency benchmark.',
+ 'Runtime checkpoint acquisition still clones synchronously; session freeze/index preparation yields. Final native installation remains indivisible. Not a physical Pencil latency benchmark.',
  'The test wraps the loader for observation only; construction, persistence and input remain production code.',
 ]};
 try{
@@ -31,6 +31,20 @@ export async function loadBoardCanvasJson(canvas, source, options) {
  (globalThis.__startupProbes??=[]).push(probe);globalThis.__startupCanvas=canvas;
  setTimeout(()=>{probe.taskBeforeComplete=!probe.complete;probe.objectsAtTask=canvas._objects.length;probe.drawingEnabledBeforeReady=Boolean(canvas.isDrawingMode);},0);
  const result=await startupOriginalLoad(canvas,source,options);probe.complete=true;probe.installed=canvas._objects.length;return result;
+}
+`;
+  await route.fulfill({response,body,contentType:'text/javascript'});
+ });
+ // Observe the real cold checkpoint preparation without holding its scheduler.
+ await page.route(/\/src\/lib\/notebookCheckpoint\.js(?:\?.*)?$/,async route=>{
+  const response=await route.fetch();let body=await response.text();
+  assert.ok(body.includes('export async function prepareNotebookCheckpoint('),'checkpoint observation anchor missing');
+  body=body.replace('export async function prepareNotebookCheckpoint(','export async function checkpointOriginalPrepare(')+`
+export async function prepareNotebookCheckpoint(source, options) {
+ const probe={revision:source.revision,complete:false,taskBeforeComplete:false,takeOwnership:Boolean(options?.takeOwnership)};
+ (globalThis.__checkpointPreparationProbes??=[]).push(probe);
+ setTimeout(()=>{probe.taskBeforeComplete=!probe.complete;},0);
+ const result=await checkpointOriginalPrepare(source,options);probe.complete=true;return result;
 }
 `;
   await route.fulfill({response,body,contentType:'text/javascript'});
@@ -80,9 +94,12 @@ export async function loadBoardCanvasJson(canvas, source, options) {
   return !!globalThis.__startupHandlers;
  },undefined,{timeout:30000});
  await page.evaluate(async()=>{const c=await globalThis.__startupHandlers.ensure();if(!c)throw Error('no controller after first stroke');await c.flush();});
+ report.checkpointPreparation=await page.evaluate(()=>globalThis.__checkpointPreparationProbes);
+ assert.ok(report.checkpointPreparation?.some(p=>p.complete&&p.taskBeforeComplete&&p.takeOwnership),
+  'first real stroke did not use bounded, owned checkpoint preparation');
  await page.reload();await page.waitForFunction(()=>globalThis.__startupCanvas?._objects.find(o=>o.boardObjectId==='audit-notebook')?._objects.length===101,undefined,{timeout:90000});
  report.firstStroke={childrenAfterReload:101,retained:true};
  assert.deepEqual(report.errors,[]);await page.screenshot({path:`${output}/${name}-loaded.png`});
- console.log(`${name}: 7 startup cases, real 1201-object lesson load, maintenance, first stroke and reload passed`);
+ console.log(`${name}: 7 startup cases, real 1201-object lesson load, maintenance, bounded checkpoint preparation, first stroke and reload passed`);
 }catch(error){report.failure=error.stack??error.message;try{report.uiText=await page?.locator('body').innerText();await page?.screenshot({path:`${output}/${name}-failure.png`});}catch{}throw error;}
 finally{await writeFile(`${output}/${name}.json`,JSON.stringify(report,null,2));await browser?.close();server.kill();}

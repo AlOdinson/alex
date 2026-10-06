@@ -1,3 +1,4 @@
+import { readStableNotebookCheckpoint } from '../lib/notebookCheckpoint.js';
 import { loadBoardCanvasJson, cancelBoardCanvasLoad } from '../lib/boardLoadPreparation.js';
 import { queueNotebookWork } from '../lib/notebookWorkScheduler.js';
 import { notebookEraserCandidates } from '../lib/notebookChildIndex.js';
@@ -5460,7 +5461,8 @@ function BoardWorkspace({
     }
     if (notebookControllerInitRef.current) return notebookControllerInitRef.current;
     const epoch = notebookControllerEpochRef.current;
-    const current = () => epoch === notebookControllerEpochRef.current && canvas === fabricCanvasRef.current && boardReadyRef.current;
+    const current = () => epoch === notebookControllerEpochRef.current && canvas === fabricCanvasRef.current
+      && realtime === realtimeRef.current && boardReadyRef.current;
     const task = (async () => {
       await realtime.whenRuntimeReady?.();
       if (realtime.getNotebookVersion?.() !== 1) throw new Error('Для редактирования блокнота обновите страницу на устройстве учителя');
@@ -5470,8 +5472,22 @@ function BoardWorkspace({
       // for this flush and never fetches a complete board snapshot.
       await realtime.flushPending?.();
       if (!current()) return null;
-      const checkpoint = realtime.getNotebookCheckpoint?.();
-      if (!checkpoint) throw new Error('Подтверждённое состояние блокнота ещё не загружено');
+      let checkpoint;
+      try {
+        checkpoint = await readStableNotebookCheckpoint({
+          readCheckpoint: () => realtime.getNotebookCheckpoint?.(),
+          readRevision: () => realtime.getRevision?.(), isCurrent: current,
+        });
+      } catch (error) { if (!current()) return null; throw error; }
+      if (!current()) return null;
+      // A confirmation can arrive in the final await's microtask handoff. Never
+      // install an older prepared model; use the original synchronous boundary
+      // on the newest snapshot in that exceptional case.
+      const latestRevision = realtime.getRevision?.();
+      if (Number.isSafeInteger(latestRevision) && latestRevision !== checkpoint.revision) {
+        checkpoint = realtime.getNotebookCheckpoint?.();
+        if (!checkpoint) throw new Error('Подтверждённое состояние блокнота ещё не загружено');
+      }
       const controller = createNotebookBoardController({ confirmedState: checkpoint,
         clientId: clientIdRef.current, outbox, initialPendingActions, maxInFlight: 1,
         canEdit: () => current() && canEditRef.current && realtime.getNotebookVersion?.() === 1,

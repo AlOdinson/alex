@@ -1,4 +1,4 @@
-import { freezeNotebookRecord } from './notebookRecords.js';
+import { freezeNotebookRecord, freezeNotebookRecordSteps } from './notebookRecords.js';
 
 // Internal, immutable model. An ordinary notebook child edit changes a record,
 // not the top-level layer order. Share that order's ID/rank map and copy only the
@@ -118,4 +118,32 @@ export function changedSnapshotObjectIds(before, after) {
   const ids = new Set();
   if (a.root !== b.root) changed(a.root, b.root, ids);
   return ids;
+}
+
+// Same balanced layout and read/replace implementation as the synchronous model;
+// only initial construction is resumable. Callers own the detached input.
+function* buildSteps(objects, start, end) {
+  yield;
+  if (start === end) return null;
+  if (end - start === 1) return node(null, null, objects[start]);
+  const middle = start + Math.floor((end - start) / 2);
+  const left = yield* buildSteps(objects, start, middle);
+  const right = yield* buildSteps(objects, middle, end);
+  return node(left, right);
+}
+export function* createIndexedBoardModelSteps(snapshot) {
+  const prior = models.get(snapshot); if (prior) return prior.model;
+  if (!snapshot || !Array.isArray(snapshot.canvas?.objects)) throw new TypeError('Indexed board model requires a snapshot');
+  const { canvas, ...metadata } = snapshot;
+  const { objects, ...canvasMetadata } = canvas;
+  yield* freezeNotebookRecordSteps(objects);
+  const ranks = new Map(); let safe = true;
+  for (let i = 0; i < objects.length; i++) {
+    const id = objects[i]?.boardObjectId;
+    if (String(objects[i]?.type).toLowerCase() === 'activeselection') safe = false;
+    if (id) { if (ranks.has(String(id))) safe = false; ranks.set(String(id), i); }
+    yield;
+  }
+  const root = yield* buildSteps(objects, 0, objects.length);
+  return version(root, { ranks, size: objects.length, safe }, metadata, canvasMetadata);
 }

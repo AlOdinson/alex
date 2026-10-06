@@ -1,5 +1,6 @@
+import { notebookCheckpoint as checkpoint } from './notebookCheckpoint.js';
 import { createNotebookWorkSlice } from './notebookWorkScheduler.js';
-import { createBoardTombstoneIndex, applyBoardTombstoneOperations } from './boardTombstoneIndex.js';
+import { applyBoardTombstoneOperations } from './boardTombstoneIndex.js';
 import { createIndexedBoardModel, readSnapshotRecord } from './indexedBoardModel.js';
 import { prepareIndexedNotebookAction, applyIndexedNotebookOps } from './notebookIndexedTransaction.js';
 import { randomToken } from './ids.js';
@@ -8,7 +9,7 @@ import { applyAuthorityOpsInPlace, forkAuthoritySnapshot } from './authoritySnap
 import { evaluateAuthorityAction } from './authorityOperationEvaluator.js';
 import { prepareAuthoritativeHistory } from './historyOperations.js';
 import { updateNotebookTombstones } from './notebookOperations.js';
-import { freezeNotebookRecord, freezeSnapshotNotebookPages } from './notebookRecords.js';
+import { freezeNotebookRecord } from './notebookRecords.js';
 import { assertNotebookCommitReadable } from './notebookProtocol.js';
 
 const clone = value => structuredClone(value);
@@ -26,17 +27,7 @@ function seal(snapshot) {
   snapshot.canvas.objects.forEach(Object.freeze);
   Object.freeze(snapshot.canvas.objects); Object.freeze(snapshot.canvas); return Object.freeze(snapshot);
 }
-function checkpoint(value) {
-  if (!safeRevision(value?.revision) || !Array.isArray(value?.snapshot?.canvas?.objects)) {
-    throw new TypeError('Notebook session requires a snapshot and non-negative integer revision');
-  }
-  const copy = clone(value);
-  freezeSnapshotNotebookPages(copy.snapshot);
-  // Full deep processing is permitted at this load/recovery boundary, not per ink.
-  copy.snapshot.canvas.objects.filter(object => !Array.isArray(object.notebookPages)).forEach(object => freezeNotebookRecord(object));
-  return { revision: copy.revision, snapshot: createIndexedBoardModel(seal(copy.snapshot)).snapshot,
-    tombstones: createBoardTombstoneIndex(copy.tombstones ?? {}), notebookTombstones: copy.notebookTombstones ?? {} };
-}
+
 function boardTombstones(source, operations, context) {
   return applyBoardTombstoneOperations(source, operations, context);
 }

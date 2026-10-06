@@ -50,3 +50,22 @@ export function createLazyNotebookPages(pages, index, materialize) {
   Object.freeze(next); immutableRecords.add(next);
   return next;
 }
+
+// Load-only cooperative counterpart of freezeNotebookRecord. Each yielded step
+// bounds traversal work; do not build Object.values for a whole large page. The
+// ancestor set distinguishes a true cycle from legitimate shared child records.
+export function* freezeNotebookRecordSteps(value, ancestors = new Set()) {
+  if (!value || typeof value !== 'object' || immutableRecords.has(value)) return value;
+  if (ancestors.has(value)) throw new TypeError('Cyclic notebook record');
+  ancestors.add(value);
+  try {
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      yield;
+      yield* freezeNotebookRecordSteps(value[key], ancestors);
+    }
+    Object.freeze(value); immutableRecords.add(value);
+    yield;
+    return value;
+  } finally { ancestors.delete(value); }
+}

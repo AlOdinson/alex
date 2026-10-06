@@ -1,4 +1,4 @@
-import { freezeNotebookRecord } from './notebookRecords.js';
+import { freezeNotebookRecord, isImmutableNotebookRecord } from './notebookRecords.js';
 
 // Persistent AVL map: adding one deletion copies a logarithmic tree path, not
 // all prior deletions. No growing prototype/overlay chain; old previews remain
@@ -99,4 +99,25 @@ export function boardTombstoneDelta(operations, context = {}) {
 }
 export function applyBoardTombstoneOperations(source, operations, context) {
   return createBoardTombstoneIndex(source).applyDelta(boardTombstoneDelta(operations, context));
+}
+
+// Initial import only: incrementally build the same persistent AVL index without
+// a whole-table Object.entries/sort. Certified immutable checkpoint values can be
+// shared; arbitrary callers still receive a separate owned value.
+export function* createBoardTombstoneIndexSteps(records = {}) {
+  if (indexes.has(records)) return records;
+  if (!records || typeof records !== 'object' || Array.isArray(records)) throw new TypeError('Tombstone records must be an object');
+  let root = null;
+  for (const key in records) {
+    if (!Object.hasOwn(records, key)) continue;
+    const input = records[key];
+    const value = isImmutableNotebookRecord(input) ? input : structuredClone(input);
+    // Cold checkpoint preparation has already frozen these values in slices.
+    // Keep the storage reader compatible with the pinned older record module;
+    // direct, non-prepared callers retain the original per-record freeze.
+    freezeNotebookRecord(value);
+    root = put(root, key, value);
+    yield;
+  }
+  return version(root);
 }
