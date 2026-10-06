@@ -67,8 +67,16 @@ export function createNotebookWorkSlice() {
   // Durable-edit readiness precedes Board's complete initial canvas load. The
   // real ensure callback may legitimately return null at that boundary. Retry
   // acquisition, not the test operation, until the actual controller is ready.
-  await page.waitForFunction(async () => {
-    await window.recoveryHandlers.ensure();
+  // The polling predicate must return a boolean, not a truthy Promise that
+  // ends polling even if it later resolves false. Serialize async acquisition
+  // separately and keep checking the actual factory reference on each poll.
+  await page.waitForFunction(() => {
+    if (window.recoveryEnsureError) throw Error(window.recoveryEnsureError);
+    if (!window.__notebookAuditControllerRef?.current && !window.recoveryEnsurePending) {
+      window.recoveryEnsurePending = true;
+      window.recoveryHandlers.ensure().catch(error => { window.recoveryEnsureError = error.message; })
+        .finally(() => { window.recoveryEnsurePending = false; });
+    }
     return !!window.recoveryBook() && !!window.__notebookAuditControllerRef?.current;
   }, undefined, { timeout: 90000 });
   await page.evaluate(async () => {
