@@ -105,7 +105,7 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
       // Determine real fragments before any controller/network/lease work.
       prepared = !published && !newText && !before.length
         ? prepareContainedNotebookStroke(notebook, object, { pageNumber }) : null;
-      prepared ??= await captureNotebookObject(notebook, object);
+      prepared ??= await captureNotebookObject(notebook, object, { isCurrent: current });
       if (!current()) throw stale();
       if (!prepared) return false;
       const controller = await getController();
@@ -196,7 +196,7 @@ export function createNotebookBoardActions({ getCanvas, getController, clientId,
       const sourceById = new Map(before.map(record => [String(record.object.boardObjectId), record]));
       const modelById = new Map(controller.getState().snapshot.canvas.objects.map((object, zIndex) => [String(object.boardObjectId), { object, zIndex }]));
       for (const entry of members) {
-        const fragments = entry.notebook ? await captureNotebookObject(entry.notebook, entry.object) : null;
+        const fragments = entry.notebook ? await captureNotebookObject(entry.notebook, entry.object, { isCurrent: current }) : null;
         prepared.push({ ...entry, fragments });
         if (!current()) throw stale();
       }

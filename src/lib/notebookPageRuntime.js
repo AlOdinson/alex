@@ -13,12 +13,21 @@ function workspace(notebook) {
   if (!state) { state = { tail: Promise.resolve(), viewEpoch: 0, attachmentEpoch: 0, disposed: false }; workspaces.set(notebook, state); }
   return state;
 }
+// Split workers are cancelled on real navigation, detach or disposal, not polled.
+export function notebookPageSplitSignal(notebook) {
+  const state=workspace(notebook);
+  state.splitController ??= new AbortController();
+  if(state.disposed)state.splitController.abort();
+  return state.splitController.signal;
+}
+function cancelSplitWork(state){state.splitController?.abort();state.splitController=null;}
 export function notebookPageWorkGuard(notebook) {
   const state = workspace(notebook), attachment = state.attachmentEpoch, view = state.viewEpoch;
   return () => !state.disposed && state.attachmentEpoch === attachment && state.viewEpoch === view;
 }
 export function retireNotebookPageWork(notebook, permanently = false) {
   const state = workspace(notebook);
+  cancelSplitWork(state);
   state.attachmentEpoch++; state.viewEpoch++; state.disposed ||= permanently;
 }
 const dispose = objects => objects.forEach(object => object.dispose());
@@ -33,7 +42,9 @@ function modelFor(notebook) {
 export async function navigateNotebookPage(notebook, page, options = {}) {
   if (!isNotebook(notebook) || !Number.isInteger(page) || page < 1
     || page > Math.max(notebook.notebookPageNumber, notebook.notebookPages.length) + 1) return false;
-  const state = workspace(notebook), ticket = ++state.viewEpoch, attachment = state.attachmentEpoch;
+  const state = workspace(notebook);
+  cancelSplitWork(state);
+  const ticket = ++state.viewEpoch, attachment = state.attachmentEpoch;
   if (state.disposed) return false;
   if (page === notebook.notebookPageNumber) return true; // also cancels older loads
   if (notebook._pageContentInvalid) notebook.syncPage({ invalidate: false });

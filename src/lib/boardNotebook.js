@@ -1,3 +1,4 @@
+import { createNotebookSplitScope, checkNotebookSplit } from './notebookSplitCancellation.js';
 import { enlivenNotebookObjects } from './notebookObjectPreparation.js';
 import { beginNotebookDamage, finishNotebookDamage } from './notebookDamageRenderer.js';
 import { currentNotebookChildIndex, rebuildNotebookChildIndex, forgetNotebookChildIndex } from './notebookChildIndex.js';
@@ -5,7 +6,7 @@ import { notebookPageState, notebookPageChanges } from './notebookPageModel.js';
 import { notebookPageAppend } from './notebookPageDelta.js';
 import { beginNotebookCacheAppend, finishNotebookCacheAppend, rememberNotebookAppendCache, forgetNotebookAppendCache } from './notebookAppendCache.js';
 import { memoizeImmutableNotebookImage } from './notebookAssets.js';
-import { navigateNotebookPage, retireNotebookPageWork } from './notebookPageRuntime.js';
+import { navigateNotebookPage, retireNotebookPageWork, notebookPageSplitSignal } from './notebookPageRuntime.js';
 export { applyPageDeltaToFabric } from './notebookPageRuntime.js';
 import { freezeNotebookRecord as freezeRecord } from './notebookRecords.js';
 import { randomToken } from './ids.js';
@@ -369,31 +370,35 @@ export function prepareContainedNotebookStroke(notebook, object, {
 const containsCutMask = object => Boolean(object.clipPath || object.getObjects?.().some(containsCutMask));
 
 /** Prepare physically independent fragments before changing source/history. */
-export async function captureNotebookObject(notebook, object) {
+export async function captureNotebookObject(notebook, object, options = {}) {
   if (!isBoardNotebook(notebook) || !object || object.visible === false || object.opacity <= 0
     || isBoardNotebook(object) || ['gif', 'pdf'].includes(object.mediaKind)) return null;
   const { intersects, contained } = notebookObjectIntersection(notebook, object);
   if (!intersects) return null;
-  const sourceMatrix = object.calcTransformMatrix().slice();
-  const prepared = await object.clone(childFields);
-  util.applyTransformToObject(prepared, sourceMatrix);
-  let inside = prepared, outside = null;
-  const materializeMasks = containsCutMask(prepared);
+  const scope=createNotebookSplitScope([options.signal,notebookPageSplitSignal(notebook)],options.isCurrent);
+  let prepared=null, inside=null, outside=null;
   try {
+    checkNotebookSplit(scope);
+    const sourceMatrix=object.calcTransformMatrix().slice();
+    prepared=await object.clone(childFields); inside=prepared;
+    checkNotebookSplit(scope);
+    util.applyTransformToObject(prepared,sourceMatrix);
+    const materializeMasks=containsCutMask(prepared);
     if (!contained || materializeMasks) {
-      // Keep the clipping engine out of empty notebooks and ordinary whole-object captures.
       const { splitNotebookFragments } = await import('./notebookSplitFragments.js');
-      const fragments = await splitNotebookFragments(notebook, prepared);
-      if (!fragments.inside) { prepared.dispose(); return null; }
-      outside = fragments.outside;
-      if (!outside && !materializeMasks) {
-        // No visible paint was removed: text remains editable, not an image of whitespace.
-        fragments.inside.dispose();
-      } else { inside = fragments.inside; prepared.dispose(); }
+      checkNotebookSplit(scope);
+      const fragments=await splitNotebookFragments(notebook,prepared,scope);
+      if (!fragments.inside) { prepared.dispose(); prepared=inside=null; return null; }
+      outside=fragments.outside;
+      if (!outside && !materializeMasks) fragments.inside.dispose();
+      else {inside=fragments.inside;prepared.dispose();prepared=null;}
     }
-    inside.boardObjectId = randomToken(14);
-    util.applyTransformToObject(inside, util.multiplyTransformMatrices(util.invertTransform(notebook.calcTransformMatrix()), inside.calcTransformMatrix()));
-    inert(inside); inside.setCoords(); outside?.setCoords();
-    return { inside, outside, split: Boolean(outside) };
-  } catch (error) { inside?.dispose(); outside?.dispose(); if(inside!==prepared) prepared.dispose(); throw error; }
+    checkNotebookSplit(scope);
+    inside.boardObjectId=randomToken(14);
+    util.applyTransformToObject(inside,util.multiplyTransformMatrices(util.invertTransform(notebook.calcTransformMatrix()),inside.calcTransformMatrix()));
+    inert(inside);inside.setCoords();outside?.setCoords();
+    return {inside,outside,split:Boolean(outside)};
+  } catch(error) {
+    inside?.dispose();outside?.dispose();if(prepared && prepared!==inside)prepared.dispose();throw error;
+  } finally {scope.dispose();}
 }

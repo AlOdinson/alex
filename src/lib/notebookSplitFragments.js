@@ -2,6 +2,10 @@ import { Path, Group, FabricImage, Color, util } from 'fabric';
 import { memoizeImmutableNotebookImage } from './notebookAssets.js';
 import { SPLIT_TOLERANCE, multiply, inverse, mapPaths, boxPath, pathBounds,
   booleanPaths, recordVectorPaints, paintPolygons, applyGeometricMask } from './notebookSplitGeometry.js';
+import { runNotebookVectorSplit, runNotebookRasterBounds } from './notebookSplitWorkerClient.js';
+import { recordNotebookVectorCommands } from './notebookVectorCommands.js';
+import { scanNotebookAlphaBounds } from './notebookRasterBounds.js';
+import { checkNotebookSplit } from './notebookSplitCancellation.js';
 
 const vectorTypes = new Set(['path','line','rect','circle','ellipse','triangle','polygon','polyline']);
 const maxScale = m => Math.max(Math.hypot(m[0],m[1]),Math.hypot(m[2],m[3]),1e-6);
@@ -34,7 +38,8 @@ function copyMetadataToImage(canvas,left,top,density,matrix,source){
  // entire new image. The original asset is retained by history, not this object.
  return result;
 }
-async function renderPixelFragment(source,worldPaths,matrix,density,nativeWorld=false) {
+async function renderPixelFragment(source,worldPaths,matrix,density,nativeWorld=false,options={}) {
+ checkNotebookSplit(options);
  if(!worldPaths.length)return null;
  const paths=mapPaths(worldPaths,inverse(matrix)),b=pathBounds(paths);if(!finiteBounds(b))return null;
  const l=Math.floor(b.left*density),t=Math.floor(b.top*density),w=Math.ceil((b.left+b.width)*density)-l,h=Math.ceil((b.top+b.height)*density)-t;
@@ -56,19 +61,18 @@ async function renderPixelFragment(source,worldPaths,matrix,density,nativeWorld=
     source.render(ctx);
    }finally{source.canvas=canvas;source.objectCaching=caching;source.clipPath=clip;source.opacity=opacity;source.globalCompositeOperation=gco;source.set(saved);if(group)source.group=group;source.setCoords();}
   }else {source._renderBackground?.(ctx);source._render(ctx);}
-  const data=ctx.getImageData(0,0,w,h).data;
-  let x0=w,y0=h,x1=-1,y1=-1;
-  for(let y=0;y<h;y++){
-   for(let x=0;x<w;x++)if(data[(y*w+x)*4+3]){x0=Math.min(x0,x);x1=Math.max(x1,x);y0=Math.min(y0,y);y1=Math.max(y1,y);}
-   if(y&&y%512===0&&w*h>2000000)await new Promise(resolve=>setTimeout(resolve,0));
-  }
-  if(x1<0)return null;
+  let bounds=await runNotebookRasterBounds(surface,options);
+  if(bounds===undefined)bounds=await scanNotebookAlphaBounds(ctx,w,h,options);
+  checkNotebookSplit(options);
+  if(bounds.empty)return null;
+  const {x0,y0,x1,y1}=bounds;
   if(x0===0&&y0===0&&x1===w-1&&y1===h-1)retained=surface;
   else {retained=util.createCanvasElement();retained.width=x1-x0+1;retained.height=y1-y0+1;retained.getContext('2d').drawImage(surface,x0,y0,retained.width,retained.height,0,0,retained.width,retained.height);}
   return copyMetadataToImage(retained,(l+x0)/density,(t+y0)/density,density,matrix,source);
  } finally {if(retained!==surface)surface.width=surface.height=0;}
 }
-async function splitRaster(source,page,matrix,masks,retainOutside){
+async function splitRaster(source,page,matrix,masks,retainOutside,options){
+ checkNotebookSplit(options);
  // Images keep native pixels, text gets a 2x bitmap for legible glyph edges.
  const nativeWorld=Boolean(source.shadow),density=nativeWorld?1:(source instanceof FabricImage?1:2);
  const pad=Math.max(0,Number(source.strokeWidth)||0)/2;
@@ -82,28 +86,43 @@ async function splitRaster(source,page,matrix,masks,retainOutside){
  const insideArea=booleanPaths(region,page),outsideArea=booleanPaths(region,page,'difference');
  let inside=null,outside=null;
  try {
-  inside=await renderPixelFragment(source,insideArea,matrix,density,nativeWorld);
+  inside=await renderPixelFragment(source,insideArea,matrix,density,nativeWorld,options);
   if(!inside&&!retainOutside)return {inside:null,outside:null};
-  outside=await renderPixelFragment(source,outsideArea,matrix,density,nativeWorld);
+  outside=await renderPixelFragment(source,outsideArea,matrix,density,nativeWorld,options);
   return {inside,outside};
  } catch(e){dispose(inside);dispose(outside);throw e;}
 }
-async function splitVector(source,page,matrix,masks,retainOutside){
- const tolerance=SPLIT_TOLERANCE/maxScale(matrix),{paints}=recordVectorPaints(source,tolerance);
- const inside=[],outside=[];
+async function splitVector(source,page,matrix,masks,retainOutside,options){
+ checkNotebookSplit(options);
+ const tolerance=SPLIT_TOLERANCE/maxScale(matrix),inside=[],outside=[];
  try{
-  if(source.backgroundColor){const d=source._getNonTransformedDimensions();paints.unshift({kind:'fill',color:source.backgroundColor,paths:boxPath(-d.x/2,-d.y/2,d.x,d.y).map(points=>({points,closed:true})),fillRule:'nonzero'});}
-  for(const paint of paints){
-   if(!paintVisible(paint.color))continue;
-   const polygons=masked(mapPaths(paintPolygons(paint,tolerance),matrix),masks,tolerance);
-   inside.push(vectorFragment(booleanPaths(polygons,page),paint.color));
-   outside.push(vectorFragment(booleanPaths(polygons,page,'difference'),paint.color));
+  let background;
+  if(source.backgroundColor && paintVisible(source.backgroundColor)){
+   const d=source._getNonTransformedDimensions();
+   background={kind:'fill',color:source.backgroundColor,paths:boxPath(-d.x/2,-d.y/2,d.x,d.y).map(points=>({points,closed:true})),fillRule:'nonzero'};
   }
+  if(!masks.length){
+   const commands=recordNotebookVectorCommands(source);
+   const rows=await runNotebookVectorSplit({commands,background,page,matrix,tolerance},options);
+   checkNotebookSplit(options);
+   for(const row of rows){inside.push(vectorFragment(row.inside,row.color));outside.push(vectorFragment(row.outside,row.color));}
+  }else{
+   // Legacy masks retain their canonical transform/clip semantics in this increment.
+   const {paints}=recordVectorPaints(source,tolerance);if(background)paints.unshift(background);
+   for(const paint of paints){
+    if(!paintVisible(paint.color))continue;
+    const polygons=masked(mapPaths(paintPolygons(paint,tolerance),matrix),masks,tolerance);
+    inside.push(vectorFragment(booleanPaths(polygons,page),paint.color));
+    outside.push(vectorFragment(booleanPaths(polygons,page,'difference'),paint.color));
+   }
+  }
+  checkNotebookSplit(options);
   if(!inside.some(Boolean)&&!retainOutside){outside.forEach(dispose);return {inside:null,outside:null};}
   return {inside:combine(inside,source),outside:combine(outside,source)};
  }catch(e){inside.forEach(dispose);outside.forEach(dispose);throw e;}
 }
-async function cut(source,page,inherited=[],retainOutside=false){
+async function cut(source,page,inherited=[],retainOutside=false,options={}){
+ checkNotebookSplit(options);
  if(source.visible===false||source.opacity<=0)return {inside:null,outside:null};
  const matrix=source.calcTransformMatrix(),masks=source.clipPath?[...inherited,{clip:source.clipPath,matrix}]:inherited;
  // A group-level shadow is a paint effect on the assembled group, not on each child.
@@ -113,7 +132,7 @@ async function cut(source,page,inherited=[],retainOutside=false){
    for(const child of source.getObjects()){
     // Return both visible sides even for a wholly external child. Never use an
     // artificial huge clipping rectangle or re-render a full child a second time.
-    const result=await cut(child,page,masks,true);
+    const result=await cut(child,page,masks,true,options);
     inside.push(result.inside);outside.push(result.outside);
    }
    if(!inside.some(Boolean)&&!retainOutside){outside.forEach(dispose);return {inside:null,outside:null};}
@@ -122,11 +141,12 @@ async function cut(source,page,inherited=[],retainOutside=false){
  }
  const type=String(source.type).toLowerCase();
  if(vectorTypes.has(type)&&(!source.fill||typeof source.fill==='string')&&(!source.stroke||typeof source.stroke==='string')&&!source.shadow)
-  return splitVector(source,page,matrix,masks,retainOutside);
- return splitRaster(source,page,matrix,masks,retainOutside);
+  return splitVector(source,page,matrix,masks,retainOutside,options);
+ return splitRaster(source,page,matrix,masks,retainOutside,options);
 }
 
-export async function splitNotebookFragments(notebook,source){
+export async function splitNotebookFragments(notebook,source,options={}){
+ checkNotebookSplit(options);
  const page=mapPaths(boxPath(-notebook.width/2,-notebook.height/2,notebook.width,notebook.height),notebook.calcTransformMatrix());
- return cut(source,page);
+ return cut(source,page,[],false,options);
 }
