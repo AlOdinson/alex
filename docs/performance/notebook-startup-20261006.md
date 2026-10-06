@@ -7,7 +7,7 @@ cost, all remaining plan items, or a production deployment.
 
 ## Implemented
 
-The actual Board initial/recovery canvas loader now hydrates top-level objects
+The actual Board initial canvas loader now hydrates top-level objects
 through the same strict, bounded Fabric constructor helper as notebook children.
 Partitioning ordinary image placeholders also yields between work slices. New
 objects remain detached until every object and background/overlay/clip resource
@@ -74,6 +74,20 @@ candidate's FIRST frame to that reference with zero tolerance and asserts equal
 serialized scene properties. This changes the reference preparation, not the
 candidate's rendering or the equality threshold. Chromium passed the original
 startup gate; final native results still must be read for the delivered commit.
+
+## Live replacement isolation found during review
+
+An actual Board callback regression showed that routing live full-scene replacement
+through cooperative hydration widened an existing applyingRemote suppression window:
+a new local add could arrive while commitAddedObject intentionally ignores remote
+installation events. The regression failed before the final isolation and passes
+after it. Bounded hydration is now used ONLY by the actual initial painter. The
+previous live replacement loader is preserved byte-for-byte; cooperative session
+reconciliation from the earlier increment is unchanged. A separate test proves
+the real cold painter selects the bounded loader. The screen-media test checks
+the two explicit entry points and retains both post-load reconciliation assertions.
+This avoids extending the unsafe window; it is not a claim of solving every old
+full-scene refresh race, and that caller still needs a dedicated input contract.
 
 ## Explicit limitations and decisions
 

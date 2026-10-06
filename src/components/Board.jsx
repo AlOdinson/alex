@@ -1366,6 +1366,37 @@ function serializedImagePayload(serialized) {
 }
 
 async function loadCanvasJsonProgressively(canvas, canvasJson) {
+  const source = canvasJson && typeof canvasJson === 'object'
+    ? canvasJson
+    : { objects: [] };
+  const sourceObjects = Array.isArray(source.objects) ? source.objects : [];
+  const pendingImages = [];
+  const immediateObjects = [];
+
+  sourceObjects.forEach((serialized, zIndex) => {
+    const imagePayload = serializedImagePayload(serialized);
+    if (imagePayload) pendingImages.push({ serialized: imagePayload, zIndex });
+    else immediateObjects.push(serialized);
+  });
+
+  await canvas.loadFromJSON({ ...source, objects: immediateObjects });
+
+  // Do not make the whole board wait for a slow image host. Every picture gets a
+  // correctly positioned placeholder and then hydrates independently in the background.
+  pendingImages.forEach(({ serialized, zIndex }) => {
+    const placeholder = createPendingImagePlaceholder(serialized);
+    canvas.add(placeholder);
+    if (typeof canvas.moveObjectTo === 'function') {
+      canvas.moveObjectTo(placeholder, clamp(zIndex, 0, canvas.getObjects().length - 1));
+    }
+  });
+
+  return pendingImages.length;
+}
+
+// Cold scene preparation may yield; keep the live full-replacement path on its
+// existing admission contract until that caller has its own input barrier.
+async function loadInitialCanvasJsonProgressively(canvas, canvasJson) {
   return loadBoardCanvasJson(canvas, canvasJson, {
     imagePayload: serializedImagePayload,
     createPlaceholder: createPendingImagePlaceholder,
@@ -9530,7 +9561,7 @@ function BoardWorkspace({
       applyBackground(initialBackground);
       applyingRemoteRef.current = true;
       try {
-        await loadCanvasJsonProgressively(canvas, snapshot.canvas);
+        await loadInitialCanvasJsonProgressively(canvas, snapshot.canvas);
         if (disposed || canvas !== fabricCanvasRef.current) return;
         reconcileBoardScreenShare();
         const serializedById = new Map((snapshot.canvas.objects ?? [])

@@ -96,7 +96,8 @@ test('a live screen object removed by snapshot replacement is reattached, not le
 
 test('both initial and recovery snapshot paths reconcile live screen media after loading', () => {
   for (const source of ['snapshot.canvas', 'effectiveSnapshot.canvas']) {
-    const anchor = `await loadCanvasJsonProgressively(canvas, ${source});`;
+    const loader = source === 'snapshot.canvas' ? 'loadInitialCanvasJsonProgressively' : 'loadCanvasJsonProgressively';
+    const anchor = `await ${loader}(canvas, ${source});`;
     assert.ok(board.includes(anchor));
     assert.match(board.split(anchor)[1].slice(0, 1200), /reconcileBoardScreenShare\(\);/);
   }

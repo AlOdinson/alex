@@ -11,7 +11,7 @@ const scope = { loadBoardCanvasJson,
     pendingImage: true, pendingImageSerialized: record }),
   clamp: (n, min, max) => Math.min(max, Math.max(min, n)),
 };
-const load = (...args) => boardFunction('loadCanvasJsonProgressively', scope)(...args);
+const load = (...args) => boardFunction('loadInitialCanvasJsonProgressively', scope)(...args);
 const canvas = () => new StaticCanvas(null, {width:160,height:120,renderOnAddRemove:true,enableRetinaScaling:false});
 const record = (id, type='Rect') => ({type,boardObjectId:id,left:10,top:10,width:10,height:10,fill:'black'});
 const ids = c => c.getObjects().map(o=>o.boardObjectId);
