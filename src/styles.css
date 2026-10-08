@@ -3634,3 +3634,43 @@ html.game-viewport-locked #root {
 .notebook-text-editor-actions button { border:0; border-radius:8px; padding:10px 16px; color:#334155; background:#eef2f7; cursor:pointer; }
 .notebook-text-editor-actions button[type="submit"] { color:#fff; background:#4f46e5; }
 .notebook-text-editor-actions button:disabled { opacity:.5; cursor:default; }
+
+
+/* Screenshot mode is a pure DOM interaction layer. It never re-renders Fabric
+   while dragging, and its marquee/instruction are not part of the captured PNG. */
+.screenshot-capture-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 26;
+  overflow: hidden;
+  cursor: crosshair;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  overscroll-behavior: contain;
+}
+.screenshot-capture-instruction {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  z-index: 1;
+  transform: translateX(-50%);
+  padding: 9px 16px;
+  border-radius: 11px;
+  color: #ffffff;
+  background: rgba(15, 23, 42, 0.88);
+  box-shadow: 0 5px 16px rgba(15, 23, 42, 0.2);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.screenshot-capture-region {
+  position: absolute;
+  display: none;
+  pointer-events: none;
+  box-sizing: border-box;
+  border: 2px dashed #2563eb;
+  background: rgba(37, 99, 235, 0.12);
+}

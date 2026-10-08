@@ -14,7 +14,7 @@ const TOOLS = [
   { id: 'pencil', label: 'Карандаш' },
   { id: 'line', label: 'Прямая' },
   { id: 'eraser', label: 'Ластик' },
-  { id: 'notebook', label: 'Блокнот' },
+  { id: 'screenshot', label: 'Screenshot' },
   { id: 'text', label: 'Текст' },
 ];
 
@@ -63,11 +63,13 @@ function DockToolIcon({ id }) {
           <path d="m12.3 12.7 5.8 5.8" stroke="#172554" strokeWidth="1.55" />
         </svg>
       );
-    case 'notebook':
+    case 'screenshot':
       return (
         <svg className="dock-tool-icon" viewBox="0 0 28 28" aria-hidden="true" focusable="false">
-          <path d="M7 4.5h15v19H7a2 2 0 0 1-2-2v-15a2 2 0 0 1 2-2Z" fill="#fef3c7" stroke="#172554" strokeWidth="1.65" strokeLinejoin="round" />
-          <path d="M9 4.5v19M12.5 10h6M12.5 14h6M12.5 18h4" fill="none" stroke="#b45309" strokeWidth="1.5" strokeLinecap="round" />
+          <path d="M9 6h6l2 2.5h4.5a2.5 2.5 0 0 1 2.5 2.5v10a2.5 2.5 0 0 1-2.5 2.5h-15A2.5 2.5 0 0 1 4 21V11a2.5 2.5 0 0 1 2.5-2.5H7Z" fill="#dbeafe" stroke="#1e3a8a" strokeWidth="1.7" strokeLinejoin="round" />
+          <circle cx="14" cy="15.8" r="4.4" fill="#93c5fd" stroke="#1e40af" strokeWidth="1.6" />
+          <circle cx="14" cy="15.8" r="2" fill="#eff6ff" />
+          <circle cx="20.4" cy="11.2" r="1" fill="#fbbf24" />
         </svg>
       );
     case 'text':
@@ -319,7 +321,6 @@ export default function Toolbar({
   onClear,
   onAddShape,
   onAddImages,
-  onAddNotebook,
   selectedCount,
   onMoveForward,
   onMoveBackward,
@@ -814,11 +815,9 @@ export default function Toolbar({
             active={tool === item.id}
             disabled={!canEdit}
             className="dock-tool-button"
-            stylusActionPhase={item.id === 'notebook' ? 'end' : 'start'}
             onClick={() => {
               setShapesOpen(false);
-              if (item.id === 'notebook' && onAddNotebook) onAddNotebook();
-              else setTool(item.id);
+              setTool(item.id);
             }}
           >
             <span className="dock-tool-content">

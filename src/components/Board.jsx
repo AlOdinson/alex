@@ -118,6 +118,7 @@ import {
   shareCanvasPng,
 } from '../lib/exportBoard.js';
 import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';
+import { captureBoardScreenshot, normalizeScreenshotRect, screenshotCanvasToBlob } from '../lib/boardScreenshot.js';
 import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';
 import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';
 import { createInitialHistoryOps, refreshHistoryOps } from '../lib/historyOperations.js';
@@ -1998,6 +1999,8 @@ function BoardWorkspace({
   const selectionDragRef = useRef(null);
   const selectionBoxRef = useRef(null);
   const selectionMarqueeElementRef = useRef(null);
+  const screenshotDragRef = useRef(null);
+  const screenshotSelectionRef = useRef(null);
   const selectionMoveFrameRef = useRef(null);
   const selectionPenSessionRef = useRef({
     pointerId: null,
@@ -3442,6 +3445,8 @@ function BoardWorkspace({
         window.cancelAnimationFrame(selectionMoveFrameRef.current);
         selectionMoveFrameRef.current = null;
       }
+      screenshotDragRef.current = null;
+      if (screenshotSelectionRef.current) screenshotSelectionRef.current.style.display = 'none';
       const marquee = selectionMarqueeElementRef.current;
       if (marquee) {
         marquee.style.display = 'none';
@@ -3484,6 +3489,17 @@ function BoardWorkspace({
     setToolState(nextTool);
     configureBrushAndMode();
   }, [activateDrawingStyle, closeMobileTextEditor, configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
+
+  useEffect(() => {
+    if (tool !== 'screenshot' || !canEdit) return undefined;
+    const cancelScreenshotOnEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setTool('select');
+    };
+    window.addEventListener('keydown', cancelScreenshotOnEscape, true);
+    return () => window.removeEventListener('keydown', cancelScreenshotOnEscape, true);
+  }, [canEdit, setTool, tool]);
 
   const setColor = useCallback((nextColor) => {
     colorRef.current = nextColor;
@@ -4374,7 +4390,7 @@ function BoardWorkspace({
     canvas.requestRenderAll();
   }, [configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
 
-  const addImageFiles = useCallback(async (files, scenePoint = null) => {
+  const addImageFiles = useCallback(async (files, scenePoint = null, screenshotPlacement = null) => {
     const canvas = fabricCanvasRef.current;
     if (!canvas || !canEditRef.current) return;
     const imageFiles = [...files].filter(isAcceptedBoardFile);
@@ -4442,13 +4458,22 @@ function BoardWorkspace({
           mediaRuntimeRef.current.adopt(object, prepared);
           adopted = true;
         }
-        const zoomValue = Math.max(canvas.getZoom(), MIN_ZOOM);
-        const maximumWidth = Math.min(560, (canvas.getWidth() / zoomValue) * 0.72);
-        const maximumHeight = Math.min(440, (canvas.getHeight() / zoomValue) * 0.72);
         const imageWidth = Number(object.width || element.naturalWidth || 1);
         const imageHeight = Number(object.height || element.naturalHeight || 1);
-        const scale = Math.min(1, maximumWidth / imageWidth, maximumHeight / imageHeight);
-        object.set({ scaleX: scale, scaleY: scale });
+        if (Number(screenshotPlacement?.width) > 0 && Number(screenshotPlacement?.height) > 0) {
+          // A screenshot replaces exactly the selected viewport area, regardless
+          // of zoom, retina resolution or the image optimizer's raster size.
+          object.set({
+            scaleX: screenshotPlacement.width / imageWidth,
+            scaleY: screenshotPlacement.height / imageHeight,
+          });
+        } else {
+          const zoomValue = Math.max(canvas.getZoom(), MIN_ZOOM);
+          const maximumWidth = Math.min(560, (canvas.getWidth() / zoomValue) * 0.72);
+          const maximumHeight = Math.min(440, (canvas.getHeight() / zoomValue) * 0.72);
+          const scale = Math.min(1, maximumWidth / imageWidth, maximumHeight / imageHeight);
+          object.set({ scaleX: scale, scaleY: scale });
+        }
         markObject(object, clientIdRef.current);
         const placeholderIndex = canvas.getObjects().indexOf(placeholder);
         applyingRemoteRef.current = true;
@@ -4458,6 +4483,7 @@ function BoardWorkspace({
         applyingRemoteRef.current = false;
         object.setCoords();
         canvas.requestRenderAll();
+        if (screenshotPlacement?.selectOnInsert) selectInsertedObjects([object]);
         // Initial upload/paste is always a standalone image. Notebook clipping
         // happens only after the user subsequently moves and releases it.
         const records = getObjectRecords([object]);
@@ -4496,7 +4522,7 @@ function BoardWorkspace({
       }
     }
 
-    if (completed.length) selectInsertedObjects(completed);
+    if (completed.length && !screenshotPlacement?.selectOnInsert) selectInsertedObjects(completed);
 
     if (failedMessages.length) {
       setSaveStatus(completed.length
@@ -4522,6 +4548,126 @@ function BoardWorkspace({
     updateSelectionState,
     updateSelectionStyleState,
   ]);
+
+
+  // An independent pointer layer owns the entire screenshot gesture: it avoids
+  // Fabric hit-testing (including PDF/video) and the Pencil/Touch compatibility
+  // recognizers used by drawing and transformation tools.
+  const screenshotViewportPoint = useCallback((event) => {
+    const canvas = fabricCanvasRef.current;
+    const rect = canvas?.upperCanvasEl?.getBoundingClientRect?.();
+    if (!canvas || !rect?.width || !rect?.height) return null;
+    return {
+      x: Math.max(0, Math.min(canvas.getWidth(),
+        (event.clientX - rect.left) * canvas.getWidth() / rect.width)),
+      y: Math.max(0, Math.min(canvas.getHeight(),
+        (event.clientY - rect.top) * canvas.getHeight() / rect.height)),
+    };
+  }, []);
+
+  const paintScreenshotMarquee = useCallback((overlay) => {
+    const canvas = fabricCanvasRef.current;
+    const session = screenshotDragRef.current;
+    const selection = screenshotSelectionRef.current;
+    const canvasRect = canvas?.upperCanvasEl?.getBoundingClientRect?.();
+    const overlayRect = overlay?.getBoundingClientRect?.();
+    if (!canvas || !session || !selection || !canvasRect || !overlayRect) return;
+    const rect = normalizeScreenshotRect(session.start, session.end,
+      { width: canvas.getWidth(), height: canvas.getHeight() });
+    if (!rect) return;
+    const scaleX = canvasRect.width / canvas.getWidth();
+    const scaleY = canvasRect.height / canvas.getHeight();
+    selection.style.left = (canvasRect.left - overlayRect.left + rect.left * scaleX) + 'px';
+    selection.style.top = (canvasRect.top - overlayRect.top + rect.top * scaleY) + 'px';
+    selection.style.width = (rect.width * scaleX) + 'px';
+    selection.style.height = (rect.height * scaleY) + 'px';
+    selection.style.display = 'block';
+  }, []);
+
+  const beginScreenshotGesture = useCallback((event) => {
+    if (!canEditRef.current || activeToolRef.current !== 'screenshot' || screenshotDragRef.current) return;
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const start = screenshotViewportPoint(event);
+    if (!start) return;
+    event.preventDefault();
+    event.stopPropagation();
+    screenshotDragRef.current = {
+      pointerId: event.pointerId,
+      start,
+      end: start,
+    };
+    try { event.currentTarget.setPointerCapture?.(event.pointerId); }
+    catch { /* Safari can refuse capture during an interrupted touch. */ }
+    paintScreenshotMarquee(event.currentTarget);
+  }, [paintScreenshotMarquee, screenshotViewportPoint]);
+
+  const moveScreenshotGesture = useCallback((event) => {
+    const drag = screenshotDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = screenshotViewportPoint(event);
+    if (!point) return;
+    drag.end = point;
+    paintScreenshotMarquee(event.currentTarget);
+  }, [paintScreenshotMarquee, screenshotViewportPoint]);
+
+  const finishScreenshotGesture = useCallback((event, cancelled = false) => {
+    const drag = screenshotDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const canvas = fabricCanvasRef.current;
+    if (!cancelled) drag.end = screenshotViewportPoint(event) ?? drag.end;
+    screenshotDragRef.current = null;
+    if (screenshotSelectionRef.current) screenshotSelectionRef.current.style.display = 'none';
+    if (cancelled || !canvas || !canEditRef.current || activeToolRef.current !== 'screenshot') return;
+    const rect = normalizeScreenshotRect(drag.start, drag.end,
+      { width: canvas.getWidth(), height: canvas.getHeight() });
+    if (!rect || rect.width < 4 || rect.height < 4) return;
+
+    let screenshot;
+    try {
+      // Read the live composited framebuffer at pointer-up, before any async
+      // PNG/storage work can allow the screen-share video frame to advance.
+      screenshot = captureBoardScreenshot(canvas, rect);
+    } catch (error) {
+      setSaveStatus(error?.message || 'Не удалось создать скриншот');
+      setSyncTone('error');
+      setTool('select');
+      return;
+    }
+    if (!screenshot) return;
+    setTool('select');
+    setSaveStatus('Создаю скриншот…');
+
+    const saveScreenshot = async () => {
+      let blob;
+      try {
+        blob = await screenshotCanvasToBlob(screenshot.bitmap);
+      } catch (error) {
+        setSaveStatus(error?.message || 'Не удалось создать скриншот');
+        setSyncTone('error');
+        return;
+      } finally {
+        // Release the temporary raster before the usual upload/image pipeline.
+        screenshot.bitmap.width = 0;
+        screenshot.bitmap.height = 0;
+      }
+      const file = new File([blob], 'screenshot-' + Date.now() + '.png', { type: 'image/png' });
+      await addImageFiles([file], new Point(
+        screenshot.sceneRect.centerX, screenshot.sceneRect.centerY,
+      ), {
+        width: screenshot.sceneRect.width,
+        height: screenshot.sceneRect.height,
+        selectOnInsert: true,
+      });
+    };
+    void saveScreenshot().catch((error) => {
+      setSaveStatus(error?.message || 'Не удалось создать скриншот');
+      setSyncTone('error');
+    });
+  }, [addImageFiles, screenshotViewportPoint, setTool]);
 
   const mutateSelection = useCallback((mutator, realtimeOperation = null) => {
     const canvas = fabricCanvasRef.current;
@@ -14799,7 +14945,6 @@ function BoardWorkspace({
         onClear={clearBoard}
         onAddShape={chooseShapeTool}
         onAddImages={addImageFiles}
-        onAddNotebook={addNotebook}
         selectedCount={selectedCount}
         onMoveForward={moveSelectionForward}
         onMoveBackward={moveSelectionBackward}
@@ -14846,6 +14991,21 @@ function BoardWorkspace({
         data-readonly-view={!isOwner && !canEdit ? 'true' : 'false'}
       >
         <canvas ref={canvasElementRef} />
+        {canEdit && tool === 'screenshot' && (
+          <div
+            className="screenshot-capture-overlay"
+            aria-label={ui('Выберите область')}
+            onPointerDown={beginScreenshotGesture}
+            onPointerMove={moveScreenshotGesture}
+            onPointerUp={finishScreenshotGesture}
+            onPointerCancel={(event) => finishScreenshotGesture(event, true)}
+            onLostPointerCapture={(event) => finishScreenshotGesture(event, true)}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            <div className="screenshot-capture-instruction">{ui('Выберите область')}</div>
+            <div ref={screenshotSelectionRef} className="screenshot-capture-region" aria-hidden="true" />
+          </div>
+        )}
         <NotebookPageControls notebooks={notebookControls} canEdit={canEdit} canNavigate={canEdit || canReadDocuments} readOnly={canReadDocuments} busy={notebookBusy}
           onPageChange={changeNotebookPage} />
         {notebookTextEditor && <NotebookTextEditor {...notebookTextEditor} busy={notebookBusy}

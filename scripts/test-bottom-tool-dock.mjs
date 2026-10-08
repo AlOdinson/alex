@@ -7,12 +7,13 @@ const palette = fs.readFileSync(new URL('../src/components/ShapePalette.jsx', im
 const i18n = fs.readFileSync(new URL('../src/i18n.js', import.meta.url), 'utf8');
 
 assert.match(toolbar, /function DockToolIcon\(\{ id \}\)/, 'Toolbar must define custom SVG dock icons');
-for (const id of ['select', 'pencil', 'line', 'eraser', 'notebook', 'text', 'shape', 'image']) {
+for (const id of ['select', 'pencil', 'line', 'eraser', 'screenshot', 'text', 'shape', 'image']) {
   assert.match(toolbar, new RegExp(`case ['\"]${id}['\"]:`), `DockToolIcon must include ${id}`);
 }
 
-assert.match(toolbar, /id: 'eraser'[\s\S]*?id: 'notebook'[\s\S]*?id: 'text'/, 'Notebook must sit between eraser and text');
-assert.match(toolbar, /item.id === 'notebook' && onAddNotebook/, 'Notebook must use its creation callback');
+assert.match(toolbar, /id: 'eraser'[\s\S]*?id: 'screenshot'[\s\S]*?id: 'text'/, 'Screenshot must replace notebook between eraser and text');
+assert.doesNotMatch(toolbar, /id: 'notebook'/, 'Notebook creation button must be removed');
+assert.match(toolbar, /label: 'Screenshot'/, 'Screenshot must be visibly labeled in English');
 
 const primaryStart = toolbar.indexOf('<div className="toolbar-primary-row">');
 const primaryEnd = toolbar.indexOf('<div className="toolbar-secondary-row">');
