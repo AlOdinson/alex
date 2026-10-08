@@ -48,7 +48,7 @@ try {
   await page.goto(`${base}/board/${record.boardId}?key=${record.ownerKey}`);
   const name=page.getByRole('textbox',{name:'Ваше имя'});await name.waitFor();await name.fill('Fragment test');
   await page.getByRole('button',{name:'Войти на доску',exact:true}).click();await bind();
-  await page.getByRole('button',{name:'Блокнот',exact:true}).click();await page.locator('.notebook-page-controls').waitFor();
+  await page.keyboard.press('Alt+Shift+N');await page.locator('.notebook-page-controls').waitFor();
   await committed(record,0);
   stage='native crossing pencil';
   const stroke=await page.evaluate(()=>{const b=window.book().getBoundingRect();return {a:window.toScreen(b.left-60,b.top+90),b:window.toScreen(b.left+120,b.top+90)};});

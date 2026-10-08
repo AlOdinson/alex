@@ -17,7 +17,7 @@ try{
  await page.waitForTimeout(1500);
  if(await page.getByRole('textbox',{name:'Ваше имя'}).count()){await page.getByRole('textbox',{name:'Ваше имя'}).fill('PDF tester');await page.getByRole('button',{name:'Войти на доску',exact:true}).click();}
  await page.waitForFunction(()=>document.documentElement.dataset.alexDurableEditState==='ready'&&document.documentElement.dataset.alexDurableEditBlocked!=='true');
- await page.getByRole('button',{name:'Блокнот',exact:true}).click();
+ await page.keyboard.press('Alt+Shift+N');
  await page.locator('.notebook-page-controls').waitFor();
  await page.evaluate(()=>{
   let f=document.querySelector('.toolbar-shell');f=f[Object.keys(f).find(k=>k.startsWith('__reactFiber'))];

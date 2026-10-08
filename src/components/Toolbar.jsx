@@ -321,6 +321,8 @@ export default function Toolbar({
   onClear,
   onAddShape,
   onAddImages,
+  // Kept for legacy board regression tools; there is no Notebook button.
+  onAddNotebook,
   selectedCount,
   onMoveForward,
   onMoveBackward,

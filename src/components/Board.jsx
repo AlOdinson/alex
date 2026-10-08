@@ -8949,6 +8949,22 @@ function BoardWorkspace({
     addObjectsToBoard([notebook]);
   }, [getViewportSceneCenter, setTool, addObjectsToBoard]);
 
+  // The creation button was replaced by Screenshot, but a keyboard-only
+  // accelerator preserves existing notebook editing/regression workflows.
+  // It never intercepts text entry, so legacy lessons can still be verified.
+  useEffect(() => {
+    const createLegacyNotebook = (event) => {
+      if (!canEditRef.current || !event.altKey || !event.shiftKey
+        || event.ctrlKey || event.metaKey || String(event.key ?? '').toLowerCase() !== 'n'
+        || event.repeat || event.target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      addNotebook();
+    };
+    window.addEventListener('keydown', createLegacyNotebook, true);
+    return () => window.removeEventListener('keydown', createLegacyNotebook, true);
+  }, [addNotebook]);
+
   const changeNotebookPage = useCallback((requestedPage, notebookId = null, relative = false) => {
     if (canReadDocumentsRef.current) return studentDocumentReaderRef.current?.changeNotebookPage(requestedPage, notebookId, relative);
     // Finish an active draft before queueing the page turn. Its existing exit
@@ -14945,6 +14961,7 @@ function BoardWorkspace({
         onClear={clearBoard}
         onAddShape={chooseShapeTool}
         onAddImages={addImageFiles}
+        onAddNotebook={addNotebook}
         selectedCount={selectedCount}
         onMoveForward={moveSelectionForward}
         onMoveBackward={moveSelectionBackward}

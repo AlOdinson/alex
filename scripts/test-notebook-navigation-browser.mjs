@@ -19,7 +19,7 @@ async function openBoard({ touch = false } = {}) {
   await p.getByRole('textbox', { name: 'Ваше имя' }).fill('Navigation test');
   await p.getByRole('button', { name: 'Войти на доску', exact: true }).click();
   await p.waitForFunction(() => document.documentElement.dataset.alexDurableEditState === 'ready' && document.documentElement.dataset.alexDurableEditBlocked !== 'true');
-  await p.getByRole('button', { name: 'Блокнот', exact: true }).click();
+  await p.keyboard.press('Alt+Shift+N');
   await p.locator('.notebook-page-controls').waitFor();
   await p.evaluate(() => {
     let f = document.querySelector('.toolbar-shell'); f = f[Object.keys(f).find(k => k.startsWith('__reactFiber'))];
