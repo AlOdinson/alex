@@ -51,7 +51,9 @@ for(const corner of Object.keys(PIVOT_CORNERS)) {
         assert.ok(distance(dragged,desired)<1e-4,'dragged corner lost pointer');
         close(o.scaleX,initialScaleX*factor);
         close(o.scaleY,initialScaleY*factor);
-        close(o.angle,initialAngle+degrees);
+        // Fabric normalizes angles to [0,360) for some object kinds.
+        const angleDiff=((o.angle-initialAngle-degrees+540)%360)-180;
+        close(angleDiff,0);
       }
       await canvas.dispose();
     });
