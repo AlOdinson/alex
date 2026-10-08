@@ -31,6 +31,7 @@ import {
   ActiveSelection,
   Canvas,
   Control,
+  controlsUtils,
   FabricImage,
   FabricObject,
   Group,
@@ -587,6 +588,59 @@ function renderSelectionMoveHandle(context, left, top) {
   context.stroke();
 
   context.restore();
+}
+
+
+function renderCornerRotationHandle(ctx, x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  // The four original corner handles keep their continuous scaling behavior.
+  // This separate grip beyond the top-right corner provides free rotation.
+  ctx.beginPath();
+  ctx.arc(0, 0, 16, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.strokeStyle = '#2563eb';
+  ctx.lineWidth = 2;
+  ctx.fill();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(0, 0, 7.3, -Math.PI * 0.84, Math.PI * 0.53);
+  ctx.strokeStyle = '#1d4ed8';
+  ctx.lineWidth = 2.3;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+  const end = Math.PI * 0.53;
+  const arrowX = Math.cos(end) * 7.3;
+  const arrowY = Math.sin(end) * 7.3;
+  ctx.beginPath();
+  ctx.moveTo(arrowX - 4.8, arrowY + 0.4);
+  ctx.lineTo(arrowX, arrowY);
+  ctx.lineTo(arrowX + 0.5, arrowY - 4.8);
+  ctx.stroke();
+  ctx.restore();
+}
+
+const continuousCornerRotationControl = new Control({
+  x: 0.5,
+  y: -0.5,
+  offsetX: 29,
+  offsetY: -29,
+  sizeX: 32,
+  sizeY: 32,
+  touchSizeX: 50,
+  touchSizeY: 50,
+  cursorStyle: 'crosshair',
+  actionName: 'rotate',
+  actionHandler: controlsUtils.rotationWithSnapping,
+  render: renderCornerRotationHandle,
+});
+
+function installContinuousCornerRotation(object) {
+  if (!object?.controls || object.transientScreenShare) return false;
+  if (object.controls.alexCornerRotate === continuousCornerRotationControl) return false;
+  object.controls = { ...object.controls, alexCornerRotate: continuousCornerRotationControl };
+  object.setCoords?.();
+  return true;
 }
 
 function moveSelectionFromHandle(eventData, transform, x, y) {
@@ -3294,6 +3348,9 @@ function BoardWorkspace({
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
     const active = canvas.getActiveObject();
+    // Rotating near the corner is continuous; the original corners still resize.
+    // ShareScreen is never rotationally interactive.
+    if (active && !isBoardScreenShareObject(active)) installContinuousCornerRotation(active);
     const members = isActiveSelectionObject(active) && typeof active.getObjects === 'function'
       ? active.getObjects()
       : [];
@@ -11321,6 +11378,9 @@ function BoardWorkspace({
         notebookTransformProjectionHolds.add(release);
       }
       const beginLeasedTransform = () => {
+        // A held gesture can receive its edit lease after before:transform.
+        // Reassert free rotation after the temporary lock is lifted.
+        enableContinuousRotation(transform);
         suppressTargetFindDuringTransform();
         const pointerType = nativeEvent?.pointerType
           ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');

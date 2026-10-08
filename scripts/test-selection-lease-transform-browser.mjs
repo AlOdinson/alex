@@ -15,14 +15,21 @@ const callbacks = source.slice(from, to) + source.slice(start, end);
 const bundle = readFileSync(new URL('../node_modules/fabric/dist/index.min.js', import.meta.url), 'utf8');
 const interactionHelpers = readFileSync(new URL('../src/lib/boardInteractionFixes.js', import.meta.url), 'utf8')
   .replace(/^export /gm, '');
+const rotationStart = source.indexOf('function renderCornerRotationHandle(');
+const rotationEnd = source.indexOf('function moveSelectionFromHandle(', rotationStart);
+assert.ok(rotationStart >= 0 && rotationEnd > rotationStart, 'Board free-rotation control source exists');
+const cornerRotationSource = source.slice(rotationStart, rotationEnd);
 const fixtureScript = `
 ${interactionHelpers}
-const { Canvas, FabricImage } = window.fabric;
+const { Canvas, FabricImage, Control, controlsUtils } = window.fabric;
+${cornerRotationSource}
 const noop=()=>{}; const ref=current=>({current}); const useCallback=fn=>fn;
 const canvas=new Canvas('board',{width:800,height:600,enablePointerEvents:true,preserveObjectStacking:true});
 const pixels=document.createElement('canvas'); pixels.width=200; pixels.height=120;
 const ctx=pixels.getContext('2d'); ctx.fillStyle='#2867ad'; ctx.fillRect(0,0,200,120);
 const target=new FabricImage(pixels,{left:150,top:150,originX:'left',originY:'top',boardObjectId:'image',objectKind:'image'});
+target.snapAngle=90; target.snapThreshold=45;
+installContinuousCornerRotation(target);
 canvas.add(target); canvas.setActiveObject(target); target.setCoords(); canvas.renderAll();
 const state={starts:0,ends:0,denied:false,requests:0}; let reply=null; let disposed=false;
 // This isolated fixture contains an ordinary image, not a notebook.
@@ -61,9 +68,13 @@ window.testApi={
  grant:async()=>{if(!reply)throw new Error('No pending reply');reply();await selectionLeaseRef.current.promise;await Promise.resolve();},
  deny:()=>{state.denied=true;},
  read:()=>({left:target.left,top:target.top,scaleX:target.scaleX,scaleY:target.scaleY,
+  angle:target.angle,snapAngle:target.snapAngle,
   action:canvas._currentTransform?.action??null,lease:selectionLeaseRef.current.state,
   starts:state.starts,ends:state.ends,requests:state.requests,before:modifiedBeforeRecordsRef.current,
-  corner:{x:target.oCoords.br.x,y:target.oCoords.br.y}})
+  corner:{x:target.oCoords.br.x,y:target.oCoords.br.y},
+  rotator:{x:target.oCoords.alexCornerRotate.x,y:target.oCoords.alexCornerRotate.y},
+  mtr:{x:target.oCoords.mtr.x,y:target.oCoords.mtr.y},
+  center:{x:target.getCenterPoint().x,y:target.getCenterPoint().y}})
 };
 `;
 
@@ -116,5 +127,52 @@ try {
     results.push({scenario,pass:true,left:final.left,scaleX:final.scaleX,modifications:final.ends});
     await page.close();
   }
+
+// Exercise the real Fabric controls across intermediate, non-right angles.
+// Both controls should rotate smoothly even when the object originally had
+// a 90-degree snap and the edit lease was pending on pointerdown.
+for (const handle of ['rotator', 'mtr']) {
+  const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.setContent('<!doctype html><html><body style="margin:0"><canvas id="board"></canvas></body></html>');
+    await page.addScriptTag({ content: bundle });
+    await page.addScriptTag({ content: fixtureScript });
+    await page.waitForFunction(() => Boolean(window.testApi));
+    const read = () => page.evaluate(() => window.testApi.read());
+    const initial = await read();
+    const grip = initial[handle];
+    const radius = Math.hypot(grip.x - initial.center.x, grip.y - initial.center.y);
+    const theta = Math.atan2(grip.y - initial.center.y, grip.x - initial.center.x);
+    const pointAt = degrees => ({
+      x: initial.center.x + radius * Math.cos(theta + degrees * Math.PI / 180),
+      y: initial.center.y + radius * Math.sin(theta + degrees * Math.PI / 180),
+    });
+    await page.mouse.move(grip.x, grip.y);
+    await page.mouse.down();
+    assert.equal((await read()).action, 'rotate', handle + ' starts native Fabric rotation');
+    const first = pointAt(4);
+    await page.mouse.move(first.x, first.y, { steps: 3 });
+    assert.equal((await read()).angle, 0, 'pending lease cannot rotate the drawing');
+    await page.evaluate(() => window.testApi.grant());
+    assert.equal((await read()).snapAngle, 0, 'legacy 90-degree snap is cleared after lease');
+    for (const degrees of [15, 35, 60]) {
+      const point = pointAt(degrees);
+      await page.mouse.move(point.x, point.y, { steps: 12 });
+      const current = await read();
+      const angularError = Math.abs(((current.angle - degrees + 540) % 360) - 180);
+      assert.ok(angularError < 9, handle + ': actual ' + current.angle + ' vs expected ' + degrees);
+      assert.ok(current.angle > 4 && current.angle < 87, handle + ' snapped to a right angle');
+    }
+    await page.mouse.up();
+    const last = await read();
+    assert.equal(last.ends, 1, 'native rotation commits once on release');
+    assert.deepEqual(errors, [], 'native Fabric rotation raised errors');
+    results.push({ scenario: 'smooth-rotation-' + handle, pass: true, angle: last.angle });
+  } finally {
+    await page.close();
+  }
+}
   console.log(JSON.stringify({browser:browser.version(),fabric:'7.4.0',results},null,2));
 }finally{await browser.close();}

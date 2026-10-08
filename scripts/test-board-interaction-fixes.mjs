@@ -24,9 +24,11 @@ test('smooth rotation removes 90-degree snapping only for active rotation gestur
   assert.equal(enableContinuousRotation({ action: 'rotate', corner: 'mtr', target }), true);
   assert.equal(target.snapAngle, 0);
   assert.equal(target.snapThreshold, 0);
-  const locked = { lockRotation: true, snapAngle: 90 };
-  assert.equal(enableContinuousRotation({ action: 'rotate', target: locked }), false);
-  assert.equal(locked.snapAngle, 90);
+  const locked = { lockRotation: true, snapAngle: 90, snapThreshold: 45 };
+  assert.equal(enableContinuousRotation({ action: 'rotate', target: locked }), true);
+  assert.equal(locked.snapAngle, 0);
+  assert.equal(locked.snapThreshold, 0);
+  assert.equal(locked.lockRotation, true, 'clearing snap must not unlock the object');
 });
 
 test('starting a pencil, line or shape clears both Fabric selection and native menu text', () => {
@@ -50,6 +52,9 @@ test('starting a pencil, line or shape clears both Fabric selection and native m
 test('Board applies free rotation on Fabric transform, follows teacher movement only and clears selection on strokes', () => {
   const board = readFileSync(new URL('../src/components/Board.jsx', import.meta.url), 'utf8');
   assert.match(board, /enableContinuousRotation\(transform\)/);
+  assert.match(board, /const beginLeasedTransform = \(\) => \{[\s\S]*?enableContinuousRotation\(transform\)/);
+  assert.match(board, /installContinuousCornerRotation\(active\)/);
+  assert.match(board, /actionName: 'rotate',\s*actionHandler: controlsUtils\.rotationWithSnapping/);
   assert.match(board, /hasTeacherCameraMoved\(previousView, message\)/);
   assert.match(board, /if \(!isOwner && autopilotRef\.current\) stopAutopilotAnimation\(\)/);
   assert.match(board, /function clearSelectionsOnDrawingContact\(event\)/);
