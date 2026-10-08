@@ -29,10 +29,11 @@ try {
   });
   await page.goto(base + 'board/' + board.boardId + '?key=' + board.ownerKey);
   const name = page.getByRole('textbox', { name: 'Ваше имя' });
-  if (await name.count()) {
-    await name.fill('Rapid Pencil tester');
-    await page.getByRole('button', { name: 'Войти на доску', exact: true }).click();
-  }
+  // BoardWorkspace's name gate mounts asynchronously after route hydration.
+  // count() immediately after goto can be zero while the gate is still loading.
+  await name.waitFor({ state: 'visible', timeout: 20_000 });
+  await name.fill('Rapid Pencil tester');
+  await page.getByRole('button', { name: 'Войти на доску', exact: true }).click();
   await page.waitForFunction(() => (
     document.documentElement.dataset.alexDurableEditState === 'ready'
     && document.documentElement.dataset.alexDurableEditBlocked !== 'true'
