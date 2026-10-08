@@ -3463,7 +3463,7 @@ function BoardWorkspace({
   }, []);
 
   const setTool = useCallback((nextTool) => {
-    if (!canEditRef.current) return;
+    if (!canEditRef.current || nextTool === activeToolRef.current) return;
     const canvas = fabricCanvasRef.current;
     const switchingTool = nextTool !== activeToolRef.current;
     if (switchingTool) {
@@ -3498,7 +3498,14 @@ function BoardWorkspace({
       if (liveTransformSendRef.current.sessionId) {
         endLiveTransform(liveTransformSendRef.current.pendingTarget ?? canvas?.getActiveObject());
       }
-      releaseLocalSelectionLease(canvas.getActiveObject());
+      // This used to call releaseLocalSelectionLease(null) for EVERY fast dock
+      // tap; that unconditionally queued a full Fabric render even on an empty
+      // selection. On a filled board a burst of Pencil taps starved the UI.
+      const activeObject = canvas?.getActiveObject();
+      const lease = selectionLeaseRef.current;
+      if (activeObject || lease.state !== 'none' || lease.ids?.length || lease.token) {
+        releaseLocalSelectionLease(activeObject);
+      }
     }
     if (switchingTool && mobileTextEditorRef.current) closeMobileTextEditor();
     if (switchingTool && canvas?.getActiveObject()) {
@@ -3507,7 +3514,7 @@ function BoardWorkspace({
       updateSelectionStyleState();
       canvas.requestRenderAll();
     }
-    if (switchingTool) {
+    if (switchingTool && (lineRef.current || shapeDraftRef.current)) {
       cancelCreationDraftRef.current?.('tool-change');
     }
     if (eyedropperActiveRef.current && nextTool !== activeToolRef.current) {
@@ -7515,6 +7522,8 @@ function BoardWorkspace({
   const setSelectionLeaseInteraction = useCallback((target, enabled) => {
     const canvas = fabricCanvasRef.current;
     const objects = [...new Set([target, ...flattenTarget(target)].filter(Boolean))];
+    if (!objects.length) return; // no selection means no graphics/layout work
+    let changed = false;
     for (const object of objects) {
       if (!enabled) {
         if (!selectionLeaseInteractionStateRef.current.has(object)) {
@@ -7533,10 +7542,12 @@ function BoardWorkspace({
         object.lockScalingY = true;
         object.lockRotation = true;
         object.hasControls = false;
+        changed = true;
         continue;
       }
       const state = selectionLeaseInteractionStateRef.current.get(object);
       if (!state) continue;
+      changed = true;
       object.lockMovementX = state.lockMovementX;
       object.lockMovementY = state.lockMovementY;
       object.lockScalingX = state.lockScalingX;
@@ -7545,7 +7556,7 @@ function BoardWorkspace({
       object.hasControls = state.hasControls;
       selectionLeaseInteractionStateRef.current.delete(object);
     }
-    canvas?.requestRenderAll();
+    if (changed) canvas?.requestRenderAll();
   }, []);
 
   const ownsSelectionLease = useCallback((objects) => {

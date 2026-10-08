@@ -2067,7 +2067,9 @@ button:disabled {
 .remote-lock-label {
   --participant-color: #2563eb;
   position: absolute;
-  transform: translate(-50%, calc(-100% - 12px));
+  /* lockLabelAnchor is the top edge of the WHOLE selection, never its center. */
+  transform: translate(-50%, calc(-100% - 9px));
+  pointer-events: none;
 }
 
 @media (max-width: 760px) {
@@ -3673,4 +3675,17 @@ html.game-viewport-locked #root {
   box-sizing: border-box;
   border: 2px dashed #2563eb;
   background: rgba(37, 99, 235, 0.12);
+}
+
+
+/* Pencil tool taps must not start native dragging or double-tap zoom while
+   moving from the dock straight onto the board. Finger clicks stay native. */
+.board-tool-dock .dock-tool-button,
+.board-tool-dock .dock-tool-content,
+.board-tool-dock .dock-tool-label,
+.shape-palette button {
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }

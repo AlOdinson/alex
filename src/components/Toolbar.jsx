@@ -116,14 +116,14 @@ function ShareLinkIcon() {
 }
 
 function firstStylusTouch(event) {
-  const changed = Array.from(event?.changedTouches ?? []);
-  const active = Array.from(event?.touches ?? []);
-  return [...changed, ...active].find(
+  // Only a CHANGED contact owns the button. Looking in all active touches lets
+  // a palm/finger tap reactivate a button while a Pencil rests on the screen.
+  return Array.from(event?.changedTouches ?? []).find(
     (touch) => String(touch?.touchType ?? '').toLowerCase() === 'stylus',
   ) ?? null;
 }
 
-function IconButton({ title, children, active = false, disabled = false, onClick, className = '', stylusActionPhase = 'start' }) {
+function IconButton({ title, children, active = false, disabled = false, onClick, className = '', stylusActionPhase = 'end' }) {
   const buttonRef = useRef(null);
   const actionRef = useRef(onClick);
   const suppressClickUntilRef = useRef(0);
@@ -136,16 +136,21 @@ function IconButton({ title, children, active = false, disabled = false, onClick
 
     function handleStylusTouchStart(event) {
       const stylus = firstStylusTouch(event);
-      if (disabled || !stylus) return;
-      // Tool switches need to happen on touchstart so the next Pencil contact can draw
-      // immediately. Commands that mutate the board (Undo/Redo, delete, paste, etc.)
-      // must wait until touchend; starting them while the Pencil is still pressed keeps
-      // WebKit's stylus recognizer and the main thread competing for the same contact.
-      if (event.cancelable) event.preventDefault();
+      if (disabled || !stylus) {
+        // An intentional finger tap must not be eaten by a prior Pencil's
+        // compatibility-click suppression on this same button.
+        if (!stylus) suppressClickUntilRef.current = 0;
+        return;
+      }
+      // Do not mutate React/Fabric or call preventDefault during stylus
+      // touchstart. iPadOS can still be delivering the paired PointerEvent and
+      // a same-contact Fabric listener rebind can strand its touch lifecycle.
       event.stopPropagation();
-      suppressClickUntilRef.current = performance.now() + 900;
       pendingStylusTouchIdRef.current = stylus.identifier ?? null;
       if (stylusActionPhase === 'start') {
+        // Keep opt-in start-phase actions, but switch all ordinary toolbar tools
+        // at release so the next contact sees a fully installed drawing mode.
+        suppressClickUntilRef.current = performance.now() + 900;
         pendingStylusTouchIdRef.current = null;
         actionRef.current?.({ inputType: 'stylus-touch', nativeEvent: event });
         button.blur();
@@ -159,14 +164,15 @@ function IconButton({ title, children, active = false, disabled = false, onClick
         touch.identifier === pendingStylusTouchIdRef.current
       ));
       if (!matching) return;
-      if (event.cancelable) event.preventDefault();
+      // No preventDefault: on some WebKit Pencil routes cancelling the paired
+      // TouchEvent pauses delivery of the following canvas contact. The
+      // compatibility click is handled separately below.
       event.stopPropagation();
       suppressClickUntilRef.current = performance.now() + 900;
       pendingStylusTouchIdRef.current = null;
       button.blur();
-      // Execute after the physical contact ends, but in this same event task. Waiting for
-      // requestAnimationFrame made Pencil commands depend on Safari producing another
-      // frame; under canvas pressure repeated taps then prolonged the apparent freeze.
+      // Apply synchronously on release, never on a later frame: a new Pencil
+      // contact on the canvas must already see the selected brush/mode.
       actionRef.current?.({ inputType: 'stylus-touch-end', nativeEvent: event });
     }
 
@@ -213,6 +219,11 @@ function IconButton({ title, children, active = false, disabled = false, onClick
       title={title}
       aria-label={title}
       disabled={disabled}
+      onPointerDown={(event) => {
+        if (event.pointerType === 'mouse' || event.pointerType === 'touch') {
+          suppressClickUntilRef.current = 0;
+        }
+      }}
       onClick={handleClick}
     >
       <span aria-hidden="true">{children}</span>

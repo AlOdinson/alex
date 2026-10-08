@@ -9,7 +9,7 @@ const DESKTOP_SCALE = 0.77;
 const TOUCH_SCALE = 1.1;
 
 function firstStylusTouch(event) {
-  return [...Array.from(event?.changedTouches ?? []), ...Array.from(event?.touches ?? [])]
+  return Array.from(event?.changedTouches ?? [])
     .find((touch) => String(touch?.touchType ?? '').toLowerCase() === 'stylus') ?? null;
 }
 
@@ -17,21 +17,45 @@ function StylusFastButton({ onActivate, children, ...props }) {
   const buttonRef = useRef(null);
   const actionRef = useRef(onActivate);
   const suppressClickUntilRef = useRef(0);
+  const pendingStylusIdRef = useRef(null);
   actionRef.current = onActivate;
 
   useEffect(() => {
     const button = buttonRef.current;
     if (!button) return undefined;
     function handleTouchStart(event) {
-      if (props.disabled || !firstStylusTouch(event)) return;
-      if (event.cancelable) event.preventDefault();
+      const stylus = firstStylusTouch(event);
+      if (props.disabled || !stylus) {
+        if (!stylus) suppressClickUntilRef.current = 0;
+        return;
+      }
       event.stopPropagation();
-      suppressClickUntilRef.current = performance.now() + 900;
-      actionRef.current?.();
-      button.blur();
+      // Opening/closing the palette re-renders buttons. Do it on contact end,
+      // not inside the Pencil down which WebKit is still processing.
+      pendingStylusIdRef.current = stylus.identifier ?? null;
     }
-    button.addEventListener('touchstart', handleTouchStart, { passive: false, capture: true });
-    return () => button.removeEventListener('touchstart', handleTouchStart, true);
+    function handleTouchEnd(event) {
+      if (pendingStylusIdRef.current == null) return;
+      if (!Array.from(event.changedTouches ?? []).some(
+        touch => touch.identifier === pendingStylusIdRef.current)) return;
+      event.stopPropagation();
+      pendingStylusIdRef.current = null;
+      suppressClickUntilRef.current = performance.now() + 900;
+      button.blur();
+      actionRef.current?.();
+    }
+    function handleTouchCancel(event) {
+      if (Array.from(event.changedTouches ?? []).some(
+        touch => touch.identifier === pendingStylusIdRef.current)) pendingStylusIdRef.current = null;
+    }
+    button.addEventListener('touchstart', handleTouchStart, { passive: true, capture: true });
+    button.addEventListener('touchend', handleTouchEnd, { passive: true, capture: true });
+    button.addEventListener('touchcancel', handleTouchCancel, { passive: true, capture: true });
+    return () => {
+      button.removeEventListener('touchstart', handleTouchStart, true);
+      button.removeEventListener('touchend', handleTouchEnd, true);
+      button.removeEventListener('touchcancel', handleTouchCancel, true);
+    };
   }, [props.disabled]);
 
   function handleClick(event) {
@@ -44,7 +68,9 @@ function StylusFastButton({ onActivate, children, ...props }) {
   }
 
   return (
-    <button ref={buttonRef} type="button" {...props} onClick={handleClick}>
+    <button ref={buttonRef} type="button" {...props} onPointerDown={(event) => {
+      if (event.pointerType === 'mouse' || event.pointerType === 'touch') suppressClickUntilRef.current = 0;
+    }} onClick={handleClick}>
       {children}
     </button>
   );

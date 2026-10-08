@@ -13,7 +13,22 @@ test('PDF editing label follows the top of rotated/scaled pages and PDF groups a
     assert.equal(screen.y,bounds.top*2-70);
   }
 });
-test('other objects retain their existing editing label position',()=>{
-  const object=new Rect({width:20,height:30,left:10,top:20});object.setCoords();
-  const bounds=object.getBoundingRect();assert.equal(lockLabelAnchor([object]).y,bounds.top+bounds.height/2);
+test('all drawings and pictures show the editing label above the selection instead of its center',()=>{
+  for(const kind of ['pencil','shape','image','notebook']) {
+    const o=new Rect({width:100,height:60,left:35,top:42,angle:19});
+    o.objectKind=kind;
+    o.setCoords();
+    const bounds=o.getBoundingRect();
+    assert.equal(lockLabelAnchor([o]).y,bounds.top, kind);
+    assert.equal(lockLabelAnchor([o]).x,bounds.left+bounds.width/2,kind);
+  }
+});
+test('multi-object editing labels sit above the full visible group',()=>{
+  const a=new Rect({width:100,height:90,left:80,top:40,angle:45});
+  const b=new Rect({width:60,height:70,left:200,top:170,angle:-25});
+  a.setCoords();b.setCoords();
+  const y=Math.min(a.getBoundingRect().top,b.getBoundingRect().top);
+  const anchor=lockLabelAnchor([a,b]);
+  assert.equal(anchor.y,y);
+  assert.equal(lockLabelAnchor([]),null);
 });
