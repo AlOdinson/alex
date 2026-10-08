@@ -15,21 +15,25 @@ const callbacks = source.slice(from, to) + source.slice(start, end);
 const bundle = readFileSync(new URL('../node_modules/fabric/dist/index.min.js', import.meta.url), 'utf8');
 const interactionHelpers = readFileSync(new URL('../src/lib/boardInteractionFixes.js', import.meta.url), 'utf8')
   .replace(/^export /gm, '');
-const rotationStart = source.indexOf('function renderCornerRotationHandle(');
-const rotationEnd = source.indexOf('function moveSelectionFromHandle(', rotationStart);
-assert.ok(rotationStart >= 0 && rotationEnd > rotationStart, 'Board free-rotation control source exists');
-const cornerRotationSource = source.slice(rotationStart, rotationEnd);
+const pivotModule = readFileSync(new URL('../src/lib/boardCornerPivot.js', import.meta.url), 'utf8')
+  .replace(/^export /gm, '');
+const pivotStart = source.indexOf('const cornerPivotControlAction =');
+const pivotEnd = source.indexOf('function moveSelectionFromHandle(', pivotStart);
+assert.ok(pivotStart >= 0 && pivotEnd > pivotStart, 'Board combined corner action must exist');
+const pivotControlSource = source.slice(pivotStart, pivotEnd);
 const fixtureScript = `
 ${interactionHelpers}
+${pivotModule}
 const { Canvas, FabricImage, Control, controlsUtils } = window.fabric;
-${cornerRotationSource}
+const isBoardNotebook = () => false;
+${pivotControlSource}
 const noop=()=>{}; const ref=current=>({current}); const useCallback=fn=>fn;
 const canvas=new Canvas('board',{width:800,height:600,enablePointerEvents:true,preserveObjectStacking:true});
 const pixels=document.createElement('canvas'); pixels.width=200; pixels.height=120;
 const ctx=pixels.getContext('2d'); ctx.fillStyle='#2867ad'; ctx.fillRect(0,0,200,120);
 const target=new FabricImage(pixels,{left:150,top:150,originX:'left',originY:'top',boardObjectId:'image',objectKind:'image'});
-target.snapAngle=90; target.snapThreshold=45;
-installContinuousCornerRotation(target);
+target.snapAngle=90; target.snapThreshold=45; // Old saved rotation snapping is ignored.
+installPivotCornerControls(target);
 canvas.add(target); canvas.setActiveObject(target); target.setCoords(); canvas.renderAll();
 const state={starts:0,ends:0,denied:false,requests:0}; let reply=null; let disposed=false;
 // This isolated fixture contains an ordinary image, not a notebook.
@@ -67,14 +71,29 @@ window.testApi={
   {bubbles:true,pointerId:state.pointerId,pointerType:'mouse',buttons:0})),
  grant:async()=>{if(!reply)throw new Error('No pending reply');reply();await selectionLeaseRef.current.promise;await Promise.resolve();},
  deny:()=>{state.denied=true;},
- read:()=>({left:target.left,top:target.top,scaleX:target.scaleX,scaleY:target.scaleY,
-  angle:target.angle,snapAngle:target.snapAngle,
-  action:canvas._currentTransform?.action??null,lease:selectionLeaseRef.current.state,
-  starts:state.starts,ends:state.ends,requests:state.requests,before:modifiedBeforeRecordsRef.current,
-  corner:{x:target.oCoords.br.x,y:target.oCoords.br.y},
-  rotator:{x:target.oCoords.alexCornerRotate.x,y:target.oCoords.alexCornerRotate.y},
-  mtr:{x:target.oCoords.mtr.x,y:target.oCoords.mtr.y},
-  center:{x:target.getCenterPoint().x,y:target.getCenterPoint().y}})
+ setup:({angle=0,scaleX=1,scaleY=1,zoom=1,tx=0,ty=0}={})=>{
+   target.set({angle,scaleX,scaleY});
+   canvas.setViewportTransform([zoom,0,0,zoom,tx,ty]);
+   target.setCoords();canvas.renderAll();
+ },
+ read:()=>{
+  const corners={tl:['left','top'],tr:['right','top'],br:['right','bottom'],bl:['left','bottom']};
+  const sceneCorners={};
+  const handles={};
+  for(const [key,[originX,originY]] of Object.entries(corners)){
+   const p=target.getPositionByOrigin(originX,originY);
+   sceneCorners[key]={x:p.x,y:p.y};
+   handles[key]={x:target.oCoords[key].x,y:target.oCoords[key].y};
+  }
+  return {left:target.left,top:target.top,scaleX:target.scaleX,scaleY:target.scaleY,
+   angle:target.angle,snapAngle:target.snapAngle,
+   action:canvas._currentTransform?.action??null,lease:selectionLeaseRef.current.state,
+   starts:state.starts,ends:state.ends,requests:state.requests,before:modifiedBeforeRecordsRef.current,
+   corner:handles.br,corners:sceneCorners,handles,
+   viewport:[...canvas.viewportTransform],
+   circularControlExists:Boolean(target.controls.alexCornerRotate),
+   centerRotationExists:Boolean(target.controls.mtr)};
+ }
 };
 `;
 
@@ -128,51 +147,69 @@ try {
     await page.close();
   }
 
-// Exercise the real Fabric controls across intermediate, non-right angles.
-// Both controls should rotate smoothly even when the object originally had
-// a 90-degree snap and the edit lease was pending on pointerdown.
-for (const handle of ['rotator', 'mtr']) {
-  const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
-  const errors = [];
-  page.on('pageerror', error => errors.push(error.message));
+
+// Real native mouse drags through intermediate angles around four DIFFERENT
+// opposite fixed corners. Each gesture simultaneously changes rotation and scale.
+for (const corner of ['tl','tr','br','bl']) {
+  const page=await browser.newPage({viewport:{width:900,height:700}});
+  const errors=[];page.on('pageerror',error=>errors.push(error.message));
   try {
     await page.setContent('<!doctype html><html><body style="margin:0"><canvas id="board"></canvas></body></html>');
-    await page.addScriptTag({ content: bundle });
-    await page.addScriptTag({ content: fixtureScript });
-    await page.waitForFunction(() => Boolean(window.testApi));
-    const read = () => page.evaluate(() => window.testApi.read());
-    const initial = await read();
-    const grip = initial[handle];
-    const radius = Math.hypot(grip.x - initial.center.x, grip.y - initial.center.y);
-    const theta = Math.atan2(grip.y - initial.center.y, grip.x - initial.center.x);
-    const pointAt = degrees => ({
-      x: initial.center.x + radius * Math.cos(theta + degrees * Math.PI / 180),
-      y: initial.center.y + radius * Math.sin(theta + degrees * Math.PI / 180),
-    });
-    await page.mouse.move(grip.x, grip.y);
+    await page.addScriptTag({content:bundle});
+    await page.addScriptTag({content:fixtureScript});
+    await page.waitForFunction(()=>Boolean(window.testApi));
+    await page.evaluate(()=>window.testApi.setup({angle:24,scaleX:1.24,scaleY:0.8,zoom:1.5,tx:24,ty:18}));
+    const read=()=>page.evaluate(()=>window.testApi.read());
+    const start=await read();
+    assert.equal(start.circularControlExists,false,'no new round handle');
+    assert.equal(start.centerRotationExists,false,'no separate rotation-only mtr');
+    const opposite={tl:'br',tr:'bl',br:'tl',bl:'tr'}[corner];
+    const pivot=start.corners[opposite],grabbed=start.corners[corner];
+    const v=start.viewport;
+    const toScene=p=>({x:(p.x-v[4])/v[0],y:(p.y-v[5])/v[3]});
+    const toScreen=p=>({x:p.x*v[0]+v[4],y:p.y*v[3]+v[5]});
+    const control=start.handles[corner];
+    const initialPointerScene=toScene(control);
+    const offset={x:grabbed.x-initialPointerScene.x,y:grabbed.y-initialPointerScene.y};
+    const originalVector={x:grabbed.x-pivot.x,y:grabbed.y-pivot.y};
+    function desiredPoint(degrees,factor){
+      const a=degrees*Math.PI/180;
+      const c=Math.cos(a),s=Math.sin(a);
+      return {x:pivot.x+(originalVector.x*c-originalVector.y*s)*factor,
+        y:pivot.y+(originalVector.x*s+originalVector.y*c)*factor};
+    }
+    const moveTo=async(degrees,factor,steps=10)=>{
+      const expected=desiredPoint(degrees,factor);
+      const cursor=toScreen({x:expected.x-offset.x,y:expected.y-offset.y});
+      await page.mouse.move(cursor.x,cursor.y,{steps});
+      return {expected,current:await read()};
+    };
+    await page.mouse.move(control.x,control.y);
     await page.mouse.down();
-    assert.equal((await read()).action, 'rotate', handle + ' starts native Fabric rotation');
-    const first = pointAt(4);
-    await page.mouse.move(first.x, first.y, { steps: 3 });
-    assert.equal((await read()).angle, 0, 'pending lease cannot rotate the drawing');
-    await page.evaluate(() => window.testApi.grant());
-    assert.equal((await read()).snapAngle, 0, 'legacy 90-degree snap is cleared after lease');
-    for (const degrees of [15, 35, 60]) {
-      const point = pointAt(degrees);
-      await page.mouse.move(point.x, point.y, { steps: 12 });
-      const current = await read();
-      const angularError = Math.abs(((current.angle - degrees + 540) % 360) - 180);
-      assert.ok(angularError < 9, handle + ': actual ' + current.angle + ' vs expected ' + degrees);
-      assert.ok(current.angle > 4 && current.angle < 87, handle + ' snapped to a right angle');
+    assert.equal((await read()).action,'scale','square corner must start the combined transform');
+    await moveTo(4,1.05,3);
+    assert.equal((await read()).scaleX,start.scaleX,'no edit before selection lease is granted');
+    await page.evaluate(()=>window.testApi.grant());
+    for(const [degrees,factor] of [[15,1.22],[35,1.4],[60,0.76]]) {
+      const {expected,current}=await moveTo(degrees,factor);
+      const anchored=current.corners[opposite],follow=current.corners[corner];
+      assert.ok(Math.hypot(anchored.x-pivot.x,anchored.y-pivot.y)<0.1,
+        corner+' opposite pivot moved under drag');
+      assert.ok(Math.hypot(follow.x-expected.x,follow.y-expected.y)<1.4,
+        corner+' dragged corner failed to follow pointer');
+      assert.ok(Math.abs(current.angle-(start.angle+degrees))<1.5,
+        corner+' rotation snapped instead of tracking '+degrees+' degrees');
+      assert.ok(Math.abs(current.scaleX-start.scaleX*factor)<0.02,
+        corner+' stretch was not proportional to dragged diagonal');
+      assert.ok(Math.abs(current.scaleY-start.scaleY*factor)<0.02,
+        corner+' height did not scale with width');
     }
     await page.mouse.up();
-    const last = await read();
-    assert.equal(last.ends, 1, 'native rotation commits once on release');
-    assert.deepEqual(errors, [], 'native Fabric rotation raised errors');
-    results.push({ scenario: 'smooth-rotation-' + handle, pass: true, angle: last.angle });
-  } finally {
-    await page.close();
-  }
+    const final=await read();
+    assert.equal(final.ends,1,'combined gesture saves as one Fabric object modification');
+    assert.deepEqual(errors,[],corner+' raised browser errors');
+    results.push({scenario:'opposite-pivot-'+corner,pass:true,angle:final.angle,scaleX:final.scaleX});
+  }finally{await page.close();}
 }
   console.log(JSON.stringify({browser:browser.version(),fabric:'7.4.0',results},null,2));
 }finally{await browser.close();}
