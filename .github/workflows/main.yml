@@ -68,6 +68,10 @@ jobs:
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
         run: npm run test:pdf:continuity
+      - name: Rapid Pencil menu switching, instant first stroke and finger compatibility
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+        run: npm run test:stylus:menu:browser
       - name: Notebook pages, clipped content, text, erasing and history
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}

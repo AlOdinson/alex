@@ -32,7 +32,8 @@
     "test:notebook:performance": "node scripts/benchmark-notebook-performance.mjs",
     "test:notebook:video": "node scripts/test-notebook-screen-share-browser.mjs",
     "test:notebook:operations-performance": "node scripts/benchmark-notebook-operations.mjs",
-    "test:notebook:split:browser": "node scripts/test-notebook-true-split-browser.mjs"
+    "test:notebook:split:browser": "node scripts/test-notebook-true-split-browser.mjs",
+    "test:stylus:menu:browser": "node scripts/test-stylus-menu-rapid-browser.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.110.8",
