@@ -118,6 +118,7 @@ import {
   shareCanvasPng,
 } from '../lib/exportBoard.js';
 import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';
+import { hasTeacherCameraMoved, enableContinuousRotation, clearSelectionsForNewStroke } from '../lib/boardInteractionFixes.js';
 import { captureBoardScreenshot, normalizeScreenshotRect, screenshotCanvasToBlob } from '../lib/boardScreenshot.js';
 import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';
 import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';
@@ -4272,6 +4273,9 @@ function BoardWorkspace({
   }, [getViewportSceneCenter, isOwner]);
 
   const sendTeacherViewThrottled = useCallback(() => {
+    // A local pan/pinch/wheel zoom interrupts only the current follow animation.
+    // Autopilot remains enabled and will react to the next teacher camera change.
+    if (!isOwner && autopilotRef.current) stopAutopilotAnimation();
     const state = viewSendRef.current;
     state.pending = true;
     const elapsed = Date.now() - state.lastSentAt;
@@ -4284,7 +4288,7 @@ function BoardWorkspace({
     };
     if (elapsed >= VIEW_BROADCAST_INTERVAL) send();
     else if (!state.timer) state.timer = window.setTimeout(send, VIEW_BROADCAST_INTERVAL - elapsed);
-  }, [isOwner, sendTeacherViewNow]);
+  }, [isOwner, sendTeacherViewNow, stopAutopilotAnimation]);
 
   const navigateToParticipant = useCallback((clientId) => {
     if (!clientId || clientId === clientIdRef.current) return;
@@ -4313,8 +4317,12 @@ function BoardWorkspace({
     }
     if (isOwner || (message?.permission !== 'owner' && message?.teacher !== true)) return;
     if (!Number.isFinite(Number(message?.centerX)) || !Number.isFinite(Number(message?.centerY))) return;
+    const previousView = lastTeacherViewRef.current;
+    const hasMoved = hasTeacherCameraMoved(previousView, message);
     lastTeacherViewRef.current = message;
-    if (autopilotRef.current) {
+    // Heartbeats and re-request responses report the same camera; they must
+    // never override the student's own pan/zoom while the teacher is still.
+    if (hasMoved && autopilotRef.current) {
       animateViewportTo(
         message.centerX,
         message.centerY,
@@ -4328,6 +4336,7 @@ function BoardWorkspace({
     if (!Number.isFinite(Number(message?.centerX)) || !Number.isFinite(Number(message?.centerY))) return;
     if (message?.permission !== 'owner' && message?.teacher !== true && message?.force !== true) return;
     lastTeacherViewRef.current = message;
+    // A deliberate teacher "bring here" command still overrides free browsing.
     stopAutopilotAnimation();
     centerViewportAt(message.centerX, message.centerY, message.zoom);
   }, [centerViewportAt, isOwner, stopAutopilotAnimation]);
@@ -11294,6 +11303,9 @@ function BoardWorkspace({
         return;
       }
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
+      // Rotation must follow every angle of the dragged handle; old objects may
+      // carry 90-degree snap properties from earlier tools/serialized content.
+      enableContinuousRotation(transform);
       if (isBoardScreenShareObject(transform.target)) {
         modifiedBeforeRecordsRef.current = [];
         currentTransformStartRef.current = null;
@@ -12186,6 +12198,7 @@ function BoardWorkspace({
         return;
       }
       if (!canEditRef.current) return;
+      clearSelectionsOnDrawingContact(nativeEvent);
 
       textTapCandidateRef.current = null;
       if (activeToolRef.current === 'select' && isTextObject(event.target)) {
@@ -13506,6 +13519,7 @@ function BoardWorkspace({
 
     function handlePalmPointerDown(event) {
       clearNativeBoardSelection();
+      clearSelectionsOnDrawingContact(event);
       if (event.pointerType === 'pen') {
         pencilDiagnosticsRef.current?.record('APP capture pointerdown', {
           pointerId: event.pointerId ?? null,
@@ -14141,15 +14155,29 @@ function BoardWorkspace({
         || Boolean(target?.closest?.('[contenteditable="true"]'));
     }
 
-    function clearNativeBoardSelection() {
+    function clearNativeBoardSelection({ anywhere = false } = {}) {
       const selection = window.getSelection?.();
       if (!selection || selection.rangeCount === 0) return;
       const nodeBelongsToBoard = (node) => {
         const element = node?.nodeType === 1 ? node : node?.parentElement;
         return Boolean(element && (element === boardPage || boardPage.contains(element)));
       };
-      if (nodeBelongsToBoard(selection.anchorNode) || nodeBelongsToBoard(selection.focusNode)) {
+      if (anywhere || nodeBelongsToBoard(selection.anchorNode) || nodeBelongsToBoard(selection.focusNode)) {
         selection.removeAllRanges();
+      }
+    }
+
+    function clearSelectionsOnDrawingContact(event) {
+      if (!canEditRef.current || eyedropperActiveRef.current
+        || !DRAWING_STYLE_TOOL_IDS.has(activeToolRef.current)
+        || (event?.button != null && event.button !== 0 && event.pointerType !== 'touch')) return;
+      // Native selected text can originate from a floating menu outside the
+      // board-page DOM subtree. Clear *all* ranges only on a new drawing contact.
+      const cleared = clearSelectionsForNewStroke(canvas, window.getSelection?.());
+      if (cleared.clearedObject) {
+        updateSelectionState();
+        updateSelectionStyleState();
+        canvas.requestRenderAll();
       }
     }
 

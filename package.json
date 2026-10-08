@@ -21,7 +21,7 @@
     "test:selection-lease": "node --test scripts/test-selection-lease-transform.mjs",
     "test:selection-lease:browser": "node scripts/test-selection-lease-transform-browser.mjs",
     "test:connections": "node --test scripts/test-connection-upgrades.mjs scripts/test-browser-peer-connection.mjs scripts/test-dual-path-peer-pair.mjs scripts/test-peer-data-channel.mjs scripts/test-peer-live-channel.mjs scripts/test-live-event-protocol.mjs scripts/test-signaling-assistance.mjs scripts/test-signaling-assistance-sdp.mjs scripts/test-student-peer-network.mjs scripts/test-teacher-peer-network.mjs",
-    "test:menu": "node --test scripts/test-board-screenshot.mjs scripts/test-menu-update-loop.mjs scripts/test-cursor-visibility.mjs scripts/test-participant-name.mjs scripts/test-touch-gesture-cursor.mjs scripts/test-board-thumbnail.mjs",
+    "test:menu": "node --test scripts/test-board-interaction-fixes.mjs scripts/test-board-screenshot.mjs scripts/test-menu-update-loop.mjs scripts/test-cursor-visibility.mjs scripts/test-participant-name.mjs scripts/test-touch-gesture-cursor.mjs scripts/test-board-thumbnail.mjs",
     "test:media": "node --test scripts/test-media-board-deletion.mjs scripts/test-lock-label-anchor.mjs scripts/test-media-asset-store.mjs scripts/test-media-asset-transfer.mjs scripts/test-pdf-media.mjs scripts/test-gif-media.mjs scripts/test-board-media.mjs scripts/test-teacher-peer-hub.mjs scripts/test-teacher-board-runtime.mjs scripts/test-student-peer-session.mjs",
     "test:media:browser": "node scripts/test-board-media-browser.mjs",
     "test:pdf:continuity": "node scripts/test-pdf-continuity-browser.mjs",
