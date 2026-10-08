@@ -4,6 +4,7 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createTeacherObjectLockAuthority } from '../src/lib/teacherObjectLocks.js';
 import { holdNotebookTransformProjection } from '../src/lib/notebookBoardActions.js';
+import { enableContinuousRotation } from '../src/lib/boardInteractionFixes.js';
 
 // Execute the production callback bodies, not a copied model of the fix. Transport
 // latency and Fabric's active-gesture identity are controlled by the fixture.
@@ -48,7 +49,7 @@ function fixture({ notebook = false } = {}) {
   const context = {
     console: { ...console, warn: noop }, Date: { now: () => now }, canvas, disposed: false,
     useCallback: (fn) => fn,
-    notebookRuntimeEnabled: notebook, holdNotebookTransformProjection,
+    notebookRuntimeEnabled: notebook, holdNotebookTransformProjection, enableContinuousRotation,
     notebookControllerRef: ref(notebook ? {
       suspendProjection() { state.projectionDepth++; },
       resumeProjection() { state.projectionDepth--; },
