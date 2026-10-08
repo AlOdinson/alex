@@ -13,7 +13,10 @@ const start = source.lastIndexOf(anchor, end) + anchor.length;
 assert.ok(from > 0 && to > from && end > start);
 const callbacks = source.slice(from, to) + source.slice(start, end);
 const bundle = readFileSync(new URL('../node_modules/fabric/dist/index.min.js', import.meta.url), 'utf8');
+const interactionHelpers = readFileSync(new URL('../src/lib/boardInteractionFixes.js', import.meta.url), 'utf8')
+  .replace(/^export /gm, '');
 const fixtureScript = `
+${interactionHelpers}
 const { Canvas, FabricImage } = window.fabric;
 const noop=()=>{}; const ref=current=>({current}); const useCallback=fn=>fn;
 const canvas=new Canvas('board',{width:800,height:600,enablePointerEvents:true,preserveObjectStacking:true});
