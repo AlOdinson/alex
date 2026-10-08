@@ -127,6 +127,45 @@ try {
     'rapid tool switching on an empty selection must not schedule full-board paints: '
       + rapid.renderRequests);
 
+  // Safari can suppress stylus TouchEvents on the second very fast tap, while
+  // PointerEvents still arrive. Reproduce 120 alternating Cursor/Pencil taps
+  // without requestAnimationFrame, 300ms gesture gap or synthetic TouchEvents.
+  const pointerOnly = await page.evaluate(() => {
+    const canvas = window.__stylusTestCanvas;
+    const sequence = ['Выделение','Карандаш'];
+    const start = performance.now();
+    for (let n = 0; n < 120; n++) {
+      const name = sequence[n % 2];
+      const button = document.querySelector(
+        '.board-tool-dock button[aria-label="' + name + '"]');
+      if (!button || button.disabled) throw new Error('Missing enabled ' + name);
+      const id = n + 4000;
+      const init = new PointerEvent('pointerdown', {
+        pointerType: 'pen', pointerId: id, bubbles: true, cancelable: true,
+        isPrimary: true, buttons: 1, pressure: 0.5,
+      });
+      button.dispatchEvent(init);
+      const last = new PointerEvent('pointerup', {
+        pointerType: 'pen', pointerId: id, bubbles: true, cancelable: true,
+        isPrimary: true, buttons: 0,
+      });
+      button.dispatchEvent(last);
+      if (Boolean(canvas.isDrawingMode) !== (name === 'Карандаш')
+        || Boolean(canvas.enablePointerEvents) !== (name === 'Выделение')) {
+        throw new Error('Lost rapid pen selection at tap ' + n + ': '
+          + name + ' drawing=' + canvas.isDrawingMode
+          + ' pointer=' + canvas.enablePointerEvents);
+      }
+      const ghost = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+      button.dispatchEvent(ghost);
+      if (!ghost.defaultPrevented) {
+        throw new Error('Unfiltered compatibility click after pointerup: ' + n);
+      }
+    }
+    return { taps: 120, elapsedMs: performance.now() - start };
+  });
+  assert.equal(pointerOnly.taps, 120);
+
   // Test a REAL browser mouse stroke with no additional wait/frame after
   // the Pencil selects the brush: the contact-end handler already changed
   // Fabric's input mode synchronously.
@@ -170,6 +209,7 @@ try {
   console.log(JSON.stringify({
     browser: engine === webkit ? 'webkit' : 'chromium',
     rapidMenu: rapid,
+    rapidPointerOnlyCursorPencil: pointerOnly,
     immediatePostSwitchStroke: 'passed',
     doubleActionOnShape: false,
     fingerStillWorks: true,
