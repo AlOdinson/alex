@@ -39,6 +39,9 @@ try {
     && document.documentElement.dataset.alexDurableEditBlocked !== 'true'
     && Boolean(document.querySelector('.board-tool-dock .dock-tool-button'))
   ), null, { timeout: 60_000 });
+  // The dock uses native listeners registered by React's passive useEffect.
+  // Wait for initial mount effects, not for any delay between later Pencil taps.
+  await page.waitForTimeout(600);
 
   await page.evaluate(() => {
     let fiber = document.querySelector('.toolbar-shell');
@@ -82,7 +85,11 @@ try {
       const expectedPointer = name === 'Выделение';
       if (Boolean(canvas.isDrawingMode) !== expectedDrawing
         || Boolean(canvas.enablePointerEvents) !== expectedPointer) {
-        throw new Error('First stroke input mode not ready immediately after Pencil-up: ' + name);
+        throw new Error('First stroke input mode not ready after Pencil-up: '
+          + JSON.stringify({ name, identifier, beforeMode, beforePointer,
+            actualDrawing:canvas.isDrawingMode, actualPointer:canvas.enablePointerEvents,
+            expectedDrawing, expectedPointer, buttonActive:button.classList.contains('active'),
+            buttonConnected:button.isConnected }));
       }
       const ghost = new MouseEvent('click', { bubbles: true, cancelable: true });
       button.dispatchEvent(ghost);
