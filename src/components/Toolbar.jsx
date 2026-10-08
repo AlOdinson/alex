@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import DrawingPresets from './DrawingPresets.jsx';
 import LanguageToggle from './LanguageToggle.jsx';
 import ShapePalette from './ShapePalette.jsx';
+import { createStylusMenuTapController } from '../lib/stylusMenuTaps.js';
 import {
   sliderStepToWidth,
   STROKE_WIDTH_STEPS,
@@ -126,105 +127,57 @@ function firstStylusTouch(event) {
 function IconButton({ title, children, active = false, disabled = false, onClick, className = '', stylusActionPhase = 'end' }) {
   const buttonRef = useRef(null);
   const actionRef = useRef(onClick);
-  const suppressClickUntilRef = useRef(0);
-  const pendingStylusTouchIdRef = useRef(null);
+  const disabledRef = useRef(disabled);
+  const phaseRef = useRef(stylusActionPhase);
+  const controllerRef = useRef(null);
   actionRef.current = onClick;
+  disabledRef.current = disabled;
+  phaseRef.current = stylusActionPhase;
+  if (!controllerRef.current) {
+    controllerRef.current = createStylusMenuTapController({
+      activate: event => actionRef.current?.(event),
+      isDisabled: () => disabledRef.current,
+      actionPhase: () => phaseRef.current,
+    });
+  }
 
   useEffect(() => {
     const button = buttonRef.current;
     if (!button) return undefined;
-
-    function handleStylusTouchStart(event) {
-      const stylus = firstStylusTouch(event);
-      if (disabled || !stylus) {
-        // An intentional finger tap must not be eaten by a prior Pencil's
-        // compatibility-click suppression on this same button.
-        if (!stylus) suppressClickUntilRef.current = 0;
-        return;
-      }
-      // Do not mutate React/Fabric or call preventDefault during stylus
-      // touchstart. iPadOS can still be delivering the paired PointerEvent and
-      // a same-contact Fabric listener rebind can strand its touch lifecycle.
-      event.stopPropagation();
-      pendingStylusTouchIdRef.current = stylus.identifier ?? null;
-      if (stylusActionPhase === 'start') {
-        // Keep opt-in start-phase actions, but switch all ordinary toolbar tools
-        // at release so the next contact sees a fully installed drawing mode.
-        suppressClickUntilRef.current = performance.now() + 900;
-        pendingStylusTouchIdRef.current = null;
-        actionRef.current?.({ inputType: 'stylus-touch', nativeEvent: event });
-        button.blur();
-      }
-    }
-
-    function handleStylusTouchEnd(event) {
-      if (stylusActionPhase !== 'end' || pendingStylusTouchIdRef.current == null) return;
-      const changed = Array.from(event?.changedTouches ?? []);
-      const matching = changed.find((touch) => (
-        touch.identifier === pendingStylusTouchIdRef.current
-      ));
-      if (!matching) return;
-      // No preventDefault: on some WebKit Pencil routes cancelling the paired
-      // TouchEvent pauses delivery of the following canvas contact. The
-      // compatibility click is handled separately below.
-      event.stopPropagation();
-      suppressClickUntilRef.current = performance.now() + 900;
-      pendingStylusTouchIdRef.current = null;
-      button.blur();
-      // Apply synchronously on release, never on a later frame: a new Pencil
-      // contact on the canvas must already see the selected brush/mode.
-      actionRef.current?.({ inputType: 'stylus-touch-end', nativeEvent: event });
-    }
-
-    function handleStylusTouchCancel(event) {
-      const changed = Array.from(event?.changedTouches ?? []);
-      if (changed.some((touch) => touch.identifier === pendingStylusTouchIdRef.current)) {
-        pendingStylusTouchIdRef.current = null;
-      }
-    }
-
-    button.addEventListener('touchstart', handleStylusTouchStart, {
-      passive: false,
-      capture: true,
-    });
-    button.addEventListener('touchend', handleStylusTouchEnd, {
-      passive: false,
-      capture: true,
-    });
-    button.addEventListener('touchcancel', handleStylusTouchCancel, {
-      passive: true,
-      capture: true,
-    });
+    const controller = controllerRef.current;
+    const touchStart = event => controller.onTouchStart(event);
+    const touchEnd = event => controller.onTouchEnd(event);
+    const touchCancel = event => controller.onCancel(event);
+    const pointerDown = event => controller.onPointerDown(event);
+    const pointerUp = event => controller.onPointerUp(event);
+    const pointerCancel = event => controller.onCancel(event);
+    // Native capture listeners survive React's frequent active-tool renders.
+    // Do not preventDefault on touchstart/end: earlier Safari releases froze.
+    button.addEventListener('touchstart', touchStart, { passive: true, capture: true });
+    button.addEventListener('touchend', touchEnd, { passive: true, capture: true });
+    button.addEventListener('touchcancel', touchCancel, { passive: true, capture: true });
+    button.addEventListener('pointerdown', pointerDown, { passive: true, capture: true });
+    button.addEventListener('pointerup', pointerUp, { passive: true, capture: true });
+    button.addEventListener('pointercancel', pointerCancel, { passive: true, capture: true });
     return () => {
-      button.removeEventListener('touchstart', handleStylusTouchStart, true);
-      button.removeEventListener('touchend', handleStylusTouchEnd, true);
-      button.removeEventListener('touchcancel', handleStylusTouchCancel, true);
+      button.removeEventListener('touchstart', touchStart, true);
+      button.removeEventListener('touchend', touchEnd, true);
+      button.removeEventListener('touchcancel', touchCancel, true);
+      button.removeEventListener('pointerdown', pointerDown, true);
+      button.removeEventListener('pointerup', pointerUp, true);
+      button.removeEventListener('pointercancel', pointerCancel, true);
     };
-  }, [disabled, stylusActionPhase]);
-
-  function handleClick(event) {
-    if (performance.now() < suppressClickUntilRef.current) {
-      event.preventDefault();
-      event.stopPropagation();
-      return;
-    }
-    onClick?.(event);
-  }
+  }, []);
 
   return (
     <button
       ref={buttonRef}
       type="button"
-      className={`tool-button ${active ? 'active' : ''} ${className}`.trim()}
+      className={'tool-button ' + (active ? 'active ' : '') + className}
       title={title}
       aria-label={title}
       disabled={disabled}
-      onPointerDown={(event) => {
-        if (event.pointerType === 'mouse' || event.pointerType === 'touch') {
-          suppressClickUntilRef.current = 0;
-        }
-      }}
-      onClick={handleClick}
+      onClick={event => controllerRef.current.onClick(event)}
     >
       <span aria-hidden="true">{children}</span>
     </button>
