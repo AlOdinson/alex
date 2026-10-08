@@ -5,6 +5,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium, webkit } from 'playwright-core';
 
+async function createLegacyNotebook(p) {
+  // Screenshot replaced the Notebook button. Wait for the same enabled state
+  // that Playwright's old button.click() awaited before invoking the retained
+  // notebook creation callback. This keeps legacy coverage without UI clutter.
+  await p.waitForFunction(() => {
+    const button = document.querySelector('.board-tool-dock .dock-tool-button[title="Screenshot"]');
+    return Boolean(button && !button.disabled);
+  });
+  await p.evaluate(() => {
+    const element = document.querySelector('.toolbar-shell');
+    let fiber = element?.[Object.keys(element).find(key => key.startsWith('__reactFiber'))];
+    while (fiber && !fiber.memoizedProps?.onAddNotebook) fiber = fiber.return;
+    if (typeof fiber?.memoizedProps?.onAddNotebook !== 'function') {
+      throw new Error('Legacy notebook action is unavailable');
+    }
+    fiber.memoizedProps.onAddNotebook();
+  });
+}
+
+
 const engine = process.env.VERIFICATION_BROWSER === 'webkit' ? 'webkit' : 'chromium';
 const out = process.env.SPLIT_RESULTS_DIR || 'notebook-true-split-results';
 const base = 'http://127.0.0.1:5173/alex';
@@ -48,7 +68,7 @@ try {
   await page.goto(`${base}/board/${record.boardId}?key=${record.ownerKey}`);
   const name=page.getByRole('textbox',{name:'Ваше имя'});await name.waitFor();await name.fill('Fragment test');
   await page.getByRole('button',{name:'Войти на доску',exact:true}).click();await bind();
-  await page.keyboard.press('Alt+Shift+N');await page.locator('.notebook-page-controls').waitFor();
+  await createLegacyNotebook(page);await page.locator('.notebook-page-controls').waitFor();
   await committed(record,0);
   stage='native crossing pencil';
   const stroke=await page.evaluate(()=>{const b=window.book().getBoundingRect();return {a:window.toScreen(b.left-60,b.top+90),b:window.toScreen(b.left+120,b.top+90)};});

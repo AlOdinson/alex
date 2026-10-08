@@ -8955,7 +8955,7 @@ function BoardWorkspace({
   useEffect(() => {
     const createLegacyNotebook = (event) => {
       if (!canEditRef.current || !event.altKey || !event.shiftKey
-        || event.ctrlKey || event.metaKey || String(event.key ?? '').toLowerCase() !== 'n'
+        || event.ctrlKey || event.metaKey || (event.code !== 'KeyN' && String(event.key ?? '').toLowerCase() !== 'n')
         || event.repeat || event.target?.closest?.('input, textarea, [contenteditable="true"]')) return;
       event.preventDefault();
       event.stopPropagation();

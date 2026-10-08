@@ -3,6 +3,26 @@ import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { createCanvas, loadImage } from 'canvas';
+
+async function createLegacyNotebook(p) {
+  // Screenshot replaced the Notebook button. Wait for the same enabled state
+  // that Playwright's old button.click() awaited before invoking the retained
+  // notebook creation callback. This keeps legacy coverage without UI clutter.
+  await p.waitForFunction(() => {
+    const button = document.querySelector('.board-tool-dock .dock-tool-button[title="Screenshot"]');
+    return Boolean(button && !button.disabled);
+  });
+  await p.evaluate(() => {
+    const element = document.querySelector('.toolbar-shell');
+    let fiber = element?.[Object.keys(element).find(key => key.startsWith('__reactFiber'))];
+    while (fiber && !fiber.memoizedProps?.onAddNotebook) fiber = fiber.return;
+    if (typeof fiber?.memoizedProps?.onAddNotebook !== 'function') {
+      throw new Error('Legacy notebook action is unavailable');
+    }
+    fiber.memoizedProps.onAddNotebook();
+  });
+}
+
 const engine = process.env.VERIFICATION_BROWSER === 'webkit' ? 'webkit' : 'chromium';
 const server = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', '127.0.0.1'], { stdio: 'ignore' });
 const browser = await (engine === 'webkit' ? webkit : chromium).launch({ headless: true,
@@ -19,7 +39,7 @@ async function openBoard({ touch = false } = {}) {
   await p.getByRole('textbox', { name: 'Ваше имя' }).fill('Navigation test');
   await p.getByRole('button', { name: 'Войти на доску', exact: true }).click();
   await p.waitForFunction(() => document.documentElement.dataset.alexDurableEditState === 'ready' && document.documentElement.dataset.alexDurableEditBlocked !== 'true');
-  await p.keyboard.press('Alt+Shift+N');
+  await createLegacyNotebook(p);
   await p.locator('.notebook-page-controls').waitFor();
   await p.evaluate(() => {
     let f = document.querySelector('.toolbar-shell'); f = f[Object.keys(f).find(k => k.startsWith('__reactFiber'))];
