@@ -14,19 +14,6 @@ export function hasTeacherCameraMoved(previous, next) {
     || Math.abs(values[2] - earlier[2]) >= VIEW_ZOOM_EPSILON;
 }
 
-// Disable inherited rotation snapping before and after edit-lease acquisition.
-// Existing resize corners, history and realtime synchronization remain intact.
-export function enableContinuousRotation(transform) {
-  const target = transform?.target;
-  if (!target || (transform.action !== 'rotate'
-    && transform.corner !== 'mtr' && transform.corner !== 'alexCornerRotate')) return false;
-  // A collaborative lease may temporarily set lockRotation=true here.
-  // Removing snap settings does not unlock or rotate the target.
-  target.snapAngle = 0;
-  target.snapThreshold = 0;
-  return true;
-}
-
 export function clearSelectionsForNewStroke(canvas, nativeSelection) {
   let clearedNative = false;
   let clearedObject = false;

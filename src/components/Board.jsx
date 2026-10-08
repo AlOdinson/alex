@@ -119,7 +119,8 @@ import {
   shareCanvasPng,
 } from '../lib/exportBoard.js';
 import { createPencilDiagnostics } from '../lib/pencilDiagnostics.js';
-import { hasTeacherCameraMoved, enableContinuousRotation, clearSelectionsForNewStroke } from '../lib/boardInteractionFixes.js';
+import { hasTeacherCameraMoved, clearSelectionsForNewStroke } from '../lib/boardInteractionFixes.js';
+import { dragCornerAroundOpposite } from '../lib/boardCornerPivot.js';
 import { captureBoardScreenshot, normalizeScreenshotRect, screenshotCanvasToBlob } from '../lib/boardScreenshot.js';
 import { createAuthoritativeSnapshotGate } from '../lib/authoritativeSnapshotGate.js';
 import { planCanonicalBoardClear } from '../lib/canonicalBoardClear.js';
@@ -591,54 +592,33 @@ function renderSelectionMoveHandle(context, left, top) {
 }
 
 
-function renderCornerRotationHandle(ctx, x, y) {
-  ctx.save();
-  ctx.translate(x, y);
-  // The four original corner handles keep their continuous scaling behavior.
-  // This separate grip beyond the top-right corner provides free rotation.
-  ctx.beginPath();
-  ctx.arc(0, 0, 16, 0, Math.PI * 2);
-  ctx.fillStyle = '#ffffff';
-  ctx.strokeStyle = '#2563eb';
-  ctx.lineWidth = 2;
-  ctx.fill();
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(0, 0, 7.3, -Math.PI * 0.84, Math.PI * 0.53);
-  ctx.strokeStyle = '#1d4ed8';
-  ctx.lineWidth = 2.3;
-  ctx.lineCap = 'round';
-  ctx.stroke();
-  const end = Math.PI * 0.53;
-  const arrowX = Math.cos(end) * 7.3;
-  const arrowY = Math.sin(end) * 7.3;
-  ctx.beginPath();
-  ctx.moveTo(arrowX - 4.8, arrowY + 0.4);
-  ctx.lineTo(arrowX, arrowY);
-  ctx.lineTo(arrowX + 0.5, arrowY - 4.8);
-  ctx.stroke();
-  ctx.restore();
-}
+// Square corner handles perform free rotation and proportional scaling around
+// their diagonally opposite vertex; no separate rotation-only grip is drawn.
+const cornerPivotControlAction = controlsUtils.wrapWithFireEvent('scaling', dragCornerAroundOpposite);
 
-const continuousCornerRotationControl = new Control({
-  x: 0.5,
-  y: -0.5,
-  offsetX: 29,
-  offsetY: -29,
-  sizeX: 32,
-  sizeY: 32,
-  touchSizeX: 50,
-  touchSizeY: 50,
-  cursorStyle: 'crosshair',
-  actionName: 'rotate',
-  actionHandler: controlsUtils.rotationWithSnapping,
-  render: renderCornerRotationHandle,
-});
-
-function installContinuousCornerRotation(object) {
-  if (!object?.controls || object.transientScreenShare) return false;
-  if (object.controls.alexCornerRotate === continuousCornerRotationControl) return false;
-  object.controls = { ...object.controls, alexCornerRotate: continuousCornerRotationControl };
+function installPivotCornerControls(object) {
+  if (!object?.controls || object.transientScreenShare || isBoardNotebook(object)) return false;
+  const current = object.controls;
+  const corners = ['tl', 'tr', 'br', 'bl'];
+  if (!current.alexCornerRotate && !current.mtr
+    && corners.every((corner) => current[corner]?.actionHandler === cornerPivotControlAction)) return false;
+  const next = { ...current };
+  delete next.alexCornerRotate;
+  delete next.mtr;
+  for (const corner of corners) {
+    const original = current[corner];
+    if (!original || original.actionHandler === cornerPivotControlAction) continue;
+    // Retain native square rendering, hit size and visibility of each object.
+    next[corner] = Object.assign(Object.create(Object.getPrototypeOf(original)), original, {
+      actionName: 'scale',
+      getActionName: () => 'scale',
+      actionHandler: cornerPivotControlAction,
+      getActionHandler: () => cornerPivotControlAction,
+      cursorStyle: 'crosshair',
+      cursorStyleHandler: () => 'crosshair',
+    });
+  }
+  object.controls = next;
   object.setCoords?.();
   return true;
 }
@@ -3348,9 +3328,8 @@ function BoardWorkspace({
     const canvas = fabricCanvasRef.current;
     if (!canvas) return;
     const active = canvas.getActiveObject();
-    // Rotating near the corner is continuous; the original corners still resize.
-    // ShareScreen is never rotationally interactive.
-    if (active && !isBoardScreenShareObject(active)) installContinuousCornerRotation(active);
+    // Each corner stretches and turns the selection about the opposite fixed vertex.
+    if (active && !isBoardScreenShareObject(active)) installPivotCornerControls(active);
     const members = isActiveSelectionObject(active) && typeof active.getObjects === 'function'
       ? active.getObjects()
       : [];
@@ -11360,9 +11339,6 @@ function BoardWorkspace({
         return;
       }
       if (applyingRemoteRef.current || applyingHistoryRef.current || !transform?.target) return;
-      // Rotation must follow every angle of the dragged handle; old objects may
-      // carry 90-degree snap properties from earlier tools/serialized content.
-      enableContinuousRotation(transform);
       if (isBoardScreenShareObject(transform.target)) {
         modifiedBeforeRecordsRef.current = [];
         currentTransformStartRef.current = null;
@@ -11378,9 +11354,6 @@ function BoardWorkspace({
         notebookTransformProjectionHolds.add(release);
       }
       const beginLeasedTransform = () => {
-        // A held gesture can receive its edit lease after before:transform.
-        // Reassert free rotation after the temporary lock is lifted.
-        enableContinuousRotation(transform);
         suppressTargetFindDuringTransform();
         const pointerType = nativeEvent?.pointerType
           ?? (selectionPenSessionRef.current.active || penInputRef.current.active ? 'pen' : 'unknown');
