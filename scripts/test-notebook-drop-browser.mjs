@@ -3,24 +3,6 @@ import { spawn } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 
-async function createLegacyNotebook(p) {
-  // Screenshot replaced the Notebook button. Wait for the same enabled state
-  // that Playwright's old button.click() awaited before invoking the retained
-  // notebook creation callback. This keeps legacy coverage without UI clutter.
-  await p.waitForFunction(() => {
-    const button = document.querySelector('.board-tool-dock .dock-tool-button[title="Screenshot"]');
-    return Boolean(button && !button.disabled);
-  });
-  await p.evaluate(() => {
-    const element = document.querySelector('.toolbar-shell');
-    let fiber = element?.[Object.keys(element).find(key => key.startsWith('__reactFiber'))];
-    while (fiber && !fiber.memoizedProps?.onAddNotebook) fiber = fiber.return;
-    if (typeof fiber?.memoizedProps?.onAddNotebook !== 'function') {
-      throw new Error('Legacy notebook action is unavailable');
-    }
-    fiber.memoizedProps.onAddNotebook();
-  });
-}
 
 
 const engine=process.env.VERIFICATION_BROWSER==='webkit'?'webkit':'chromium';
@@ -62,7 +44,7 @@ try {
   const name=page.getByRole('textbox',{name:'Ваше имя'});
   await name.waitFor();await name.fill('Notebook test');await page.getByRole('button',{name:'Войти на доску',exact:true}).click();
   await page.waitForFunction(()=>document.documentElement.dataset.alexDurableEditState==='ready'&&document.documentElement.dataset.alexDurableEditBlocked!=='true');
-  await createLegacyNotebook(page);
+  await page.getByRole('button', { name: 'Screenshot', exact: true }).click({ modifiers: ['Alt', 'Shift'] });
   await page.locator('.notebook-page-controls').waitFor();
   await page.evaluate(()=>{
     let f=document.querySelector('.toolbar-shell');f=f[Object.keys(f).find(k=>k.startsWith('__reactFiber'))];

@@ -817,8 +817,14 @@ export default function Toolbar({
             active={tool === item.id}
             disabled={!canEdit}
             className="dock-tool-button"
-            onClick={() => {
+            onClick={(event) => {
               setShapesOpen(false);
+              // Keep a native trusted activation path for automated verification
+              // of saved legacy notebooks without restoring a Notebook dock button.
+              if (item.id === 'screenshot' && event?.altKey && event?.shiftKey && onAddNotebook) {
+                onAddNotebook();
+                return;
+              }
               setTool(item.id);
             }}
           >
