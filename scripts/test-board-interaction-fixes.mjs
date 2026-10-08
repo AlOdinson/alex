@@ -56,5 +56,6 @@ test('Board applies free rotation on Fabric transform, follows teacher movement 
   assert.match(board, /clearSelectionsForNewStroke\(canvas, window\.getSelection\?\.\(\)\)/);
   assert.match(board, /clearSelectionsOnDrawingContact\(event\)/);
   assert.match(board, /clearSelectionsOnDrawingContact\(nativeEvent\)/);
+  assert.match(board, /clearNativeBoardSelection\(\{ anywhere: Boolean\(drawingNow\) \}\)/);
   assert.match(board, /if \(hasMoved && autopilotRef\.current\)/);
 });

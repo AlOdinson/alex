@@ -14204,8 +14204,17 @@ function BoardWorkspace({
     }
 
     function handleNativeBoardSelectionChange() {
+      // An active Pencil/line/shape stroke must not leave behind selected labels
+      // in menus rendered through a portal outside the board-page subtree.
+      // Never clear a genuine editable field's caret/text selection.
       if (isNativeBoardTextTarget(document.activeElement)) return;
-      clearNativeBoardSelection();
+      const drawingNow = canEditRef.current && (
+        (activeToolRef.current === 'pencil'
+          && (canvas._isCurrentlyDrawing || activePencilRef.current || penInputRef.current.active))
+        || (activeToolRef.current === 'line' && lineRef.current)
+        || (activeToolRef.current === 'shape' && shapeDraftRef.current)
+      );
+      clearNativeBoardSelection({ anywhere: Boolean(drawingNow) });
     }
 
     function consumeEyedropperStylusTouch(event) {
