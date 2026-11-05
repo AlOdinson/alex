@@ -22,6 +22,13 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --no-audit --no-fund
+      - name: Source-only verification snapshot
+        run: git archive --format=tar HEAD -o /tmp/alex-repair-source.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alex-repair-source
+          path: /tmp/alex-repair-source.tar
+          retention-days: 1
       - name: Prepare and verify regression reproduction
         run: |
           if [ -f scripts/apply-board-repairs.py ]; then
