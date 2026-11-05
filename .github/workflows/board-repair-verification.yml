@@ -32,6 +32,18 @@ jobs:
           fi
           python3 scripts/apply-board-repairs.py --apply
           node --test scripts/test-board-repairs.mjs
+      - name: Inspect and normalize local-server test endpoint
+        run: |
+          git rev-parse HEAD
+          cat scripts/run-sync-ci.mjs
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/test-mac-agent-development-network.mjs')
+          if p.exists():
+              source = p.read_text()
+              print(source)
+              p.write_text(source.replace('http://localhost:', 'http://127.0.0.1:'))
+          PY
       - run: npm run test:browser-authority
       - run: npm run test:media
       - run: npm run test:sync:ci
