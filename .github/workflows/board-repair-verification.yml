@@ -1,75 +1,63 @@
-name: Verify board export eraser and upload repairs
+name: Verify board export, eraser and uploads
+
 on:
   push:
     branches: ['fix/export-eraser-uploads-20261105']
+
 permissions:
-  contents: write
+  contents: read
+
 concurrency:
   group: board-repair-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  VITE_NOTEBOOK_OPERATIONS_V1: 'true'
+  NODE_OPTIONS: '--dns-result-order=ipv4first'
+
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    env:
-      VITE_NOTEBOOK_OPERATIONS_V1: 'true'
-      NODE_OPTIONS: '--dns-result-order=ipv4first'
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-        with:
-          ref: ${{ github.ref }}
-          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci --no-audit --no-fund
-      - name: Reproduce failures then verify the repair
-        run: |
-          python3 scripts/apply-board-repairs.py --tests
-          if node --test scripts/test-board-repairs.mjs; then
-            echo '::error::Regression tests unexpectedly passed without the repair'
-            exit 1
-          fi
-          python3 scripts/apply-board-repairs.py --apply
-          node --test scripts/test-board-repairs.mjs
-      - name: Inspect and normalize local-server test endpoint
-        run: |
-          git rev-parse HEAD
-          cat scripts/run-sync-ci.mjs
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('scripts/test-mac-agent-development-network.mjs')
-          if p.exists():
-              source = p.read_text()
-              print(source)
-              p.write_text(source.replace('http://localhost:', 'http://127.0.0.1:'))
-          PY
       - run: npm run test:browser-authority
+      - run: npm run test:student:reading
       - run: npm run test:media
       - run: npm run test:sync:ci
       - run: npm run test:screen-share
       - run: npm run test:notebook
       - run: npm run build
-      - name: Browser regression checks
-        run: |
-          npm install --no-save --no-package-lock playwright-core@1.62.1
-          node node_modules/playwright-core/cli.js install --with-deps chromium webkit
-          node scripts/test-board-repairs-browser.mjs
-          VERIFICATION_BROWSER=webkit node scripts/test-board-repairs-browser.mjs
-      - uses: actions/upload-artifact@v4
-        if: always()
+
+  browser:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, engine: chromium }
+          - { os: macos-latest, engine: webkit }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
         with:
-          name: board-repair-browser-results
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - run: npm install --no-save --no-package-lock playwright-core@1.62.1
+      - run: node node_modules/playwright-core/cli.js install --with-deps ${{ matrix.engine }}
+      - run: npm run test:board-repairs:browser
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+          WEBKIT_LOCAL_ICE: '1'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: board-repair-${{ matrix.engine }}
           path: board-repair-results/
           if-no-files-found: ignore
-          retention-days: 3
-      - name: Commit verified source changes to isolated branch
-        run: |
-          test "$GITHUB_REF_NAME" = 'fix/export-eraser-uploads-20261105'
-          rm scripts/apply-board-repairs.py
-          rm -rf scripts/.board-repair-payload
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add src scripts docs package.json
-          git commit -m 'fix: reliable export, scoped eraser and recoverable image uploads'
-          git push origin HEAD:"$GITHUB_REF_NAME"

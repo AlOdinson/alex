@@ -1,3 +1,4 @@
+import { createImageUploadQueue } from '../src/lib/imageUploadQueue.js';
 import { readStableNotebookCheckpoint } from '../src/lib/notebookCheckpoint.js';
 import { queueNotebookWork } from '../src/lib/notebookWorkScheduler.js';
 import { readSnapshotRecord } from '../src/lib/indexedBoardModel.js';
@@ -122,12 +123,14 @@ export async function createUiHarness({authority,clientId='teacher',beforeCommit
   await beforeCommit({ops,actionId,clientId});const result=await authority.commitAction({ops,actionId,clientId,baseRevision:authority.getRevision()});await deliver(result,clientId);return result;
  }},onCommit:commit,onPendingChange:count=>{scope.pendingServerWritesRef.current=count;},onStatus:()=>{}});
  Object.assign(realtime,{whenRuntimeReady:async()=>{},getNotebookVersion:()=>1,getNotebookCheckpoint:()=>({snapshot:authority.getSnapshot(),revision:authority.getRevision(),tombstones:authority.getTombstones(),notebookTombstones:authority.getNotebookTombstones()}),getVerificationStats:()=>({enabled:true})});
+ scope.uploadQueueRef=ref(createImageUploadQueue({isReady:()=>scope.canEditRef.current}));
+ scope.setOperationNotice=notice=>statuses.push(notice.message);
  scope.realtimeRef=ref(realtime);scope.notebookHandlersRef.current={leaseForOperations:async()=>true,refreshControls:()=>{}};
  await scope.ensureNotebookController();
  return {canvas,scope,errors,statuses,history,savedCaches,book:()=>canvas.getObjects().find(isBoardNotebook),
   async flush(){await scope.notebookControllerRef.current.flush();await scope.authoritativeApplyQueueRef.current;},
   async receive(result,sourceClientId){return scope.applyRemoteOps(result.appliedOps,result.revision,false,result.appliedBackground,result.actionId,sourceClientId);},
-  async close(){scope.boardReadyRef.current=false;scope.notebookControllerEpochRef.current++;scope.notebookControllerRef.current?.dispose();scope.notebookControllerRef.current=null;await realtime.disconnect();await canvas.dispose();},
+  async close(){scope.uploadQueueRef.current?.close();scope.boardReadyRef.current=false;scope.notebookControllerEpochRef.current++;scope.notebookControllerRef.current?.dispose();scope.notebookControllerRef.current=null;await realtime.disconnect();await canvas.dispose();},
  };
 }
 

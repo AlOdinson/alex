@@ -46,6 +46,10 @@ import {
   util,
 } from 'fabric';
 import Toolbar from './Toolbar.jsx';
+import EraserScopePicker from './EraserScopePicker.jsx';
+import BoardOperationStatus from './BoardOperationStatus.jsx';
+import { DEFAULT_ERASER_SCOPE, ERASER_SCOPES, eraserAllows } from '../lib/eraserScope.js';
+import { createImageUploadQueue } from '../lib/imageUploadQueue.js';
 import { boundedCursorIntersection, createCursorVisibilityController } from '../lib/cursorVisibility.js';
 import { getParticipantName, saveParticipantName } from '../lib/participantName.js';
 import LanguageToggle from './LanguageToggle.jsx';
@@ -1937,6 +1941,7 @@ function BoardWorkspace({
   // Fabric after the atomic eyedropper session has already completed.
   const eyedropperCompatibilityGuardUntilRef = useRef(0);
   const eraserModeRef = useRef('object');
+  const eraserScopeRef = useRef(DEFAULT_ERASER_SCOPE);
   const eraserWidthRef = useRef(28);
   const fontFamilyRef = useRef('Arial');
   const fontSizeRef = useRef(34);
@@ -2119,6 +2124,30 @@ function BoardWorkspace({
   const [width, setWidthState] = useState(DEFAULT_DRAWING_STYLES.pencil.width);
   const [eyedropperActive, setEyedropperActive] = useState(false);
   const [eraserMode, setEraserModeState] = useState('object');
+  const [eraserScope, setEraserScope] = useState(DEFAULT_ERASER_SCOPE);
+  const [eraserScopeOpen, setEraserScopeOpen] = useState(false);
+  const [operationNotice, setOperationNotice] = useState(null);
+  const exportBusyRef = useRef(false);
+  const [uploadJobs, setUploadJobs] = useState([]);
+  const uploadQueueRef = useRef(null);
+  useEffect(() => {
+    const queue = createImageUploadQueue({
+      isReady: () => canEditRef.current,
+      onChange: setUploadJobs,
+    });
+    uploadQueueRef.current = queue;
+    setUploadJobs([]);
+    return () => {
+      queue.close();
+      uploadQueueRef.current = null;
+    };
+  }, [boardId]);
+  const closeEraserScope = useCallback(() => setEraserScopeOpen(false), []);
+  const chooseEraserScope = useCallback((scope) => {
+    if (!ERASER_SCOPES.includes(scope)) return;
+    eraserScopeRef.current = scope;
+    setEraserScope(scope);
+  }, []);
   const [eraserWidth, setEraserWidthState] = useState(28);
   const [fontFamily, setFontFamilyState] = useState('Arial');
   const [fontSize, setFontSizeState] = useState(34);
@@ -3091,6 +3120,7 @@ function BoardWorkspace({
     if (undoStackRef.current.length > HISTORY_LIMIT) undoStackRef.current.shift();
     redoStackRef.current = [];
     updateHistoryButtons();
+    return action;
   }, [updateHistoryButtons]);
 
   // Automatic full-snapshot compaction is intentionally disabled.
@@ -3228,6 +3258,7 @@ function BoardWorkspace({
       const permanentNonInteractive = Boolean(
         object.isEraserPath
         || object.pendingImage
+        || object.pendingUpload
         || object.transientPreview
         || (object.transientSelectionProxy && !isLocalSelectionProxy)
       );
@@ -3279,6 +3310,7 @@ function BoardWorkspace({
       const permanentNonInteractive = Boolean(
         object.isEraserPath
         || object.pendingImage
+        || object.pendingUpload
         || object.transientPreview
         || (object.transientSelectionProxy && !isLocalSelectionProxy)
       );
@@ -3463,7 +3495,9 @@ function BoardWorkspace({
   }, []);
 
   const setTool = useCallback((nextTool) => {
-    if (!canEditRef.current || nextTool === activeToolRef.current) return;
+    if (!canEditRef.current) return;
+    if (nextTool === 'eraser') setEraserScopeOpen(true);
+    if (nextTool === activeToolRef.current) return;
     const canvas = fabricCanvasRef.current;
     const switchingTool = nextTool !== activeToolRef.current;
     if (switchingTool) {
@@ -3528,11 +3562,12 @@ function BoardWorkspace({
       setEyedropperActive(false);
     }
     if (nextTool !== 'shape') selectedShapeRef.current = null;
+    if (nextTool !== 'eraser') closeEraserScope();
     activeToolRef.current = nextTool;
     activateDrawingStyle(nextTool);
     setToolState(nextTool);
     configureBrushAndMode();
-  }, [activateDrawingStyle, closeMobileTextEditor, configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
+  }, [activateDrawingStyle, closeEraserScope, closeMobileTextEditor, configureBrushAndMode, updateSelectionState, updateSelectionStyleState]);
 
   useEffect(() => {
     if (tool !== 'screenshot' || !canEdit) return undefined;
@@ -4444,163 +4479,195 @@ function BoardWorkspace({
 
   const addImageFiles = useCallback(async (files, scenePoint = null, screenshotPlacement = null) => {
     const canvas = fabricCanvasRef.current;
-    if (!canvas || !canEditRef.current) return;
+    const queue = uploadQueueRef.current;
+    if (!canvas || !queue || !canEditRef.current) return;
     const imageFiles = [...files].filter(isAcceptedBoardFile);
     if (!imageFiles.length) {
-      setSaveStatus('Поддерживаются PDF, JPG, PNG, WebP, GIF, HEIC и HEIF');
-      setSyncTone('error');
+      setOperationNotice({ tone: 'error', message: 'Поддерживаются PDF, JPG, PNG, WebP, GIF, HEIC и HEIF' });
       return;
     }
-
     const basePoint = scenePoint ?? getViewportSceneCenter();
     const completed = [];
-    const failedMessages = [];
-
-    for (let index = 0; index < imageFiles.length; index += 1) {
-      const file = imageFiles[index];
-      const point = new Point(basePoint.x + index * 24, basePoint.y + index * 24);
-      const placeholder = createImagePlaceholder(point);
-      markObject(placeholder, clientIdRef.current);
-      placeholder.set({ selectable: false, evented: false, hasControls: false });
-      placeholder.transientPreview = true;
-      canvas.add(placeholder);
-      canvas.requestRenderAll();
-      const placeholderRecord = getObjectRecords([placeholder]);
-      realtimeRef.current?.sendPreview?.(placeholderRecord);
-      // The upload placeholder is transient. Persisting it created two authoritative
-      // revisions for one image and allowed the final image upsert to overwrite a newer
-      // server transform. Only the completed Storage object enters the v8 journal.
-
-      setSaveStatus(`Загружаю изображение ${index + 1} из ${imageFiles.length}…`);
-      setSyncTone('saving');
+    let batchFinished = false;
+    const jobs = imageFiles.map((file, index) => ({
+      id: randomToken(18),
+      actionId: randomToken(24),
+      objectId: randomToken(14),
+      name: file.name,
+      file,
+      point: new Point(basePoint.x + index * 24, basePoint.y + index * 24),
+    }));
+    queue.add(jobs, async (job, isCurrent) => {
+      const current = () => isCurrent() && fabricCanvasRef.current === canvas;
+      const requireCurrent = () => {
+        if (!current()) throw new DOMException('Добавление файла отменено', 'AbortError');
+      };
+      requireCurrent();
       let prepared = null;
       let adopted = false;
+      let placeholder = null;
+      let historyAction;
+      let settleHistory;
       try {
-        const header = new Uint8Array(await file.slice(0, 6).arrayBuffer());
-        const signature = String.fromCharCode(...header);
-        const mediaFile = signature.startsWith('%PDF-') || signature === 'GIF87a' || signature === 'GIF89a';
-        let metadata = null;
-        let stored, element;
-        if (mediaFile) {
-          metadata = await boardMediaAssets.importFile(boardId, file);
-          if (!metadata.persisted) throw new Error('Не удалось сохранить медиафайл на устройстве. Проверьте свободное место');
-          prepared = await mediaRuntimeRef.current.prepareAsset(metadata);
-          if (!realtimeRef.current?.ensureMediaAsset) throw new Error('Соединение для передачи медиафайла ещё не готово');
-          await realtimeRef.current.ensureMediaAsset(metadata.assetId);
-          stored = { storagePath: null, url: '' };
-          element = prepared.result.element;
-        } else {
-          stored = await storeBoardImage(boardId, file);
-          element = await loadImageElement(stored.url, { retries: 1 });
-        }
-        if (fabricCanvasRef.current !== canvas || !canEditRef.current) throw new Error('Добавление файла отменено');
-        const object = new FabricImage(element, {
-          left: point.x,
-          top: point.y,
-          originX: 'center',
-          originY: 'center',
-          objectKind: 'image',
-          storagePath: stored.storagePath,
-          boardObjectId: placeholder.boardObjectId,
-          crossOrigin: /^https?:/i.test(stored.url) ? 'anonymous' : undefined,
-        });
-        if (metadata) {
-          object.set({ mediaKind: metadata.kind, mediaAssetId: metadata.assetId, mediaName: metadata.name,
-            pageNumber: 1, pageCount: prepared.pageCount });
-          mediaRuntimeRef.current.adopt(object, prepared);
-          adopted = true;
-        }
-        const imageWidth = Number(object.width || element.naturalWidth || 1);
-        const imageHeight = Number(object.height || element.naturalHeight || 1);
-        if (Number(screenshotPlacement?.width) > 0 && Number(screenshotPlacement?.height) > 0) {
-          // A screenshot replaces exactly the selected viewport area, regardless
-          // of zoom, retina resolution or the image optimizer's raster size.
-          object.set({
-            scaleX: screenshotPlacement.width / imageWidth,
-            scaleY: screenshotPlacement.height / imageHeight,
+        if (!job.records) {
+          const { file, point } = job;
+          placeholder = createImagePlaceholder(point);
+          placeholder.boardObjectId = job.objectId;
+          markObject(placeholder, clientIdRef.current);
+          placeholder.set({ selectable: false, evented: false, hasControls: false });
+          placeholder.transientPreview = true;
+          canvas.add(placeholder);
+          canvas.requestRenderAll();
+          Promise.resolve(realtimeRef.current?.sendPreview?.(getObjectRecords([placeholder]))).catch(() => undefined);
+
+          const header = new Uint8Array(await file.slice(0, 6).arrayBuffer());
+          const signature = String.fromCharCode(...header);
+          const mediaFile = signature.startsWith('%PDF-') || signature === 'GIF87a' || signature === 'GIF89a';
+          let metadata = null;
+          let stored, element;
+          if (mediaFile) {
+            metadata = await boardMediaAssets.importFile(boardId, file);
+            if (!metadata.persisted) {
+              throw new Error('Не удалось сохранить медиафайл на устройстве. Проверьте свободное место');
+            }
+            requireCurrent();
+            prepared = await mediaRuntimeRef.current.prepareAsset(metadata);
+            stored = { storagePath: null, url: '' };
+            element = prepared.result.element;
+          } else {
+            stored = await storeBoardImage(boardId, file);
+            element = await loadImageElement(stored.url, { retries: 1 });
+          }
+          requireCurrent();
+          const object = new FabricImage(element, {
+            left: point.x,
+            top: point.y,
+            originX: 'center',
+            originY: 'center',
+            objectKind: 'image',
+            storagePath: stored.storagePath,
+            boardObjectId: job.objectId,
+            crossOrigin: /^https?:/i.test(stored.url) ? 'anonymous' : undefined,
           });
-        } else {
-          const zoomValue = Math.max(canvas.getZoom(), MIN_ZOOM);
-          const maximumWidth = Math.min(560, (canvas.getWidth() / zoomValue) * 0.72);
-          const maximumHeight = Math.min(440, (canvas.getHeight() / zoomValue) * 0.72);
-          const scale = Math.min(1, maximumWidth / imageWidth, maximumHeight / imageHeight);
-          object.set({ scaleX: scale, scaleY: scale });
+          if (metadata) {
+            object.set({ mediaKind: metadata.kind, mediaAssetId: metadata.assetId, mediaName: metadata.name,
+              pageNumber: 1, pageCount: prepared.pageCount });
+            mediaRuntimeRef.current.adopt(object, prepared);
+            adopted = true;
+            job.mediaAssetId = metadata.assetId;
+          }
+          const imageWidth = Number(object.width || element.naturalWidth || 1);
+          const imageHeight = Number(object.height || element.naturalHeight || 1);
+          if (Number(screenshotPlacement?.width) > 0 && Number(screenshotPlacement?.height) > 0) {
+            object.set({
+              scaleX: screenshotPlacement.width / imageWidth,
+              scaleY: screenshotPlacement.height / imageHeight,
+            });
+          } else {
+            const zoomValue = Math.max(canvas.getZoom(), MIN_ZOOM);
+            const maximumWidth = Math.min(560, (canvas.getWidth() / zoomValue) * 0.72);
+            const maximumHeight = Math.min(440, (canvas.getHeight() / zoomValue) * 0.72);
+            const scale = Math.min(1, maximumWidth / imageWidth, maximumHeight / imageHeight);
+            object.set({ scaleX: scale, scaleY: scale });
+          }
+          markObject(object, clientIdRef.current);
+          // The local preview stays out of editing and history until publication is confirmed.
+          object.pendingUpload = true;
+          object.set({ selectable: false, evented: false, hasControls: false });
+          const index = canvas.getObjects().indexOf(placeholder);
+          const wasApplyingRemote = applyingRemoteRef.current;
+          applyingRemoteRef.current = true;
+          try {
+            canvas.remove(placeholder);
+            canvas.add(object);
+            if (index >= 0) canvas.moveObjectTo(object, index);
+          } finally {
+            applyingRemoteRef.current = wasApplyingRemote;
+          }
+          object.setCoords();
+          canvas.requestRenderAll();
+          job.records = structuredClone(getObjectRecords([object]));
+          Promise.resolve(realtimeRef.current?.sendPreview?.(job.records)).catch(() => undefined);
         }
-        markObject(object, clientIdRef.current);
-        const placeholderIndex = canvas.getObjects().indexOf(placeholder);
-        applyingRemoteRef.current = true;
-        canvas.remove(placeholder);
-        canvas.add(object);
-        if (placeholderIndex >= 0) canvas.moveObjectTo(object, placeholderIndex);
-        applyingRemoteRef.current = false;
-        object.setCoords();
-        canvas.requestRenderAll();
-        if (screenshotPlacement?.selectOnInsert) selectInsertedObjects([object]);
-        // Initial upload/paste is always a standalone image. Notebook clipping
-        // happens only after the user subsequently moves and releases it.
-        const records = getObjectRecords([object]);
-        recordAction({ type: 'add', records });
-        realtimeRef.current?.sendPreview?.(records);
-        // eslint-disable-next-line no-await-in-loop
-        const imageActionId = randomToken(24);
-        const publicationRecords = structuredClone(records);
+        requireCurrent();
+        const requireConnection = () => {
+          if (!canEditRef.current) throw new Error('Ожидаю восстановления соединения');
+        };
+        requireConnection();
+        if (job.mediaAssetId) {
+          if (!realtimeRef.current?.ensureMediaAsset) throw new Error('Подключение медиафайлов ещё не готово');
+          await realtimeRef.current.ensureMediaAsset(job.mediaAssetId);
+          requireCurrent();
+        }
+        const records = job.records;
+        if (!job.historyRecorded) {
+          // Reserve history order before a slow upload lets later edits finish.
+          // Undo waits for this entry's acknowledgement before using it.
+          historyAction = recordAction({ type: 'add', records });
+          if (historyAction) {
+            historyAction.pendingUpload = new Promise(resolve => { settleHistory = resolve; });
+          }
+        }
         const committedResults = await publishBoardImage(
-          () => sendRecordUpserts(publicationRecords, { actionId: imageActionId }),
-          {
-            isActive: () => fabricCanvasRef.current === canvas && canEditRef.current,
-            onRetry: () => setSaveStatus('Повторяю передачу изображения участникам…'),
+          () => {
+            requireConnection();
+            return sendRecordUpserts(records, { actionId: job.actionId });
           },
+          { isActive: current, onRetry: () => setSaveStatus('Повторяю передачу изображения участникам…') },
         );
+        requireCurrent();
         const committedResult = committedResults?.at(-1);
-        completed.push(object);
-        schedulePersistence();
-
-        if (committedResult) {
-          revisionRef.current = Math.max(Number(revisionRef.current ?? 0), Number(committedResult.revision ?? 0));
-          // eslint-disable-next-line no-await-in-loop
-          await realtimeRef.current?.requestSync?.(committedResult.revision);
+        revisionRef.current = Math.max(Number(revisionRef.current ?? 0), Number(committedResult?.revision ?? 0));
+        job.historyRecorded = true;
+        const [object] = registeredObjectsById(job.objectId);
+        if (object) {
+          object.pendingUpload = false;
+          applyObjectInteractivityToObjects([object]);
+          if (screenshotPlacement?.selectOnInsert || batchFinished) {
+            if (canEditRef.current) selectInsertedObjects([object]);
+          } else {
+            completed.push(object);
+          }
         }
-      } catch (caught) {
+        schedulePersistence();
+        setSaveStatus('Сохранено');
+        setSyncTone('saved');
+        // Sync notification is best-effort after the durable acknowledgement.
+        Promise.resolve().then(() => realtimeRef.current?.requestSync?.(committedResult?.revision)).catch(() => undefined);
+      } catch (error) {
         if (prepared && !adopted) prepared.media.dispose();
-        console.error(caught);
-        applyingRemoteRef.current = true;
-        if (canvas.getObjects().includes(placeholder)) canvas.remove(placeholder);
-        applyingRemoteRef.current = false;
-        realtimeRef.current?.sendDeletePreview?.(
-          [placeholder.boardObjectId],
-          { expectDurable: false },
-        ).catch?.(() => undefined);
-        failedMessages.push(caught instanceof Error ? caught.message : `Не удалось добавить ${file.name}`);
+        if (current() && placeholder?.canvas === canvas) {
+          const wasApplyingRemote = applyingRemoteRef.current;
+          applyingRemoteRef.current = true;
+          try {
+            canvas.remove(placeholder);
+          } finally {
+            applyingRemoteRef.current = wasApplyingRemote;
+          }
+          realtimeRef.current?.sendDeletePreview?.([job.objectId], { expectDurable: false }).catch?.(() => undefined);
+        }
+        // Retry the same records and action ID in case the first attempt reached the authority.
+        throw error;
+      } finally {
+        if (historyAction) {
+          delete historyAction.pendingUpload;
+          if (!job.historyRecorded) {
+            const index = undoStackRef.current.indexOf(historyAction);
+            if (index >= 0) undoStackRef.current.splice(index, 1);
+            if (current()) updateHistoryButtons();
+          }
+          settleHistory(job.historyRecorded === true);
+        }
       }
+    });
+    await queue.whenIdle();
+    batchFinished = true;
+    if (uploadQueueRef.current === queue && canEditRef.current && fabricCanvasRef.current === canvas) {
+      selectInsertedObjects(completed);
     }
-
-    if (completed.length && !screenshotPlacement?.selectOnInsert) selectInsertedObjects(completed);
-
-    if (failedMessages.length) {
-      setSaveStatus(completed.length
-        ? `Добавлено: ${completed.length}. Ошибка: ${failedMessages[0]}`
-        : failedMessages[0]);
-      setSyncTone('error');
-    } else {
-      setSaveStatus('Сохранено');
-      setSyncTone('saved');
-    }
-  }, [
-    applyObjectInteractivity,
-    boardId,
-    configureBrushAndMode,
-    getObjectRecords,
-    getViewportSceneCenter,
-    markObject,
-    recordAction,
-    schedulePersistence,
-    sendDeletes,
-    sendRecordUpserts,
-    selectInsertedObjects,
-    updateSelectionState,
-    updateSelectionStyleState,
-  ]);
-
+    completed.length = 0;
+  }, [applyObjectInteractivityToObjects, boardId, getObjectRecords, getViewportSceneCenter, markObject,
+    recordAction, registeredObjectsById, schedulePersistence, selectInsertedObjects, sendRecordUpserts, updateHistoryButtons]);
 
   // An independent pointer layer owns the entire screenshot gesture: it avoids
   // Fabric hit-testing (including PDF/video) and the Pencil/Touch compatibility
@@ -6413,7 +6480,7 @@ function BoardWorkspace({
   }, [sendDurableOps, syncFromServer]);
 
   const applyHistoryAction = useCallback(async (action, direction) => {
-    if (!action) return { changed: false };
+    if (!action || (action.pendingUpload && !await action.pendingUpload)) return { changed: false };
     // Do not suppress recording/remote updates during network waits. Both teachers
     // and students may continue drawing while this immutable request is in flight.
     if (!action.pendingHistoryRequest) {
@@ -7606,7 +7673,7 @@ function BoardWorkspace({
       return Promise.resolve(true);
     }
     const ids = selectionObjectIds(target);
-    if (!ids.length || flattenTarget(target).some((object) => object?.pendingImage)) {
+    if (!ids.length || flattenTarget(target).some((object) => object?.pendingImage || object?.pendingUpload)) {
       setSelectionLeaseInteraction(target, false);
       return Promise.resolve(false);
     }
@@ -8719,64 +8786,41 @@ function BoardWorkspace({
     return renderFabricCanvas(canvas, backgroundRef.current, { wholeBoard: false, multiplier: 2 });
   }, []);
 
-  const exportCurrentPng = useCallback(async () => {
+  const runBoardExport = useCallback(async (wholeBoard, label, action) => {
+    if (exportBusyRef.current) return;
+    exportBusyRef.current = true;
+    setOperationNotice({tone:'info',message:`Создаю ${label}…`});
+    let bitmap;
     try {
-      setSaveStatus('Создаю PNG текущей области…');
-      const exportCanvas = createCurrentAreaExport();
-      await downloadCanvasPng(exportCanvas, `${safeFilename(initialAccess.title)}-область.png`);
-      setSaveStatus('PNG текущей области сохранён');
+      bitmap = wholeBoard ? createWholeBoardExport() : createCurrentAreaExport();
+      const message = await action(bitmap);
+      setOperationNotice({tone:'success',message:message || `${label}: файл передан браузеру для сохранения`});
     } catch (error) {
-      setSaveStatus(error instanceof Error ? error.message : 'Не удалось создать PNG');
+      if (error?.name === 'AbortError') setOperationNotice(null);
+      else setOperationNotice({tone:'error',message:error?.name === 'SecurityError'
+        ? 'Браузер запретил экспорт внешней картинки. Загрузите её файлом и повторите экспорт.'
+        : (error?.message || 'Не удалось экспортировать доску')});
+    } finally {
+      if (bitmap) { bitmap.width = 0; bitmap.height = 0; }
+      exportBusyRef.current = false;
     }
-  }, [createCurrentAreaExport, initialAccess.title]);
-
-  const exportPng = useCallback(async () => {
-    try {
-      setSaveStatus('Создаю PNG…');
-      const exportCanvas = createWholeBoardExport();
-      await downloadCanvasPng(exportCanvas, `${safeFilename(initialAccess.title)}.png`);
-      setSaveStatus('PNG сохранён');
-    } catch (error) {
-      setSaveStatus(error instanceof Error ? error.message : 'Не удалось создать PNG');
-    }
-  }, [createWholeBoardExport, initialAccess.title]);
-
-  const exportPdf = useCallback(() => {
-    try {
-      setSaveStatus('Создаю PDF…');
-      const exportCanvas = createWholeBoardExport();
-      downloadCanvasPdf(exportCanvas, `${safeFilename(initialAccess.title)}.pdf`, initialAccess.title);
-      setSaveStatus('PDF сохранён');
-    } catch (error) {
-      setSaveStatus(error instanceof Error ? error.message : 'Не удалось создать PDF');
-    }
-  }, [createWholeBoardExport, initialAccess.title]);
-
-  const copyBoardImage = useCallback(async () => {
-    try {
-      const exportCanvas = createWholeBoardExport();
-      await copyCanvasPng(exportCanvas);
-      setSaveStatus('Изображение скопировано');
-    } catch (error) {
-      setSaveStatus(error instanceof Error ? error.message : 'Не удалось скопировать изображение');
-    }
-  }, [createWholeBoardExport]);
-
-  const shareBoardImage = useCallback(async () => {
-    try {
-      const exportCanvas = createWholeBoardExport();
-      const shared = await shareCanvasPng(
-        exportCanvas,
-        `${safeFilename(initialAccess.title)}.png`,
-        initialAccess.title,
-      );
-      setSaveStatus(shared ? 'Итог урока отправлен' : 'PNG сохранён — его можно отправить ученику');
-    } catch (error) {
-      if (error?.name !== 'AbortError') {
-        setSaveStatus(error instanceof Error ? error.message : 'Не удалось отправить итог');
-      }
-    }
-  }, [createWholeBoardExport, initialAccess.title]);
+  }, [createWholeBoardExport,createCurrentAreaExport]);
+  const exportCurrentPng = useCallback(() => runBoardExport(false,'PNG текущей области',async bitmap => {
+    await downloadCanvasPng(bitmap,`${safeFilename(initialAccess.title)}-область.png`);
+  }),[runBoardExport,initialAccess.title]);
+  const exportPng = useCallback(() => runBoardExport(true,'PNG',async bitmap => {
+    await downloadCanvasPng(bitmap,`${safeFilename(initialAccess.title)}.png`);
+  }),[runBoardExport,initialAccess.title]);
+  const exportPdf = useCallback(() => runBoardExport(true,'PDF',bitmap => {
+    downloadCanvasPdf(bitmap,`${safeFilename(initialAccess.title)}.pdf`,initialAccess.title);
+  }),[runBoardExport,initialAccess.title]);
+  const copyBoardImage = useCallback(() => runBoardExport(true,'PNG',async bitmap => {
+    await copyCanvasPng(bitmap);return 'Изображение скопировано';
+  }),[runBoardExport]);
+  const shareBoardImage = useCallback(() => runBoardExport(true,'PNG',async bitmap => {
+    const shared=await shareCanvasPng(bitmap,`${safeFilename(initialAccess.title)}.png`,initialAccess.title);
+    return shared?'Итог урока отправлен':'PNG передан браузеру для сохранения';
+  }),[runBoardExport,initialAccess.title]);
 
   const changePdfPage = useCallback(async (pageNumber) => {
     const canvas = fabricCanvasRef.current;
@@ -8890,7 +8934,7 @@ function BoardWorkspace({
 
   const notebookForObject = useCallback((object) => {
     if (!object || isBoardNotebook(object) || isTextObject(object) && object.isEditing
-      || isBoardMedia(object) || object.pendingImage) return null;
+      || isBoardMedia(object) || object.pendingImage || object.pendingUpload) return null;
     return [...(fabricCanvasRef.current?.getObjects() ?? [])].reverse().find(candidate =>
       isBoardNotebook(candidate) && notebookObjectIntersection(candidate, object).intersects) ?? null;
   }, []);
@@ -11090,6 +11134,7 @@ function BoardWorkspace({
         const object = entry?.object ?? entry;
         if (!object || object.canvas !== canvas || object.isEraserPath
           || object.transientPreview || object.transientSelectionProxy
+          || !eraserAllows(object, eraserScopeRef.current)
           || objectEraserRecordsRef.current.has(object.boardObjectId)) continue;
         const bounds = finiteRect(entry?.bounds ?? object.getBoundingRect());
         if (scenePoint.x < bounds.left - sceneTolerance
@@ -11198,8 +11243,17 @@ function BoardWorkspace({
         objectEraserCandidatesNear(scenePoint),
       );
       if (!target) return;
+      if (isBoardScreenShareObject(target)) {
+        // A screen is a live session, not an IndexedDB object. Never silently
+        // remove just its local Fabric frame while capture continues elsewhere.
+        Promise.resolve(screenShareRef.current?.removeFromBoard?.()).catch(error => {
+          setOperationNotice({tone:'error', message:error?.message || 'Не удалось остановить демонстрацию'});
+        });
+        return;
+      }
       if (isBoardNotebook(target)) {
         const child = notebookEraserCandidates(target, scenePoint).find(object => !object.isEraserPath
+          && eraserAllows(object, eraserScopeRef.current)
           && object.containsPoint(scenePoint) && !canvas.isTargetTransparent(object, viewportPoint.x, viewportPoint.y));
         if (child) {
           const entry = notebookEraserEntries.get(target.boardObjectId)
@@ -14862,6 +14916,7 @@ function BoardWorkspace({
 
   useEffect(() => {
     canEditRef.current = canEdit;
+    if (canEdit) uploadQueueRef.current?.resume();
     canReadDocumentsRef.current = canReadDocuments;
     if (canEdit && activeToolRef.current === 'select' && resumeToolRef.current !== 'select') {
       activeToolRef.current = resumeToolRef.current;
@@ -14937,6 +14992,8 @@ function BoardWorkspace({
         if (canReadDocumentsRef.current) canvas.upperCanvasEl?.setAttribute('data-readonly-navigation', 'true');
       }
       setRuntimeReady(ready);
+      if (canEditRef.current) uploadQueueRef.current?.resume();
+      else uploadQueueRef.current?.pause();
     };
     const listener = (event) => update(event.detail);
     window.addEventListener('alex-board-runtime-state', listener);
@@ -15011,6 +15068,9 @@ function BoardWorkspace({
 
   return (
     <main className="board-page">
+      <BoardOperationStatus notice={operationNotice} onDismiss={() => setOperationNotice(null)}
+        uploads={uploadJobs} onRetry={id => uploadQueueRef.current?.retry(id)} onClear={() => uploadQueueRef.current?.dismissDone()} />
+      {tool === 'eraser' && eraserScopeOpen && canEdit && <EraserScopePicker scope={eraserScope} onChange={chooseEraserScope} onClose={closeEraserScope} />}
       {!canReadDocuments && <Toolbar
         canEdit={canEdit}
         tool={tool}

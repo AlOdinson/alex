@@ -51,6 +51,7 @@ export function screenShareEffectiveProfile(
 const SIGNAL_TYPES = new Set([
   'host-start',
   'host-stop',
+  'screen-remove',
   'host-paused',
   'screen-layout',
   'viewer-ready',
@@ -309,4 +310,11 @@ export function rtcConfiguration() {
     iceCandidatePoolSize: 4,
     bundlePolicy: 'max-bundle',
   };
+}
+
+/** Editors may request removal; only the actual host stops capture and announces it. */
+export function canRemoveScreenShare(signal, session, localClientId) {
+  return Boolean(signal?.type === 'screen-remove' && session?.sourceMode === 'screen'
+    && signal.sessionId === session.sessionId && session.hostId === localClientId
+    && screenSharePermissionCanHost(signal.permission));
 }

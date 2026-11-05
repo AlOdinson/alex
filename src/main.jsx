@@ -32,5 +32,6 @@ import './board-settings-gear.js';
 import './board-fullscreen.css';
 import './dock-layout-modes.css';
 import './board-fullscreen.js';
+import './board-repairs.css';
 
 createRoot(document.getElementById('root')).render(<App />);

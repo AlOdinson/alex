@@ -6,7 +6,8 @@ function downloadBlob(blob, filename) {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // Mobile download handlers may consume the blob after the click task.
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 function drawBackground(context, width, height, background, spacing = 64) {
@@ -42,60 +43,75 @@ function drawBackground(context, width, height, background, spacing = 64) {
   context.restore();
 }
 
+export function fitExportSize(width, height, multiplier = 2) {
+  if (![width, height, multiplier].every(value => Number.isFinite(value) && value > 0)) {
+    throw new Error('Некорректный размер экспорта доски');
+  }
+  const pixelScale = Math.sqrt(8_000_000) / (Math.sqrt(width) * Math.sqrt(height));
+  const scale = Math.min(multiplier, 4096 / width, 4096 / height, pixelScale);
+  return {
+    width: Math.max(1, Math.floor(width * scale)),
+    height: Math.max(1, Math.floor(height * scale)),
+    multiplier: scale,
+  };
+}
+
 export function renderFabricCanvas(canvas, background, { wholeBoard = false, multiplier = 2 } = {}) {
-  const objects = canvas.getObjects().filter((object) => !object.excludeFromExport);
-  let left = 0;
-  let top = 0;
+  const include = object => !object.excludeFromExport && !object.transientPreview && !object.transientSelectionProxy;
+  const objects = canvas.getObjects().filter(include);
   let width = canvas.getWidth();
   let height = canvas.getHeight();
-  let viewportTransform = canvas.viewportTransform;
-
+  let viewport = canvas.viewportTransform;
   if (wholeBoard && objects.length) {
-    const bounds = objects.reduce((result, object) => {
-      const rect = object.getBoundingRect(true, true);
-      return {
-        left: Math.min(result.left, rect.left),
-        top: Math.min(result.top, rect.top),
-        right: Math.max(result.right, rect.left + rect.width),
-        bottom: Math.max(result.bottom, rect.top + rect.height),
-      };
-    }, { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity });
-    const padding = 80;
-    left = bounds.left - padding;
-    top = bounds.top - padding;
-    width = Math.max(320, bounds.right - bounds.left + padding * 2);
-    height = Math.max(240, bounds.bottom - bounds.top + padding * 2);
-    viewportTransform = [1, 0, 0, 1, -left, -top];
+    const bounds = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
+    for (const object of objects) {
+      const rect = object.getBoundingRect();
+      if (![rect.left, rect.top, rect.width, rect.height].every(Number.isFinite)) {
+        throw new Error('Некорректный размер объекта при экспорте');
+      }
+      bounds.left = Math.min(bounds.left, rect.left);
+      bounds.top = Math.min(bounds.top, rect.top);
+      bounds.right = Math.max(bounds.right, rect.left + rect.width);
+      bounds.bottom = Math.max(bounds.bottom, rect.top + rect.height);
+    }
+    width = Math.max(320, bounds.right - bounds.left + 160);
+    height = Math.max(240, bounds.bottom - bounds.top + 160);
+    viewport = [1, 0, 0, 1, 80 - bounds.left, 80 - bounds.top];
   }
-
-  const exportCanvas = document.createElement('canvas');
-  exportCanvas.width = Math.max(1, Math.round(width * multiplier));
-  exportCanvas.height = Math.max(1, Math.round(height * multiplier));
-  const context = exportCanvas.getContext('2d');
-  drawBackground(context, exportCanvas.width, exportCanvas.height, background, 32 * multiplier);
-
+  const size = fitExportSize(width, height, multiplier);
+  const output = document.createElement('canvas');
+  let layer;
   const originalViewport = canvas.viewportTransform;
-  const originalWidth = canvas.getWidth();
-  const originalHeight = canvas.getHeight();
-  const originalSelection = canvas.getActiveObject();
-  canvas.discardActiveObject();
+  const originalWidth = canvas.width;
+  const originalHeight = canvas.height;
+  const originalRetina = canvas.enableRetinaScaling;
+  const originalControls = canvas.skipControlsDrawing;
   try {
-    canvas.setViewportTransform(viewportTransform);
-    const objectLayer = canvas.toCanvasElement(multiplier, {
-      left: 0,
-      top: 0,
-      width,
-      height,
-      enableRetinaScaling: false,
-    });
-    context.drawImage(objectLayer, 0, 0);
+    output.width = size.width;
+    output.height = size.height;
+    const context = output.getContext('2d');
+    if (!context) throw new Error('Недостаточно памяти для экспорта. Попробуйте PNG текущей области.');
+    drawBackground(context, size.width, size.height, background, Math.max(8, 32 * size.multiplier));
+    // toCanvasElement draws without selection controls. Do not discard the live
+    // selection: that would release leases and can trigger a durable transform.
+    canvas.viewportTransform = viewport;
+    layer = canvas.toCanvasElement(size.multiplier, { left: 0, top: 0, width, height, filter: include });
+    if (!layer?.width || !layer?.height) throw new Error('Не удалось создать изображение доски');
+    context.drawImage(layer, 0, 0, output.width, output.height);
+    return output;
+  } catch (error) {
+    output.width = output.height = 0;
+    throw error;
   } finally {
-    canvas.setDimensions({ width: originalWidth, height: originalHeight });
-    canvas.setViewportTransform(originalViewport);
-    if (originalSelection) canvas.setActiveObject(originalSelection);
+    canvas.viewportTransform = originalViewport;
+    if (originalWidth != null) canvas.width = originalWidth;
+    if (originalHeight != null) canvas.height = originalHeight;
+    canvas.enableRetinaScaling = originalRetina;
+    canvas.skipControlsDrawing = originalControls;
+    canvas.calcViewportBoundaries?.();
+    if (layer) layer.width = layer.height = 0;
     canvas.requestRenderAll();
   }
-  return exportCanvas;
 }
 
 export async function canvasToPngBlob(canvas) {
@@ -108,6 +124,7 @@ export async function canvasToPngBlob(canvas) {
 }
 
 function dataUrlBytes(dataUrl) {
+  if (typeof dataUrl !== 'string' || !/^data:image\/jpeg;base64,.+/.test(dataUrl)) throw new Error('Не удалось создать JPEG для PDF: пустое изображение');
   const base64 = dataUrl.split(',')[1];
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -187,11 +204,10 @@ export function downloadCanvasPdf(canvas, filename, title) {
 }
 
 export async function copyCanvasPng(canvas) {
-  const blob = await canvasToPngBlob(canvas);
   if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
     throw new Error('Этот браузер не поддерживает копирование изображения');
   }
-  await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+  await navigator.clipboard.write([new ClipboardItem({ 'image/png': canvasToPngBlob(canvas) })]);
 }
 
 export async function shareCanvasPng(canvas, filename, title) {
@@ -201,6 +217,12 @@ export async function shareCanvasPng(canvas, filename, title) {
     downloadBlob(blob, filename);
     return false;
   }
-  await navigator.share({ title, files: [file] });
-  return true;
+  try {
+    await navigator.share({ title, files: [file] });
+    return true;
+  } catch (error) {
+    if (error?.name !== 'NotAllowedError') throw error;
+    downloadBlob(blob, filename);
+    return false;
+  }
 }

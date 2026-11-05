@@ -19,6 +19,7 @@ import {
   screenShareEffectiveProfile,
   screenShareNetworkIsDegraded,
   screenSharePermissionCanHost,
+  canRemoveScreenShare,
   screenShareProfileForActivity,
 } from '../lib/screenShare.js';
 
@@ -782,6 +783,11 @@ function useAdaptiveScreenShareBase({
       return;
     }
 
+    if (canRemoveScreenShare(signal, session, clientId)) {
+      await stopHosting('eraser', true);
+      return;
+    }
+
     if (signal.type === 'host-stop' && signal.clientId === session.hostId) {
       leaveViewerSession(false);
       return;
@@ -1150,6 +1156,20 @@ function useAdaptiveScreenShareBase({
     else start();
   }, [clientId, start, stopHosting]);
 
+  const lastRemovalRequestRef = useRef({sessionId:'',at:0});
+  const removeFromBoard = useCallback(async () => {
+    if (!canEdit) throw new Error('Нет права редактирования доски');
+    const session = activeSessionRef.current;
+    if (!session || session.sourceMode !== 'screen') return false;
+    if (session.hostId === clientId) { await stopHosting('eraser',true); return true; }
+    const last=lastRemovalRequestRef.current;
+    if(last.sessionId===session.sessionId && Date.now()-last.at<1000) return true;
+    lastRemovalRequestRef.current={sessionId:session.sessionId,at:Date.now()};
+    const result=await sendSignal('screen-remove',{targetId:session.hostId},session);
+    if(result==='unavailable'||result==='closed'||result==='ignored') throw new Error('Не удалось передать остановку демонстрации. Повторите после подключения.');
+    return true;
+  }, [canEdit,clientId,sendSignal,stopHosting]);
+
   const dismiss = useCallback(() => {
     if (activeSessionRef.current?.hostId === clientId) return;
     if (activeSessionRef.current) leaveViewerSession(true);
@@ -1395,6 +1415,7 @@ function useAdaptiveScreenShareBase({
     start,
     startRemoteBrowser,
     stop: () => stopHosting('user', true),
+    removeFromBoard,
     stopRemoteBrowser,
     toggle,
     updateBoardLayout,

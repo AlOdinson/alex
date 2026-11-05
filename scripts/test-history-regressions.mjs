@@ -153,3 +153,35 @@ test('a silent slow participant cannot block commit delivery to healthy particip
   assert.deepEqual(deliveredBeforeDrain, ['commit']);
   assert.equal(settledBeforeDrain, true, 'committing must not await the slowest participant');
 });
+
+test('undo waits for a pending image and never submits an undo for a rejected upload', async () => {
+  const object = { boardObjectId: 'image', type: 'Image' };
+  let commits = 0;
+  const b = await boardHarness([], { beforeCommit: () => { commits++; } });
+  let settle;
+  const pendingUpload = new Promise(resolve => { settle = resolve; });
+  b.recordAction({ type: 'add', records: [{ object, zIndex: 0 }], pendingUpload });
+  const undo = b.undo();
+  await turn();
+  assert.equal(commits, 0);
+  assert.equal(b.undoStackRef.current.length, 1);
+  settle(false);
+  assert.equal((await undo).changed, false);
+  assert.equal(commits, 0);
+  assert.equal(b.redoStackRef.current.length, 0);
+});
+
+test('undo of a confirmed image waits for its commit and produces a redo', async () => {
+  const object = { boardObjectId: 'image', type: 'Image' };
+  const b = await boardHarness([]);
+  let settle;
+  const pendingUpload = new Promise(resolve => { settle = resolve; });
+  b.recordAction({ type: 'add', records: [{ object, zIndex: 0 }], pendingUpload });
+  const undo = b.undo();
+  await turn();
+  await b.commit([{ type: 'upsert', object }]);
+  settle(true);
+  assert.equal((await undo).changed, true);
+  assert.deepEqual(b.service.getSnapshot().canvas.objects, []);
+  assert.equal(b.redoStackRef.current.length, 1);
+});

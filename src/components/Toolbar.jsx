@@ -124,7 +124,7 @@ function firstStylusTouch(event) {
   ) ?? null;
 }
 
-function IconButton({ title, children, active = false, disabled = false, onClick, className = '', stylusActionPhase = 'end' }) {
+function IconButton({ title, children, active = false, disabled = false, onClick, className = '', stylusActionPhase = 'end', dataTool }) {
   const buttonRef = useRef(null);
   const actionRef = useRef(onClick);
   const disabledRef = useRef(disabled);
@@ -172,6 +172,7 @@ function IconButton({ title, children, active = false, disabled = false, onClick
   return (
     <button
       ref={buttonRef}
+      data-tool={dataTool}
       type="button"
       className={'tool-button ' + (active ? 'active ' : '') + className}
       title={title}
@@ -332,7 +333,6 @@ export default function Toolbar({
   const showFloatingDrawingSettings = ['pencil', 'line', 'shape'].includes(tool);
   const showWidth = ['pencil', 'line', 'shape'].includes(tool);
   const showTextSettings = tool === 'text';
-  const showEraserSettings = tool === 'eraser';
   const selectedSupports = selectionStyle ?? { canColor: false, canOpacity: false, canWidth: false };
   const showSelectedStyleControls = selectedCount > 0
     && (selectedSupports.canColor || selectedSupports.canOpacity || selectedSupports.canWidth);
@@ -343,7 +343,7 @@ export default function Toolbar({
       const insideShapeButton = shapeAnchorRef.current?.contains(event.target);
       const insideShapeMenu = event.target?.closest?.('.shape-palette');
       if (!insideShapeButton && !insideShapeMenu) setShapesOpen(false);
-      if (!exportAnchorRef.current?.contains(event.target)) setExportOpen(false);
+      if (!exportAnchorRef.current?.contains(event.target) && !event.target?.closest?.('.board-export-menu')) setExportOpen(false);
       if (!presenceAnchorRef.current?.contains(event.target)) setPresenceOpen(false);
     }
     function closeOnEscape(event) {
@@ -498,14 +498,14 @@ export default function Toolbar({
               <span className="export-wide">Экспорт</span>
               <span className="export-narrow" aria-hidden="true"><ExportIcon /></span>
             </button>
-            {exportOpen && (
-              <div className="export-menu">
+            {exportOpen && createPortal(
+              <div className="export-menu board-export-menu">
                 <button type="button" onClick={() => { setExportOpen(false); onExportCurrentPng?.(); }}>PNG текущей области</button>
                 <button type="button" onClick={() => { setExportOpen(false); onExportPng?.(); }}>PNG всей доски</button>
                 <button type="button" onClick={() => { setExportOpen(false); onExportPdf?.(); }}>PDF всей доски</button>
                 <button type="button" onClick={() => { setExportOpen(false); onCopyImage?.(); }}>Скопировать изображение</button>
                 <button type="button" onClick={() => { setExportOpen(false); onShareImage?.(); }}>Отправить итог урока</button>
-              </div>
+              </div>, document.body
             )}
           </div>
 
@@ -571,44 +571,6 @@ export default function Toolbar({
               />
               <strong>{fontSize}</strong>
             </label>
-          </div>
-        )}
-
-        {showEraserSettings && (
-          <div className="tool-group eraser-controls">
-            <div className="segmented-control" aria-label="Режим ластика">
-              <button
-                type="button"
-                className={eraserMode === 'object' ? 'selected' : ''}
-                disabled={!canEdit}
-                onClick={() => setEraserMode('object')}
-              >
-                Объект
-              </button>
-              <button
-                type="button"
-                className={eraserMode === 'partial' ? 'selected' : ''}
-                disabled={!canEdit}
-                onClick={() => setEraserMode('partial')}
-              >
-                Область
-              </button>
-            </div>
-            {eraserMode === 'partial' && (
-              <label className="compact-slider" title={`Размер ластика: ${eraserWidth}px`}>
-                <span>Размер</span>
-                <input
-                  type="range"
-                  min="6"
-                  max="100"
-                  step="2"
-                  value={eraserWidth}
-                  disabled={!canEdit}
-                  onChange={(event) => setEraserWidth(Number(event.target.value))}
-                />
-                <strong>{eraserWidth}</strong>
-              </label>
-            )}
           </div>
         )}
 
@@ -777,6 +739,7 @@ export default function Toolbar({
         {TOOLS.map((item) => (
           <IconButton
             key={item.id}
+            dataTool={item.id}
             title={item.label}
             active={tool === item.id}
             disabled={!canEdit}

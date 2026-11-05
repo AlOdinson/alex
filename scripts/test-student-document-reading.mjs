@@ -122,9 +122,13 @@ test('repeated offline runtime notifications keep reading focus available, inclu
     && source.slice(n.start, n.end).includes('let stateGeneration = 0'));
   assert.ok(effect); const node = effect.arguments[0]; let listener;
   const canvas = makeCanvas(); const book = notebook(); canvas.add(book);
+  const uploadEvents = [];
   const scope = { boardId:'board', permission:'edit', canEditRef:ref(false), canReadDocumentsRef:ref(true),
     runtimeReadyRef:ref(false), viewedSnapshotRef:ref(true), studentDocumentReaderRef:ref(null),
     activeToolRef:ref('select'), resumeToolRef:ref('pencil'), fabricCanvasRef:ref(canvas),
+    boardReadyRef:ref(true), uploadQueueRef:ref({
+      pause:() => uploadEvents.push('pause'), resume:() => uploadEvents.push('resume'),
+    }),
     setRuntimeReady(){}, setSaveStatus:noWrites, setSyncTone:noWrites,
     applyObjectInteractivity(){ api.applyStudentReadingInteractivity(book, scope.canReadDocumentsRef.current); },
     configureBrushAndMode(){ canvas.skipTargetFind = !(scope.canEditRef.current || scope.canReadDocumentsRef.current); },
@@ -146,6 +150,7 @@ test('repeated offline runtime notifications keep reading focus available, inclu
     await listener({detail:{boardId:'board',state:'disconnected'}}); finish(); await reconnect;
     assert.equal(cancelled,1); assert.equal(scope.canEditRef.current,false); assert.equal(scope.canReadDocumentsRef.current,true);
     assert.equal(canvas.skipTargetFind,false);
+    assert.deepEqual(uploadEvents, ['pause', 'pause', 'pause', 'pause']);
   } finally { cleanup(); await canvas.dispose(); }
 });
 

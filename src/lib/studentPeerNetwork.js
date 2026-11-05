@@ -106,15 +106,22 @@ export function createStudentPeerNetwork({
   };
 
   const awaitAcknowledgement = (task) => {
-    let timer;
+    let timer, finished = false;
     const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => {
-        const error = new Error('Board action acknowledgement timed out');
-        closeResources(error, { reportState: 'failed' });
-        reject(error);
-      }, positiveTimeout(requestTimeoutMs, 30_000));
+      const arm = () => {
+        if (finished) return;
+        timer = setTimeout(() => {
+          const error = new Error('Board action acknowledgement timed out');
+          closeResources(error, { reportState: 'failed' });
+          reject(error);
+        }, positiveTimeout(requestTimeoutMs, 30_000));
+      };
+      // The transport has its own progress-aware write deadline. Only count
+      // acknowledgement time after the complete proposal has been queued.
+      if (task?.sent) Promise.resolve(task.sent).then(arm, reject);
+      else arm();
     });
-    return Promise.race([task, timeout]).finally(() => clearTimeout(timer));
+    return Promise.race([task, timeout]).finally(() => { finished = true; clearTimeout(timer); });
   };
 
   const pair = createPair({

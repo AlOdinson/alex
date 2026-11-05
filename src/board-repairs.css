@@ -1,0 +1,20 @@
+.eraser-scope-menu {position:fixed;z-index:600;display:flex;gap:8px;padding:8px;border:1px solid #cbd5e1;border-radius:18px;background:rgba(255,255,255,.98);box-shadow:0 8px 28px #0f172a33;pointer-events:auto;font:12px system-ui;}
+.eraser-scope-menu button {display:grid;justify-items:center;gap:3px;width:58px;padding:0;border:0;background:transparent;color:#475569;cursor:pointer;}
+.eraser-scope-circle {display:grid;place-items:center;width:40px;height:40px;border:2px solid #cbd5e1;border-radius:50%;background:#f8fafc;font-size:24px;}
+.eraser-scope-menu button.selected .eraser-scope-circle {border-color:#2563eb;background:#dbeafe;color:#1d4ed8;}
+.eraser-scope-menu button:focus-visible {outline:2px solid #2563eb;outline-offset:3px;border-radius:8px;}
+.board-operation-status {position:fixed;z-index:550;right:max(12px,env(safe-area-inset-right));top:max(64px,calc(env(safe-area-inset-top) + 64px));width:min(340px,calc(100vw - 24px));pointer-events:none;font:13px system-ui;}
+.board-operation-notice,.board-upload-status {pointer-events:auto;padding:12px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;box-shadow:0 6px 24px #0f172a26;margin-bottom:8px;color:#0f172a;}
+.board-operation-notice {display:flex;gap:8px;align-items:flex-start;}
+.board-operation-notice.error {border-color:#ef4444;background:#fff1f2;}
+.board-operation-notice span {flex:1;overflow-wrap:anywhere;}
+.board-operation-notice button,.board-upload-status button {border:1px solid #cbd5e1;border-radius:7px;background:#f8fafc;padding:5px 8px;cursor:pointer;color:#1d4ed8;font:inherit;}
+.board-upload-status header {display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:8px;}
+.board-upload-items {max-height:160px;overflow:auto;}
+.board-upload-item {display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 8px;padding:6px 0;border-top:1px solid #e2e8f0;}
+.board-upload-name {overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.board-upload-item small {grid-column:1/-1;color:#b91c1c;overflow-wrap:anywhere;}
+.board-upload-item.done {color:#15803d;}
+.board-upload-item.failed {color:#b91c1c;}
+/* Export is a body portal: it cannot be clipped/covered by the compact toolbar. */
+.board-export-menu {position:fixed!important;z-index:610!important;top:max(60px,calc(env(safe-area-inset-top) + 60px))!important;right:max(10px,env(safe-area-inset-right))!important;left:auto!important;pointer-events:auto!important;}

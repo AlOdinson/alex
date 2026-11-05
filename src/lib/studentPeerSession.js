@@ -348,7 +348,11 @@ export function createStudentPeerSession({
       const task = new Promise((resolve, reject) => {
         actionWaiters.set(actionId, { resolve, reject });
       });
-      Promise.resolve(transport.send('action-proposal', payload)).catch((error) => {
+      // Expose the end of transmission so a large progressing file does not
+      // spend its acknowledgement budget while its bytes are still being sent.
+      const sending = Promise.resolve().then(() => transport.send('action-proposal', payload));
+      task.sent = sending;
+      sending.catch((error) => {
         const waiter = actionWaiters.get(actionId);
         if (!waiter) return;
         actionWaiters.delete(actionId);

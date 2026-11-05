@@ -72,6 +72,11 @@ jobs:
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
         run: npm run test:stylus:menu:browser
+      - name: Board export, eraser scopes and student image batches
+        env:
+          VERIFICATION_BROWSER: ${{ matrix.engine }}
+          WEBKIT_LOCAL_ICE: '1'
+        run: npm run test:board-repairs:browser
       - name: Notebook pages, clipped content, text, erasing and history
         env:
           VERIFICATION_BROWSER: ${{ matrix.engine }}
@@ -106,6 +111,7 @@ jobs:
           name: connection-direct-${{ matrix.engine }}
           path: |
             connection-direct-results/
+            board-repair-results/
             screen-share-receiver-results/
             student-document-reading-results/
             notebook-true-split-results/
