@@ -21,3 +21,14 @@ else:
     s = s[:start] + s[end:]
     s = s.replace("  const showEraserSettings = tool === 'eraser';\n", '')
     p.write_text(s)
+    p = pathlib.Path('scripts/test-board-repairs-browser.mjs')
+    s = p.read_text()
+    s = s.replace("  page.on('pageerror', error => errors.push(error.message));", "  page.on('pageerror', error => {errors.push(error.message);console.error('BROWSER ERROR',error.stack);});\n  page.on('console', message => {if(['warning','error'].includes(message.type())) console.log('BROWSER CONSOLE',message.type(),message.text());});")
+    s = s.replace("} catch(error) {", """} catch(error) {
+  if (page) console.log('READINESS DIAGNOSTIC',JSON.stringify(await page.evaluate(()=>{
+    const el=document.querySelector('.toolbar-shell');let fiber=el?.[Object.keys(el).find(k=>k.startsWith('__reactFiber'))];
+    const components=[];while(fiber){if(typeof fiber.type==='function'){const states=[];let index=0;for(let h=fiber.memoizedState;h;h=h.next,index++){const v=h.memoizedState;if(v===null||['string','number','boolean'].includes(typeof v))states.push([index,v]);}components.push({name:fiber.type.name,canEdit:fiber.memoizedProps?.canEdit,states});}fiber=fiber.return;}
+    return{dataset:{...document.documentElement.dataset},components,text:document.body.innerText.slice(0,4000)};
+  }).catch(e=>({error:String(e)}))));
+""")
+    p.write_text(s)
