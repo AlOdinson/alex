@@ -1,0 +1,58 @@
+name: Verify board export eraser and upload repairs
+on:
+  push:
+    branches: ['fix/export-eraser-uploads-20261105']
+permissions:
+  contents: write
+concurrency:
+  group: board-repair-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VITE_NOTEBOOK_OPERATIONS_V1: 'true'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+      - name: Prepare and verify regression reproduction
+        run: |
+          if [ -f scripts/apply-board-repairs.py ]; then
+            python3 scripts/apply-board-repairs.py --tests
+            if node --test scripts/test-board-repairs.mjs; then
+              echo '::error::Regression tests unexpectedly passed without the repair'
+              exit 1
+            fi
+            python3 scripts/apply-board-repairs.py --apply
+            node --test scripts/test-board-repairs.mjs
+          fi
+      - run: npm run test:browser-authority
+      - run: npm run test:media
+      - run: npm run test:sync:ci
+      - run: npm run test:screen-share
+      - run: npm run test:notebook
+      - run: npm run build
+      - name: Browser regression checks
+        if: ${{ hashFiles('scripts/test-board-repairs-browser.mjs') != '' }}
+        run: |
+          npm install --no-save --no-package-lock playwright-core@1.62.1
+          node node_modules/playwright-core/cli.js install --with-deps chromium
+          node scripts/test-board-repairs-browser.mjs
+      - name: Commit verified source changes to isolated branch
+        if: ${{ hashFiles('scripts/apply-board-repairs.py') != '' }}
+        run: |
+          test "$GITHUB_REF_NAME" = 'fix/export-eraser-uploads-20261105'
+          rm scripts/apply-board-repairs.py .github/workflows/board-repair-verification.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src scripts docs package.json
+          git add -u .github/workflows/board-repair-verification.yml
+          git commit -m 'fix: reliable export, scoped eraser and recoverable image uploads'
+          git push origin HEAD:"$GITHUB_REF_NAME"
