@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFile, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chromium, webkit } from 'playwright-core';
 
 const engineName = process.env.VERIFICATION_BROWSER === 'webkit' ? 'webkit' : 'chromium';
@@ -79,7 +81,26 @@ async function enterBoard(page, board, key, name) {
   await page.waitForFunction(() => document.documentElement.dataset.alexDurableEditState === 'ready'
     && document.documentElement.dataset.alexDurableEditBlocked !== 'true');
 }
-let browser, page;
+const contexts = [], profiles = [];
+async function openPage() {
+  // Use a normal, persistent profile. WebKit does not store file-backed Blobs
+  // in IndexedDB from an ephemeral context. Owner and student stay isolated.
+  const profile = await mkdtemp(join(tmpdir(), 'alex-board-repair-'));
+  profiles.push(profile);
+  const context = await engine.launchPersistentContext(profile, {
+    headless: true,
+    viewport: { width: 1200, height: 850 },
+    acceptDownloads: true,
+    ...(engineName === 'chromium' ? {
+      executablePath: process.env.CHROMIUM_EXECUTABLE || undefined,
+      args: ['--no-sandbox', '--allow-loopback-in-peer-connection', '--disable-features=WebRtcHideLocalIpsWithMdns'],
+    } : {}),
+  });
+  contexts.push(context);
+  return context.pages()[0] ?? context.newPage();
+}
+
+let page;
 try {
   let ready = false;
   for (let i = 0; i < 120; i++) {
@@ -87,14 +108,7 @@ try {
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   assert.ok(ready, 'Vite repair server starts');
-  browser = await engine.launch({
-    headless: true,
-    ...(engineName === 'chromium' ? {
-      executablePath: process.env.CHROMIUM_EXECUTABLE || undefined,
-      args: ['--no-sandbox', '--allow-loopback-in-peer-connection', '--disable-features=WebRtcHideLocalIpsWithMdns'],
-    } : {}),
-  });
-  page = await browser.newPage({ viewport: { width: 1200, height: 850 }, acceptDownloads: true });
+  page = await openPage();
   page.on('pageerror', error => errors.push(error.stack));
   await page.addInitScript(() => {
     navigator.mediaDevices.getDisplayMedia = async () => {
@@ -104,7 +118,6 @@ try {
       const stream = bitmap.captureStream(10);
       const context = bitmap.getContext('2d');
       context.fillRect(0, 0, bitmap.width, bitmap.height);
-      window.repairScreenTrack = stream.getVideoTracks()[0];
       return stream;
     };
   });
@@ -119,7 +132,8 @@ try {
     while (fiber && fiber.type?.name !== 'BoardWorkspace') fiber = fiber.return;
     for (let hook = fiber?.memoizedState; hook; hook = hook.next) {
       const value = hook.memoizedState?.current;
-      if (value?.getObjects && value?.getZoom) { window.__repairCanvas = value; break; }
+      if (value?.getObjects && value?.getZoom) window.__repairCanvas = value;
+      if (value?.removeFromBoard && value?.handleSignal) window.repairScreenRef = hook.memoizedState;
     }
     if (!window.__repairCanvas) throw new Error('Fabric canvas unavailable');
   });
@@ -197,7 +211,11 @@ try {
 
   await page.locator('.alex-settings-gear').click();
   await page.locator('.alex-settings-item[data-action="screenShare"]').click();
-  await page.waitForFunction(() => window.__repairCanvas.getObjects().some(o => o.transientScreenShare));
+  await page.waitForFunction(() => window.__repairCanvas.getObjects().some(o => o.transientScreenShare)
+    && window.repairScreenRef.current.stream?.getVideoTracks().length);
+  await page.evaluate(() => {
+    window.repairScreenTrack = window.repairScreenRef.current.stream.getVideoTracks()[0];
+  });
   const screen = await mediaCenter('screen-share');
   await eraserMode('Рисунок');
   await page.mouse.click(screen.x, screen.y);
@@ -207,8 +225,6 @@ try {
   await page.waitForFunction(() => window.repairScreenTrack.readyState === 'ended'
     && !window.__repairCanvas.getObjects().some(o => o.transientScreenShare));
   checks.push('Drawing preserves a live share and Media stops the host capture');
-
-
 
   // Real PNG/PDF download through settings gear, not a direct handler call.
   await page.evaluate(async()=>{
@@ -259,7 +275,7 @@ try {
   });
   await owner.goto(`${base}board/${uploadsBoard.boardId}?key=${uploadsBoard.ownerKey}&webrtcLiveV1=1`);
   await owner.waitForFunction(() => document.documentElement.dataset.alexDurableEditState === 'ready');
-  page = await browser.newPage({ viewport: { width: 1200, height: 850 } });
+  page = await openPage();
   page.on('pageerror', error => errors.push(error.stack));
   await installSignaling(page);
   await page.route('**/src/lib/imageStorage.js*', async route => {
@@ -317,4 +333,8 @@ try {
   console.error(JSON.stringify({ checks, progress, signals, errors }, null, 2));
   if(page) {await mkdir('board-repair-results',{recursive:true});await page.screenshot({path:`board-repair-results/${engineName}-failure.png`,fullPage:true}).catch(()=>{});await writeFile(`board-repair-results/${engineName}-failure.txt`,String(error.stack)+'\n'+JSON.stringify(errors));}
   throw error;
-} finally {await browser?.close();server.kill('SIGTERM');}
+} finally {
+  await Promise.allSettled(contexts.map(context => context.close()));
+  await Promise.allSettled(profiles.map(profile => rm(profile, { recursive: true, force: true })));
+  server.kill('SIGTERM');
+}
