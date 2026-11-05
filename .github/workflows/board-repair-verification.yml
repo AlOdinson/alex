@@ -13,6 +13,7 @@ jobs:
     timeout-minutes: 25
     env:
       VITE_NOTEBOOK_OPERATIONS_V1: 'true'
+      NODE_OPTIONS: '--dns-result-order=ipv4first'
     steps:
       - uses: actions/checkout@v6
         with:
@@ -40,8 +41,9 @@ jobs:
       - name: Browser regression checks
         run: |
           npm install --no-save --no-package-lock playwright-core@1.62.1
-          node node_modules/playwright-core/cli.js install --with-deps chromium
+          node node_modules/playwright-core/cli.js install --with-deps chromium webkit
           node scripts/test-board-repairs-browser.mjs
+          VERIFICATION_BROWSER=webkit node scripts/test-board-repairs-browser.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
